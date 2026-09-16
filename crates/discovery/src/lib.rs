@@ -108,7 +108,7 @@ fn normalize_device(raw: LsblkDevice) -> BlockDevice {
         path: raw.path,
         kind: normalize_kind(&raw.device_type),
         size_bytes: raw.size,
-        start_sector: raw.start,
+        start_512_sector: raw.start,
         logical_sector_bytes: raw.log_sec,
         filesystem,
         mountpoints: raw
