@@ -13,8 +13,9 @@ Goal: safely understand a host before changing anything.
 - [x] Add dedicated `pvs` / `vgs` / `lvs` JSON/report collectors.
 - [x] Discover active swap files and swap partitions from `/proc/swaps`.
 - [x] Read active mount state through a dedicated `findmnt` JSON adapter.
-- [ ] Add read-only `/etc/fstab` adapter.
-- [ ] Add topology consistency diagnostics.
+- [x] Add read-only `/etc/fstab` adapter.
+- [x] Add initial topology consistency diagnostics.
+- [ ] Reconcile lsblk/LVM/mount/fstab/swap sources into one host snapshot.
 - [ ] Add VM/loop-device integration test matrix.
 
 ## M1 — Planner and safe grow workflows

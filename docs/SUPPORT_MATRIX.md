@@ -12,7 +12,8 @@ Status values: `Discovery`, `Planned`, `Later`, `Not supported`.
 | Active mount table | Discovery | Planned guarded mount changes |
 | Swap partition | Discovery | Planned |
 | Swap file | Discovery | Planned |
-| `/etc/fstab` | Planned read | Planned guarded write |
+| `/etc/fstab` | Discovery | Planned guarded write |
+| Topology diagnostics | Discovery | Planned preflight enforcement |
 | LUKS | Later | Later |
 | Btrfs | Later | Later |
 | mdraid | Later | Later |

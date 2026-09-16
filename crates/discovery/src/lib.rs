@@ -1,3 +1,5 @@
+mod diagnostics;
+mod fstab;
 mod lvm;
 mod mounts;
 mod swap;
@@ -10,6 +12,8 @@ use lsm_core::{BlockDevice, Filesystem, HostCapabilities, NodeKind, StorageGraph
 use serde::Deserialize;
 use thiserror::Error;
 
+pub use diagnostics::diagnose_storage;
+pub use fstab::{discover_fstab, parse_fstab, FstabDiscoveryError};
 pub use lvm::{
     discover_lvm, parse_lvs_json, parse_pvs_json, parse_vgs_json, LvmDiscoveryError,
 };

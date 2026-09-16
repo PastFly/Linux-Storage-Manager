@@ -2,7 +2,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use lsm_core::BlockDevice;
 use lsm_discovery::{
-    discover_capabilities, discover_lvm, discover_mounts, discover_storage, discover_swaps,
+    diagnose_storage, discover_capabilities, discover_fstab, discover_lvm, discover_mounts,
+    discover_storage, discover_swaps,
 };
 
 #[derive(Debug, Parser)]
@@ -22,10 +23,14 @@ enum Command {
     Capabilities,
     /// Emit the current mount table as normalized JSON.
     Mounts,
+    /// Emit /etc/fstab as normalized JSON without changing it.
+    Fstab,
     /// Emit active swap areas as normalized JSON.
     Swap,
     /// Emit LVM PV/VG/LV inventory as normalized JSON.
     Lvm,
+    /// Run read-only topology consistency diagnostics.
+    Diagnose,
     /// Open the full-screen read-only terminal UI.
     Tui,
 }
@@ -44,12 +49,21 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&discover_mounts()?)?);
             Ok(())
         }
+        Some(Command::Fstab) => {
+            println!("{}", serde_json::to_string_pretty(&discover_fstab()?)?);
+            Ok(())
+        }
         Some(Command::Swap) => {
             println!("{}", serde_json::to_string_pretty(&discover_swaps()?)?);
             Ok(())
         }
         Some(Command::Lvm) => {
             println!("{}", serde_json::to_string_pretty(&discover_lvm()?)?);
+            Ok(())
+        }
+        Some(Command::Diagnose) => {
+            let graph = discover_storage()?;
+            println!("{}", serde_json::to_string_pretty(&diagnose_storage(&graph))?);
             Ok(())
         }
         Some(Command::Tree) => {

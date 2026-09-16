@@ -63,6 +63,16 @@ pub struct MountEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FstabEntry {
+    pub source: String,
+    pub target: String,
+    pub fs_type: String,
+    pub options: Vec<String>,
+    pub dump: u32,
+    pub pass: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwapEntry {
     pub name: String,
     pub kind: String,
@@ -105,4 +115,20 @@ pub struct LvmLogicalVolume {
     pub vg_name: String,
     pub size_bytes: u64,
     pub attributes: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageDiagnostic {
+    pub code: String,
+    pub severity: DiagnosticSeverity,
+    pub message: String,
+    pub device: Option<String>,
 }
