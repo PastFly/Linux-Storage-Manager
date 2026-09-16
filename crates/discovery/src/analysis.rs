@@ -42,7 +42,7 @@ pub fn analyze_extendability(
         return Ok(ExtendAnalysis {
             target: target.to_owned(),
             device: Some(device_name),
-            filesystem,
+            filesystem: Some(fs_type.to_owned()),
             current_size_bytes: Some(device.size_bytes),
             immediate_growth_bytes: None,
             status: ExtendabilityStatus::UnsupportedFilesystem,
@@ -57,7 +57,7 @@ pub fn analyze_extendability(
         return Ok(ExtendAnalysis {
             target: target.to_owned(),
             device: Some(device_name),
-            filesystem,
+            filesystem: Some(fs_type.to_owned()),
             current_size_bytes: Some(device.size_bytes),
             immediate_growth_bytes: None,
             status: ExtendabilityStatus::NeedsGeometry,
@@ -77,7 +77,7 @@ pub fn analyze_extendability(
         return Ok(ExtendAnalysis {
             target: target.to_owned(),
             device: Some(device_name),
-            filesystem,
+            filesystem: Some(fs_type.to_owned()),
             current_size_bytes: Some(device.size_bytes),
             immediate_growth_bytes: None,
             status: ExtendabilityStatus::Unknown,
@@ -97,7 +97,7 @@ pub fn analyze_extendability(
         return Ok(ExtendAnalysis {
             target: target.to_owned(),
             device: Some(device_name),
-            filesystem,
+            filesystem: Some(fs_type.to_owned()),
             current_size_bytes: Some(device.size_bytes),
             immediate_growth_bytes: None,
             status: ExtendabilityStatus::Unknown,
@@ -113,7 +113,7 @@ pub fn analyze_extendability(
         return Ok(ExtendAnalysis {
             target: target.to_owned(),
             device: Some(device_name),
-            filesystem,
+            filesystem: Some(fs_type.to_owned()),
             current_size_bytes: Some(device.size_bytes),
             immediate_growth_bytes: None,
             status: ExtendabilityStatus::Unknown,
@@ -129,7 +129,7 @@ pub fn analyze_extendability(
         return Ok(ExtendAnalysis {
             target: target.to_owned(),
             device: Some(device_name),
-            filesystem,
+            filesystem: Some(fs_type.to_owned()),
             current_size_bytes: Some(device.size_bytes),
             immediate_growth_bytes: Some(0),
             status: ExtendabilityStatus::NeedsUnderlyingCapacity,
@@ -151,7 +151,7 @@ pub fn analyze_extendability(
         return Ok(ExtendAnalysis {
             target: target.to_owned(),
             device: Some(device_name),
-            filesystem,
+            filesystem: Some(fs_type.to_owned()),
             current_size_bytes: Some(device.size_bytes),
             immediate_growth_bytes: Some(vg.free_bytes),
             status: ExtendabilityStatus::RequiresMount,
@@ -174,7 +174,7 @@ pub fn analyze_extendability(
     Ok(ExtendAnalysis {
         target: target.to_owned(),
         device: Some(device_name),
-        filesystem,
+        filesystem: Some(fs_type.to_owned()),
         current_size_bytes: Some(device.size_bytes),
         immediate_growth_bytes: Some(vg.free_bytes),
         status: ExtendabilityStatus::Ready,
