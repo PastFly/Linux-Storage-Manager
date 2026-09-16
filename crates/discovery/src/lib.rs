@@ -3,6 +3,7 @@ mod diagnostics;
 mod fstab;
 mod lvm;
 mod mounts;
+mod partition_table;
 mod reconcile;
 mod snapshot;
 mod swap;
@@ -22,6 +23,9 @@ pub use lvm::{
     discover_lvm, parse_lvs_json, parse_pvs_json, parse_vgs_json, LvmDiscoveryError,
 };
 pub use mounts::{discover_mounts, parse_findmnt_json, MountDiscoveryError};
+pub use partition_table::{
+    discover_partition_tables, parse_sfdisk_json, PartitionTableDiscoveryError,
+};
 pub use reconcile::reconcile_snapshot;
 pub use snapshot::{discover_snapshot, SnapshotDiscoveryError};
 pub use swap::{discover_swaps, parse_proc_swaps, SwapDiscoveryError};
