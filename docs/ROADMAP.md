@@ -22,7 +22,8 @@ Goal: safely understand a host before changing anything.
 - [x] Extend `explain` to detect adjacent partition/PV growth capacity without writes.
 - [x] Add authoritative disk/partition-table discovery with `sfdisk --json`.
 - [x] Reconcile sfdisk label/sector/start/size/PARTUUID facts against lsblk.
-- [ ] Add VM/loop-device integration test matrix.
+- [x] Add disposable loop-device integration harness for plain ext4 and LVM/ext4 topologies.
+- [ ] Execute and validate the loop-device matrix on GitHub Actions (blocked by account billing/spending limit).
 
 ## M1 — Planner and safe grow workflows
 
