@@ -14,7 +14,7 @@ if [[ ! -x ${BIN} ]]; then
   exit 2
 fi
 
-for command in losetup sfdisk partx mkfs.ext4 pvcreate vgcreate lvcreate vgremove jq mount umount; do
+for command in losetup sfdisk partx mkfs.ext4 pvcreate vgcreate lvcreate vgremove jq mount mountpoint umount; do
   if ! command -v "${command}" >/dev/null 2>&1; then
     echo "required integration command is missing: ${command}" >&2
     exit 2
@@ -25,16 +25,20 @@ TMP_ROOT=$(mktemp -d -t lsm-loop-matrix.XXXXXX)
 declare -a LOOPS=()
 declare -a MOUNTS=()
 declare -a VGS=()
+CREATED_LOOP=""
 
 cleanup() {
   set +e
-  for mountpoint in "${MOUNTS[@]:-}"; do
-    mountpoint -q "${mountpoint}" && umount "${mountpoint}"
+  local mount_path
+  local vg
+  local loop
+  for mount_path in "${MOUNTS[@]}"; do
+    mountpoint -q "${mount_path}" && umount "${mount_path}"
   done
-  for vg in "${VGS[@]:-}"; do
+  for vg in "${VGS[@]}"; do
     vgremove -ff -y "${vg}" >/dev/null 2>&1 || true
   done
-  for loop in "${LOOPS[@]:-}"; do
+  for loop in "${LOOPS[@]}"; do
     losetup -d "${loop}" >/dev/null 2>&1 || true
   done
   rm -rf "${TMP_ROOT}"
@@ -58,10 +62,8 @@ create_loop() {
   local image=$1
   local size=$2
   truncate -s "${size}" "${image}"
-  local loop
-  loop=$(losetup --find --show --partscan "${image}")
-  LOOPS+=("${loop}")
-  printf '%s\n' "${loop}"
+  CREATED_LOOP=$(losetup --find --show --partscan "${image}")
+  LOOPS+=("${CREATED_LOOP}")
 }
 
 refresh_partitions() {
@@ -87,7 +89,8 @@ assert_no_error_for_prefix() {
 
 echo "==> Case 1: GPT -> ext4 partition"
 PLAIN_IMAGE="${TMP_ROOT}/plain.img"
-PLAIN_LOOP=$(create_loop "${PLAIN_IMAGE}" 256M)
+create_loop "${PLAIN_IMAGE}" 256M
+PLAIN_LOOP=${CREATED_LOOP}
 printf 'label: gpt\n,128M,L\n' | sfdisk "${PLAIN_LOOP}" >/dev/null
 refresh_partitions "${PLAIN_LOOP}"
 PLAIN_PART="${PLAIN_LOOP}p1"
@@ -108,7 +111,8 @@ assert_no_error_for_prefix "${DIAGNOSTICS}" "${PLAIN_LOOP}"
 
 echo "==> Case 2: GPT -> LVM PV/VG/LV -> ext4"
 LVM_IMAGE="${TMP_ROOT}/lvm.img"
-LVM_LOOP=$(create_loop "${LVM_IMAGE}" 768M)
+create_loop "${LVM_IMAGE}" 768M
+LVM_LOOP=${CREATED_LOOP}
 printf 'label: gpt\n,640M,L\n' | sfdisk "${LVM_LOOP}" >/dev/null
 refresh_partitions "${LVM_LOOP}"
 LVM_PART="${LVM_LOOP}p1"
