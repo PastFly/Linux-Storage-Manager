@@ -59,6 +59,58 @@ fn reports_adjacent_partition_capacity_below_full_vg() {
     );
 }
 
+#[test]
+fn lsblk_start_remains_512_byte_based_on_4k_logical_sector_disk() {
+    let input = r#"{
+        "blockdevices": [
+            {
+                "name": "vdb",
+                "kname": "vdb",
+                "path": "/dev/vdb",
+                "type": "disk",
+                "size": 10737418240,
+                "start": null,
+                "log-sec": 4096,
+                "pttype": "gpt",
+                "mountpoints": [null],
+                "children": [
+                    {
+                        "name": "vdb1",
+                        "kname": "vdb1",
+                        "path": "/dev/vdb1",
+                        "type": "part",
+                        "size": 5368709120,
+                        "start": 2048,
+                        "log-sec": 4096,
+                        "fstype": "ext4",
+                        "mountpoints": ["/data"],
+                        "pkname": "vdb",
+                        "children": []
+                    }
+                ]
+            }
+        ]
+    }"#;
+
+    let snapshot = HostSnapshot {
+        storage: parse_lsblk_json(input).expect("4k geometry fixture should parse"),
+        mounts: Vec::new(),
+        fstab: Vec::new(),
+        swaps: Vec::new(),
+        lvm: None,
+        diagnostics: Vec::new(),
+        collectors: Vec::new(),
+    };
+
+    let analysis = analyze_extendability(&snapshot, "/data").expect("/data should resolve");
+
+    assert_eq!(analysis.status, ExtendabilityStatus::NeedsUnderlyingResize);
+    assert_eq!(
+        analysis.potential_underlying_growth_bytes,
+        Some(5_367_521_280)
+    );
+}
+
 fn fixture_snapshot(vg_free: u64) -> HostSnapshot {
     let storage = parse_lsblk_json(include_str!("../../../tests/fixtures/lsblk-lvm-ext4.json"))
         .expect("lsblk fixture should parse");
