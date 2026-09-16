@@ -16,7 +16,10 @@ Goal: safely understand a host before changing anything.
 - [x] Add read-only `/etc/fstab` adapter.
 - [x] Add initial topology consistency diagnostics.
 - [x] Reconcile collectors into one degradation-tolerant host snapshot.
-- [ ] Add cross-source reconciliation diagnostics (lsblk/LVM/mount/fstab/swap).
+- [x] Add cross-source reconciliation diagnostics (lsblk/LVM/mount/fstab/swap).
+- [x] Add first read-only `explain` analysis for immediate LVM/VG growth capacity.
+- [ ] Collect partition geometry and parent logical-sector sizes for safe tail-space analysis.
+- [ ] Extend `explain` to partition/PV growth chains without performing writes.
 - [ ] Add VM/loop-device integration test matrix.
 
 ## M1 — Planner and safe grow workflows
