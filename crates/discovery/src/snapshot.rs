@@ -4,9 +4,9 @@ use lsm_core::{CollectorState, CollectorStatus, HostSnapshot};
 use thiserror::Error;
 
 use crate::{
-    diagnose_storage, discover_fstab, discover_lvm, discover_mounts, discover_storage,
-    discover_swaps, reconcile_snapshot, DiscoveryError, FstabDiscoveryError, LvmDiscoveryError,
-    MountDiscoveryError, SwapDiscoveryError,
+    diagnose_storage, discover_fstab, discover_lvm, discover_mounts, discover_partition_tables,
+    discover_storage, discover_swaps, reconcile_snapshot, DiscoveryError, FstabDiscoveryError,
+    LvmDiscoveryError, MountDiscoveryError, PartitionTableDiscoveryError, SwapDiscoveryError,
 };
 
 #[derive(Debug, Error)]
@@ -23,6 +23,17 @@ pub fn discover_snapshot() -> Result<HostSnapshot, SnapshotDiscoveryError> {
         state: CollectorState::Complete,
         detail: None,
     }];
+
+    let partition_tables = match discover_partition_tables(&storage) {
+        Ok(value) => {
+            collectors.push(complete("partition_tables"));
+            value
+        }
+        Err(error) => {
+            collectors.push(failed_partition_tables(&error));
+            Vec::new()
+        }
+    };
 
     let mounts = match discover_mounts() {
         Ok(value) => {
@@ -70,6 +81,7 @@ pub fn discover_snapshot() -> Result<HostSnapshot, SnapshotDiscoveryError> {
 
     let mut snapshot = HostSnapshot {
         storage,
+        partition_tables,
         mounts,
         fstab,
         swaps,
@@ -90,6 +102,14 @@ fn complete(component: &str) -> CollectorStatus {
         state: CollectorState::Complete,
         detail: None,
     }
+}
+
+fn failed_partition_tables(error: &PartitionTableDiscoveryError) -> CollectorStatus {
+    let unavailable = matches!(
+        error,
+        PartitionTableDiscoveryError::Io { source, .. } if source.kind() == ErrorKind::NotFound
+    );
+    failed("partition_tables", error.to_string(), unavailable)
 }
 
 fn failed_mounts(error: &MountDiscoveryError) -> CollectorStatus {
