@@ -37,6 +37,7 @@ fn reports_adjacent_partition_capacity_below_full_vg() {
 
     let snapshot = HostSnapshot {
         storage,
+        partition_tables: Vec::new(),
         mounts: Vec::new(),
         fstab: Vec::new(),
         swaps: Vec::new(),
@@ -94,6 +95,7 @@ fn lsblk_start_remains_512_byte_based_on_4k_logical_sector_disk() {
 
     let snapshot = HostSnapshot {
         storage: parse_lsblk_json(input).expect("4k geometry fixture should parse"),
+        partition_tables: Vec::new(),
         mounts: Vec::new(),
         fstab: Vec::new(),
         swaps: Vec::new(),
@@ -125,6 +127,7 @@ fn fixture_snapshot(vg_free: u64) -> HostSnapshot {
 
     HostSnapshot {
         storage,
+        partition_tables: Vec::new(),
         mounts: Vec::new(),
         fstab: Vec::new(),
         swaps: Vec::new(),
