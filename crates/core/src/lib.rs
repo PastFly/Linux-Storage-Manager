@@ -107,6 +107,14 @@ pub struct LvmVolumeGroup {
     pub free_bytes: u64,
     pub pv_count: u64,
     pub lv_count: u64,
+    #[serde(default)]
+    pub extent_size_bytes: Option<u64>,
+    #[serde(default)]
+    pub free_extent_count: Option<u64>,
+    #[serde(default)]
+    pub missing_pv_count: Option<u64>,
+    #[serde(default)]
+    pub attributes: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +125,10 @@ pub struct LvmLogicalVolume {
     pub vg_name: String,
     pub size_bytes: u64,
     pub attributes: Option<String>,
+    #[serde(default)]
+    pub layout: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

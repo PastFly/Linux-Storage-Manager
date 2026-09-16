@@ -25,11 +25,25 @@ Goal: safely understand a host before changing anything.
 - [x] Add disposable loop-device integration harness for plain ext4 and LVM/ext4 topologies.
 - [ ] Execute and validate the loop-device matrix on GitHub Actions (blocked by account billing/spending limit).
 
-## M1 — Planner and safe grow workflows
+## M1A — Experimental read-only previews (not release acceptance)
 
-- immutable operation plans;
-- dry-run output;
-- operation risk/reversibility classification;
+- [x] Implement a pure planner crate with immutable, nonexecutable preview data.
+- [x] Add `plan extend TARGET --by SIZE | --max` and optional JSON output.
+- [x] Collect exact VG extent facts and LV layout/role facts.
+- [x] Reject incomplete collectors, ambiguous targets, unsupported layouts and contradictory capacities.
+- [x] Freeze requests to observed extents; include backup and verification requirements.
+- [x] Add SHA-256 preview/basis IDs and in-memory stale-basis checks.
+- [x] Add unit and CLI parser tests (implemented, not yet executed).
+- [ ] Compile and run fmt/clippy/unit tests on the exact feature head.
+- [ ] Validate M0 and M1A together in a disposable Linux VM.
+
+M0 must still pass its acceptance gates. M1A has no executor, cannot perform a
+backup or resize, and does not authorize storage mutation. See M1A_PLANNER.md.
+
+## M1B — Future executor and safe grow workflows
+
+- authoritative immutable operation plans with live identity and health checks;
+- explicit owner acceptance of M0 and M1A before executor rollout;
 - partition-table metadata backup;
 - LVM metadata backup;
 - grow GPT/MBR partition where safe;

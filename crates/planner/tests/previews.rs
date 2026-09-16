@@ -1,0 +1,219 @@
+use lsm_core::{CollectorState, DiagnosticSeverity, HostCapabilities, HostSnapshot, StorageDiagnostic};
+use lsm_planner::{plan_extend, parse_growth_size, ExtendRequest, Growth, Operation, PlanStatus};
+use serde_json::json;
+
+const GIB: u64 = 1 << 30;
+const EXTENT: u64 = 4 << 20;
+
+fn input() -> (HostSnapshot, HostCapabilities) {
+    let snapshot: HostSnapshot = serde_json::from_value(json!({
+        "storage": {"block_devices": [{
+            "name":"vda", "kernel_name":"vda", "path":"/dev/vda", "kind":"disk",
+            "size_bytes":20*GIB, "mountpoints":[], "partition_table":"gpt", "children":[{
+                "name":"vda1", "kernel_name":"vda1", "path":"/dev/vda1", "kind":"partition",
+                "size_bytes":16*GIB+EXTENT, "start_512_sector":2048, "logical_sector_bytes":512,
+                "uuid":"pv-1", "filesystem":{"fs_type":"LVM2_member"}, "mountpoints":[],
+                "children":[{
+                    "name":"vg0-root", "kernel_name":"dm-0", "path":"/dev/mapper/vg0-root",
+                    "kind":"lvm", "size_bytes":8*GIB, "uuid":"fs-1",
+                    "filesystem":{"fs_type":"ext4"}, "mountpoints":["/"], "children":[]
+                }]
+            }]
+        }]},
+        "partition_tables":[],
+        "mounts":[{"source":"/dev/vg0/root","target":"/","fs_type":"ext4","options":["rw","relatime"]}],
+        "fstab":[], "swaps":[], "diagnostics":[],
+        "collectors":[
+            {"component":"lsblk","state":"complete"},
+            {"component":"partition_tables","state":"complete"},
+            {"component":"mounts","state":"complete"},
+            {"component":"fstab","state":"complete"},
+            {"component":"swap","state":"complete"},
+            {"component":"lvm","state":"complete"}
+        ],
+        "lvm":{
+            "physical_volumes":[{"name":"/dev/vda1","uuid":"pv-1","vg_name":"vg0","size_bytes":16*GIB,"free_bytes":8*GIB}],
+            "volume_groups":[{
+                "name":"vg0","uuid":"vg-1","size_bytes":16*GIB,"free_bytes":8*GIB,
+                "pv_count":1,"lv_count":1,"extent_size_bytes":EXTENT,"free_extent_count":2048,
+                "missing_pv_count":0,"attributes":"wz--n-"
+            }],
+            "logical_volumes":[{
+                "name":"root","path":"/dev/vg0/root","uuid":"lv-1","vg_name":"vg0",
+                "size_bytes":8*GIB,"attributes":"-wi-ao----","layout":"linear","role":"public"
+            }]
+        }
+    })).unwrap();
+    let caps = serde_json::from_value(json!({"tools":[
+        {"name":"vgcfgbackup","available":true}, {"name":"lvextend","available":true},
+        {"name":"resize2fs","available":true}, {"name":"xfs_growfs","available":true}
+    ]})).unwrap();
+    (snapshot, caps)
+}
+
+fn request(target: &str, growth: Growth) -> ExtendRequest {
+    ExtendRequest { target: target.to_owned(), growth }
+}
+
+#[test]
+fn preview_is_immutable_input_and_never_executable() {
+    let (snapshot, caps) = input();
+    let before = snapshot.clone();
+    let plan = plan_extend(&snapshot, &caps, request("/", Growth::ByBytes(GIB))).unwrap();
+    assert_eq!(snapshot, before);
+    assert_eq!(plan.status(), PlanStatus::Preview);
+    assert_eq!(plan.steps().len(), 5);
+    assert_eq!(plan.size_change().unwrap().expected_lv_size_bytes, 9*GIB);
+    assert!(matches!(plan.steps()[1].operation, Operation::BackupLvmMetadata { .. }));
+    for (index, step) in plan.steps().iter().enumerate() {
+        assert_eq!(step.id as usize, index+1);
+        assert_eq!(step.depends_on, if index == 0 { vec![] } else { vec![index as u32] });
+    }
+    let output = serde_json::to_value(&plan).unwrap();
+    assert_eq!(output["dry_run"], true);
+    assert_eq!(output["executable"], false);
+    assert!(plan.render_text().contains("no commands executed"));
+}
+
+#[test]
+fn rounds_up_to_extents_transparently() {
+    let (snapshot, caps) = input();
+    let plan = plan_extend(&snapshot, &caps, request("/", Growth::ByBytes(EXTENT+1))).unwrap();
+    let size = plan.size_change().unwrap();
+    assert_eq!(size.requested_growth_bytes, EXTENT+1);
+    assert_eq!(size.rounded_growth_bytes, EXTENT*2);
+}
+
+#[test]
+fn max_is_frozen_to_observed_capacity() {
+    let (snapshot, caps) = input();
+    let plan = plan_extend(&snapshot, &caps, request("/", Growth::MaxFree)).unwrap();
+    assert_eq!(plan.size_change().unwrap().remaining_vg_free_bytes, 0);
+    assert_eq!(plan.size_change().unwrap().expected_lv_size_bytes, 16*GIB);
+}
+
+#[test]
+fn recognizes_device_mapper_kernel_and_lvm_aliases() {
+    let (snapshot, caps) = input();
+    for target in ["/", "/dev/vg0/root", "/dev/mapper/vg0-root", "/dev/dm-0"] {
+        assert_eq!(plan_extend(&snapshot, &caps, request(target, Growth::MaxFree)).unwrap().status(), PlanStatus::Preview);
+    }
+}
+
+#[test]
+fn xfs_requires_matching_rw_mount() {
+    let (mut snapshot, caps) = input();
+    snapshot.storage.block_devices[0].children[0].children[0].filesystem.as_mut().unwrap().fs_type = "xfs".into();
+    snapshot.mounts[0].fs_type = Some("xfs".into());
+    assert_eq!(plan_extend(&snapshot, &caps, request("/", Growth::MaxFree)).unwrap().status(), PlanStatus::Preview);
+    snapshot.mounts[0].options = vec!["ro".into()];
+    assert_eq!(plan_extend(&snapshot, &caps, request("/", Growth::MaxFree)).unwrap().status(), PlanStatus::Blocked);
+}
+
+#[test]
+fn missing_and_failed_collectors_are_blockers() {
+    let (snapshot, caps) = input();
+    for state in [CollectorState::Unavailable, CollectorState::Failed] {
+        let mut changed = snapshot.clone();
+        changed.collectors[0].state = state;
+        let plan = plan_extend(&changed, &caps, request("/", Growth::MaxFree)).unwrap();
+        assert_eq!(plan.status(), PlanStatus::Blocked);
+        assert!(plan.steps().is_empty());
+    }
+    let mut changed = snapshot.clone();
+    changed.collectors.clear();
+    assert_eq!(plan_extend(&changed, &caps, request("/", Growth::MaxFree)).unwrap().status(), PlanStatus::Blocked);
+}
+
+#[test]
+fn errors_block_even_when_legacy_explain_would_be_ready() {
+    let (mut snapshot, caps) = input();
+    snapshot.diagnostics.push(StorageDiagnostic {
+        code:"partition-size-mismatch".into(), severity:DiagnosticSeverity::Error,
+        message:"contradictory geometry".into(), device:Some("/dev/vda1".into()),
+    });
+    let plan = plan_extend(&snapshot, &caps, request("/", Growth::MaxFree)).unwrap();
+    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert_eq!(plan.blockers()[0].code, "diagnostic-error");
+    assert!(plan.steps().is_empty());
+}
+
+#[test]
+fn duplicate_mount_targets_and_logical_volumes_are_rejected() {
+    let (snapshot, caps) = input();
+    let mut changed = snapshot.clone();
+    changed.mounts.push(changed.mounts[0].clone());
+    assert_eq!(plan_extend(&changed, &caps, request("/", Growth::MaxFree)).unwrap().status(), PlanStatus::Blocked);
+    let mut changed = snapshot.clone();
+    let lvm = changed.lvm.as_mut().unwrap();
+    lvm.logical_volumes.push(lvm.logical_volumes[0].clone());
+    assert_eq!(plan_extend(&changed, &caps, request("/", Growth::MaxFree)).unwrap().status(), PlanStatus::Blocked);
+}
+
+#[test]
+fn missing_or_thin_or_raid_layouts_are_blocked() {
+    let (snapshot, caps) = input();
+    for layout in [None, Some("thin"), Some("raid,raid1"), Some("striped"), Some("linear,cache")] {
+        let mut changed = snapshot.clone();
+        changed.lvm.as_mut().unwrap().logical_volumes[0].layout = layout.map(str::to_owned);
+        let plan = plan_extend(&changed, &caps, request("/", Growth::MaxFree)).unwrap();
+        assert_eq!(plan.status(), PlanStatus::Blocked);
+        assert!(plan.steps().is_empty());
+    }
+}
+
+#[test]
+fn identity_and_capacity_disagreements_block() {
+    let (snapshot, caps) = input();
+    let cases: Vec<fn(&mut HostSnapshot)> = vec![
+        |s| s.lvm.as_mut().unwrap().physical_volumes[0].uuid = Some("another-pv".into()),
+        |s| s.lvm.as_mut().unwrap().logical_volumes[0].size_bytes += 1,
+        |s| s.lvm.as_mut().unwrap().volume_groups[0].free_extent_count = Some(1),
+        |s| s.lvm.as_mut().unwrap().volume_groups[0].missing_pv_count = Some(1),
+        |s| s.lvm.as_mut().unwrap().volume_groups[0].pv_count = 2,
+        |s| s.lvm.as_mut().unwrap().volume_groups[0].extent_size_bytes = None,
+        |s| s.lvm.as_mut().unwrap().logical_volumes[0].uuid = None,
+    ];
+    for mutate in cases {
+        let mut changed = snapshot.clone();
+        mutate(&mut changed);
+        assert_eq!(plan_extend(&changed, &caps, request("/", Growth::MaxFree)).unwrap().status(), PlanStatus::Blocked);
+    }
+}
+
+#[test]
+fn missing_tools_zero_and_oversized_requests_block() {
+    let (snapshot, mut caps) = input();
+    for size in [0, 8*GIB+1, u64::MAX] {
+        let plan = plan_extend(&snapshot, &caps, request("/", Growth::ByBytes(size))).unwrap();
+        assert_eq!(plan.status(), PlanStatus::Blocked);
+        assert!(plan.steps().is_empty());
+    }
+    caps.tools[0].available = false;
+    assert_eq!(plan_extend(&snapshot, &caps, request("/", Growth::MaxFree)).unwrap().status(), PlanStatus::Blocked);
+}
+
+#[test]
+fn plan_id_is_repeatable_and_basis_changes_invalidate() {
+    let (snapshot, caps) = input();
+    let plan = plan_extend(&snapshot, &caps, request("/", Growth::MaxFree)).unwrap();
+    let again = plan_extend(&snapshot, &caps, request("/", Growth::MaxFree)).unwrap();
+    assert_eq!(plan.plan_id(), again.plan_id());
+    assert!(plan.matches_basis(&snapshot, &caps).unwrap());
+    let mut changed = snapshot.clone();
+    changed.lvm.as_mut().unwrap().volume_groups[0].free_bytes -= EXTENT;
+    assert!(!plan.matches_basis(&changed, &caps).unwrap());
+    let mut changed_caps = caps.clone();
+    changed_caps.tools[0].available = false;
+    assert!(!plan.matches_basis(&snapshot, &changed_caps).unwrap());
+}
+
+#[test]
+fn validates_explicit_binary_units_without_float_conversion() {
+    assert_eq!(parse_growth_size("8GiB").unwrap(), 8*GIB);
+    assert_eq!(parse_growth_size("1B").unwrap(), 1);
+    assert_eq!(parse_growth_size("18446744073709551615B").unwrap(), u64::MAX);
+    for value in ["8", "8GB", "0B", "1.5GiB", "-1GiB", "+1GiB", "1e3B", " 8GiB", "8GiB ", "18446744073709551616B", "18446744073709551615TiB"] {
+        assert!(parse_growth_size(value).is_err(), "accepted {value}");
+    }
+}

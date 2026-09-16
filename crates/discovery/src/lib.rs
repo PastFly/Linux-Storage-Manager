@@ -73,6 +73,8 @@ pub fn discover_capabilities() -> HostCapabilities {
         "pvs",
         "vgs",
         "lvs",
+        "vgcfgbackup",
+        "lvextend",
         "swapon",
         "resize2fs",
         "xfs_growfs",

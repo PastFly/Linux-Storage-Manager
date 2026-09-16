@@ -14,5 +14,6 @@ anyhow.workspace = true
 clap.workspace = true
 lsm-core = { path = "../core" }
 lsm-discovery = { path = "../discovery" }
+lsm-planner = { path = "../planner" }
 lsm-tui = { path = "../tui" }
 serde_json.workspace = true
