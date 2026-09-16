@@ -3,6 +3,7 @@ use lsm_core::{
 };
 use thiserror::Error;
 
+const LSBLK_START_SECTOR_BYTES: u64 = 512;
 const GPT_TAIL_RESERVED_SECTORS: u64 = 34;
 
 #[derive(Debug, Error)]
@@ -312,7 +313,7 @@ fn analyze_partition_target(
             None,
             None,
             vec![
-                "partition start or parent logical-sector geometry is incomplete, so adjacent capacity cannot be calculated safely"
+                "partition start or parent geometry is incomplete, so adjacent capacity cannot be calculated safely"
                     .to_owned(),
             ],
             vec!["complete lower-layer partition geometry discovery".to_owned()],
@@ -390,11 +391,8 @@ fn is_direct_child(parent: &BlockDevice, target: &BlockDevice) -> bool {
 }
 
 fn adjacent_free_in_disk(disk: &BlockDevice, target: &BlockDevice) -> Option<u64> {
-    let sector_bytes = disk
-        .logical_sector_bytes
-        .or(target.logical_sector_bytes)?;
-    let target_start_sector = target.start_sector?;
-    let target_start_bytes = target_start_sector.checked_mul(sector_bytes)?;
+    let target_start_sector = target.start_512_sector?;
+    let target_start_bytes = target_start_sector.checked_mul(LSBLK_START_SECTOR_BYTES)?;
     let target_end_bytes = target_start_bytes.checked_add(target.size_bytes)?;
 
     let next_partition_start = disk
@@ -403,8 +401,8 @@ fn adjacent_free_in_disk(disk: &BlockDevice, target: &BlockDevice) -> Option<u64
         .filter(|child| child.kind == NodeKind::Partition && !same_device(child, target))
         .filter_map(|child| {
             child
-                .start_sector
-                .and_then(|start| start.checked_mul(sector_bytes))
+                .start_512_sector
+                .and_then(|start| start.checked_mul(LSBLK_START_SECTOR_BYTES))
         })
         .filter(|start| *start >= target_end_bytes)
         .min();
@@ -412,8 +410,10 @@ fn adjacent_free_in_disk(disk: &BlockDevice, target: &BlockDevice) -> Option<u64
     let usable_disk_end = if next_partition_start.is_some() {
         disk.size_bytes
     } else if disk.partition_table.as_deref() == Some("gpt") {
-        disk.size_bytes
-            .saturating_sub(GPT_TAIL_RESERVED_SECTORS.saturating_mul(sector_bytes))
+        let logical_sector_bytes = disk.logical_sector_bytes.or(target.logical_sector_bytes)?;
+        disk.size_bytes.saturating_sub(
+            GPT_TAIL_RESERVED_SECTORS.saturating_mul(logical_sector_bytes),
+        )
     } else {
         disk.size_bytes
     };
