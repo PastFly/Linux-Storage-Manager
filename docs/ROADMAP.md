@@ -20,7 +20,8 @@ Goal: safely understand a host before changing anything.
 - [x] Add read-only `explain` analysis for immediate LVM/VG growth capacity.
 - [x] Collect partition start geometry and parent logical-sector sizes.
 - [x] Extend `explain` to detect adjacent partition/PV growth capacity without writes.
-- [ ] Add disk/partition-table authoritative reconciliation with `sfdisk --json` before M1.
+- [x] Add authoritative disk/partition-table discovery with `sfdisk --json`.
+- [x] Reconcile sfdisk label/sector/start/size/PARTUUID facts against lsblk.
 - [ ] Add VM/loop-device integration test matrix.
 
 ## M1 — Planner and safe grow workflows
