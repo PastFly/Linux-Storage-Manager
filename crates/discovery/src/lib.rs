@@ -1,3 +1,7 @@
+mod lvm;
+mod mounts;
+mod swap;
+
 use std::env;
 use std::path::Path;
 use std::process::Command;
@@ -5,6 +9,12 @@ use std::process::Command;
 use lsm_core::{BlockDevice, Filesystem, HostCapabilities, NodeKind, StorageGraph, ToolCapability};
 use serde::Deserialize;
 use thiserror::Error;
+
+pub use lvm::{
+    discover_lvm, parse_lvs_json, parse_pvs_json, parse_vgs_json, LvmDiscoveryError,
+};
+pub use mounts::{discover_mounts, parse_findmnt_json, MountDiscoveryError};
+pub use swap::{discover_swaps, parse_proc_swaps, SwapDiscoveryError};
 
 const LSBLK_COLUMNS: &str =
     "NAME,KNAME,PATH,TYPE,SIZE,FSTYPE,FSVER,MOUNTPOINTS,PKNAME,MODEL,SERIAL,UUID,PARTUUID,PTTYPE";
@@ -43,8 +53,18 @@ pub fn parse_lsblk_json(input: &str) -> Result<StorageGraph, DiscoveryError> {
 
 pub fn discover_capabilities() -> HostCapabilities {
     const TOOLS: &[&str] = &[
-        "lsblk", "findmnt", "sfdisk", "pvs", "vgs", "lvs", "swapon", "resize2fs",
-        "xfs_growfs", "cryptsetup", "mdadm", "btrfs",
+        "lsblk",
+        "findmnt",
+        "sfdisk",
+        "pvs",
+        "vgs",
+        "lvs",
+        "swapon",
+        "resize2fs",
+        "xfs_growfs",
+        "cryptsetup",
+        "mdadm",
+        "btrfs",
     ];
 
     HostCapabilities {

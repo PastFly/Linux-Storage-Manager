@@ -1,7 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use lsm_core::BlockDevice;
-use lsm_discovery::{discover_capabilities, discover_storage};
+use lsm_discovery::{
+    discover_capabilities, discover_lvm, discover_mounts, discover_storage, discover_swaps,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "storagemgr", version, about = "Safety-first Linux storage administration")]
@@ -18,6 +20,12 @@ enum Command {
     Json,
     /// Show detected host storage-tool capabilities.
     Capabilities,
+    /// Emit the current mount table as normalized JSON.
+    Mounts,
+    /// Emit active swap areas as normalized JSON.
+    Swap,
+    /// Emit LVM PV/VG/LV inventory as normalized JSON.
+    Lvm,
     /// Open the full-screen read-only terminal UI.
     Tui,
 }
@@ -30,6 +38,18 @@ fn main() -> Result<()> {
         Some(Command::Json) => {
             let graph = discover_storage()?;
             println!("{}", serde_json::to_string_pretty(&graph)?);
+            Ok(())
+        }
+        Some(Command::Mounts) => {
+            println!("{}", serde_json::to_string_pretty(&discover_mounts()?)?);
+            Ok(())
+        }
+        Some(Command::Swap) => {
+            println!("{}", serde_json::to_string_pretty(&discover_swaps()?)?);
+            Ok(())
+        }
+        Some(Command::Lvm) => {
+            println!("{}", serde_json::to_string_pretty(&discover_lvm()?)?);
             Ok(())
         }
         Some(Command::Tree) => {
@@ -49,7 +69,11 @@ fn main() -> Result<()> {
 
 fn print_capabilities() -> Result<()> {
     for tool in discover_capabilities().tools {
-        println!("{:<12} {}", tool.name, if tool.available { "available" } else { "missing" });
+        println!(
+            "{:<12} {}",
+            tool.name,
+            if tool.available { "available" } else { "missing" }
+        );
     }
     Ok(())
 }

@@ -6,11 +6,12 @@ Status values: `Discovery`, `Planned`, `Later`, `Not supported`.
 | --- | --- | --- |
 | Physical disks | Discovery | Planned |
 | GPT / MBR partitions | Discovery | Planned |
-| LVM PV / VG / LV | Partial discovery | Planned |
+| LVM PV / VG / LV | Discovery | Planned |
 | ext4 | Discovery | Planned grow |
 | XFS | Discovery | Planned grow |
+| Active mount table | Discovery | Planned guarded mount changes |
 | Swap partition | Discovery | Planned |
-| Swap file | Planned | Planned |
+| Swap file | Discovery | Planned |
 | `/etc/fstab` | Planned read | Planned guarded write |
 | LUKS | Later | Later |
 | Btrfs | Later | Later |

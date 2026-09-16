@@ -53,3 +53,56 @@ pub struct ToolCapability {
     pub name: String,
     pub available: bool,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MountEntry {
+    pub source: Option<String>,
+    pub target: String,
+    pub fs_type: Option<String>,
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwapEntry {
+    pub name: String,
+    pub kind: String,
+    pub size_bytes: u64,
+    pub used_bytes: u64,
+    pub priority: i32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LvmInventory {
+    pub physical_volumes: Vec<LvmPhysicalVolume>,
+    pub volume_groups: Vec<LvmVolumeGroup>,
+    pub logical_volumes: Vec<LvmLogicalVolume>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LvmPhysicalVolume {
+    pub name: String,
+    pub uuid: Option<String>,
+    pub vg_name: Option<String>,
+    pub size_bytes: u64,
+    pub free_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LvmVolumeGroup {
+    pub name: String,
+    pub uuid: Option<String>,
+    pub size_bytes: u64,
+    pub free_bytes: u64,
+    pub pv_count: u64,
+    pub lv_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LvmLogicalVolume {
+    pub name: String,
+    pub path: Option<String>,
+    pub uuid: Option<String>,
+    pub vg_name: String,
+    pub size_bytes: u64,
+    pub attributes: Option<String>,
+}

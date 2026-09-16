@@ -10,9 +10,10 @@ Goal: safely understand a host before changing anything.
 - [x] Provide read-only CLI views.
 - [x] Provide initial read-only TUI.
 - [x] Add fixture-based discovery tests.
-- [ ] Add dedicated `pvs` / `vgs` / `lvs` JSON/report collectors.
-- [ ] Discover active swap files and swap partitions.
-- [ ] Read mount/fstab state through dedicated adapters.
+- [x] Add dedicated `pvs` / `vgs` / `lvs` JSON/report collectors.
+- [x] Discover active swap files and swap partitions from `/proc/swaps`.
+- [x] Read active mount state through a dedicated `findmnt` JSON adapter.
+- [ ] Add read-only `/etc/fstab` adapter.
 - [ ] Add topology consistency diagnostics.
 - [ ] Add VM/loop-device integration test matrix.
 
