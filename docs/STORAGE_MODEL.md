@@ -38,6 +38,20 @@ M0 starts with the block hierarchy reported by `lsblk` and normalizes device cla
 
 `LOG-SEC` is stored separately as `logical_sector_bytes`. It must not be used to convert `START`. It is relevant to partition-table details such as GPT logical-block boundaries and will also be required by the future write planner.
 
-The M0 extendability analyzer may calculate a conservative upper bound for adjacent partition capacity. That value is informational only: M1 must re-read authoritative partition-table metadata before producing or executing a write plan.
+## Authoritative partition-table view
+
+For disks where `lsblk` reports a partition table, M0 also reads `sfdisk --json` and normalizes:
+
+- disk-label type;
+- table identifier;
+- first/last usable LBA where reported;
+- partition-table sector size;
+- partition node;
+- start and size in partition-table sectors;
+- partition type, UUID, name, attributes, and boot flag where reported.
+
+The `sfdisk` sector values are interpreted using that table's `sector_size_bytes`. M0 cross-checks their byte offsets and sizes against the independent `lsblk` view. Contradictions are diagnostics with error severity because future write planning must not choose one conflicting geometry source silently.
+
+The M0 extendability analyzer may calculate a conservative upper bound for adjacent partition capacity. That value is informational only: M1 must re-read and reconcile authoritative partition-table metadata immediately before producing or executing a write plan.
 
 Raw command output must not leak into planning logic. Discovery adapters translate external schemas into the normalized model first.
