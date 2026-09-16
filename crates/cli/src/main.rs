@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use lsm_core::BlockDevice;
 use lsm_discovery::{
     diagnose_storage, discover_capabilities, discover_fstab, discover_lvm, discover_mounts,
-    discover_storage, discover_swaps,
+    discover_snapshot, discover_storage, discover_swaps,
 };
 
 #[derive(Debug, Parser)]
@@ -19,6 +19,8 @@ enum Command {
     Tree,
     /// Emit the normalized storage graph as JSON.
     Json,
+    /// Emit the complete read-only host storage snapshot as JSON.
+    Snapshot,
     /// Show detected host storage-tool capabilities.
     Capabilities,
     /// Emit the current mount table as normalized JSON.
@@ -43,6 +45,10 @@ fn main() -> Result<()> {
         Some(Command::Json) => {
             let graph = discover_storage()?;
             println!("{}", serde_json::to_string_pretty(&graph)?);
+            Ok(())
+        }
+        Some(Command::Snapshot) => {
+            println!("{}", serde_json::to_string_pretty(&discover_snapshot()?)?);
             Ok(())
         }
         Some(Command::Mounts) => {
@@ -74,9 +80,9 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Command::Tui) | None => {
-            let graph = discover_storage()?;
+            let snapshot = discover_snapshot()?;
             let capabilities = discover_capabilities();
-            lsm_tui::run(&graph, &capabilities)
+            lsm_tui::run(&snapshot.storage, &capabilities)
         }
     }
 }

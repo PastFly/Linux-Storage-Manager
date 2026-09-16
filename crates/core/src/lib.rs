@@ -132,3 +132,29 @@ pub struct StorageDiagnostic {
     pub message: String,
     pub device: Option<String>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectorState {
+    Complete,
+    Unavailable,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CollectorStatus {
+    pub component: String,
+    pub state: CollectorState,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostSnapshot {
+    pub storage: StorageGraph,
+    pub mounts: Vec<MountEntry>,
+    pub fstab: Vec<FstabEntry>,
+    pub swaps: Vec<SwapEntry>,
+    pub lvm: Option<LvmInventory>,
+    pub diagnostics: Vec<StorageDiagnostic>,
+    pub collectors: Vec<CollectorStatus>,
+}

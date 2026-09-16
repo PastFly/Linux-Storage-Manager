@@ -15,7 +15,8 @@ Goal: safely understand a host before changing anything.
 - [x] Read active mount state through a dedicated `findmnt` JSON adapter.
 - [x] Add read-only `/etc/fstab` adapter.
 - [x] Add initial topology consistency diagnostics.
-- [ ] Reconcile lsblk/LVM/mount/fstab/swap sources into one host snapshot.
+- [x] Reconcile collectors into one degradation-tolerant host snapshot.
+- [ ] Add cross-source reconciliation diagnostics (lsblk/LVM/mount/fstab/swap).
 - [ ] Add VM/loop-device integration test matrix.
 
 ## M1 — Planner and safe grow workflows
