@@ -119,6 +119,30 @@ pub struct LvmLogicalVolume {
     pub attributes: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartitionTable {
+    pub device: String,
+    pub label: Option<String>,
+    pub id: Option<String>,
+    pub unit: Option<String>,
+    pub first_lba: Option<u64>,
+    pub last_lba: Option<u64>,
+    pub sector_size_bytes: Option<u64>,
+    pub partitions: Vec<PartitionRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartitionRecord {
+    pub node: String,
+    pub start_sector: u64,
+    pub size_sectors: u64,
+    pub partition_type: Option<String>,
+    pub uuid: Option<String>,
+    pub name: Option<String>,
+    pub attrs: Option<String>,
+    pub bootable: Option<bool>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticSeverity {
@@ -153,6 +177,7 @@ pub struct CollectorStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostSnapshot {
     pub storage: StorageGraph,
+    pub partition_tables: Vec<PartitionTable>,
     pub mounts: Vec<MountEntry>,
     pub fstab: Vec<FstabEntry>,
     pub swaps: Vec<SwapEntry>,
