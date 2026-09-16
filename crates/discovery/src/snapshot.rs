@@ -5,8 +5,8 @@ use thiserror::Error;
 
 use crate::{
     diagnose_storage, discover_fstab, discover_lvm, discover_mounts, discover_storage,
-    discover_swaps, DiscoveryError, FstabDiscoveryError, LvmDiscoveryError, MountDiscoveryError,
-    SwapDiscoveryError,
+    discover_swaps, reconcile_snapshot, DiscoveryError, FstabDiscoveryError, LvmDiscoveryError,
+    MountDiscoveryError, SwapDiscoveryError,
 };
 
 #[derive(Debug, Error)]
@@ -68,7 +68,7 @@ pub fn discover_snapshot() -> Result<HostSnapshot, SnapshotDiscoveryError> {
         }
     };
 
-    Ok(HostSnapshot {
+    let mut snapshot = HostSnapshot {
         storage,
         mounts,
         fstab,
@@ -76,7 +76,12 @@ pub fn discover_snapshot() -> Result<HostSnapshot, SnapshotDiscoveryError> {
         lvm,
         diagnostics,
         collectors,
-    })
+    };
+
+    let reconciliation = reconcile_snapshot(&snapshot);
+    snapshot.diagnostics.extend(reconciliation);
+
+    Ok(snapshot)
 }
 
 fn complete(component: &str) -> CollectorStatus {
