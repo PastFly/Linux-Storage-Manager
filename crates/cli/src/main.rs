@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use lsm_core::BlockDevice;
 use lsm_discovery::{
     analyze_extendability, discover_capabilities, discover_fstab, discover_lvm, discover_mounts,
-    discover_snapshot, discover_storage, discover_swaps,
+    discover_partition_tables, discover_snapshot, discover_storage, discover_swaps,
 };
 
 #[derive(Debug, Parser)]
@@ -23,6 +23,8 @@ enum Command {
     Snapshot,
     /// Show detected host storage-tool capabilities.
     Capabilities,
+    /// Emit authoritative partition-table data from read-only sfdisk JSON.
+    PartitionTables,
     /// Emit the current mount table as normalized JSON.
     Mounts,
     /// Emit /etc/fstab as normalized JSON without changing it.
@@ -54,6 +56,14 @@ fn main() -> Result<()> {
         }
         Some(Command::Snapshot) => {
             println!("{}", serde_json::to_string_pretty(&discover_snapshot()?)?);
+            Ok(())
+        }
+        Some(Command::PartitionTables) => {
+            let graph = discover_storage()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&discover_partition_tables(&graph)?)?
+            );
             Ok(())
         }
         Some(Command::Mounts) => {
