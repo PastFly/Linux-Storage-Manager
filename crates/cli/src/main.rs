@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use lsm_core::BlockDevice;
 use lsm_discovery::{
-    diagnose_storage, discover_capabilities, discover_fstab, discover_lvm, discover_mounts,
+    analyze_extendability, discover_capabilities, discover_fstab, discover_lvm, discover_mounts,
     discover_snapshot, discover_storage, discover_swaps,
 };
 
@@ -31,8 +31,13 @@ enum Command {
     Swap,
     /// Emit LVM PV/VG/LV inventory as normalized JSON.
     Lvm,
-    /// Run read-only topology consistency diagnostics.
+    /// Run read-only topology and cross-source consistency diagnostics.
     Diagnose,
+    /// Explain whether a mount point or block device can be grown with currently known capacity.
+    Explain {
+        /// Mount point (for example / or /var) or block-device path.
+        target: String,
+    },
     /// Open the full-screen read-only terminal UI.
     Tui,
 }
@@ -68,8 +73,17 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Command::Diagnose) => {
-            let graph = discover_storage()?;
-            println!("{}", serde_json::to_string_pretty(&diagnose_storage(&graph))?);
+            let snapshot = discover_snapshot()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&snapshot.diagnostics)?
+            );
+            Ok(())
+        }
+        Some(Command::Explain { target }) => {
+            let snapshot = discover_snapshot()?;
+            let analysis = analyze_extendability(&snapshot, &target)?;
+            println!("{}", serde_json::to_string_pretty(&analysis)?);
             Ok(())
         }
         Some(Command::Tree) => {
