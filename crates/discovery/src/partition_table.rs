@@ -32,7 +32,7 @@ pub fn discover_partition_tables(
     let mut tables = Vec::new();
 
     for disk in &graph.block_devices {
-        if disk.kind != NodeKind::Disk {
+        if disk.kind != NodeKind::Disk || disk.partition_table.is_none() {
             continue;
         }
 
