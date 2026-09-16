@@ -1,3 +1,4 @@
+mod analysis;
 mod diagnostics;
 mod fstab;
 mod lvm;
@@ -14,6 +15,7 @@ use lsm_core::{BlockDevice, Filesystem, HostCapabilities, NodeKind, StorageGraph
 use serde::Deserialize;
 use thiserror::Error;
 
+pub use analysis::{analyze_extendability, ExtendAnalysisError};
 pub use diagnostics::diagnose_storage;
 pub use fstab::{discover_fstab, parse_fstab, FstabDiscoveryError};
 pub use lvm::{
