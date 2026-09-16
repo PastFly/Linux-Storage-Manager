@@ -18,6 +18,19 @@ A user expresses intent such as "show storage", "extend /", or "create 8 GiB swa
 
 M0 contains discovery, the normalized read-only model, CLI inspection, TUI inspection, fixtures, and tests. There is no mutating executor.
 
+## Discovery authority
+
+No single Linux utility is treated as sufficient for future write decisions.
+
+- `lsblk` supplies the primary block-device topology, filesystem facts, mountpoint hints, and normalized device relationships.
+- `sfdisk --json` supplies an independent read-only view of authoritative partition-table geometry.
+- `pvs`, `vgs`, and `lvs` supply LVM allocation facts.
+- `findmnt` supplies the active mount tree.
+- `/etc/fstab` supplies persistent mount intent.
+- `/proc/swaps` supplies active swap state.
+
+M0 reconciles these sources and emits diagnostics for contradictions. Future M1 write planning must fail closed when authoritative geometry is unavailable or disagrees with the topology model.
+
 ## Dependency direction
 
 ```text
