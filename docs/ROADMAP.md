@@ -17,9 +17,10 @@ Goal: safely understand a host before changing anything.
 - [x] Add initial topology consistency diagnostics.
 - [x] Reconcile collectors into one degradation-tolerant host snapshot.
 - [x] Add cross-source reconciliation diagnostics (lsblk/LVM/mount/fstab/swap).
-- [x] Add first read-only `explain` analysis for immediate LVM/VG growth capacity.
-- [ ] Collect partition geometry and parent logical-sector sizes for safe tail-space analysis.
-- [ ] Extend `explain` to partition/PV growth chains without performing writes.
+- [x] Add read-only `explain` analysis for immediate LVM/VG growth capacity.
+- [x] Collect partition start geometry and parent logical-sector sizes.
+- [x] Extend `explain` to detect adjacent partition/PV growth capacity without writes.
+- [ ] Add disk/partition-table authoritative reconciliation with `sfdisk --json` before M1.
 - [ ] Add VM/loop-device integration test matrix.
 
 ## M1 — Planner and safe grow workflows
