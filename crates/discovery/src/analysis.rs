@@ -1,10 +1,12 @@
+mod geometry;
+
+use std::collections::BTreeSet;
+
 use lsm_core::{
-    BlockDevice, ExtendAnalysis, ExtendabilityStatus, HostSnapshot, LvmLogicalVolume, NodeKind,
+    BlockDevice, DiagnosticSeverity, ExtendAnalysis, ExtendabilityStatus, HostSnapshot,
+    LvmLogicalVolume, NodeKind,
 };
 use thiserror::Error;
-
-const LSBLK_START_SECTOR_BYTES: u64 = 512;
-const GPT_TAIL_RESERVED_SECTORS: u64 = 34;
 
 #[derive(Debug, Error)]
 pub enum ExtendAnalysisError {
@@ -19,21 +21,32 @@ pub fn analyze_extendability(
     let device = find_target_device(snapshot, target)
         .ok_or_else(|| ExtendAnalysisError::TargetNotFound(target.to_owned()))?;
 
-    let device_name = device
-        .path
-        .clone()
-        .unwrap_or_else(|| device.name.clone());
     let filesystem = device
         .filesystem
         .as_ref()
         .map(|filesystem| filesystem.fs_type.clone());
 
+    // A contradictory snapshot must not yield a capacity claim, even for LVM free space.
+    if snapshot
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == DiagnosticSeverity::Error)
+    {
+        return Ok(base_analysis(
+            target,
+            device,
+            ExtendabilityStatus::Unknown,
+            None,
+            None,
+            vec!["error-level diagnostics invalidate this advisory analysis".to_owned()],
+            Vec::new(),
+        ));
+    }
+
     let Some(fs_type) = filesystem.as_deref() else {
         return Ok(base_analysis(
             target,
-            device_name,
-            None,
-            device.size_bytes,
+            device,
             ExtendabilityStatus::Unknown,
             None,
             None,
@@ -45,9 +58,7 @@ pub fn analyze_extendability(
     if !matches!(fs_type, "ext4" | "xfs") {
         return Ok(base_analysis(
             target,
-            device_name,
-            Some(fs_type.to_owned()),
-            device.size_bytes,
+            device,
             ExtendabilityStatus::UnsupportedFilesystem,
             None,
             None,
@@ -63,15 +74,12 @@ pub fn analyze_extendability(
         NodeKind::Partition => Ok(analyze_partition_target(snapshot, target, device, fs_type)),
         _ => Ok(base_analysis(
             target,
-            device_name,
-            Some(fs_type.to_owned()),
-            device.size_bytes,
+            device,
             ExtendabilityStatus::NeedsGeometry,
             None,
             None,
             vec![
-                "the target is not a directly supported LVM or partition growth topology"
-                    .to_owned(),
+                "the target is not a directly supported LVM or partition growth topology".to_owned(),
             ],
             vec![
                 "inspect the lower block-device layers before planning growth".to_owned(),
@@ -87,17 +95,10 @@ fn analyze_lvm_target(
     device: &BlockDevice,
     fs_type: &str,
 ) -> Result<ExtendAnalysis, ExtendAnalysisError> {
-    let device_name = device
-        .path
-        .clone()
-        .unwrap_or_else(|| device.name.clone());
-
     let Some(lvm) = snapshot.lvm.as_ref() else {
         return Ok(base_analysis(
             target,
-            device_name,
-            Some(fs_type.to_owned()),
-            device.size_bytes,
+            device,
             ExtendabilityStatus::Unknown,
             None,
             None,
@@ -116,9 +117,7 @@ fn analyze_lvm_target(
     else {
         return Ok(base_analysis(
             target,
-            device_name,
-            Some(fs_type.to_owned()),
-            device.size_bytes,
+            device,
             ExtendabilityStatus::Unknown,
             None,
             None,
@@ -133,9 +132,7 @@ fn analyze_lvm_target(
     let Some(vg) = lvm.volume_groups.iter().find(|vg| vg.name == lv.vg_name) else {
         return Ok(base_analysis(
             target,
-            device_name,
-            Some(fs_type.to_owned()),
-            device.size_bytes,
+            device,
             ExtendabilityStatus::Unknown,
             None,
             None,
@@ -178,9 +175,7 @@ fn analyze_lvm_target(
 
         return Ok(base_analysis(
             target,
-            device_name,
-            Some(fs_type.to_owned()),
-            device.size_bytes,
+            device,
             status,
             Some(vg.free_bytes),
             None,
@@ -191,10 +186,10 @@ fn analyze_lvm_target(
 
     let capacity = analyze_vg_underlying_capacity(snapshot, &vg.name);
 
-    if capacity.bytes > 0 {
+    if capacity.complete && capacity.bytes > 0 {
         let mut steps = vec![
             format!(
-                "grow the LVM PV partition(s) with detected adjacent capacity (conservative upper bound: {} bytes)",
+                "grow the LVM PV partition(s) with detected adjacent capacity (partition-table-bounded estimate: {} bytes)",
                 capacity.bytes
             ),
             "resize the affected LVM physical volume(s)".to_owned(),
@@ -208,9 +203,7 @@ fn analyze_lvm_target(
 
         return Ok(base_analysis(
             target,
-            device_name,
-            Some(fs_type.to_owned()),
-            device.size_bytes,
+            device,
             ExtendabilityStatus::NeedsUnderlyingResize,
             Some(0),
             Some(capacity.bytes),
@@ -225,9 +218,7 @@ fn analyze_lvm_target(
     if !capacity.complete {
         return Ok(base_analysis(
             target,
-            device_name,
-            Some(fs_type.to_owned()),
-            device.size_bytes,
+            device,
             ExtendabilityStatus::NeedsGeometry,
             Some(0),
             None,
@@ -244,9 +235,7 @@ fn analyze_lvm_target(
 
     Ok(base_analysis(
         target,
-        device_name,
-        Some(fs_type.to_owned()),
-        device.size_bytes,
+        device,
         ExtendabilityStatus::NeedsUnderlyingCapacity,
         Some(0),
         Some(0),
@@ -255,7 +244,7 @@ fn analyze_lvm_target(
             vg.name
         )],
         vec![
-            "increase the virtual/physical disk size or attach another disk".to_owned(),
+            "inspect existing PV container capacity and GPT placement before adding capacity".to_owned(),
             "make the new capacity available to the volume group".to_owned(),
             format!("extend logical volume `{}/{}`", lv.vg_name, lv.name),
             format!("grow the {fs_type} filesystem"),
@@ -269,17 +258,10 @@ fn analyze_partition_target(
     device: &BlockDevice,
     fs_type: &str,
 ) -> ExtendAnalysis {
-    let device_name = device
-        .path
-        .clone()
-        .unwrap_or_else(|| device.name.clone());
-
-    match adjacent_free_after_partition(&snapshot.storage.block_devices, device) {
+    match geometry::adjacent_capacity(snapshot, device) {
         Some(bytes) if bytes > 0 => base_analysis(
             target,
-            device_name,
-            Some(fs_type.to_owned()),
-            device.size_bytes,
+            device,
             ExtendabilityStatus::NeedsUnderlyingResize,
             None,
             Some(bytes),
@@ -295,25 +277,21 @@ fn analyze_partition_target(
         ),
         Some(_) => base_analysis(
             target,
-            device_name,
-            Some(fs_type.to_owned()),
-            device.size_bytes,
+            device,
             ExtendabilityStatus::NeedsUnderlyingCapacity,
             None,
             Some(0),
-            vec!["no adjacent free space was detected after the target partition".to_owned()],
-            vec!["increase the underlying disk or rearrange storage outside the M0 scope".to_owned()],
+            vec!["no adjacent free space exists inside the reported table bounds; GPT relocation and unused capacity inside the current partition are not assessed".to_owned()],
+            vec!["inspect current container capacity and GPT placement before adding a disk; M0 does not modify either".to_owned()],
         ),
         None => base_analysis(
             target,
-            device_name,
-            Some(fs_type.to_owned()),
-            device.size_bytes,
+            device,
             ExtendabilityStatus::NeedsGeometry,
             None,
             None,
             vec![
-                "partition start or parent geometry is incomplete, so adjacent capacity cannot be calculated safely"
+                "partition-table evidence is incomplete, ambiguous, unsupported or inconsistent with lsblk; no capacity is claimed"
                     .to_owned(),
             ],
             vec!["complete lower-layer partition geometry discovery".to_owned()],
@@ -340,7 +318,12 @@ fn analyze_vg_underlying_capacity(snapshot: &HostSnapshot, vg_name: &str) -> Und
         .filter(|pv| pv.vg_name.as_deref() == Some(vg_name))
         .collect();
 
-    if pvs.is_empty() {
+    let expected_pvs = lvm
+        .volume_groups
+        .iter()
+        .find(|vg| vg.name == vg_name)
+        .map(|vg| vg.pv_count);
+    if pvs.is_empty() || expected_pvs != u64::try_from(pvs.len()).ok() {
         return UnderlyingCapacity {
             bytes: 0,
             complete: false,
@@ -350,19 +333,37 @@ fn analyze_vg_underlying_capacity(snapshot: &HostSnapshot, vg_name: &str) -> Und
     let mut bytes = 0_u64;
     let mut complete = true;
 
+    let mut seen_pvs = BTreeSet::new();
+    let mut seen_devices = BTreeSet::new();
+    let mut seen_uuids = BTreeSet::new();
     for pv in pvs {
+        if !seen_pvs.insert(pv.name.as_str()) {
+            complete = false;
+            continue;
+        }
         let Some(device) = find_by_alias(&snapshot.storage.block_devices, &pv.name) else {
             complete = false;
             continue;
         };
 
-        if device.kind != NodeKind::Partition {
+        let valid_identity = match (device.path.as_deref(), pv.uuid.as_deref()) {
+            (Some(path), Some(uuid)) if !uuid.is_empty() => {
+                seen_devices.insert(path)
+                    && seen_uuids.insert(uuid)
+                    && device.uuid.as_deref() == Some(uuid)
+            }
+            _ => false,
+        };
+        if device.kind != NodeKind::Partition || !valid_identity {
             complete = false;
             continue;
         }
 
-        match adjacent_free_after_partition(&snapshot.storage.block_devices, device) {
-            Some(free) => bytes = bytes.saturating_add(free),
+        match geometry::adjacent_capacity(snapshot, device) {
+            Some(free) => match bytes.checked_add(free) {
+                Some(total) => bytes = total,
+                None => complete = false,
+            },
             None => complete = false,
         }
     }
@@ -370,81 +371,22 @@ fn analyze_vg_underlying_capacity(snapshot: &HostSnapshot, vg_name: &str) -> Und
     UnderlyingCapacity { bytes, complete }
 }
 
-fn adjacent_free_after_partition(devices: &[BlockDevice], target: &BlockDevice) -> Option<u64> {
-    for parent in devices {
-        if parent.kind == NodeKind::Disk && is_direct_child(parent, target) {
-            return adjacent_free_in_disk(parent, target);
-        }
-
-        if let Some(value) = adjacent_free_after_partition(&parent.children, target) {
-            return Some(value);
-        }
-    }
-    None
-}
-
-fn is_direct_child(parent: &BlockDevice, target: &BlockDevice) -> bool {
-    parent
-        .children
-        .iter()
-        .any(|child| same_device(child, target))
-}
-
-fn adjacent_free_in_disk(disk: &BlockDevice, target: &BlockDevice) -> Option<u64> {
-    let target_start_sector = target.start_512_sector?;
-    let target_start_bytes = target_start_sector.checked_mul(LSBLK_START_SECTOR_BYTES)?;
-    let target_end_bytes = target_start_bytes.checked_add(target.size_bytes)?;
-
-    let next_partition_start = disk
-        .children
-        .iter()
-        .filter(|child| child.kind == NodeKind::Partition && !same_device(child, target))
-        .filter_map(|child| {
-            child
-                .start_512_sector
-                .and_then(|start| start.checked_mul(LSBLK_START_SECTOR_BYTES))
-        })
-        .filter(|start| *start >= target_end_bytes)
-        .min();
-
-    let usable_disk_end = if next_partition_start.is_some() {
-        disk.size_bytes
-    } else if disk.partition_table.as_deref() == Some("gpt") {
-        let logical_sector_bytes = disk.logical_sector_bytes.or(target.logical_sector_bytes)?;
-        disk.size_bytes.saturating_sub(
-            GPT_TAIL_RESERVED_SECTORS.saturating_mul(logical_sector_bytes),
-        )
-    } else {
-        disk.size_bytes
-    };
-
-    let limit = next_partition_start.unwrap_or(usable_disk_end).min(usable_disk_end);
-    Some(limit.saturating_sub(target_end_bytes))
-}
-
-fn same_device(left: &BlockDevice, right: &BlockDevice) -> bool {
-    match (left.path.as_deref(), right.path.as_deref()) {
-        (Some(left), Some(right)) => left == right,
-        _ => left.kernel_name == right.kernel_name && left.name == right.name,
-    }
-}
-
 fn base_analysis(
     target: &str,
-    device: String,
-    filesystem: Option<String>,
-    current_size_bytes: u64,
+    device: &BlockDevice,
     status: ExtendabilityStatus,
     immediate_growth_bytes: Option<u64>,
     potential_underlying_growth_bytes: Option<u64>,
     reasons: Vec<String>,
     steps: Vec<String>,
 ) -> ExtendAnalysis {
+    let mut reasons = reasons;
+    reasons.push("Advisory only: no writes, no filesystem health check, no execution authorization. Use plan extend for the stricter nonexecutable preview.".to_owned());
     ExtendAnalysis {
         target: target.to_owned(),
-        device: Some(device),
-        filesystem,
-        current_size_bytes: Some(current_size_bytes),
+        device: Some(device.path.clone().unwrap_or_else(|| device.name.clone())),
+        filesystem: device.filesystem.as_ref().map(|fs| fs.fs_type.clone()),
+        current_size_bytes: Some(device.size_bytes),
         immediate_growth_bytes,
         potential_underlying_growth_bytes,
         status,
