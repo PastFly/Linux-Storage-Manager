@@ -12,6 +12,8 @@ pub struct BlockDevice {
     pub path: Option<String>,
     pub kind: NodeKind,
     pub size_bytes: u64,
+    pub start_sector: Option<u64>,
+    pub logical_sector_bytes: Option<u64>,
     pub filesystem: Option<Filesystem>,
     pub mountpoints: Vec<String>,
     pub parent_kernel_name: Option<String>,
@@ -163,6 +165,7 @@ pub struct HostSnapshot {
 #[serde(rename_all = "snake_case")]
 pub enum ExtendabilityStatus {
     Ready,
+    NeedsUnderlyingResize,
     NeedsUnderlyingCapacity,
     NeedsGeometry,
     RequiresMount,
@@ -177,6 +180,7 @@ pub struct ExtendAnalysis {
     pub filesystem: Option<String>,
     pub current_size_bytes: Option<u64>,
     pub immediate_growth_bytes: Option<u64>,
+    pub potential_underlying_growth_bytes: Option<u64>,
     pub status: ExtendabilityStatus,
     pub reasons: Vec<String>,
     pub steps: Vec<String>,
