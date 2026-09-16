@@ -1,0 +1,74 @@
+{
+  "blockdevices": [
+    {
+      "name": "sda",
+      "kname": "sda",
+      "path": "/dev/sda",
+      "type": "disk",
+      "size": 214748364800,
+      "fstype": null,
+      "fsver": null,
+      "mountpoints": [null],
+      "pkname": null,
+      "model": "Virtual Disk   ",
+      "serial": "disk-001",
+      "uuid": null,
+      "partuuid": null,
+      "pttype": "gpt",
+      "children": [
+        {
+          "name": "sda1",
+          "kname": "sda1",
+          "path": "/dev/sda1",
+          "type": "part",
+          "size": 1073741824,
+          "fstype": "vfat",
+          "fsver": "FAT32",
+          "mountpoints": ["/boot/efi"],
+          "pkname": "sda",
+          "model": null,
+          "serial": null,
+          "uuid": "EFI-UUID",
+          "partuuid": "PART-EFI",
+          "pttype": null,
+          "children": []
+        },
+        {
+          "name": "sda2",
+          "kname": "sda2",
+          "path": "/dev/sda2",
+          "type": "part",
+          "size": 213674622976,
+          "fstype": "LVM2_member",
+          "fsver": "LVM2 001",
+          "mountpoints": [null],
+          "pkname": "sda",
+          "model": null,
+          "serial": null,
+          "uuid": "PV-UUID",
+          "partuuid": "PART-LVM",
+          "pttype": null,
+          "children": [
+            {
+              "name": "vg0-root",
+              "kname": "dm-0",
+              "path": "/dev/mapper/vg0-root",
+              "type": "lvm",
+              "size": 193273528320,
+              "fstype": "ext4",
+              "fsver": "1.0",
+              "mountpoints": ["/"],
+              "pkname": "sda2",
+              "model": null,
+              "serial": null,
+              "uuid": "FS-UUID",
+              "partuuid": null,
+              "pttype": null,
+              "children": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
