@@ -91,7 +91,7 @@ echo "==> Case 1: GPT -> ext4 partition"
 PLAIN_IMAGE="${TMP_ROOT}/plain.img"
 create_loop "${PLAIN_IMAGE}" 256M
 PLAIN_LOOP=${CREATED_LOOP}
-printf 'label: gpt\n,128M,L\n' | sfdisk "${PLAIN_LOOP}" >/dev/null
+printf 'label: gpt\n,128M\n' | sfdisk "${PLAIN_LOOP}" >/dev/null
 refresh_partitions "${PLAIN_LOOP}"
 PLAIN_PART="${PLAIN_LOOP}p1"
 wait_for_block "${PLAIN_PART}"
@@ -113,7 +113,7 @@ echo "==> Case 2: GPT -> LVM PV/VG/LV -> ext4"
 LVM_IMAGE="${TMP_ROOT}/lvm.img"
 create_loop "${LVM_IMAGE}" 768M
 LVM_LOOP=${CREATED_LOOP}
-printf 'label: gpt\n,640M,L\n' | sfdisk "${LVM_LOOP}" >/dev/null
+printf 'label: gpt\n,640M\n' | sfdisk "${LVM_LOOP}" >/dev/null
 refresh_partitions "${LVM_LOOP}"
 LVM_PART="${LVM_LOOP}p1"
 wait_for_block "${LVM_PART}"
