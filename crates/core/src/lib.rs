@@ -158,3 +158,26 @@ pub struct HostSnapshot {
     pub diagnostics: Vec<StorageDiagnostic>,
     pub collectors: Vec<CollectorStatus>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtendabilityStatus {
+    Ready,
+    NeedsUnderlyingCapacity,
+    NeedsGeometry,
+    RequiresMount,
+    UnsupportedFilesystem,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtendAnalysis {
+    pub target: String,
+    pub device: Option<String>,
+    pub filesystem: Option<String>,
+    pub current_size_bytes: Option<u64>,
+    pub immediate_growth_bytes: Option<u64>,
+    pub status: ExtendabilityStatus,
+    pub reasons: Vec<String>,
+    pub steps: Vec<String>,
+}
