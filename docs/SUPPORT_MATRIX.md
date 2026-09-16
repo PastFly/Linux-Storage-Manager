@@ -5,7 +5,8 @@ Status values: `Discovery`, `Planned`, `Later`, `Not supported`.
 | Technology | M0 | First write release |
 | --- | --- | --- |
 | Physical disks | Discovery | Planned |
-| GPT / MBR partitions | Discovery | Planned |
+| GPT / MBR partitions | Discovery + authoritative `sfdisk` cross-check | Planned guarded grow |
+| Partition geometry reconciliation | Discovery | Planned preflight enforcement |
 | LVM PV / VG / LV | Discovery | Planned |
 | ext4 | Discovery | Planned grow |
 | XFS | Discovery | Planned grow |
@@ -14,6 +15,7 @@ Status values: `Discovery`, `Planned`, `Later`, `Not supported`.
 | Swap file | Discovery | Planned |
 | `/etc/fstab` | Discovery | Planned guarded write |
 | Topology diagnostics | Discovery | Planned preflight enforcement |
+| Read-only extendability analysis | Discovery | Planner input |
 | LUKS | Later | Later |
 | Btrfs | Later | Later |
 | mdraid | Later | Later |
