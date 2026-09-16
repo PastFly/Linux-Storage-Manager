@@ -12,7 +12,7 @@ pub struct BlockDevice {
     pub path: Option<String>,
     pub kind: NodeKind,
     pub size_bytes: u64,
-    pub start_sector: Option<u64>,
+    pub start_512_sector: Option<u64>,
     pub logical_sector_bytes: Option<u64>,
     pub filesystem: Option<Filesystem>,
     pub mountpoints: Vec<String>,
