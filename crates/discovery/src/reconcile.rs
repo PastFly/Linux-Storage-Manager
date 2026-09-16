@@ -1,18 +1,196 @@
 use std::collections::{HashMap, HashSet};
 
 use lsm_core::{
-    BlockDevice, DiagnosticSeverity, HostSnapshot, LvmLogicalVolume, StorageDiagnostic,
+    BlockDevice, DiagnosticSeverity, HostSnapshot, LvmLogicalVolume, NodeKind, PartitionTable,
+    StorageDiagnostic,
 };
+
+const LSBLK_START_SECTOR_BYTES: u64 = 512;
 
 pub fn reconcile_snapshot(snapshot: &HostSnapshot) -> Vec<StorageDiagnostic> {
     let mut diagnostics = Vec::new();
 
+    reconcile_partition_tables(snapshot, &mut diagnostics);
     reconcile_lvm(snapshot, &mut diagnostics);
     reconcile_mounts(snapshot, &mut diagnostics);
     reconcile_fstab(snapshot, &mut diagnostics);
     reconcile_swaps(snapshot, &mut diagnostics);
 
     diagnostics
+}
+
+fn reconcile_partition_tables(
+    snapshot: &HostSnapshot,
+    diagnostics: &mut Vec<StorageDiagnostic>,
+) {
+    for table in &snapshot.partition_tables {
+        let Some(disk) = find_graph_alias(&snapshot.storage.block_devices, &table.device) else {
+            diagnostics.push(StorageDiagnostic {
+                code: "sfdisk-disk-not-in-lsblk".to_owned(),
+                severity: DiagnosticSeverity::Error,
+                message: "sfdisk returned a partition table for a disk that is absent from the lsblk topology"
+                    .to_owned(),
+                device: Some(table.device.clone()),
+            });
+            continue;
+        };
+
+        if let (Some(lsblk_label), Some(sfdisk_label)) =
+            (disk.partition_table.as_deref(), table.label.as_deref())
+        {
+            if !lsblk_label.eq_ignore_ascii_case(sfdisk_label) {
+                diagnostics.push(StorageDiagnostic {
+                    code: "partition-table-label-mismatch".to_owned(),
+                    severity: DiagnosticSeverity::Error,
+                    message: format!(
+                        "lsblk reports partition-table type `{lsblk_label}`, but sfdisk reports `{sfdisk_label}`"
+                    ),
+                    device: Some(table.device.clone()),
+                });
+            }
+        }
+
+        if let (Some(lsblk_sector), Some(sfdisk_sector)) =
+            (disk.logical_sector_bytes, table.sector_size_bytes)
+        {
+            if lsblk_sector != sfdisk_sector {
+                diagnostics.push(StorageDiagnostic {
+                    code: "logical-sector-size-mismatch".to_owned(),
+                    severity: DiagnosticSeverity::Error,
+                    message: format!(
+                        "lsblk reports logical sector size {lsblk_sector}, but sfdisk reports {sfdisk_sector}"
+                    ),
+                    device: Some(table.device.clone()),
+                });
+            }
+        }
+
+        let Some(sector_size) = table.sector_size_bytes else {
+            diagnostics.push(StorageDiagnostic {
+                code: "sfdisk-sector-size-missing".to_owned(),
+                severity: DiagnosticSeverity::Error,
+                message: "sfdisk JSON did not include a sector size; authoritative byte geometry cannot be verified"
+                    .to_owned(),
+                device: Some(table.device.clone()),
+            });
+            continue;
+        };
+
+        reconcile_sfdisk_partitions(snapshot, disk, table, sector_size, diagnostics);
+    }
+}
+
+fn reconcile_sfdisk_partitions(
+    snapshot: &HostSnapshot,
+    disk: &BlockDevice,
+    table: &PartitionTable,
+    sector_size: u64,
+    diagnostics: &mut Vec<StorageDiagnostic>,
+) {
+    for partition in &table.partitions {
+        let Some(lsblk_partition) =
+            find_graph_alias(&snapshot.storage.block_devices, &partition.node)
+        else {
+            diagnostics.push(StorageDiagnostic {
+                code: "sfdisk-partition-not-in-lsblk".to_owned(),
+                severity: DiagnosticSeverity::Error,
+                message: "sfdisk reports a partition that is absent from the lsblk topology"
+                    .to_owned(),
+                device: Some(partition.node.clone()),
+            });
+            continue;
+        };
+
+        let sfdisk_start_bytes = partition.start_sector.checked_mul(sector_size);
+        let lsblk_start_bytes = lsblk_partition
+            .start_512_sector
+            .and_then(|start| start.checked_mul(LSBLK_START_SECTOR_BYTES));
+
+        match (lsblk_start_bytes, sfdisk_start_bytes) {
+            (Some(lsblk_start), Some(sfdisk_start)) if lsblk_start != sfdisk_start => {
+                diagnostics.push(StorageDiagnostic {
+                    code: "partition-start-mismatch".to_owned(),
+                    severity: DiagnosticSeverity::Error,
+                    message: format!(
+                        "lsblk start offset is {lsblk_start} bytes, but sfdisk reports {sfdisk_start} bytes"
+                    ),
+                    device: Some(partition.node.clone()),
+                });
+            }
+            (None, Some(_)) => diagnostics.push(StorageDiagnostic {
+                code: "lsblk-partition-start-missing".to_owned(),
+                severity: DiagnosticSeverity::Warning,
+                message: "sfdisk reports partition geometry, but lsblk did not provide START for the partition"
+                    .to_owned(),
+                device: Some(partition.node.clone()),
+            }),
+            (Some(_), None) | (None, None) => diagnostics.push(StorageDiagnostic {
+                code: "partition-start-overflow".to_owned(),
+                severity: DiagnosticSeverity::Error,
+                message: "partition start offset could not be represented safely in bytes"
+                    .to_owned(),
+                device: Some(partition.node.clone()),
+            }),
+            _ => {}
+        }
+
+        match partition.size_sectors.checked_mul(sector_size) {
+            Some(sfdisk_size) if sfdisk_size != lsblk_partition.size_bytes => {
+                diagnostics.push(StorageDiagnostic {
+                    code: "partition-size-mismatch".to_owned(),
+                    severity: DiagnosticSeverity::Error,
+                    message: format!(
+                        "lsblk reports partition size {} bytes, but sfdisk reports {sfdisk_size} bytes",
+                        lsblk_partition.size_bytes
+                    ),
+                    device: Some(partition.node.clone()),
+                });
+            }
+            None => diagnostics.push(StorageDiagnostic {
+                code: "partition-size-overflow".to_owned(),
+                severity: DiagnosticSeverity::Error,
+                message: "partition size from sfdisk could not be represented safely in bytes"
+                    .to_owned(),
+                device: Some(partition.node.clone()),
+            }),
+            _ => {}
+        }
+
+        if let (Some(lsblk_uuid), Some(sfdisk_uuid)) = (
+            lsblk_partition.partition_uuid.as_deref(),
+            partition.uuid.as_deref(),
+        ) {
+            if !lsblk_uuid.eq_ignore_ascii_case(sfdisk_uuid) {
+                diagnostics.push(StorageDiagnostic {
+                    code: "partition-uuid-mismatch".to_owned(),
+                    severity: DiagnosticSeverity::Error,
+                    message: format!(
+                        "lsblk reports PARTUUID `{lsblk_uuid}`, but sfdisk reports `{sfdisk_uuid}`"
+                    ),
+                    device: Some(partition.node.clone()),
+                });
+            }
+        }
+    }
+
+    for child in disk
+        .children
+        .iter()
+        .filter(|child| child.kind == NodeKind::Partition)
+    {
+        let Some(path) = child.path.as_deref() else {
+            continue;
+        };
+        if !table.partitions.iter().any(|partition| partition.node == path) {
+            diagnostics.push(StorageDiagnostic {
+                code: "lsblk-partition-not-in-sfdisk".to_owned(),
+                severity: DiagnosticSeverity::Error,
+                message: "lsblk reports a direct disk partition that is absent from the authoritative sfdisk table"
+                    .to_owned(),
+                device: Some(path.to_owned()),
+            });
+        }
+    }
 }
 
 fn reconcile_lvm(snapshot: &HostSnapshot, diagnostics: &mut Vec<StorageDiagnostic>) {
@@ -178,7 +356,9 @@ fn source_resolves_to_graph(snapshot: &HostSnapshot, source: &str) -> bool {
         .as_ref()
         .map(|lvm| {
             lvm.logical_volumes.iter().any(|lv| {
-                lv_aliases(lv).iter().any(|alias| alias == source)
+                lv_aliases(lv)
+                    .iter()
+                    .any(|alias| alias.as_str() == source)
                     && lv_present_in_graph(snapshot, lv)
             })
         })
@@ -213,16 +393,27 @@ fn is_block_source(source: &str) -> bool {
 }
 
 fn graph_has_alias(devices: &[BlockDevice], alias: &str) -> bool {
-    devices.iter().any(|device| {
-        device.path.as_deref() == Some(alias)
+    find_graph_alias(devices, alias).is_some()
+}
+
+fn find_graph_alias<'a>(devices: &'a [BlockDevice], alias: &str) -> Option<&'a BlockDevice> {
+    for device in devices {
+        if device.path.as_deref() == Some(alias)
             || device
                 .kernel_name
                 .as_deref()
                 .map(|name| format!("/dev/{name}") == alias)
                 .unwrap_or(false)
             || format!("/dev/{}", device.name) == alias
-            || graph_has_alias(&device.children, alias)
-    })
+        {
+            return Some(device);
+        }
+
+        if let Some(found) = find_graph_alias(&device.children, alias) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn collect_ids<'a>(
