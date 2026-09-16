@@ -10,6 +10,7 @@ fn reports_missing_sources_across_collectors() {
 
     let snapshot = HostSnapshot {
         storage,
+        partition_tables: Vec::new(),
         mounts: vec![MountEntry {
             source: Some("/dev/missing-mount".to_owned()),
             target: "/mnt/missing".to_owned(),
