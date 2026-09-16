@@ -27,7 +27,7 @@ pub use snapshot::{discover_snapshot, SnapshotDiscoveryError};
 pub use swap::{discover_swaps, parse_proc_swaps, SwapDiscoveryError};
 
 const LSBLK_COLUMNS: &str =
-    "NAME,KNAME,PATH,TYPE,SIZE,FSTYPE,FSVER,MOUNTPOINTS,PKNAME,MODEL,SERIAL,UUID,PARTUUID,PTTYPE";
+    "NAME,KNAME,PATH,TYPE,SIZE,START,LOG-SEC,FSTYPE,FSVER,MOUNTPOINTS,PKNAME,MODEL,SERIAL,UUID,PARTUUID,PTTYPE";
 
 #[derive(Debug, Error)]
 pub enum DiscoveryError {
@@ -108,6 +108,8 @@ fn normalize_device(raw: LsblkDevice) -> BlockDevice {
         path: raw.path,
         kind: normalize_kind(&raw.device_type),
         size_bytes: raw.size,
+        start_sector: raw.start,
+        logical_sector_bytes: raw.log_sec,
         filesystem,
         mountpoints: raw
             .mountpoints
@@ -162,6 +164,10 @@ struct LsblkDevice {
     device_type: String,
     #[serde(default)]
     size: u64,
+    #[serde(default)]
+    start: Option<u64>,
+    #[serde(rename = "log-sec", default)]
+    log_sec: Option<u64>,
     #[serde(default)]
     fstype: Option<String>,
     #[serde(default)]
