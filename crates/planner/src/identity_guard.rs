@@ -184,9 +184,11 @@ pub fn capture_target_identity(
                         })
                 })
                 .collect::<Vec<_>>();
-            let observed_filesystem_size_bytes = (matching_evidence.len() == 1)
-                .then_some(matching_evidence[0].size_bytes)
-                .flatten();
+            let observed_filesystem_size_bytes = if matching_evidence.len() == 1 {
+                matching_evidence.first().and_then(|evidence| evidence.size_bytes)
+            } else {
+                None
+            };
 
             Some(FilesystemIdentity {
                 device: path,
