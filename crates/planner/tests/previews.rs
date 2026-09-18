@@ -483,4 +483,3 @@ fn chained_lvm_route_handles_pv_directly_on_an_enlarged_disk() {
     assert_eq!(plan.status(), PlanStatus::Blocked);
     assert_eq!(plan.growth_route_alternatives().len(), 1);
 }
-
