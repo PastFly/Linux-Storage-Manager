@@ -1210,6 +1210,64 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn plus_press_advances_once_and_repeat_release_are_ignored() {
+        use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let snap = snapshot();
+        let mut state = AppState::new(&snap);
+        state.section_index = 5;
+
+        let press = KeyEvent {
+            code: KeyCode::Char('+'),
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        assert_eq!(handle_key_event(&mut state, &snap, press), LoopControl::Continue);
+        assert_eq!(
+            state.plan_growth(),
+            Growth::ByBytes(1024 * 1024 * 1024)
+        );
+
+        let repeat = KeyEvent { kind: KeyEventKind::Repeat, ..press };
+        assert_eq!(handle_key_event(&mut state, &snap, repeat), LoopControl::Continue);
+        assert_eq!(
+            state.plan_growth(),
+            Growth::ByBytes(1024 * 1024 * 1024)
+        );
+
+        let release = KeyEvent { kind: KeyEventKind::Release, ..press };
+        assert_eq!(handle_key_event(&mut state, &snap, release), LoopControl::Continue);
+        assert_eq!(
+            state.plan_growth(),
+            Growth::ByBytes(1024 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn repeated_plus_at_max_free_remains_bounded() {
+        use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let snap = snapshot();
+        let mut state = AppState::new(&snap);
+        state.section_index = 5;
+        state.plan_growth_index = PLAN_GROWTH_PRESETS.len() - 1;
+
+        let press = KeyEvent {
+            code: KeyCode::Char('+'),
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+
+        for _ in 0..100 {
+            assert_eq!(handle_key_event(&mut state, &snap, press), LoopControl::Continue);
+        }
+        assert_eq!(state.plan_growth(), Growth::MaxFree);
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
