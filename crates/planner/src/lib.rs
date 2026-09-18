@@ -322,6 +322,19 @@ pub struct CreateAllocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CreateSourceAdapter {
+    pub source_id: String,
+    pub kind: ProvisioningSpaceKind,
+    pub disk: Option<String>,
+    pub volume_group: Option<String>,
+    pub allocation_unit_bytes: u64,
+    pub available_bytes: u64,
+    pub start_sector: Option<u64>,
+    pub sector_count: Option<u64>,
+    pub partition_table: Option<CreatePartitionTablePolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CreatePlanPreview {
     schema_version: u32,
     plan_id: String,
@@ -1148,6 +1161,194 @@ fn blank_disk_geometry(
     })
 }
 
+pub fn resolve_create_source_adapter(
+    snapshot: &HostSnapshot,
+    source: &ProvisioningOpportunity,
+    partition_table: Option<CreatePartitionTablePolicy>,
+) -> Result<CreateSourceAdapter, Blocker> {
+    if source.kind != ProvisioningSpaceKind::BlankDisk && partition_table.is_some() {
+        return Err(blocked(
+            "create-partition-table-unexpected",
+            "partition-table policy is valid only when the selected Create source is a blank disk",
+        ));
+    }
+
+    match source.kind {
+        ProvisioningSpaceKind::LvmFreeExtents => {
+            let vg_name = source.volume_group.as_deref().ok_or_else(|| {
+                blocked(
+                    "create-vg-missing",
+                    "the selected VG free-space source has no volume-group identity",
+                )
+            })?;
+            let lvm = snapshot.lvm.as_ref().ok_or_else(|| {
+                blocked(
+                    "create-lvm-missing",
+                    "LVM inventory is unavailable for the selected source",
+                )
+            })?;
+            let vg = unique(
+                lvm.volume_groups.iter().filter(|vg| vg.name == vg_name),
+                "create-vg-ambiguous",
+            )
+            .map_err(|_| {
+                blocked(
+                    "create-vg-ambiguous",
+                    "the selected volume-group identity is ambiguous",
+                )
+            })?;
+            let extent = vg.extent_size_bytes.ok_or_else(|| {
+                blocked("create-extent-missing", "VG extent size is unavailable")
+            })?;
+            ensure(
+                extent >= 512
+                    && extent.is_power_of_two()
+                    && vg.free_bytes == source.available_bytes,
+                "create-capacity-mismatch",
+                "VG free-space identity or extent geometry changed",
+            )?;
+            Ok(CreateSourceAdapter {
+                source_id: source.id.clone(),
+                kind: source.kind,
+                disk: None,
+                volume_group: Some(vg.name.clone()),
+                allocation_unit_bytes: extent,
+                available_bytes: vg.free_bytes,
+                start_sector: None,
+                sector_count: None,
+                partition_table: None,
+            })
+        }
+        ProvisioningSpaceKind::DiskGap | ProvisioningSpaceKind::DiskTail => {
+            let disk_path = source.disk.as_deref().ok_or_else(|| {
+                blocked(
+                    "create-disk-missing",
+                    "selected partition-table free space has no disk identity",
+                )
+            })?;
+            let sector = source.sector_size_bytes.ok_or_else(|| {
+                blocked(
+                    "create-sector-size-missing",
+                    "selected partition-table free space has no sector size",
+                )
+            })?;
+            let start_sector = source.start_sector.ok_or_else(|| {
+                blocked(
+                    "create-geometry-invalid",
+                    "selected partition-table free-space geometry is incomplete",
+                )
+            })?;
+            let sector_count = source.sector_count.ok_or_else(|| {
+                blocked(
+                    "create-geometry-invalid",
+                    "selected partition-table free-space geometry is incomplete",
+                )
+            })?;
+            ensure(
+                sector >= 512 && sector.is_power_of_two() && sector_count > 0,
+                "create-geometry-invalid",
+                "selected partition-table free-space geometry is incomplete",
+            )?;
+
+            let nodes = flatten(&snapshot.storage.block_devices);
+            let disk = unique(
+                nodes.iter().copied().filter(|device| {
+                    matches!(device.kind, NodeKind::Disk | NodeKind::Loop)
+                        && device.path.as_deref() == Some(disk_path)
+                }),
+                "create-disk-ambiguous",
+            )
+            .map_err(|_| {
+                blocked(
+                    "create-disk-ambiguous",
+                    "selected free-space disk identity is ambiguous",
+                )
+            })?;
+            let table = unique(
+                snapshot
+                    .partition_tables
+                    .iter()
+                    .filter(|table| table.device == disk_path),
+                "create-partition-table-ambiguous",
+            )
+            .map_err(|_| {
+                blocked(
+                    "create-partition-table-ambiguous",
+                    "selected disk partition-table identity is ambiguous",
+                )
+            })?;
+            let free_space = partition_free_ranges(disk, table).ok_or_else(|| {
+                blocked(
+                    "create-geometry-changed",
+                    "selected partition-table free-space geometry can no longer be proven",
+                )
+            })?;
+            ensure(
+                free_space.sector_size_bytes == sector,
+                "create-capacity-mismatch",
+                "partition-table sector size changed for the selected source",
+            )?;
+            let expected_tail = source.kind == ProvisioningSpaceKind::DiskTail;
+            ensure(
+                free_space.ranges.iter().any(|range| {
+                    range.start_sector == start_sector
+                        && range.sector_count == sector_count
+                        && range.is_tail == expected_tail
+                }),
+                "create-geometry-changed",
+                "selected partition-table free range changed since discovery",
+            )?;
+            let available_bytes = sector_count
+                .checked_mul(sector)
+                .ok_or_else(|| blocked("size-overflow", "free-space capacity exceeds u64"))?;
+            ensure(
+                available_bytes == source.available_bytes,
+                "create-capacity-mismatch",
+                "selected partition-table free-space capacity changed",
+            )?;
+
+            Ok(CreateSourceAdapter {
+                source_id: source.id.clone(),
+                kind: source.kind,
+                disk: Some(disk_path.to_owned()),
+                volume_group: None,
+                allocation_unit_bytes: sector,
+                available_bytes,
+                start_sector: Some(start_sector),
+                sector_count: Some(sector_count),
+                partition_table: None,
+            })
+        }
+        ProvisioningSpaceKind::BlankDisk => {
+            let policy = partition_table.ok_or_else(|| {
+                blocked(
+                    "blank-disk-policy-required",
+                    "blank-disk creation requires an explicit GPT or DOS/MBR partition-table policy",
+                )
+            })?;
+            let geometry = blank_disk_geometry(snapshot, source, policy)?;
+            let disk = source.disk.clone().ok_or_else(|| {
+                blocked(
+                    "blank-disk-identity-missing",
+                    "blank-disk source has no device path",
+                )
+            })?;
+            let sector_count = geometry.available_bytes / geometry.sector_size_bytes;
+            Ok(CreateSourceAdapter {
+                source_id: source.id.clone(),
+                kind: source.kind,
+                disk: Some(disk),
+                volume_group: None,
+                allocation_unit_bytes: geometry.sector_size_bytes,
+                available_bytes: geometry.available_bytes,
+                start_sector: Some(geometry.start_sector),
+                sector_count: Some(sector_count),
+                partition_table: Some(policy),
+            })
+        }
+    }
+}
+
 pub fn plan_create(
     snapshot: &HostSnapshot,
     request: CreateRequest,
@@ -1193,116 +1394,22 @@ pub fn plan_create(
     }
     plan.source = Some(source.clone());
 
-    if source.kind != ProvisioningSpaceKind::BlankDisk && plan.request.partition_table.is_some() {
-        plan.blockers.push(blocked(
-            "create-partition-table-unexpected",
-            "partition-table policy is valid only when the selected Create source is a blank disk",
-        ));
-        plan.plan_id = fingerprint(&plan)?;
-        return Ok(plan);
-    }
-
-    let mut allocation_start_sector = source.start_sector;
-    let mut allocation_partition_table = None;
-    let (allocation_unit_bytes, available_bytes) = match source.kind {
-        ProvisioningSpaceKind::LvmFreeExtents => {
-            let Some(vg_name) = source.volume_group.as_deref() else {
-                plan.blockers.push(blocked(
-                    "create-vg-missing",
-                    "the selected VG free-space source has no volume-group identity",
-                ));
-                plan.plan_id = fingerprint(&plan)?;
-                return Ok(plan);
-            };
-            let Some(lvm) = snapshot.lvm.as_ref() else {
-                plan.blockers.push(blocked(
-                    "create-lvm-missing",
-                    "LVM inventory is unavailable for the selected source",
-                ));
-                plan.plan_id = fingerprint(&plan)?;
-                return Ok(plan);
-            };
-            let mut groups = lvm.volume_groups.iter().filter(|vg| vg.name == vg_name);
-            let Some(vg) = groups.next() else {
-                plan.blockers.push(blocked(
-                    "create-vg-not-found",
-                    "the selected volume group no longer exists",
-                ));
-                plan.plan_id = fingerprint(&plan)?;
-                return Ok(plan);
-            };
-            if groups.next().is_some() {
-                plan.blockers.push(blocked(
-                    "create-vg-ambiguous",
-                    "the selected volume-group identity is ambiguous",
-                ));
-                plan.plan_id = fingerprint(&plan)?;
-                return Ok(plan);
-            }
-            let Some(extent) = vg.extent_size_bytes else {
-                plan.blockers.push(blocked(
-                    "create-extent-missing",
-                    "VG extent size is unavailable",
-                ));
-                plan.plan_id = fingerprint(&plan)?;
-                return Ok(plan);
-            };
-            if extent < 512 || !extent.is_power_of_two() || vg.free_bytes != source.available_bytes
-            {
-                plan.blockers.push(blocked(
-                    "create-capacity-mismatch",
-                    "VG free-space identity or extent geometry changed",
-                ));
-                plan.plan_id = fingerprint(&plan)?;
-                return Ok(plan);
-            }
-            (extent, vg.free_bytes)
-        }
-        ProvisioningSpaceKind::DiskGap | ProvisioningSpaceKind::DiskTail => {
-            let Some(sector) = source.sector_size_bytes else {
-                plan.blockers.push(blocked(
-                    "create-sector-size-missing",
-                    "selected partition-table free space has no sector size",
-                ));
-                plan.plan_id = fingerprint(&plan)?;
-                return Ok(plan);
-            };
-            if sector < 512
-                || !sector.is_power_of_two()
-                || source.start_sector.is_none()
-                || source.sector_count.is_none()
-            {
-                plan.blockers.push(blocked(
-                    "create-geometry-invalid",
-                    "selected partition-table free-space geometry is incomplete",
-                ));
-                plan.plan_id = fingerprint(&plan)?;
-                return Ok(plan);
-            }
-            (sector, source.available_bytes)
-        }
-        ProvisioningSpaceKind::BlankDisk => {
-            let Some(policy) = plan.request.partition_table else {
-                plan.blockers.push(blocked(
-                    "blank-disk-policy-required",
-                    "blank-disk creation requires an explicit GPT or DOS/MBR partition-table policy",
-                ));
-                plan.plan_id = fingerprint(&plan)?;
-                return Ok(plan);
-            };
-            let geometry = match blank_disk_geometry(snapshot, &source, policy) {
-                Ok(geometry) => geometry,
-                Err(blocker) => {
-                    plan.blockers.push(blocker);
-                    plan.plan_id = fingerprint(&plan)?;
-                    return Ok(plan);
-                }
-            };
-            allocation_start_sector = Some(geometry.start_sector);
-            allocation_partition_table = Some(policy);
-            (geometry.sector_size_bytes, geometry.available_bytes)
+    let source_adapter = match resolve_create_source_adapter(
+        snapshot,
+        &source,
+        plan.request.partition_table,
+    ) {
+        Ok(adapter) => adapter,
+        Err(blocker) => {
+            plan.blockers.push(blocker);
+            plan.plan_id = fingerprint(&plan)?;
+            return Ok(plan);
         }
     };
+    let allocation_start_sector = source_adapter.start_sector;
+    let allocation_partition_table = source_adapter.partition_table;
+    let allocation_unit_bytes = source_adapter.allocation_unit_bytes;
+    let available_bytes = source_adapter.available_bytes;
 
     let requested_bytes = match plan.request.size {
         Growth::ByBytes(bytes) => bytes,
@@ -1405,7 +1512,7 @@ pub fn plan_create(
         allocation_unit_bytes,
         start_sector: allocation_start_sector,
         sector_count: allocated_sectors,
-        volume_group: source.volume_group.clone(),
+        volume_group: source_adapter.volume_group.clone(),
         partition_table: allocation_partition_table,
     });
 
