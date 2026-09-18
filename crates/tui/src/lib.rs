@@ -903,6 +903,7 @@ fn render_create(
 fn provisioning_kind_label(kind: ProvisioningSpaceKind) -> &'static str {
     match kind {
         ProvisioningSpaceKind::BlankDisk => "Blank disk",
+        ProvisioningSpaceKind::DiskGap => "Disk gap",
         ProvisioningSpaceKind::DiskTail => "Disk tail",
         ProvisioningSpaceKind::LvmFreeExtents => "VG free",
     }
@@ -932,6 +933,20 @@ fn provisioning_detail_lines(opportunity: &ProvisioningOpportunity) -> Vec<Line<
             opportunity
                 .sector_size_bytes
                 .map(|bytes| format!("{bytes} B"))
+                .unwrap_or_else(|| "-".to_owned())
+        )),
+        Line::from(format!(
+            "Start sector    {}",
+            opportunity
+                .start_sector
+                .map(|sector| sector.to_string())
+                .unwrap_or_else(|| "-".to_owned())
+        )),
+        Line::from(format!(
+            "Sector count    {}",
+            opportunity
+                .sector_count
+                .map(|count| count.to_string())
                 .unwrap_or_else(|| "-".to_owned())
         )),
         Line::from(""),
