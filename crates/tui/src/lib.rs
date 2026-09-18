@@ -2387,6 +2387,7 @@ mod tests {
             fstab: Vec::new(),
             swaps: Vec::new(),
             lvm: None,
+            filesystem_preflight: Vec::new(),
             diagnostics: Vec::new(),
             collectors: vec![CollectorStatus {
                 component: "lsblk".into(),
