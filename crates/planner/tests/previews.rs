@@ -654,6 +654,85 @@ fn create_catalog_reports_internal_gpt_gap_with_exact_geometry() {
 }
 
 #[test]
+fn unusable_partition_table_is_visible_as_blocked_create_source() {
+    let (snapshot, _caps) = input();
+    let mut snapshot = with_gpt_tail(snapshot);
+    snapshot.partition_tables[0].label = Some("sun".into());
+
+    let spaces = list_provisioning_opportunities(&snapshot);
+    let blocked = spaces
+        .iter()
+        .find(|space| space.kind == ProvisioningSpaceKind::BlockedDisk)
+        .expect("unusable authoritative table must remain visible");
+
+    assert_eq!(blocked.code, "partition-table-geometry-unusable");
+    assert_eq!(blocked.disk.as_deref(), Some("/dev/vda"));
+    assert_eq!(blocked.available_bytes, 0);
+    assert!(blocked
+        .blockers
+        .iter()
+        .any(|blocker| blocker.contains("recovery") || blocker.contains("reconciliation")));
+
+    let plan = plan_create(
+        &snapshot,
+        CreateRequest {
+            source_id: blocked.id.clone(),
+            size: Growth::MaxFree,
+            purpose: CreatePurpose::Filesystem,
+            filesystem: Some("ext4".into()),
+            mountpoint: Some("/recovered".into()),
+            partition_table: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert!(plan.allocation().is_none());
+    assert!(plan
+        .blockers()
+        .iter()
+        .any(|blocker| blocker.code == "create-source-unusable"));
+}
+
+#[test]
+fn incomplete_gpt_geometry_is_visible_as_blocked_create_source() {
+    let (snapshot, _caps) = input();
+    let mut snapshot = with_gpt_tail(snapshot);
+    snapshot.partition_tables[0].last_lba = None;
+
+    let spaces = list_provisioning_opportunities(&snapshot);
+    let blocked = spaces
+        .iter()
+        .find(|space| space.kind == ProvisioningSpaceKind::BlockedDisk)
+        .expect("incomplete authoritative GPT geometry must remain visible");
+
+    assert_eq!(blocked.code, "partition-table-geometry-unusable");
+    assert_eq!(blocked.available_bytes, 0);
+    assert!(!spaces.iter().any(|space| {
+        matches!(
+            space.kind,
+            ProvisioningSpaceKind::DiskGap | ProvisioningSpaceKind::DiskTail
+        )
+    }));
+}
+
+#[test]
+fn lsblk_partition_table_marker_without_authoritative_table_is_not_blank_space() {
+    let (mut snapshot, _caps) = input();
+    snapshot.storage.block_devices[0].children.clear();
+    snapshot.lvm = None;
+    snapshot.partition_tables.clear();
+    snapshot.storage.block_devices[0].partition_table = Some("gpt".into());
+    snapshot.storage.block_devices[0].filesystem = None;
+
+    let spaces = list_provisioning_opportunities(&snapshot);
+
+    assert!(spaces
+        .iter()
+        .all(|space| space.kind != ProvisioningSpaceKind::BlankDisk));
+}
+
+#[test]
 fn create_catalog_exposes_empty_gpt_usable_range_without_calling_it_blank() {
     let (mut snapshot, _caps) = input();
     let sector = 512_u64;
