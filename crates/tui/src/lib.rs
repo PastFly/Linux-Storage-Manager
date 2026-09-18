@@ -1316,6 +1316,65 @@ mod tests {
         assert_eq!(state.plan_growth(), Growth::MaxFree);
     }
 
+
+    #[test]
+    fn minus_variants_and_page_keys_change_plan_growth() {
+        use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let snap = snapshot();
+        let mut state = AppState::new(&snap);
+        state.section_index = 5;
+        state.plan_growth_index = 2;
+
+        let plain_minus = KeyEvent {
+            code: KeyCode::Char('-'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        assert_eq!(
+            handle_key_event(&mut state, &snap, plain_minus),
+            LoopControl::Continue
+        );
+        assert_eq!(state.plan_growth(), Growth::ByBytes(1024 * 1024 * 1024));
+
+        let shifted_minus = KeyEvent {
+            code: KeyCode::Char('_'),
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        assert_eq!(
+            handle_key_event(&mut state, &snap, shifted_minus),
+            LoopControl::Continue
+        );
+        assert_eq!(state.plan_growth(), Growth::ByBytes(512 * 1024 * 1024));
+
+        let page_down = KeyEvent {
+            code: KeyCode::PageDown,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        assert_eq!(
+            handle_key_event(&mut state, &snap, page_down),
+            LoopControl::Continue
+        );
+        assert_eq!(state.plan_growth(), Growth::ByBytes(1024 * 1024 * 1024));
+
+        let page_up = KeyEvent {
+            code: KeyCode::PageUp,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        assert_eq!(
+            handle_key_event(&mut state, &snap, page_up),
+            LoopControl::Continue
+        );
+        assert_eq!(state.plan_growth(), Growth::ByBytes(512 * 1024 * 1024));
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
