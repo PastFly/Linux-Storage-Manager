@@ -2443,7 +2443,6 @@ mod tests {
         assert!(text.contains("Next step\n  grow the partition first"));
     }
 
-
     #[test]
     fn refresh_key_requests_fresh_discovery_without_mutating_storage() {
         use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
