@@ -265,11 +265,15 @@ fn handle_key_event(state: &mut AppState, snapshot: &HostSnapshot, key: KeyEvent
             state.clamp_device_selection(snapshot);
             LoopControl::Continue
         }
-        KeyCode::Char('[') | KeyCode::Char('-') if state.section() == Section::Plans => {
+        KeyCode::Char('[') | KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::PageUp
+            if state.section() == Section::Plans =>
+        {
             state.previous_plan_growth();
             LoopControl::Continue
         }
-        KeyCode::Char(']') | KeyCode::Char('+') if state.section() == Section::Plans => {
+        KeyCode::Char(']') | KeyCode::Char('+') | KeyCode::PageDown
+            if state.section() == Section::Plans =>
+        {
             state.next_plan_growth();
             LoopControl::Continue
         }
@@ -321,7 +325,7 @@ fn draw(
 
     frame.render_widget(
         Paragraph::new(if state.section() == Section::Plans {
-            " ↑↓ target   [ ] / - + size   ←→/Tab section   q/Esc quit   preview only, no writes "
+            " ↑↓ target   [ ] / - + / PgUp PgDn size   ←→/Tab section   q/Esc quit   preview only, no writes "
         } else {
             " ↑↓/jk navigate   ←→/Tab section   1-6 jump   q/Esc quit   no writes are performed "
         })
@@ -1315,7 +1319,6 @@ mod tests {
         }
         assert_eq!(state.plan_growth(), Growth::MaxFree);
     }
-
 
     #[test]
     fn minus_variants_and_page_keys_change_plan_growth() {
