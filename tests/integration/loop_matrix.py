@@ -46,7 +46,12 @@ class Runner:
             timeout=120, env={**os.environ, "LC_ALL": "C", "LANG": "C"}, check=False,
         )
         if result.returncode not in allowed:
-            raise SafetyError(f"{name} {args!r} exited {result.returncode}: {result.stderr.strip()}")
+            stdout = result.stdout.strip()
+            stderr = result.stderr.strip()
+            raise SafetyError(
+                f"{name} {args!r} exited {result.returncode}: "
+                f"stdout={stdout!r} stderr={stderr!r}"
+            )
         return result
 
     def json(self, name: str, *args: str) -> Any:
