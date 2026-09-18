@@ -2,6 +2,7 @@
 //! A preview is NOT an executable plan or authorization to modify storage.
 
 mod execution_guard;
+mod execution_handoff;
 mod filesystem_policy;
 mod identity_guard;
 mod route_graph;
@@ -22,6 +23,11 @@ pub use execution_guard::{
     GuardPlanStatus, JournalError, JournalEvent, JournalPhase, JournalTransition, LockScope,
     OperationJournal, OperationLockPlan, ResumeDisposition, HOST_STORAGE_LOCK_PATH,
     JOURNAL_DIRECTORY,
+};
+
+pub use execution_handoff::{
+    build_frozen_execution_handoff, ExecutionHandoffError, ExecutionHandoffStatus,
+    FrozenExecutionHandoff,
 };
 
 pub use filesystem_policy::{
@@ -515,6 +521,10 @@ impl PlanPreview {
 
     pub fn plan_id(&self) -> &str {
         &self.plan_id
+    }
+
+    pub fn target(&self) -> &str {
+        &self.request.target
     }
 
     /// Exact-input freshness check only. Does not validate runtime safety or authorize writes.
