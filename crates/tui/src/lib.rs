@@ -581,7 +581,6 @@ fn render_plan_hint(
                 lines.extend(strict_plan_lines(
                     snapshot,
                     capabilities,
-                    row.device,
                     &target,
                     state.plan_growth(),
                 ));
@@ -871,7 +870,6 @@ fn growth_label(growth: Growth) -> String {
 fn strict_plan_lines(
     snapshot: &HostSnapshot,
     capabilities: &HostCapabilities,
-    device: &BlockDevice,
     target: &str,
     growth: Growth,
 ) -> Vec<Line<'static>> {
