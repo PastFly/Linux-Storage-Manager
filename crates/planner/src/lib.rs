@@ -348,13 +348,14 @@ impl CreatePlanPreview {
         if let Some(allocation) = &self.allocation {
             text.push_str(&format!(
                 "Requested: {} bytes\nAllocated: {} bytes\nRemaining: {} bytes\n",
-                allocation.requested_bytes,
-                allocation.rounded_bytes,
-                allocation.remaining_bytes
+                allocation.requested_bytes, allocation.rounded_bytes, allocation.remaining_bytes
             ));
         }
         for blocker in &self.blockers {
-            text.push_str(&format!("BLOCKED [{}]: {}\n", blocker.code, blocker.message));
+            text.push_str(&format!(
+                "BLOCKED [{}]: {}\n",
+                blocker.code, blocker.message
+            ));
         }
         for (index, step) in self.steps.iter().enumerate() {
             text.push_str(&format!("{}. {}\n", index + 1, step));
@@ -701,7 +702,7 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
                     "mount it and optionally persist the mount".to_owned(),
                 ],
                 blockers: vec![
-                    "storage-mutating Create executor is not implemented in M1A".to_owned(),
+                    "storage-mutating Create executor is not implemented in M1A".to_owned()
                 ],
             });
         }
@@ -953,7 +954,8 @@ pub fn plan_create(
                 plan.plan_id = fingerprint(&plan)?;
                 return Ok(plan);
             };
-            if extent < 512 || !extent.is_power_of_two() || vg.free_bytes != source.available_bytes {
+            if extent < 512 || !extent.is_power_of_two() || vg.free_bytes != source.available_bytes
+            {
                 plan.blockers.push(blocked(
                     "create-capacity-mismatch",
                     "VG free-space identity or extent geometry changed",
@@ -1041,8 +1043,14 @@ pub fn plan_create(
             if let Some(mountpoint) = plan.request.mountpoint.as_deref() {
                 if !mountpoint.starts_with('/')
                     || mountpoint.chars().any(char::is_control)
-                    || snapshot.mounts.iter().any(|mount| mount.target == mountpoint)
-                    || snapshot.fstab.iter().any(|entry| entry.target == mountpoint)
+                    || snapshot
+                        .mounts
+                        .iter()
+                        .any(|mount| mount.target == mountpoint)
+                    || snapshot
+                        .fstab
+                        .iter()
+                        .any(|entry| entry.target == mountpoint)
                 {
                     plan.blockers.push(blocked(
                         "create-mountpoint-invalid",
@@ -1124,9 +1132,8 @@ pub fn plan_create(
         CreatePurpose::Swap => {
             plan.steps
                 .push("initialize the new block volume as Linux swap".to_owned());
-            plan.steps.push(
-                "activate swap and prepare guarded persistent swap configuration".to_owned(),
-            );
+            plan.steps
+                .push("activate swap and prepare guarded persistent swap configuration".to_owned());
         }
     }
     plan.steps
