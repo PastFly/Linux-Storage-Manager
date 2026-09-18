@@ -334,6 +334,48 @@ class ExerciseTests(unittest.TestCase):
             self.assertEqual((target / "readonly-sentinel").read_bytes(), b"original")
 
 
+class IdentityReadinessTests(unittest.TestCase):
+    def test_lvm_fixture_requires_all_runtime_identities(self):
+        snapshot = {
+            "storage": {"block_devices": [{
+                "path": "/dev/loop987654", "kind": "loop", "uuid": None,
+                "children": [{
+                    "path": "/dev/loop987654p1", "kind": "partition",
+                    "uuid": "pv-uuid", "children": [{
+                        "path": "/dev/mapper/lsmtestabc-data", "kind": "lvm",
+                        "uuid": "fs-uuid", "children": []
+                    }]
+                }]
+            }]},
+            "lvm": {
+                "physical_volumes": [{
+                    "name": "/dev/loop987654p1", "uuid": "pv-uuid",
+                    "vg_name": "lsmtestabc"
+                }],
+                "volume_groups": [{
+                    "name": "lsmtestabc", "uuid": "vg-uuid"
+                }],
+                "logical_volumes": [{
+                    "name": "data", "path": "/dev/lsmtestabc/data",
+                    "uuid": "lv-uuid", "vg_name": "lsmtestabc"
+                }],
+            },
+        }
+        self.assertTrue(M.fixture_identity_ready(snapshot, "/dev/loop987654", "lsmtestabc"))
+
+        broken = copy.deepcopy(snapshot)
+        broken["storage"]["block_devices"][0]["children"][0]["children"][0]["uuid"] = None
+        self.assertFalse(M.fixture_identity_ready(broken, "/dev/loop987654", "lsmtestabc"))
+
+        broken = copy.deepcopy(snapshot)
+        broken["lvm"]["logical_volumes"][0]["uuid"] = None
+        self.assertFalse(M.fixture_identity_ready(broken, "/dev/loop987654", "lsmtestabc"))
+
+    def test_plain_fixture_does_not_require_lvm_identity(self):
+        snapshot = {"storage": {"block_devices": []}, "lvm": None}
+        self.assertTrue(M.fixture_identity_ready(snapshot, "/dev/loop987654", None))
+
+
 class ReadinessTests(unittest.TestCase):
     def test_settle_failure_prevents_baseline_collection(self):
         runner = Mock()
