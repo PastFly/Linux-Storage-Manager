@@ -1,8 +1,8 @@
 use lsm_core::{HostCapabilities, HostSnapshot};
 use lsm_planner::{
-    analyze_layer_route, list_extend_targets, plan_extend, select_extend_planner_profile,
-    ExtendPlannerProfile, ExtendRequest, ExtendTargetKind, Growth, LayerRouteStatus, PlanStatus,
-    RouteIssueKind, RouteLayerKind,
+    analyze_layer_route, list_extend_targets, plan_extend, resolve_extend_route_adapter,
+    select_extend_planner_profile, ExtendPlannerProfile, ExtendRequest, ExtendTargetKind, Growth,
+    LayerRouteStatus, PlanStatus, RouteIssueKind, RouteLayerKind,
 };
 use serde_json::json;
 
@@ -307,6 +307,41 @@ fn semantic_profile_selects_direct_partition_builder_for_plain_partition_targets
         select_extend_planner_profile(&snapshot, "/data"),
         ExtendPlannerProfile::DirectPartition
     );
+}
+
+#[test]
+fn semantic_extend_adapter_normalizes_direct_mount_and_device_targets() {
+    let snapshot = direct_snapshot();
+
+    let by_mount = resolve_extend_route_adapter(&snapshot, "/data");
+    let by_device = resolve_extend_route_adapter(&snapshot, "/dev/sda1");
+
+    for adapter in [&by_mount, &by_device] {
+        assert_eq!(adapter.profile, ExtendPlannerProfile::DirectPartition);
+        assert_eq!(adapter.status, LayerRouteStatus::SupportedProfile);
+        assert_eq!(adapter.resolved_device.as_deref(), Some("/dev/sda1"));
+        assert_eq!(adapter.mountpoint.as_deref(), Some("/data"));
+        assert!(adapter.issue_codes.is_empty());
+    }
+}
+
+#[test]
+fn semantic_extend_adapter_normalizes_lvm_aliases_to_one_route() {
+    let snapshot = lvm_snapshot();
+
+    let by_mount = resolve_extend_route_adapter(&snapshot, "/");
+    let by_lv_path = resolve_extend_route_adapter(&snapshot, "/dev/vg0/root");
+
+    for adapter in [&by_mount, &by_lv_path] {
+        assert_eq!(adapter.profile, ExtendPlannerProfile::Lvm);
+        assert_eq!(adapter.status, LayerRouteStatus::SupportedProfile);
+        assert_eq!(
+            adapter.resolved_device.as_deref(),
+            Some("/dev/mapper/vg0-root")
+        );
+        assert_eq!(adapter.mountpoint.as_deref(), Some("/"));
+        assert!(adapter.issue_codes.is_empty());
+    }
 }
 
 #[test]
