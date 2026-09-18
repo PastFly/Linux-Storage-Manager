@@ -205,6 +205,14 @@ pub enum ExtendTargetKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ExtendPlannerProfile {
+    DirectPartition,
+    Lvm,
+    LegacyFailClosed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExtendTargetAvailability {
     PreviewReady,
     Advisory,
@@ -1257,6 +1265,94 @@ fn partition_free_ranges(disk: &BlockDevice, table: &PartitionTable) -> Option<P
     })
 }
 
+pub fn select_extend_planner_profile(
+    snapshot: &HostSnapshot,
+    target: &str,
+) -> ExtendPlannerProfile {
+    let route = analyze_layer_route(snapshot, target);
+    let last_block_layer = route.layers.iter().rev().find_map(|layer| match layer.kind {
+        RouteLayerKind::Disk
+        | RouteLayerKind::Partition
+        | RouteLayerKind::LoopDevice
+        | RouteLayerKind::Encryption
+        | RouteLayerKind::Raid
+        | RouteLayerKind::Multipath
+        | RouteLayerKind::LvmLogicalVolume
+        | RouteLayerKind::Zram
+        | RouteLayerKind::Rom
+        | RouteLayerKind::Unknown => Some(layer.kind),
+        RouteLayerKind::LvmPhysicalVolume
+        | RouteLayerKind::LvmVolumeGroup
+        | RouteLayerKind::Filesystem
+        | RouteLayerKind::Mount => None,
+    });
+
+    match last_block_layer {
+        Some(RouteLayerKind::Partition) => ExtendPlannerProfile::DirectPartition,
+        Some(RouteLayerKind::LvmLogicalVolume) => ExtendPlannerProfile::Lvm,
+        _ => ExtendPlannerProfile::LegacyFailClosed,
+    }
+}
+
+fn apply_partition_outcome(
+    plan: &mut PlanPreview,
+    snapshot: &HostSnapshot,
+    outcome: Result<Option<(PartitionSizeChange, Vec<PlanStep>)>, Blocker>,
+) -> bool {
+    match outcome {
+        Ok(Some((size, steps))) => {
+            plan.status = PlanStatus::Preview;
+            plan.partition_size_change = Some(size);
+            plan.preflight_checks = partition_preflight_checks();
+            plan.steps = steps;
+            true
+        }
+        Ok(None) => false,
+        Err(blocker) => {
+            if blocker.code == "insufficient-adjacent-capacity" {
+                plan.layout_alternatives = detect_layout_alternatives(snapshot, &plan.request);
+            }
+            plan.blockers.push(blocker);
+            true
+        }
+    }
+}
+
+fn apply_lvm_outcome(
+    plan: &mut PlanPreview,
+    snapshot: &HostSnapshot,
+    outcome: Result<(SizeChange, Vec<PlanStep>), Blocker>,
+) {
+    match outcome {
+        Ok((size, steps)) => {
+            plan.status = PlanStatus::Preview;
+            plan.size_change = Some(size);
+            plan.preflight_checks = lvm_preflight_checks();
+            plan.steps = steps;
+        }
+        Err(blocker) => {
+            if matches!(blocker.code.as_str(), "insufficient-capacity" | "no-growth") {
+                if let Some(route) = analyze_lvm_underlying_growth(snapshot, &plan.request) {
+                    plan.growth_route_alternatives.push(route);
+                }
+            }
+            plan.blockers.push(blocker);
+        }
+    }
+}
+
+fn apply_legacy_extend_profile(
+    plan: &mut PlanPreview,
+    snapshot: &HostSnapshot,
+    capabilities: &HostCapabilities,
+) {
+    let partition = try_build_partition_candidate(snapshot, capabilities, &plan.request);
+    if !apply_partition_outcome(plan, snapshot, partition) {
+        let lvm = build_candidate(snapshot, capabilities, &plan.request);
+        apply_lvm_outcome(plan, snapshot, lvm);
+    }
+}
+
 pub fn plan_extend(
     snapshot: &HostSnapshot,
     capabilities: &HostCapabilities,
@@ -1284,34 +1380,20 @@ pub fn plan_extend(
             "Metadata backups are not backups of user data; filesystem growth has no automatic rollback.".into(),
         ],
     };
-    match try_build_partition_candidate(snapshot, capabilities, &plan.request) {
-        Ok(Some((size, steps))) => {
-            plan.status = PlanStatus::Preview;
-            plan.partition_size_change = Some(size);
-            plan.preflight_checks = partition_preflight_checks();
-            plan.steps = steps;
+    match select_extend_planner_profile(snapshot, &plan.request.target) {
+        ExtendPlannerProfile::DirectPartition => {
+            let partition = try_build_partition_candidate(snapshot, capabilities, &plan.request);
+            if !apply_partition_outcome(&mut plan, snapshot, partition) {
+                let lvm = build_candidate(snapshot, capabilities, &plan.request);
+                apply_lvm_outcome(&mut plan, snapshot, lvm);
+            }
         }
-        Ok(None) => match build_candidate(snapshot, capabilities, &plan.request) {
-            Ok((size, steps)) => {
-                plan.status = PlanStatus::Preview;
-                plan.size_change = Some(size);
-                plan.preflight_checks = lvm_preflight_checks();
-                plan.steps = steps;
-            }
-            Err(blocker) => {
-                if matches!(blocker.code.as_str(), "insufficient-capacity" | "no-growth") {
-                    if let Some(route) = analyze_lvm_underlying_growth(snapshot, &plan.request) {
-                        plan.growth_route_alternatives.push(route);
-                    }
-                }
-                plan.blockers.push(blocker);
-            }
-        },
-        Err(blocker) => {
-            if blocker.code == "insufficient-adjacent-capacity" {
-                plan.layout_alternatives = detect_layout_alternatives(snapshot, &plan.request);
-            }
-            plan.blockers.push(blocker);
+        ExtendPlannerProfile::Lvm => {
+            let lvm = build_candidate(snapshot, capabilities, &plan.request);
+            apply_lvm_outcome(&mut plan, snapshot, lvm);
+        }
+        ExtendPlannerProfile::LegacyFailClosed => {
+            apply_legacy_extend_profile(&mut plan, snapshot, capabilities);
         }
     }
 
