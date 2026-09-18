@@ -141,10 +141,11 @@ identifiers will be created.
 Support is capability-based, not a hard-coded distribution whitelist.
 
 Portable artifacts are currently tested across Debian 12, Ubuntu 22.04, Ubuntu 24.04,
-Rocky Linux 9, AlmaLinux 9, Fedora 44 and Alpine 3.22.
+Rocky Linux 9, AlmaLinux 9, Fedora 44, Alpine 3.22 and openSUSE Leap 16.0 on x86_64
+and aarch64. The official Arch Linux container is additionally tested on x86_64 only.
 
-Additional validation targets include RHEL, Arch, SUSE/openSUSE and other Linux systems. Equivalent storage capabilities should map into the same normalized
-model.
+Additional validation targets include RHEL, SUSE Linux Enterprise and other Linux
+systems. Equivalent storage capabilities should map into the same normalized model.
 
 Distro differences that may require adapters:
 - command/package availability and paths;

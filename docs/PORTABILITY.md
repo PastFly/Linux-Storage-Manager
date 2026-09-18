@@ -20,8 +20,12 @@ to the CPU architecture. No `target-cpu=native` optimization is used.
 ## Evidence and limits
 
 The workflow executes target-specific Rust tests, then tests the SAME release
-binary in Debian 12, Ubuntu 22.04/24.04, Rocky Linux 9, AlmaLinux 9, Fedora 44 and Alpine 3.22 userlands.
-Startup, CLI help, missing-tool reporting and refusal of `--apply` are checked.
+binary in Debian 12, Ubuntu 22.04/24.04, Rocky Linux 9, AlmaLinux 9, Fedora 44,
+Alpine 3.22 and openSUSE Leap 16.0 userlands on both supported architectures.
+The official Arch Linux `base` image is additionally tested on x86_64; its official
+Docker image is amd64-only, so the aarch64 workflow records an explicit skip instead
+of claiming an unsupported Arch container target. Startup, CLI help, missing-tool
+reporting and refusal of `--apply` are checked.
 A separate Debian 12 image installs distro-provided storage tools and exercises
 unprivileged JSON collectors and blocked planning without access to host disks.
 Containers have no host device bind mounts or privileged mode, run read-only,

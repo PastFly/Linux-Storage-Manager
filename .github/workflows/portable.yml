@@ -27,7 +27,7 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       TARGET: ${{ matrix.target }}
       ARCH: ${{ matrix.arch }}
@@ -58,10 +58,11 @@ jobs:
           cp "target/$TARGET/release/storagemgr" "$RUNNER_TEMP/portable-probe/storagemgr"
           bash tests/portability/check-elf.sh "$RUNNER_TEMP/portable-probe/storagemgr" "$ARCH" \
             | tee "$RUNNER_TEMP/portable-probe/PORTABILITY.txt"
-      - name: Test same binary in seven Linux userlands
+      - name: Test same binary across Linux userlands
         run: |
           set -euo pipefail
-          for image in debian:12-slim ubuntu:22.04 ubuntu:24.04 rockylinux:9 almalinux:9 fedora:44 alpine:3.22; do
+          smoke_userland() {
+            image="$1"
             docker pull "$image"
             docker image inspect --format '{{json .RepoDigests}}' "$image" \
               | tee -a "$RUNNER_TEMP/portable-probe/PORTABILITY.txt"
@@ -74,7 +75,18 @@ jobs:
               | tee -a "$RUNNER_TEMP/portable-probe/PORTABILITY.txt"
             echo "USERLAND_OK image=$image arch=$ARCH" \
               | tee -a "$RUNNER_TEMP/portable-probe/PORTABILITY.txt"
+          }
+
+          for image in debian:12-slim ubuntu:22.04 ubuntu:24.04 rockylinux:9 almalinux:9 fedora:44 alpine:3.22 opensuse/leap:16.0; do
+            smoke_userland "$image"
           done
+
+          if [[ "$ARCH" == "x86_64" ]]; then
+            smoke_userland archlinux:base
+          else
+            echo "USERLAND_SKIP image=archlinux:base arch=$ARCH reason=official-image-amd64-only" \
+              | tee -a "$RUNNER_TEMP/portable-probe/PORTABILITY.txt"
+          fi
       - name: Test Debian 12 collectors without host device access
         run: |
           set -euo pipefail
