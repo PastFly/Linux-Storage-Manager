@@ -34,6 +34,7 @@ fn fixture(sector: u64) -> HostSnapshot {
         fstab: Vec::new(),
         swaps: Vec::new(),
         lvm: None,
+        filesystem_preflight: Vec::new(),
         diagnostics: Vec::new(),
         collectors: ["lsblk", "partition_tables", "mounts"]
             .into_iter()
