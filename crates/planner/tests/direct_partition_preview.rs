@@ -450,7 +450,6 @@ fn layout_alternative_is_not_emitted_when_tail_cannot_preserve_swap_and_growth()
     assert!(plan.layout_alternatives().is_empty());
 }
 
-
 #[test]
 fn layout_opportunity_exposes_max_target_growth_for_selector() {
     let snapshot = grown_live_debian_snapshot();
