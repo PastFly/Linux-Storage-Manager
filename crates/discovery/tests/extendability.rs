@@ -261,7 +261,6 @@ fn dos_primary_before_extended_container_has_known_zero_adjacent_capacity() {
     assert_eq!(analysis.potential_underlying_growth_bytes, Some(0));
 }
 
-
 #[test]
 fn debian12_dos_logical_sibling_reports_real_gap_before_extended_container() {
     let storage = parse_lsblk_json(
@@ -325,8 +324,5 @@ fn debian12_dos_logical_sibling_reports_real_gap_before_extended_container() {
 
     let analysis = analyze_extendability(&snapshot, "/").unwrap();
     assert_eq!(analysis.status, ExtendabilityStatus::NeedsUnderlyingResize);
-    assert_eq!(
-        analysis.potential_underlying_growth_bytes,
-        Some(1_047_552)
-    );
+    assert_eq!(analysis.potential_underlying_growth_bytes, Some(1_047_552));
 }
