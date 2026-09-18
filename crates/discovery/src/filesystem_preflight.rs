@@ -1,9 +1,7 @@
 use std::io::ErrorKind;
 use std::process::{Command, Output};
 
-use lsm_core::{
-    BlockDevice, FilesystemPreflightEvidence, FilesystemProbeState, StorageGraph,
-};
+use lsm_core::{BlockDevice, FilesystemPreflightEvidence, FilesystemProbeState, StorageGraph};
 
 pub fn discover_filesystem_preflight(storage: &StorageGraph) -> Vec<FilesystemPreflightEvidence> {
     let mut evidence = Vec::new();
@@ -21,10 +19,7 @@ pub fn discover_filesystem_preflight(storage: &StorageGraph) -> Vec<FilesystemPr
 }
 
 fn probe_ext4(device: &BlockDevice) -> FilesystemPreflightEvidence {
-    let device_name = device
-        .path
-        .clone()
-        .unwrap_or_else(|| device.name.clone());
+    let device_name = device.path.clone().unwrap_or_else(|| device.name.clone());
     let mountpoint = first_real_mountpoint(device);
     let Some(path) = device.path.as_deref() else {
         return evidence(
@@ -37,7 +32,9 @@ fn probe_ext4(device: &BlockDevice) -> FilesystemPreflightEvidence {
             None,
             Vec::new(),
             None,
-            Some("ext4 block-device path is unavailable; tune2fs metadata probe was not run".into()),
+            Some(
+                "ext4 block-device path is unavailable; tune2fs metadata probe was not run".into(),
+            ),
         );
     };
 
@@ -170,9 +167,7 @@ fn probe_xfs(device: &BlockDevice) -> FilesystemPreflightEvidence {
     } else if info_ok || grow_check_passed == Some(true) {
         FilesystemProbeState::Partial
     } else if grow_check_passed.is_none()
-        && details
-            .iter()
-            .all(|detail| detail.contains("unavailable"))
+        && details.iter().all(|detail| detail.contains("unavailable"))
     {
         FilesystemProbeState::Unavailable
     } else {
@@ -271,10 +266,7 @@ fn parse_tune2fs_list(input: &str) -> Ext4Superblock {
             "Filesystem state" => parsed.filesystem_state = nonempty(value),
             "Filesystem revision #" => parsed.revision = nonempty(value),
             "Filesystem features" => {
-                parsed.features = value
-                    .split_whitespace()
-                    .map(str::to_owned)
-                    .collect();
+                parsed.features = value.split_whitespace().map(str::to_owned).collect();
             }
             _ => {}
         }
@@ -352,7 +344,7 @@ mod tests {
         let features = parse_xfs_info_features(
             "meta-data=/dev/vda1 isize=512 agcount=4, agsize=65536 blks\n\
              = sectsz=512 attr=2, projid32bit=1\n\
-             = crc=1 finobt=1, sparse=1, rmapbt=0\n\
+             = crc=1 finobt=1, sparse=1, rmapbt=0 reflink=1\n\
              data = bsize=4096 blocks=262144, imaxpct=25\n\
              naming =version 2 bsize=4096 ascii-ci=0, ftype=1\n\
              log =internal bsize=4096 blocks=16384, version=2\n\
@@ -371,6 +363,7 @@ mod tests {
                 "inobtcount=1",
                 "metadir=0",
                 "nrext64=0",
+                "reflink=1",
                 "rmapbt=0",
                 "sparse=1"
             ]
