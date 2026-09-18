@@ -4,10 +4,10 @@ use lsm_core::{CollectorState, CollectorStatus, HostSnapshot};
 use thiserror::Error;
 
 use crate::{
-    diagnose_storage, discover_filesystem_preflight, discover_fstab, discover_lvm,
-    discover_mounts, discover_partition_tables, discover_storage, discover_swaps,
-    reconcile_snapshot, DiscoveryError, FstabDiscoveryError, LvmDiscoveryError,
-    MountDiscoveryError, PartitionTableDiscoveryError, SwapDiscoveryError,
+    diagnose_storage, discover_filesystem_preflight, discover_fstab, discover_lvm, discover_mounts,
+    discover_partition_tables, discover_storage, discover_swaps, reconcile_snapshot,
+    DiscoveryError, FstabDiscoveryError, LvmDiscoveryError, MountDiscoveryError,
+    PartitionTableDiscoveryError, SwapDiscoveryError,
 };
 
 #[derive(Debug, Error)]
