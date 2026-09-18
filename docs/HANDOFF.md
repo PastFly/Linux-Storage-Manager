@@ -25,16 +25,16 @@ appropriate approval. Read AGENTS.md and docs/SAFETY.md before writing.
 
 Exact validated code head:
 
-`ec47e85908c591396b8cfc6cedda3717d833b232`
+`759b6f2d959cf6412de4d68cd2b024ebdecacad8`
 
-CI #251 / run `35383113497`:
+CI #277 / run `35385883388`:
 - harness safety tests PASS;
 - rustfmt PASS;
 - Clippy with `-D warnings` PASS;
-- Rust workspace tests PASS;
-- disposable loop integration PASS.
+- Rust workspace tests PASS, including target/Create scenario contracts;
+- repeated disposable loop integration PASS.
 
-Portable Linux #130 / run `35383113481`:
+Portable Linux #156 / run `35385883384`:
 - static musl x86_64 PASS;
 - static musl aarch64 PASS;
 - same binaries smoke-tested across Debian 12, Ubuntu 22.04, Ubuntu 24.04,
@@ -42,8 +42,8 @@ Portable Linux #130 / run `35383113481`:
 - Debian 12 collector probe PASS.
 
 Artifacts:
-- x86_64: `storagemgr-linux-x86_64-musl-35383113481`
-- aarch64: `storagemgr-linux-aarch64-musl-35383113481`
+- x86_64: `storagemgr-linux-x86_64-musl-35385883384`
+- aarch64: `storagemgr-linux-aarch64-musl-35385883384`
 
 The branch may contain documentation-only commits after that code head. Do not claim a
 later code head is validated unless its own workflows have completed.
@@ -89,12 +89,28 @@ Each target records:
 
 M1A also exposes a Create/free-space catalog:
 - free extents in an existing VG;
+- verified internal GPT/DOS free ranges;
 - verified raw disk tail behind a partition table;
 - verified blank disks.
+
+Every source has a stable SHA-based ID. CLI accepts the full ID or a unique 16+
+character prefix.
+
+Read-only Create intent planning supports:
+- exact size or maximum verified source capacity;
+- filesystem or swap purpose;
+- ext4/XFS filesystem intent;
+- optional future mountpoint validation in CLI;
+- sector-aligned partition allocations for verified gap/tail sources;
+- extent-aligned LV allocations for VG-free sources.
+
+Blank-disk exact allocation remains blocked until a partition-table/alignment policy is
+explicitly resolved. The planner never guesses GPT/DOS policy.
 
 CLI:
 - `storagemgr plan targets [--json]`
 - `storagemgr plan create-spaces [--json]`
+- `storagemgr plan create SOURCE_ID --by SIZE|--max --purpose filesystem|swap [--fs ext4|xfs] [--mount PATH] [--json]`
 
 No Create operation is executable in M1A.
 
@@ -244,11 +260,15 @@ Current UI:
 - strict plan preview;
 - Tail opportunity summary and detailed advisory layout alternative;
 - Create free-space source table/details;
+- live read-only Create preview with source, size, filesystem/swap purpose and ext4/XFS selection;
+- exact blocked reason for unsupported filesystems instead of hiding targets;
 - contextual toolbar.
 
 Key controls:
 - navigation: arrows / Tab / 1-7;
 - Extend size: PgUp/PgDn plus legacy +/-/[ ];
+- Create: ↑/↓ source, PgUp/PgDn size, `p` filesystem/swap, `f` ext4/XFS;
+- TUI mountpoint text entry is not implemented yet; CLI can validate an optional mountpoint;
 - `r` = discovery refresh;
 - `R` = selected-disk kernel rescan + refresh;
 - `q`/Esc = quit.
