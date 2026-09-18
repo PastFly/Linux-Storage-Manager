@@ -660,4 +660,107 @@ fn dos_extended_container_hides_its_internal_logical_space_from_generic_create()
                 .iter()
                 .any(|blocker| blocker.contains("DOS/MBR"))
         }));
+
+#[test]
+fn scenario_contract_keeps_multiple_filesystem_targets_selectable() {
+    let (mut snapshot, mut caps) = input();
+    let sector = 512_u64;
+    let first_start = 2048_u64;
+    let first_size = 16 * GIB + EXTENT;
+    let first_size_sectors = first_size / sector;
+    let second_start = first_start + first_size_sectors + 2048;
+    let second_size = GIB;
+    let second_size_sectors = second_size / sector;
+    let disk_sectors = snapshot.storage.block_devices[0].size_bytes / sector;
+
+    let var_device: lsm_core::BlockDevice = serde_json::from_value(json!({
+        "name":"vda2", "kernel_name":"vda2", "path":"/dev/vda2", "kind":"partition",
+        "size_bytes":second_size, "start_512_sector":second_start,
+        "logical_sector_bytes":sector, "uuid":"var-fs", "partition_uuid":"var-part",
+        "partition_table":"gpt",
+        "filesystem":{"fs_type":"ext4","version":"1.0"},
+        "mountpoints":["/var"], "parent_kernel_name":"vda", "children":[]
+    }))
+    .unwrap();
+    snapshot.storage.block_devices[0].children.push(var_device);
+    snapshot.mounts.push(
+        serde_json::from_value(json!({
+            "source":"/dev/vda2","target":"/var","fs_type":"ext4","options":["rw","relatime"]
+        }))
+        .unwrap(),
+    );
+    snapshot.partition_tables = vec![lsm_core::PartitionTable {
+        device: "/dev/vda".into(),
+        label: Some("gpt".into()),
+        id: Some("multi-target-gpt".into()),
+        unit: Some("sectors".into()),
+        first_lba: Some(34),
+        last_lba: Some(disk_sectors - 34),
+        sector_size_bytes: Some(sector),
+        partitions: vec![
+            lsm_core::PartitionRecord {
+                node: "/dev/vda1".into(),
+                start_sector: first_start,
+                size_sectors: first_size_sectors,
+                partition_type: Some(
+                    "E6D6D379-F507-44C2-A23C-238F2A3DF928".into(),
+                ),
+                uuid: Some("pv-part".into()),
+                name: None,
+                attrs: None,
+                bootable: None,
+            },
+            lsm_core::PartitionRecord {
+                node: "/dev/vda2".into(),
+                start_sector: second_start,
+                size_sectors: second_size_sectors,
+                partition_type: Some(
+                    "0FC63DAF-8483-4772-8E79-3D69D8477DE4".into(),
+                ),
+                uuid: Some("var-part".into()),
+                name: None,
+                attrs: None,
+                bootable: None,
+            },
+        ],
+    }];
+    caps.tools.push(lsm_core::ToolCapability {
+        name: "sfdisk".into(),
+        available: true,
+    });
+
+    let targets = list_extend_targets(&snapshot, &caps);
+
+    assert_eq!(targets.len(), 2);
+    assert!(targets.iter().any(|target| {
+        target.target == "/"
+            && target.kind == ExtendTargetKind::LvmLogicalVolume
+            && target.availability == ExtendTargetAvailability::PreviewReady
+    }));
+    assert!(targets.iter().any(|target| {
+        target.target == "/var"
+            && target.kind == ExtendTargetKind::DirectPartition
+            && target.availability == ExtendTargetAvailability::PreviewReady
+    }));
+}
+
+#[test]
+fn scenario_contract_keeps_unknown_filesystem_visible_but_blocked() {
+    let (mut snapshot, caps) = input();
+    snapshot.storage.block_devices[0].children[0].children[0]
+        .filesystem
+        .as_mut()
+        .unwrap()
+        .fs_type = "mysteryfs".into();
+    snapshot.mounts[0].fs_type = Some("mysteryfs".into());
+
+    let targets = list_extend_targets(&snapshot, &caps);
+
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].target, "/");
+    assert_eq!(targets[0].filesystem, "mysteryfs");
+    assert_eq!(targets[0].availability, ExtendTargetAvailability::Blocked);
+    assert!(targets[0].reason.contains("filesystem"));
+}
+
 }
