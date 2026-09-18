@@ -732,6 +732,29 @@ fn direct_partition_preview_exposes_verified_and_required_preflight() {
 }
 
 #[test]
+fn bind_mount_is_visible_but_blocked_from_generic_growth() {
+    let mut snapshot = live_debian_snapshot();
+    snapshot.mounts[0].options.push("bind".into());
+
+    let plan = plan_extend(
+        &snapshot,
+        &capabilities(),
+        ExtendRequest {
+            target: "/".into(),
+            growth: Growth::MaxFree,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert!(plan
+        .blockers()
+        .iter()
+        .any(|blocker| blocker.code == "mount-state-mismatch"));
+    assert!(plan.partition_size_change().is_none());
+}
+
+#[test]
 fn blocked_direct_partition_plan_has_no_success_preflight() {
     let plan = plan_extend(
         &live_debian_snapshot(),
@@ -801,6 +824,46 @@ fn one_gib_request_reports_tail_swap_layout_alternative() {
         .steps
         .iter()
         .any(|step| step.contains("hibernation")));
+}
+
+#[test]
+fn mixed_payload_inside_extended_container_blocks_swap_migration_advisory() {
+    let mut snapshot = grown_live_debian_snapshot();
+
+    let swap_record = snapshot.partition_tables[0]
+        .partitions
+        .iter_mut()
+        .find(|record| record.node == "/dev/sda5")
+        .unwrap();
+    swap_record.size_sectors = 1_000_000;
+    snapshot.swaps[0].size_bytes = 1_000_000 * 512;
+    snapshot.storage.block_devices[0].children[2].size_bytes = 1_000_000 * 512;
+
+    snapshot.partition_tables[0].partitions.push(PartitionRecord {
+        node: "/dev/sda6".into(),
+        start_sector: 19_972_672,
+        size_sectors: 500_000,
+        partition_type: Some("83".into()),
+        uuid: None,
+        name: Some("payload".into()),
+        attrs: None,
+        bootable: None,
+    });
+
+    assert!(analyze_layout_opportunity(&snapshot, "/").is_none());
+
+    let plan = plan_extend(
+        &snapshot,
+        &capabilities(),
+        ExtendRequest {
+            target: "/".into(),
+            growth: Growth::ByBytes(1024 * 1024 * 1024),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert!(plan.layout_alternatives().is_empty());
 }
 
 #[test]
