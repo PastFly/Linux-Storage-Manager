@@ -3,7 +3,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{analyze_layer_route, LayerRouteStatus, RouteLayerKind};
+use crate::{analyze_layer_route, LayerRouteStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TargetIdentityManifest {
