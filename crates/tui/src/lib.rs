@@ -12,7 +12,9 @@ use lsm_core::{
     HostSnapshot, NodeKind, StorageGraph,
 };
 use lsm_discovery::analyze_extendability;
-use lsm_planner::{plan_extend, ExtendRequest, Growth, Operation, PlanStatus, PlanStep, Reversibility};
+use lsm_planner::{
+    plan_extend, ExtendRequest, Growth, Operation, PlanStatus, PlanStep, Reversibility,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
