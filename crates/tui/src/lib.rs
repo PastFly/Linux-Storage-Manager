@@ -201,11 +201,7 @@ fn event_loop(
     }
 }
 
-fn handle_key_event(
-    state: &mut AppState,
-    snapshot: &HostSnapshot,
-    key: KeyEvent,
-) -> LoopControl {
+fn handle_key_event(state: &mut AppState, snapshot: &HostSnapshot, key: KeyEvent) -> LoopControl {
     if key.kind != KeyEventKind::Press {
         return LoopControl::Continue;
     }
@@ -278,8 +274,7 @@ fn handle_key_event(
             LoopControl::Continue
         }
         KeyCode::Char('=')
-            if state.section() == Section::Plans
-                && key.modifiers.contains(KeyModifiers::SHIFT) =>
+            if state.section() == Section::Plans && key.modifiers.contains(KeyModifiers::SHIFT) =>
         {
             state.next_plan_growth();
             LoopControl::Continue
@@ -1255,7 +1250,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn plus_press_advances_once_and_repeat_release_are_ignored() {
         use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
@@ -1270,25 +1264,31 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         };
-        assert_eq!(handle_key_event(&mut state, &snap, press), LoopControl::Continue);
         assert_eq!(
-            state.plan_growth(),
-            Growth::ByBytes(1024 * 1024 * 1024)
+            handle_key_event(&mut state, &snap, press),
+            LoopControl::Continue
         );
+        assert_eq!(state.plan_growth(), Growth::ByBytes(1024 * 1024 * 1024));
 
-        let repeat = KeyEvent { kind: KeyEventKind::Repeat, ..press };
-        assert_eq!(handle_key_event(&mut state, &snap, repeat), LoopControl::Continue);
+        let repeat = KeyEvent {
+            kind: KeyEventKind::Repeat,
+            ..press
+        };
         assert_eq!(
-            state.plan_growth(),
-            Growth::ByBytes(1024 * 1024 * 1024)
+            handle_key_event(&mut state, &snap, repeat),
+            LoopControl::Continue
         );
+        assert_eq!(state.plan_growth(), Growth::ByBytes(1024 * 1024 * 1024));
 
-        let release = KeyEvent { kind: KeyEventKind::Release, ..press };
-        assert_eq!(handle_key_event(&mut state, &snap, release), LoopControl::Continue);
+        let release = KeyEvent {
+            kind: KeyEventKind::Release,
+            ..press
+        };
         assert_eq!(
-            state.plan_growth(),
-            Growth::ByBytes(1024 * 1024 * 1024)
+            handle_key_event(&mut state, &snap, release),
+            LoopControl::Continue
         );
+        assert_eq!(state.plan_growth(), Growth::ByBytes(1024 * 1024 * 1024));
     }
 
     #[test]
@@ -1308,7 +1308,10 @@ mod tests {
         };
 
         for _ in 0..100 {
-            assert_eq!(handle_key_event(&mut state, &snap, press), LoopControl::Continue);
+            assert_eq!(
+                handle_key_event(&mut state, &snap, press),
+                LoopControl::Continue
+            );
         }
         assert_eq!(state.plan_growth(), Growth::MaxFree);
     }
