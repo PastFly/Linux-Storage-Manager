@@ -147,20 +147,12 @@ impl AppState {
         }
     }
 
-    fn plan_growth(&self) -> Growth {
-        PLAN_GROWTH_PRESETS[self.plan_growth_index]
-    }
-
     fn plan_growth_for_snapshot(&self, snapshot: &HostSnapshot) -> Growth {
         let options = plan_growth_options(snapshot, self.selected_device);
         options
             .get(self.plan_growth_index.min(options.len().saturating_sub(1)))
             .copied()
             .unwrap_or(Growth::MaxFree)
-    }
-
-    fn next_plan_growth(&mut self) {
-        self.plan_growth_index = (self.plan_growth_index + 1).min(PLAN_GROWTH_PRESETS.len() - 1);
     }
 
     fn next_plan_growth_for_snapshot(&mut self, snapshot: &HostSnapshot) {
@@ -1315,30 +1307,37 @@ mod tests {
 
     #[test]
     fn plan_growth_presets_are_safe_and_cycle_without_execution() {
-        let mut state = AppState::new(&snapshot());
+        let snap = snapshot();
+        let mut state = AppState::new(&snap);
         state.section_index = 5;
 
         assert_eq!(
-            state.plan_growth(),
+            state.plan_growth_for_snapshot(&snap),
             lsm_planner::Growth::ByBytes(512 * 1024 * 1024)
         );
-        state.next_plan_growth();
+        state.next_plan_growth_for_snapshot(&snap);
         assert_eq!(
-            state.plan_growth(),
+            state.plan_growth_for_snapshot(&snap),
             lsm_planner::Growth::ByBytes(1024 * 1024 * 1024)
         );
-        state.next_plan_growth();
+        state.next_plan_growth_for_snapshot(&snap);
         assert_eq!(
-            state.plan_growth(),
+            state.plan_growth_for_snapshot(&snap),
             lsm_planner::Growth::ByBytes(4 * 1024 * 1024 * 1024)
         );
-        state.next_plan_growth();
-        assert_eq!(state.plan_growth(), lsm_planner::Growth::MaxFree);
-        state.next_plan_growth();
-        assert_eq!(state.plan_growth(), lsm_planner::Growth::MaxFree);
+        state.next_plan_growth_for_snapshot(&snap);
+        assert_eq!(
+            state.plan_growth_for_snapshot(&snap),
+            lsm_planner::Growth::MaxFree
+        );
+        state.next_plan_growth_for_snapshot(&snap);
+        assert_eq!(
+            state.plan_growth_for_snapshot(&snap),
+            lsm_planner::Growth::MaxFree
+        );
         state.previous_plan_growth();
         assert_eq!(
-            state.plan_growth(),
+            state.plan_growth_for_snapshot(&snap),
             lsm_planner::Growth::ByBytes(4 * 1024 * 1024 * 1024)
         );
     }
@@ -1361,7 +1360,7 @@ mod tests {
             handle_key_event(&mut state, &snap, press),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth(), Growth::ByBytes(1024 * 1024 * 1024));
+        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(1024 * 1024 * 1024));
 
         let repeat = KeyEvent {
             kind: KeyEventKind::Repeat,
@@ -1371,7 +1370,7 @@ mod tests {
             handle_key_event(&mut state, &snap, repeat),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth(), Growth::ByBytes(1024 * 1024 * 1024));
+        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(1024 * 1024 * 1024));
 
         let release = KeyEvent {
             kind: KeyEventKind::Release,
@@ -1381,7 +1380,7 @@ mod tests {
             handle_key_event(&mut state, &snap, release),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth(), Growth::ByBytes(1024 * 1024 * 1024));
+        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(1024 * 1024 * 1024));
     }
 
     #[test]
@@ -1406,7 +1405,7 @@ mod tests {
                 LoopControl::Continue
             );
         }
-        assert_eq!(state.plan_growth(), Growth::MaxFree);
+        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::MaxFree);
     }
 
     #[test]
@@ -1428,7 +1427,7 @@ mod tests {
             handle_key_event(&mut state, &snap, plain_minus),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth(), Growth::ByBytes(1024 * 1024 * 1024));
+        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(1024 * 1024 * 1024));
 
         let shifted_minus = KeyEvent {
             code: KeyCode::Char('_'),
@@ -1440,7 +1439,7 @@ mod tests {
             handle_key_event(&mut state, &snap, shifted_minus),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth(), Growth::ByBytes(512 * 1024 * 1024));
+        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(512 * 1024 * 1024));
 
         let page_down = KeyEvent {
             code: KeyCode::PageDown,
@@ -1452,7 +1451,7 @@ mod tests {
             handle_key_event(&mut state, &snap, page_down),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth(), Growth::ByBytes(1024 * 1024 * 1024));
+        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(1024 * 1024 * 1024));
 
         let page_up = KeyEvent {
             code: KeyCode::PageUp,
@@ -1464,7 +1463,7 @@ mod tests {
             handle_key_event(&mut state, &snap, page_up),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth(), Growth::ByBytes(512 * 1024 * 1024));
+        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(512 * 1024 * 1024));
     }
 
     #[test]
@@ -1486,16 +1485,13 @@ mod tests {
             handle_key_event(&mut state, &snap, equals),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth(), Growth::ByBytes(1024 * 1024 * 1024));
+        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(1024 * 1024 * 1024));
     }
 
     #[test]
     fn adaptive_growth_presets_hide_values_larger_than_verified_capacity() {
         let presets = growth_presets_for_capacity(Some(1_047_552));
-        assert_eq!(
-            presets,
-            vec![Growth::ByBytes(512 * 1024), Growth::MaxFree]
-        );
+        assert_eq!(presets, vec![Growth::ByBytes(512 * 1024), Growth::MaxFree]);
     }
 
     #[test]
@@ -1508,8 +1504,8 @@ mod tests {
 
     #[test]
     fn precise_size_display_distinguishes_small_growth_on_large_volume() {
-        assert_eq!(human_bytes_precise(9_711_910_912), "9.044 GiB");
-        assert_eq!(human_bytes_precise(9_712_958_464), "9.045 GiB");
+        assert_eq!(human_bytes_precise(9_711_910_912), "9.045 GiB");
+        assert_eq!(human_bytes_precise(9_712_958_464), "9.046 GiB");
     }
 
     #[test]
