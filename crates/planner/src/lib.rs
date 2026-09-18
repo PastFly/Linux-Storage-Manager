@@ -2,6 +2,7 @@
 //! A preview is NOT an executable plan or authorization to modify storage.
 
 mod identity_guard;
+mod execution_guard;
 mod route_graph;
 
 pub use route_graph::{
@@ -13,6 +14,13 @@ pub use identity_guard::{
     capture_target_identity, revalidate_target_identity, DeviceIdentity, FilesystemIdentity,
     IdentityChange, IdentityGuardError, IdentityRevalidation, LvmIdentity, LvmIdentityKind,
     MountIdentity, PartitionGeometryIdentity, TargetIdentityManifest,
+};
+
+pub use execution_guard::{
+    build_execution_guard_plan, ExecutionGuardError, ExecutionGuardPlan, GuardGate, GuardGateKind,
+    GuardPlanStatus, JournalError, JournalEvent, JournalPhase, JournalTransition, LockScope,
+    OperationJournal, OperationLockPlan, ResumeDisposition, HOST_STORAGE_LOCK_PATH,
+    JOURNAL_DIRECTORY,
 };
 
 use lsm_core::{
