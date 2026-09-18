@@ -583,7 +583,6 @@ fn create_catalog_exposes_empty_gpt_usable_range_without_calling_it_blank() {
 fn dos_extended_container_hides_its_internal_logical_space_from_generic_create() {
     let (mut snapshot, _caps) = input();
     let sector = 512_u64;
-    let disk_sectors = snapshot.storage.block_devices[0].size_bytes / sector;
     let primary_start = 2048_u64;
     let primary_size = 2 * GIB / sector;
     let extended_start = 6 * GIB / sector;
