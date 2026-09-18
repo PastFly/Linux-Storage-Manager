@@ -44,6 +44,7 @@ fn probe_ext4(device: &BlockDevice) -> FilesystemPreflightEvidence {
     match Command::new("tune2fs").args(["-l", path]).output() {
         Ok(output) if output.status.success() => {
             let parsed = parse_tune2fs_list(&String::from_utf8_lossy(&output.stdout));
+            let size_bytes = parsed.size_bytes();
             evidence(
                 device_name,
                 mountpoint,
@@ -55,7 +56,7 @@ fn probe_ext4(device: &BlockDevice) -> FilesystemPreflightEvidence {
                 parsed.features,
                 parsed.block_size_bytes,
                 parsed.block_count,
-                parsed.size_bytes(),
+                size_bytes,
                 None,
                 Some(
                     "read-only ext4 superblock metadata collected; a dedicated health check is still required before execution"
