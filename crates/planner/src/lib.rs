@@ -146,6 +146,58 @@ pub struct LayoutAlternative {
     pub steps: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtendTargetKind {
+    DirectPartition,
+    LvmLogicalVolume,
+    LayeredOrOther,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtendTargetAvailability {
+    PreviewReady,
+    Advisory,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExtendTarget {
+    pub target: String,
+    pub device: String,
+    pub mountpoint: Option<String>,
+    pub filesystem: String,
+    pub kind: ExtendTargetKind,
+    pub current_block_size_bytes: u64,
+    pub verified_growth_bytes: Option<u64>,
+    pub layout_growth_bytes: Option<u64>,
+    pub availability: ExtendTargetAvailability,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvisioningSpaceKind {
+    BlankDisk,
+    DiskTail,
+    LvmFreeExtents,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProvisioningOpportunity {
+    pub code: String,
+    pub kind: ProvisioningSpaceKind,
+    pub source: String,
+    pub disk: Option<String>,
+    pub volume_group: Option<String>,
+    pub available_bytes: u64,
+    pub sector_size_bytes: Option<u64>,
+    pub advisory_only: bool,
+    pub future_actions: Vec<String>,
+    pub blockers: Vec<String>,
+}
+
 // Private fields, no setters and deliberately no Deserialize implementation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlanPreview {
@@ -309,6 +361,290 @@ pub fn parse_growth_size(input: &str) -> Result<u64, PlannerError> {
         return Err(PlannerError::InvalidSize);
     }
     Ok(bytes)
+}
+
+
+pub fn list_extend_targets(
+    snapshot: &HostSnapshot,
+    capabilities: &HostCapabilities,
+) -> Vec<ExtendTarget> {
+    let mut targets = Vec::new();
+
+    for device in flatten(&snapshot.storage.block_devices) {
+        let Some(filesystem) = device.filesystem.as_ref() else {
+            continue;
+        };
+        if matches!(filesystem.fs_type.as_str(), "swap" | "LVM2_member")
+            || device
+                .mountpoints
+                .iter()
+                .any(|mount| mount.as_str() == "[SWAP]")
+            || !device.children.is_empty()
+        {
+            continue;
+        }
+
+        let device_path = device.path.clone().unwrap_or_else(|| device.name.clone());
+        let mountpoint = device
+            .mountpoints
+            .iter()
+            .find(|mount| mount.as_str() != "[SWAP]")
+            .cloned();
+        let target = mountpoint
+            .clone()
+            .unwrap_or_else(|| device_path.clone());
+
+        let preview = plan_extend(
+            snapshot,
+            capabilities,
+            ExtendRequest {
+                target: target.clone(),
+                growth: Growth::MaxFree,
+            },
+        );
+
+        let verified_growth_bytes = preview.as_ref().ok().and_then(|plan| {
+            plan.size_change()
+                .map(|change| change.rounded_growth_bytes)
+                .or_else(|| {
+                    plan.partition_size_change()
+                        .map(|change| change.rounded_growth_bytes)
+                })
+        });
+        let layout_growth_bytes =
+            analyze_layout_opportunity(snapshot, &target).map(|opportunity| {
+                opportunity.max_target_growth_bytes
+            });
+
+        let (availability, reason) = match &preview {
+            Ok(plan) if plan.status() == PlanStatus::Preview => {
+                let reason = if layout_growth_bytes
+                    .is_some_and(|bytes| bytes > verified_growth_bytes.unwrap_or(0))
+                {
+                    "verified growth is available; an additional layout migration opportunity was also detected"
+                        .to_owned()
+                } else {
+                    "verified read-only growth preview is available".to_owned()
+                };
+                (ExtendTargetAvailability::PreviewReady, reason)
+            }
+            Ok(plan) if layout_growth_bytes.is_some_and(|bytes| bytes > 0) => (
+                ExtendTargetAvailability::Advisory,
+                plan.blockers()
+                    .first()
+                    .map(|blocker| {
+                        format!(
+                            "{}; a non-executable layout migration opportunity is available",
+                            blocker.message
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        "a non-executable layout migration opportunity is available".to_owned()
+                    }),
+            ),
+            Ok(plan) => (
+                ExtendTargetAvailability::Blocked,
+                plan.blockers()
+                    .first()
+                    .map(|blocker| blocker.message.clone())
+                    .unwrap_or_else(|| "no verified growth path is currently available".to_owned()),
+            ),
+            Err(error) => (
+                ExtendTargetAvailability::Blocked,
+                format!("planner error: {error}"),
+            ),
+        };
+
+        let kind = match device.kind {
+            NodeKind::Partition => ExtendTargetKind::DirectPartition,
+            NodeKind::Lvm => ExtendTargetKind::LvmLogicalVolume,
+            _ => ExtendTargetKind::LayeredOrOther,
+        };
+
+        targets.push(ExtendTarget {
+            target,
+            device: device_path,
+            mountpoint,
+            filesystem: filesystem.fs_type.clone(),
+            kind,
+            current_block_size_bytes: device.size_bytes,
+            verified_growth_bytes,
+            layout_growth_bytes,
+            availability,
+            reason,
+        });
+    }
+
+    targets.sort_by(|left, right| {
+        left.target
+            .cmp(&right.target)
+            .then_with(|| left.device.cmp(&right.device))
+    });
+    targets
+}
+
+pub fn list_provisioning_opportunities(
+    snapshot: &HostSnapshot,
+) -> Vec<ProvisioningOpportunity> {
+    let mut opportunities = Vec::new();
+
+    if let Some(lvm) = snapshot.lvm.as_ref() {
+        for vg in &lvm.volume_groups {
+            if vg.free_bytes == 0 {
+                continue;
+            }
+            opportunities.push(ProvisioningOpportunity {
+                code: "lvm-vg-free".to_owned(),
+                kind: ProvisioningSpaceKind::LvmFreeExtents,
+                source: format!("VG {}", vg.name),
+                disk: None,
+                volume_group: Some(vg.name.clone()),
+                available_bytes: vg.free_bytes,
+                sector_size_bytes: None,
+                advisory_only: true,
+                future_actions: vec![
+                    "create a new logical volume".to_owned(),
+                    "format it with a supported filesystem".to_owned(),
+                    "mount it and optionally persist the mount".to_owned(),
+                ],
+                blockers: vec![
+                    "M2 provisioning planner/executor is not implemented yet".to_owned(),
+                ],
+            });
+        }
+    }
+
+    let partition_tables_complete = snapshot
+        .collectors
+        .iter()
+        .filter(|status| status.component == "partition_tables")
+        .collect::<Vec<_>>();
+    let partition_tables_complete = partition_tables_complete.len() == 1
+        && partition_tables_complete[0].state == CollectorState::Complete;
+
+    for disk in flatten(&snapshot.storage.block_devices)
+        .into_iter()
+        .filter(|device| matches!(device.kind, NodeKind::Disk | NodeKind::Loop))
+    {
+        let Some(disk_path) = disk.path.as_ref() else {
+            continue;
+        };
+
+        let matching_tables: Vec<_> = snapshot
+            .partition_tables
+            .iter()
+            .filter(|table| table.device == *disk_path)
+            .collect();
+
+        if matching_tables.is_empty() && disk.children.is_empty() && disk.filesystem.is_none() {
+            let mut blockers = vec![
+                "M2 provisioning planner/executor is not implemented yet".to_owned(),
+            ];
+            if !partition_tables_complete {
+                blockers.push(
+                    "authoritative partition-table discovery must complete before creation"
+                        .to_owned(),
+                );
+            }
+            opportunities.push(ProvisioningOpportunity {
+                code: "blank-disk".to_owned(),
+                kind: ProvisioningSpaceKind::BlankDisk,
+                source: disk_path.clone(),
+                disk: Some(disk_path.clone()),
+                volume_group: None,
+                available_bytes: disk.size_bytes,
+                sector_size_bytes: disk.logical_sector_bytes,
+                advisory_only: true,
+                future_actions: vec![
+                    "choose GPT or DOS/MBR according to host and boot constraints".to_owned(),
+                    "create a partition with validated alignment".to_owned(),
+                    "optionally build LVM, then format and mount".to_owned(),
+                ],
+                blockers,
+            });
+            continue;
+        }
+
+        if matching_tables.len() != 1 || !partition_tables_complete {
+            continue;
+        }
+        let table = matching_tables[0];
+        let Some((tail_bytes, sector_size_bytes)) = partition_tail_free_bytes(disk, table) else {
+            continue;
+        };
+        if tail_bytes == 0 {
+            continue;
+        }
+
+        let mut blockers = vec![
+            "M2 provisioning planner/executor is not implemented yet".to_owned(),
+        ];
+        if table.label.as_deref() == Some("dos") {
+            blockers.push(
+                "DOS/MBR primary-slot and extended/logical constraints must be revalidated before partition creation"
+                    .to_owned(),
+            );
+        }
+
+        opportunities.push(ProvisioningOpportunity {
+            code: "disk-tail".to_owned(),
+            kind: ProvisioningSpaceKind::DiskTail,
+            source: format!("{disk_path} tail"),
+            disk: Some(disk_path.clone()),
+            volume_group: None,
+            available_bytes: tail_bytes,
+            sector_size_bytes: Some(sector_size_bytes),
+            advisory_only: true,
+            future_actions: vec![
+                "create a new partition in verified raw tail space".to_owned(),
+                "optionally initialize it as an LVM PV and attach/create a VG".to_owned(),
+                "create a filesystem, mount it and optionally persist the mount".to_owned(),
+            ],
+            blockers,
+        });
+    }
+
+    opportunities.sort_by(|left, right| {
+        left.source
+            .cmp(&right.source)
+            .then_with(|| left.code.cmp(&right.code))
+    });
+    opportunities
+}
+
+fn partition_tail_free_bytes(
+    disk: &BlockDevice,
+    table: &PartitionTable,
+) -> Option<(u64, u64)> {
+    let sector = table.sector_size_bytes?;
+    if sector < 512 || !sector.is_power_of_two() || disk.size_bytes % sector != 0 {
+        return None;
+    }
+
+    let disk_sectors = disk.size_bytes / sector;
+    let limit = match table.label.as_deref()? {
+        "gpt" => table.last_lba?.checked_add(1)?.min(disk_sectors),
+        "dos" => disk_sectors,
+        _ => return None,
+    };
+
+    if table.partitions.is_empty() {
+        return None;
+    }
+
+    let mut highest_end = 0_u64;
+    for record in &table.partitions {
+        let end = record.start_sector.checked_add(record.size_sectors)?;
+        if end > limit {
+            return None;
+        }
+        highest_end = highest_end.max(end);
+    }
+    if highest_end >= limit {
+        return None;
+    }
+
+    Some((limit.checked_sub(highest_end)?.checked_mul(sector)?, sector))
 }
 
 pub fn plan_extend(
