@@ -1584,6 +1584,30 @@ fn plan_preview_summary_lines(plan: &lsm_planner::PlanPreview) -> Vec<Line<'stat
             human_bytes(change.remaining_adjacent_free_bytes)
         )));
     }
+    if let Some(change) = plan.filesystem_size_change() {
+        lines.push(Line::from("Layout          Whole-device filesystem"));
+        lines.push(Line::from(format!("Device          {}", change.device)));
+        lines.push(Line::from(format!(
+            "FS size         {}",
+            human_bytes_precise(change.current_filesystem_size_bytes)
+        )));
+        lines.push(Line::from(format!(
+            "Backing size    {}",
+            human_bytes_precise(change.backing_device_size_bytes)
+        )));
+        lines.push(Line::from(format!(
+            "Growth          {}",
+            human_bytes(change.rounded_growth_bytes)
+        )));
+        lines.push(Line::from(format!(
+            "Expected FS     {}",
+            human_bytes_precise(change.expected_filesystem_size_bytes)
+        )));
+        lines.push(Line::from(format!(
+            "Backing after   {}",
+            human_bytes(change.remaining_backing_free_bytes)
+        )));
+    }
     lines
 }
 
