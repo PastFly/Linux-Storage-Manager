@@ -14,8 +14,9 @@ use lsm_core::{
 };
 use lsm_discovery::{analyze_extendability, discover_capabilities, discover_snapshot};
 use lsm_planner::{
-    analyze_layout_opportunity, plan_extend, ExtendRequest, Growth, LayoutAlternative, Operation,
-    PlanStatus, PlanStep, PreflightCheck, PreflightState, Reversibility,
+    analyze_layout_opportunity, list_provisioning_opportunities, plan_extend, ExtendRequest, Growth,
+    LayoutAlternative, Operation, PlanStatus, PlanStep, PreflightCheck, PreflightState,
+    ProvisioningOpportunity, ProvisioningSpaceKind, Reversibility,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -46,16 +47,18 @@ enum Section {
     Mounts,
     Diagnostics,
     Plans,
+    Create,
 }
 
 impl Section {
-    const ALL: [Section; 6] = [
+    const ALL: [Section; 7] = [
         Section::Disks,
         Section::Volumes,
         Section::Swap,
         Section::Mounts,
         Section::Diagnostics,
         Section::Plans,
+        Section::Create,
     ];
 
     fn label(self) -> &'static str {
@@ -65,7 +68,8 @@ impl Section {
             Section::Swap => "Swap",
             Section::Mounts => "Mounts",
             Section::Diagnostics => "Diagnostics",
-            Section::Plans => "Plans",
+            Section::Plans => "Extend",
+            Section::Create => "Create",
         }
     }
 }
@@ -135,6 +139,7 @@ impl AppState {
         let len = match self.section() {
             Section::Volumes => visible_device_rows(&snapshot.storage, true).len(),
             Section::Plans => plan_candidate_rows(snapshot).len(),
+            Section::Create => list_provisioning_opportunities(snapshot).len(),
             _ => visible_device_rows(&snapshot.storage, false).len(),
         };
         self.selected_device = self.selected_device.min(len.saturating_sub(1));
@@ -157,6 +162,17 @@ impl AppState {
             self.selected_device = previous;
             self.plan_growth_index = 0;
         }
+    }
+
+    fn select_next_create_candidate(&mut self, snapshot: &HostSnapshot) {
+        let len = list_provisioning_opportunities(snapshot).len();
+        if len > 0 {
+            self.selected_device = (self.selected_device + 1).min(len - 1);
+        }
+    }
+
+    fn select_previous_create_candidate(&mut self) {
+        self.selected_device = self.selected_device.saturating_sub(1);
     }
 
     fn plan_growth_for_snapshot(&self, snapshot: &HostSnapshot) -> Growth {
@@ -293,6 +309,7 @@ fn handle_key_event(state: &mut AppState, snapshot: &HostSnapshot, key: KeyEvent
             match state.section() {
                 Section::Disks | Section::Volumes => state.select_previous_device(),
                 Section::Plans => state.select_previous_plan_candidate(),
+                Section::Create => state.select_previous_create_candidate(),
                 _ => state.scroll_up(),
             }
             LoopControl::Continue
@@ -304,6 +321,7 @@ fn handle_key_event(state: &mut AppState, snapshot: &HostSnapshot, key: KeyEvent
                     state.select_next_device(snapshot, volumes_only)
                 }
                 Section::Plans => state.select_next_plan_candidate(snapshot),
+                Section::Create => state.select_next_create_candidate(snapshot),
                 _ => state.scroll_down(),
             }
             LoopControl::Continue
@@ -342,6 +360,11 @@ fn handle_key_event(state: &mut AppState, snapshot: &HostSnapshot, key: KeyEvent
         }
         KeyCode::Char('6') => {
             state.set_section(5);
+            state.clamp_device_selection(snapshot);
+            LoopControl::Continue
+        }
+        KeyCode::Char('7') => {
+            state.set_section(6);
             state.clamp_device_selection(snapshot);
             LoopControl::Continue
         }
@@ -443,6 +466,7 @@ fn render_section(
         Section::Mounts => render_mounts(frame, area, snapshot, state),
         Section::Diagnostics => render_diagnostics(frame, area, snapshot, capabilities, state),
         Section::Plans => render_plan_hint(frame, area, snapshot, capabilities, state),
+        Section::Create => render_create(frame, area, snapshot, state),
     }
 }
 
@@ -737,9 +761,9 @@ fn render_plan_hint(
     let Some(row) = rows.get(state.selected_device) else {
         frame.render_widget(
             Paragraph::new(vec![
-                Line::from("No supported filesystem targets were discovered."),
+                Line::from("No filesystem targets were discovered."),
                 Line::from(""),
-                Line::from("Plans currently analyzes ext4/XFS filesystems only."),
+                Line::from("Extend shows discovered leaf filesystems; unsupported paths stay visible as blocked."),
                 Line::from("No changes will be made."),
             ])
             .block(Block::default().borders(Borders::ALL).title(" Plans ")),
@@ -791,6 +815,138 @@ fn render_plan_hint(
             &analysis,
         ),
     }
+}
+
+fn render_create(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    snapshot: &HostSnapshot,
+    state: AppState,
+) {
+    let opportunities = list_provisioning_opportunities(snapshot);
+    if opportunities.is_empty() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from("No verified free-space sources were discovered."),
+                Line::from(""),
+                Line::from("This section will host creation of partitions, LVM volumes, filesystems and swap."),
+                Line::from("Provisioning remains advisory/read-only in M1A."),
+            ])
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(" Create ")),
+            area,
+        );
+        return;
+    }
+
+    let panes = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(area);
+
+    let rows = opportunities.iter().enumerate().map(|(index, opportunity)| {
+        let row = Row::new([
+            provisioning_kind_label(opportunity.kind).to_owned(),
+            opportunity.source.clone(),
+            human_bytes(opportunity.available_bytes),
+            opportunity
+                .future_actions
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "-".to_owned()),
+        ]);
+        if index == state.selected_device {
+            row.style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
+        } else {
+            row
+        }
+    });
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(13),
+            Constraint::Length(28),
+            Constraint::Length(14),
+            Constraint::Min(30),
+        ],
+    )
+    .header(
+        Row::new(["Space", "Source", "Available", "Future workflow"])
+            .style(Style::default().add_modifier(Modifier::BOLD)),
+    )
+    .column_spacing(1)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Create — discovered free space "),
+    );
+    frame.render_widget(table, panes[0]);
+
+    let selected = state.selected_device.min(opportunities.len() - 1);
+    frame.render_widget(
+        Paragraph::new(provisioning_detail_lines(&opportunities[selected]))
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(" Planned use ")),
+        panes[1],
+    );
+}
+
+fn provisioning_kind_label(kind: ProvisioningSpaceKind) -> &'static str {
+    match kind {
+        ProvisioningSpaceKind::BlankDisk => "Blank disk",
+        ProvisioningSpaceKind::DiskTail => "Disk tail",
+        ProvisioningSpaceKind::LvmFreeExtents => "VG free",
+    }
+}
+
+fn provisioning_detail_lines(opportunity: &ProvisioningOpportunity) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(format!("Source          {}", opportunity.source)),
+        Line::from(format!(
+            "Type            {}",
+            provisioning_kind_label(opportunity.kind)
+        )),
+        Line::from(format!(
+            "Available       {}",
+            human_bytes_precise(opportunity.available_bytes)
+        )),
+        Line::from(format!(
+            "Disk            {}",
+            opportunity.disk.as_deref().unwrap_or("-")
+        )),
+        Line::from(format!(
+            "Volume group    {}",
+            opportunity.volume_group.as_deref().unwrap_or("-")
+        )),
+        Line::from(format!(
+            "Sector size     {}",
+            opportunity
+                .sector_size_bytes
+                .map(|bytes| format!("{bytes} B"))
+                .unwrap_or_else(|| "-".to_owned())
+        )),
+        Line::from(""),
+        Line::from("Future automatic workflow"),
+    ];
+
+    for (index, action) in opportunity.future_actions.iter().enumerate() {
+        lines.push(Line::from(format!("{}. {}", index + 1, action)));
+    }
+
+    if !opportunity.blockers.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from("Current blockers"));
+        for blocker in &opportunity.blockers {
+            lines.push(Line::from(format!("- {blocker}")));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(
+        "Preview only: no partition, LVM, filesystem, mount or swap change is executed.",
+    ));
+    lines
 }
 
 fn render_plan_compact(
@@ -1211,7 +1367,7 @@ fn toolbar_text(section: Section) -> String {
         "↑↓ Target   PgUp/PgDn Size   Tab Section   r Refresh   R Rescan   q Quit   Read-only"
             .to_owned()
     } else {
-        "↑↓ Navigate   Tab Section   1-6 Jump   r Refresh   R Rescan   q Quit   Read-only"
+        "↑↓ Navigate   Tab Section   1-7 Jump   r Refresh   R Rescan   q Quit   Read-only"
             .to_owned()
     }
 }
@@ -1230,7 +1386,7 @@ fn toolbar_line(section: Section, refresh_status: Option<&str>) -> Line<'static>
         vec![
             ("↑↓", "Navigate"),
             ("Tab", "Section"),
-            ("1-6", "Jump"),
+            ("1-7", "Jump"),
             ("r", "Refresh"),
             ("R", "Rescan"),
             ("q", "Quit"),
@@ -1482,13 +1638,14 @@ fn plan_candidate_rows(snapshot: &HostSnapshot) -> Vec<DeviceRow<'_>> {
             row.device
                 .filesystem
                 .as_ref()
-                .map(|fs| matches!(fs.fs_type.as_str(), "ext4" | "xfs"))
+                .map(|fs| !matches!(fs.fs_type.as_str(), "swap" | "LVM2_member"))
                 .unwrap_or(false)
-                && row
+                && !row
                     .device
                     .mountpoints
                     .iter()
-                    .any(|mount| mount.as_str() != "[SWAP]")
+                    .any(|mount| mount.as_str() == "[SWAP]")
+                && row.device.children.is_empty()
                 && !is_extended_partition(snapshot, row.device)
         })
         .collect()
@@ -1963,6 +2120,7 @@ mod tests {
                 Section::Mounts,
                 Section::Diagnostics,
                 Section::Plans,
+                Section::Create,
             ]
         );
     }
@@ -2098,7 +2256,7 @@ mod tests {
     }
 
     #[test]
-    fn plans_only_include_growable_filesystem_targets() {
+    fn extend_targets_exclude_swap_and_container_devices() {
         let mut snap = snapshot();
         let mut extended = device("sda2", NodeKind::Partition, vec![]);
         extended.size_bytes = 1024;
