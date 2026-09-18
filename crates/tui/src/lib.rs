@@ -8,8 +8,10 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use lsm_core::{
-    BlockDevice, DiagnosticSeverity, HostCapabilities, HostSnapshot, NodeKind, StorageGraph,
+    BlockDevice, DiagnosticSeverity, ExtendAnalysis, ExtendabilityStatus, HostCapabilities,
+    HostSnapshot, NodeKind, StorageGraph,
 };
+use lsm_discovery::analyze_extendability;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
@@ -109,9 +111,19 @@ impl AppState {
     }
 
     fn clamp_device_selection(&mut self, snapshot: &HostSnapshot) {
-        let volumes_only = self.section() == Section::Volumes;
-        let len = visible_device_rows(&snapshot.storage, volumes_only).len();
+        let len = match self.section() {
+            Section::Volumes => visible_device_rows(&snapshot.storage, true).len(),
+            Section::Plans => plan_candidate_rows(snapshot).len(),
+            _ => visible_device_rows(&snapshot.storage, false).len(),
+        };
         self.selected_device = self.selected_device.min(len.saturating_sub(1));
+    }
+
+    fn select_next_plan_candidate(&mut self, snapshot: &HostSnapshot) {
+        let len = plan_candidate_rows(snapshot).len();
+        if len > 0 {
+            self.selected_device = (self.selected_device + 1).min(len - 1);
+        }
     }
 
     fn select_previous_device(&mut self) {
@@ -162,10 +174,11 @@ fn event_loop(
                         _ => state.scroll_up(),
                     },
                     KeyCode::Down | KeyCode::Char('j') => match state.section() {
-                        Section::Disks | Section::Volumes | Section::Plans => {
+                        Section::Disks | Section::Volumes => {
                             let volumes_only = state.section() == Section::Volumes;
                             state.select_next_device(snapshot, volumes_only)
                         }
+                        Section::Plans => state.select_next_plan_candidate(snapshot),
                         _ => state.scroll_down(),
                     },
                     KeyCode::Left | KeyCode::BackTab => {
@@ -455,49 +468,64 @@ fn render_plan_hint(
     snapshot: &HostSnapshot,
     state: AppState,
 ) {
-    let rows = device_rows(&snapshot.storage);
+    let rows = plan_candidate_rows(snapshot);
     let lines = if let Some(row) = rows.get(state.selected_device) {
         let target = plan_target(row.device);
-        let filesystem = row
-            .device
-            .filesystem
-            .as_ref()
-            .map(|fs| fs.fs_type.as_str())
-            .unwrap_or("-");
-        let mount = row
-            .device
-            .mountpoints
-            .iter()
-            .find(|mount| mount.as_str() != "[SWAP]")
-            .map(String::as_str)
-            .unwrap_or("-");
-        vec![
-            Line::from("Growth preview"),
-            Line::from(""),
-            Line::from(format!("Target        {target}")),
-            Line::from(format!(
-                "Type          {}",
-                device_role(snapshot, row.device)
-            )),
-            Line::from(format!("Filesystem    {filesystem}")),
-            Line::from(format!("Mounted at    {mount}")),
-            Line::from(format!(
-                "Current size  {}",
-                device_size_for_display(snapshot, row.device)
-            )),
-            Line::from(""),
-            Line::from("Status        Read-only preview only"),
-            Line::from("Apply         Not available in this build"),
-        ]
+        match analyze_extendability(snapshot, &target) {
+            Ok(analysis) => {
+                let mut lines = vec![
+                    Line::from("Growth analysis"),
+                    Line::from(""),
+                    Line::from(format!("Target          {target}")),
+                    Line::from(format!(
+                        "Device          {}",
+                        analysis.device.as_deref().unwrap_or("-")
+                    )),
+                    Line::from(format!(
+                        "Filesystem      {}",
+                        analysis.filesystem.as_deref().unwrap_or("-")
+                    )),
+                    Line::from(format!(
+                        "Current size    {}",
+                        analysis
+                            .current_size_bytes
+                            .map(human_bytes)
+                            .unwrap_or_else(|| "-".to_owned())
+                    )),
+                    Line::from(""),
+                ];
+                lines.extend(analysis_summary_lines(&analysis));
+                lines.push(Line::from(""));
+                lines.push(Line::from("No changes will be made."));
+                lines
+            }
+            Err(error) => vec![
+                Line::from("Growth analysis"),
+                Line::from(""),
+                Line::from(format!("Target          {target}")),
+                Line::from("Status          Analysis unavailable"),
+                Line::from(format!("Reason          {error}")),
+                Line::from(""),
+                Line::from("No changes will be made."),
+            ],
+        }
     } else {
-        vec![Line::from("No device selected.")]
+        vec![
+            Line::from("No supported filesystem targets were discovered."),
+            Line::from(""),
+            Line::from("Plans currently analyzes ext4/XFS filesystems only."),
+            Line::from("No changes will be made."),
+        ]
     };
 
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Plans ")),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(" Plans ")),
         area,
     );
 }
+
 
 fn device_detail_lines(snapshot: &HostSnapshot, device: &BlockDevice) -> Vec<Line<'static>> {
     let path = device.path.as_deref().unwrap_or(&device.name);
@@ -667,6 +695,78 @@ fn storage_mounts(snapshot: &HostSnapshot) -> Vec<&lsm_core::MountEntry> {
                 .unwrap_or(true)
         })
         .collect()
+}
+
+fn plan_candidate_rows(snapshot: &HostSnapshot) -> Vec<DeviceRow<'_>> {
+    device_rows(&snapshot.storage)
+        .into_iter()
+        .filter(|row| {
+            row.device
+                .filesystem
+                .as_ref()
+                .map(|fs| matches!(fs.fs_type.as_str(), "ext4" | "xfs"))
+                .unwrap_or(false)
+                && row
+                    .device
+                    .mountpoints
+                    .iter()
+                    .any(|mount| mount.as_str() != "[SWAP]")
+                && !is_extended_partition(snapshot, row.device)
+        })
+        .collect()
+}
+
+fn analysis_summary_lines(analysis: &ExtendAnalysis) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+
+    match analysis.status {
+        ExtendabilityStatus::Ready => {
+            lines.push(Line::from("Can grow        Yes"));
+            if let Some(bytes) = analysis.immediate_growth_bytes {
+                lines.push(Line::from(format!(
+                    "Available       {}",
+                    human_bytes(bytes)
+                )));
+            }
+        }
+        ExtendabilityStatus::NeedsUnderlyingResize => {
+            lines.push(Line::from("Can grow        Yes, lower layer resize required"));
+            if let Some(bytes) = analysis.potential_underlying_growth_bytes {
+                lines.push(Line::from(format!(
+                    "Adjacent free   {}",
+                    human_bytes(bytes)
+                )));
+            }
+        }
+        ExtendabilityStatus::NeedsUnderlyingCapacity => {
+            lines.push(Line::from("Can grow        No in-place capacity"));
+            lines.push(Line::from("Adjacent free   0 B"));
+        }
+        ExtendabilityStatus::NeedsGeometry => {
+            lines.push(Line::from("Can grow        Unknown"));
+            lines.push(Line::from("Blocker         Incomplete partition geometry"));
+        }
+        ExtendabilityStatus::RequiresMount => {
+            lines.push(Line::from("Can grow        Blocked"));
+            lines.push(Line::from("Blocker         Filesystem must be mounted"));
+        }
+        ExtendabilityStatus::UnsupportedFilesystem => {
+            lines.push(Line::from("Can grow        Unsupported"));
+        }
+        ExtendabilityStatus::Unknown => {
+            lines.push(Line::from("Can grow        Unknown"));
+        }
+    }
+
+    if let Some(reason) = analysis.reasons.first() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!("Why             {reason}")));
+    }
+    if let Some(step) = analysis.steps.first() {
+        lines.push(Line::from(format!("Next step       {step}")));
+    }
+
+    lines
 }
 
 fn plan_target(device: &BlockDevice) -> String {
@@ -894,7 +994,6 @@ mod tests {
         assert!(text.contains("1 warning"));
         assert!(!text.contains("tools"));
     }
-
 
     #[test]
     fn plans_only_include_growable_filesystem_targets() {
