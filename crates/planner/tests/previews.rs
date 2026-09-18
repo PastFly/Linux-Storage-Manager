@@ -444,4 +444,44 @@ fn max_target_catalog_includes_verified_lvm_underlying_route_capacity() {
     assert!(targets[0].layout_growth_bytes.unwrap() > 8 * GIB);
 }
 
+
+#[test]
+fn chained_lvm_route_handles_pv_directly_on_an_enlarged_disk() {
+    let (mut snapshot, caps) = input();
+    let lv_device = snapshot.storage.block_devices[0].children[0]
+        .children
+        .remove(0);
+    let disk = &mut snapshot.storage.block_devices[0];
+    disk.children = vec![lv_device];
+    disk.filesystem = Some(lsm_core::Filesystem {
+        fs_type: "LVM2_member".into(),
+        version: None,
+    });
+    disk.uuid = Some("pv-1".into());
+
+    let lvm = snapshot.lvm.as_mut().unwrap();
+    lvm.physical_volumes[0].name = "/dev/vda".into();
+    lvm.physical_volumes[0].size_bytes = 18 * GIB;
+    lvm.physical_volumes[0].free_bytes = 10 * GIB;
+    lvm.volume_groups[0].size_bytes = 18 * GIB;
+    lvm.volume_groups[0].free_bytes = 10 * GIB;
+    lvm.volume_groups[0].free_extent_count = Some((10 * GIB) / EXTENT);
+
+    let request = request("/", Growth::ByBytes(11 * GIB));
+    let route = analyze_lvm_underlying_growth(&snapshot, &request)
+        .expect("expected direct-disk PV growth opportunity");
+
+    assert_eq!(route.disk, "/dev/vda");
+    assert_eq!(route.partition, None);
+    assert_eq!(route.physical_volume, "/dev/vda");
+    assert_eq!(route.pv_device_slack_bytes, 2 * GIB);
+    assert_eq!(route.required_partition_growth_bytes, 0);
+    assert!(route.max_growth_bytes >= 11 * GIB);
+    assert_eq!(route.code, "grow-pv-lv-filesystem");
+
+    let plan = plan_extend(&snapshot, &caps, request).unwrap();
+    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert_eq!(plan.growth_route_alternatives().len(), 1);
+}
+
 }
