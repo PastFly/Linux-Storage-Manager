@@ -845,23 +845,26 @@ fn render_create(
         .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
         .split(area);
 
-    let rows = opportunities.iter().enumerate().map(|(index, opportunity)| {
-        let row = Row::new([
-            provisioning_kind_label(opportunity.kind).to_owned(),
-            opportunity.source.clone(),
-            human_bytes(opportunity.available_bytes),
-            opportunity
-                .future_actions
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "-".to_owned()),
-        ]);
-        if index == state.selected_device {
-            row.style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
-        } else {
-            row
-        }
-    });
+    let rows = opportunities
+        .iter()
+        .enumerate()
+        .map(|(index, opportunity)| {
+            let row = Row::new([
+                provisioning_kind_label(opportunity.kind).to_owned(),
+                opportunity.source.clone(),
+                human_bytes(opportunity.available_bytes),
+                opportunity
+                    .future_actions
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "-".to_owned()),
+            ]);
+            if index == state.selected_device {
+                row.style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
+            } else {
+                row
+            }
+        });
 
     let table = Table::new(
         rows,
@@ -888,7 +891,11 @@ fn render_create(
     frame.render_widget(
         Paragraph::new(provisioning_detail_lines(&opportunities[selected]))
             .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title(" Planned use ")),
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Planned use "),
+            ),
         panes[1],
     );
 }
@@ -1701,10 +1708,8 @@ fn plan_growth_options(snapshot: &HostSnapshot, selected_device: usize) -> Vec<G
                 .or(analysis.potential_underlying_growth_bytes)
         })
         .filter(|bytes| *bytes > 0);
-    let layout_capacity =
-        analyze_layout_opportunity(snapshot, &target).map(|opportunity| {
-            opportunity.max_target_growth_bytes
-        });
+    let layout_capacity = analyze_layout_opportunity(snapshot, &target)
+        .map(|opportunity| opportunity.max_target_growth_bytes);
     let lvm_route_capacity = analyze_lvm_underlying_growth(
         snapshot,
         &ExtendRequest {
