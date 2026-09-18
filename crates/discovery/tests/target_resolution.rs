@@ -25,6 +25,7 @@ fn fixture() -> HostSnapshot {
             volume_groups: parse_vgs_json(r#"{"report":[{"vg":[{"vg_name":"vg0","vg_uuid":"VG-UUID","vg_size":"193290305536","vg_free":"16777216","pv_count":"1","lv_count":"1"}]}]}"#).unwrap(),
             logical_volumes: parse_lvs_json(r#"{"report":[{"lv":[{"lv_name":"root","lv_path":"/dev/vg0/root","lv_uuid":"LV-UUID","vg_name":"vg0","lv_size":"193273528320","lv_attr":"-wi-ao----"}]}]}"#).unwrap(),
         }),
+        filesystem_preflight: Vec::new(),
         diagnostics: Vec::new(),
         collectors: ["lsblk", "mounts", "lvm"]
             .into_iter()
