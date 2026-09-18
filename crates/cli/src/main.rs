@@ -1,13 +1,13 @@
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use lsm_core::BlockDevice;
 use lsm_discovery::{
     analyze_extendability, discover_capabilities, discover_fstab, discover_lvm, discover_mounts,
     discover_partition_tables, discover_snapshot, discover_storage, discover_swaps,
 };
 use lsm_planner::{
-    list_extend_targets, list_provisioning_opportunities, parse_growth_size, plan_extend,
-    ExtendRequest, Growth, PlanStatus,
+    list_extend_targets, list_provisioning_opportunities, parse_growth_size, plan_create,
+    plan_extend, CreatePurpose, CreateRequest, ExtendRequest, Growth, PlanStatus,
 };
 use std::process::ExitCode;
 
@@ -86,6 +86,44 @@ enum PlanCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Preview creating a filesystem volume or swap from a discovered free-space source.
+    Create {
+        /// Stable source ID reported by `plan create-spaces`.
+        source_id: String,
+        /// Requested capacity, e.g. 8GiB; rounded to sectors or LVM extents.
+        #[arg(long, conflicts_with = "max", required_unless_present = "max")]
+        by: Option<String>,
+        /// Use the maximum currently verified capacity of the selected source.
+        #[arg(long)]
+        max: bool,
+        /// Intended use of the new block volume.
+        #[arg(long, value_enum)]
+        purpose: CreatePurposeArg,
+        /// Filesystem type for filesystem purpose: ext4 or xfs.
+        #[arg(long)]
+        fs: Option<String>,
+        /// Optional future mountpoint for filesystem purpose.
+        #[arg(long)]
+        mount: Option<String>,
+        /// Emit structured JSON instead of the human-readable preview.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CreatePurposeArg {
+    Filesystem,
+    Swap,
+}
+
+impl From<CreatePurposeArg> for CreatePurpose {
+    fn from(value: CreatePurposeArg) -> Self {
+        match value {
+            CreatePurposeArg::Filesystem => CreatePurpose::Filesystem,
+            CreatePurposeArg::Swap => CreatePurpose::Swap,
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -209,7 +247,8 @@ fn run() -> Result<ExitCode> {
             } else {
                 for space in spaces {
                     println!(
-                        "{:<16} {:<28} available={} advisory_only={} blockers={}",
+                        "{:<14} {:<16} {:<28} available={} advisory_only={} blockers={}",
+                        &space.id[..space.id.len().min(12)],
                         format!("{:?}", space.kind),
                         space.source,
                         space.available_bytes,
@@ -222,6 +261,52 @@ fn run() -> Result<ExitCode> {
                     );
                 }
             }
+        }
+        Some(Command::Plan {
+            command:
+                PlanCommand::Create {
+                    source_id,
+                    by,
+                    max,
+                    purpose,
+                    fs,
+                    mount,
+                    json,
+                },
+        }) => {
+            let size = match (by, max) {
+                (Some(value), false) => Growth::ByBytes(parse_growth_size(&value)?),
+                (None, true) => Growth::MaxFree,
+                _ => anyhow::bail!("select exactly one of --by or --max"),
+            };
+            let purpose = CreatePurpose::from(purpose);
+            if purpose == CreatePurpose::Filesystem && fs.is_none() {
+                anyhow::bail!("--fs ext4|xfs is required for --purpose filesystem");
+            }
+            if purpose == CreatePurpose::Swap && (fs.is_some() || mount.is_some()) {
+                anyhow::bail!("--purpose swap does not accept --fs or --mount");
+            }
+            let snapshot = discover_snapshot()?;
+            let plan = plan_create(
+                &snapshot,
+                CreateRequest {
+                    source_id,
+                    size,
+                    purpose,
+                    filesystem: fs,
+                    mountpoint: mount,
+                },
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&plan)?);
+            } else {
+                print!("{}", plan.render_text());
+            }
+            return Ok(if plan.status() == PlanStatus::Blocked {
+                ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
+            });
         }
         Some(Command::Tree) => {
             let graph = discover_storage()?;
@@ -303,5 +388,42 @@ mod tests {
         assert!(Cli::try_parse_from(["storagemgr", "plan", "targets", "--json"]).is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "create-spaces"]).is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "create-spaces", "--json"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "create",
+            "space-test",
+            "--by",
+            "8GiB",
+            "--purpose",
+            "filesystem",
+            "--fs",
+            "ext4",
+            "--mount",
+            "/data"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "create",
+            "space-test",
+            "--max",
+            "--purpose",
+            "swap",
+            "--json"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "create",
+            "space-test",
+            "--purpose",
+            "filesystem",
+            "--fs",
+            "ext4"
+        ])
+        .is_err());
     }
 }
