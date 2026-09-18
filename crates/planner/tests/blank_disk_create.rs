@@ -66,16 +66,16 @@ fn blank_disk_source_adapter_freezes_policy_specific_geometry() {
         .find(|source| source.kind == ProvisioningSpaceKind::BlankDisk)
         .expect("blank disk must be exposed as a Create source");
 
-    let adapter = resolve_create_source_adapter(
-        &snapshot,
-        &source,
-        Some(CreatePartitionTablePolicy::Gpt),
-    )
-    .unwrap();
+    let adapter =
+        resolve_create_source_adapter(&snapshot, &source, Some(CreatePartitionTablePolicy::Gpt))
+            .unwrap();
 
     assert_eq!(adapter.kind, ProvisioningSpaceKind::BlankDisk);
     assert_eq!(adapter.disk.as_deref(), Some("/dev/vdb"));
-    assert_eq!(adapter.partition_table, Some(CreatePartitionTablePolicy::Gpt));
+    assert_eq!(
+        adapter.partition_table,
+        Some(CreatePartitionTablePolicy::Gpt)
+    );
     assert_eq!(adapter.allocation_unit_bytes, 512);
     assert_eq!(adapter.start_sector, Some(2048));
     assert_eq!(
