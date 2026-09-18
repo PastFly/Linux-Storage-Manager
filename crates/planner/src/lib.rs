@@ -208,6 +208,7 @@ pub enum ExtendTargetKind {
 pub enum ExtendPlannerProfile {
     DirectPartition,
     Lvm,
+    WholeBlockFilesystem,
     LegacyFailClosed,
 }
 
@@ -1290,6 +1291,9 @@ pub fn select_extend_planner_profile(
     match last_block_layer {
         Some(RouteLayerKind::Partition) => ExtendPlannerProfile::DirectPartition,
         Some(RouteLayerKind::LvmLogicalVolume) => ExtendPlannerProfile::Lvm,
+        Some(RouteLayerKind::Disk | RouteLayerKind::LoopDevice) => {
+            ExtendPlannerProfile::WholeBlockFilesystem
+        }
         _ => ExtendPlannerProfile::LegacyFailClosed,
     }
 }
@@ -1402,6 +1406,12 @@ pub fn plan_extend(
         ExtendPlannerProfile::Lvm => {
             let lvm = build_candidate(snapshot, capabilities, &plan.request);
             apply_lvm_outcome(&mut plan, snapshot, lvm);
+        }
+        ExtendPlannerProfile::WholeBlockFilesystem => {
+            plan.blockers.push(blocked(
+                "whole-device-filesystem-capacity-unmodeled",
+                "filesystem is directly on a disk/loop device; exact filesystem allocation/size evidence is required before a safe growth amount can be frozen",
+            ));
         }
         ExtendPlannerProfile::LegacyFailClosed => {
             if let Some(blocker) = semantic_layer_blocker(snapshot, &plan.request.target) {
