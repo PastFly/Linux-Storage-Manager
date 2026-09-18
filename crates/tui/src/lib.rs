@@ -1712,6 +1712,50 @@ mod tests {
         assert!(text.contains("filesystem health must be checked"));
     }
 
+
+    #[test]
+    fn device_table_cells_include_hierarchy_filesystem_and_mount() {
+        let snap = snapshot();
+        let rows = device_rows(&snap.storage);
+        let cells = device_table_cells(&snap, rows[1]);
+
+        assert_eq!(cells[0], "  /dev/sda1");
+        assert_eq!(cells[1], "1.0 KiB");
+        assert_eq!(cells[2], "ext4");
+        assert_eq!(cells[3], "/");
+    }
+
+    #[test]
+    fn mount_table_cells_keep_target_source_and_filesystem_separate() {
+        let mount = lsm_core::MountEntry {
+            source: Some("//server/share".into()),
+            target: "/mnt/share".into(),
+            fs_type: Some("cifs".into()),
+            options: vec!["rw".into()],
+        };
+        assert_eq!(
+            mount_table_cells(&mount),
+            [
+                "/mnt/share".to_owned(),
+                "//server/share".to_owned(),
+                "cifs".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn toolbar_is_contextual_for_plans_and_regular_sections() {
+        let plans = toolbar_text(Section::Plans);
+        assert!(plans.contains("PgUp/PgDn"));
+        assert!(plans.contains("Size"));
+        assert!(plans.contains("Target"));
+
+        let disks = toolbar_text(Section::Disks);
+        assert!(disks.contains("1-6"));
+        assert!(disks.contains("Section"));
+        assert!(!disks.contains("PgUp/PgDn"));
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
