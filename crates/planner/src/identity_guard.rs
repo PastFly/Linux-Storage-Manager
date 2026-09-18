@@ -185,7 +185,9 @@ pub fn capture_target_identity(
                 })
                 .collect::<Vec<_>>();
             let observed_filesystem_size_bytes = if matching_evidence.len() == 1 {
-                matching_evidence.first().and_then(|evidence| evidence.size_bytes)
+                matching_evidence
+                    .first()
+                    .and_then(|evidence| evidence.size_bytes)
             } else {
                 None
             };
