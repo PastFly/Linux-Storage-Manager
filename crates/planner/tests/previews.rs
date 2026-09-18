@@ -349,23 +349,25 @@ fn lvm_preview_exposes_profile_preflight_and_future_gates() {
 #[test]
 fn ext4_filesystem_evidence_upgrades_observable_preflight_checks() {
     let (mut snapshot, caps) = input();
-    snapshot.filesystem_preflight.push(FilesystemPreflightEvidence {
-        device: "/dev/mapper/vg0-root".into(),
-        mountpoint: Some("/".into()),
-        fs_type: "ext4".into(),
-        fs_version: Some("1.0".into()),
-        state: FilesystemProbeState::Verified,
-        filesystem_state: Some("clean".into()),
-        revision: Some("1 (dynamic)".into()),
-        features: vec![
-            "has_journal".into(),
-            "extent".into(),
-            "64bit".into(),
-            "metadata_csum".into(),
-        ],
-        grow_check_passed: None,
-        detail: None,
-    });
+    snapshot
+        .filesystem_preflight
+        .push(FilesystemPreflightEvidence {
+            device: "/dev/mapper/vg0-root".into(),
+            mountpoint: Some("/".into()),
+            fs_type: "ext4".into(),
+            fs_version: Some("1.0".into()),
+            state: FilesystemProbeState::Verified,
+            filesystem_state: Some("clean".into()),
+            revision: Some("1 (dynamic)".into()),
+            features: vec![
+                "has_journal".into(),
+                "extent".into(),
+                "64bit".into(),
+                "metadata_csum".into(),
+            ],
+            grow_check_passed: None,
+            detail: None,
+        });
 
     let plan = plan_extend(&snapshot, &caps, request("/", Growth::MaxFree)).unwrap();
     let checks = plan.preflight_checks();
@@ -397,18 +399,20 @@ fn xfs_read_only_grow_probe_is_exposed_as_verified_preflight() {
         .unwrap()
         .fs_type = "xfs".into();
     snapshot.mounts[0].fs_type = Some("xfs".into());
-    snapshot.filesystem_preflight.push(FilesystemPreflightEvidence {
-        device: "/dev/mapper/vg0-root".into(),
-        mountpoint: Some("/".into()),
-        fs_type: "xfs".into(),
-        fs_version: Some("5".into()),
-        state: FilesystemProbeState::Verified,
-        filesystem_state: None,
-        revision: None,
-        features: vec!["crc=1".into(), "reflink=1".into(), "bigtime=1".into()],
-        grow_check_passed: Some(true),
-        detail: None,
-    });
+    snapshot
+        .filesystem_preflight
+        .push(FilesystemPreflightEvidence {
+            device: "/dev/mapper/vg0-root".into(),
+            mountpoint: Some("/".into()),
+            fs_type: "xfs".into(),
+            fs_version: Some("5".into()),
+            state: FilesystemProbeState::Verified,
+            filesystem_state: None,
+            revision: None,
+            features: vec!["crc=1".into(), "reflink=1".into(), "bigtime=1".into()],
+            grow_check_passed: Some(true),
+            detail: None,
+        });
 
     let plan = plan_extend(&snapshot, &caps, request("/", Growth::MaxFree)).unwrap();
     let checks = plan.preflight_checks();
