@@ -222,6 +222,19 @@ pub struct ProvisioningOpportunity {
     pub blockers: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PartitionFreeRange {
+    start_sector: u64,
+    sector_count: u64,
+    is_tail: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PartitionFreeSpace {
+    ranges: Vec<PartitionFreeRange>,
+    sector_size_bytes: u64,
+}
+
 // Private fields, no setters and deliberately no Deserialize implementation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlanPreview {
@@ -619,19 +632,23 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
             continue;
         }
         let table = matching_tables[0];
-        let Some((free_ranges, sector_size_bytes)) = partition_free_ranges(disk, table) else {
+        let Some(free_space) = partition_free_ranges(disk, table) else {
             continue;
         };
 
-        for (start_sector, sector_count, is_tail) in free_ranges {
-            if sector_count == 0 {
+        for range in free_space.ranges {
+            if range.sector_count == 0 {
                 continue;
             }
-            let available_bytes = sector_count.checked_mul(sector_size_bytes).unwrap_or(0);
-            if available_bytes == 0 {
+            let Some(available_bytes) = range
+                .sector_count
+                .checked_mul(free_space.sector_size_bytes)
+            else {
                 continue;
-            }
-            let end_sector = start_sector.saturating_add(sector_count);
+            };
+            let Some(end_sector) = range.start_sector.checked_add(range.sector_count) else {
+                continue;
+            };
             let mut blockers =
                 vec!["M2 provisioning planner/executor is not implemented yet".to_owned()];
             blockers.push(
@@ -646,30 +663,31 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
             }
 
             opportunities.push(ProvisioningOpportunity {
-                code: if is_tail {
+                code: if range.is_tail {
                     "disk-tail".to_owned()
                 } else {
                     "disk-gap".to_owned()
                 },
-                kind: if is_tail {
+                kind: if range.is_tail {
                     ProvisioningSpaceKind::DiskTail
                 } else {
                     ProvisioningSpaceKind::DiskGap
                 },
-                source: if is_tail {
+                source: if range.is_tail {
                     format!("{disk_path} tail")
                 } else {
                     format!(
-                        "{disk_path} free sectors {start_sector}..{}",
+                        "{disk_path} free sectors {}..{}",
+                        range.start_sector,
                         end_sector.saturating_sub(1)
                     )
                 },
                 disk: Some(disk_path.clone()),
                 volume_group: None,
                 available_bytes,
-                sector_size_bytes: Some(sector_size_bytes),
-                start_sector: Some(start_sector),
-                sector_count: Some(sector_count),
+                sector_size_bytes: Some(free_space.sector_size_bytes),
+                start_sector: Some(range.start_sector),
+                sector_count: Some(range.sector_count),
                 advisory_only: true,
                 future_actions: vec![
                     "create a new partition inside this verified free range".to_owned(),
@@ -692,7 +710,7 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
 fn partition_free_ranges(
     disk: &BlockDevice,
     table: &PartitionTable,
-) -> Option<(Vec<(u64, u64, bool)>, u64)> {
+) -> Option<PartitionFreeSpace> {
     let sector = table.sector_size_bytes?;
     if sector < 512 || !sector.is_power_of_two() || disk.size_bytes % sector != 0 {
         return None;
@@ -740,19 +758,26 @@ fn partition_free_ranges(
     let mut free_ranges = Vec::new();
     for (start, end) in merged {
         if start > cursor {
-            free_ranges.push((cursor, start.checked_sub(cursor)?, false));
+            free_ranges.push(PartitionFreeRange {
+                start_sector: cursor,
+                sector_count: start.checked_sub(cursor)?,
+                is_tail: false,
+            });
         }
         cursor = cursor.max(end);
     }
     if cursor < limit {
-        free_ranges.push((
-            cursor,
-            limit.checked_sub(cursor)?,
-            has_partitions,
-        ));
+        free_ranges.push(PartitionFreeRange {
+            start_sector: cursor,
+            sector_count: limit.checked_sub(cursor)?,
+            is_tail: has_partitions,
+        });
     }
 
-    Some((free_ranges, sector))
+    Some(PartitionFreeSpace {
+        ranges: free_ranges,
+        sector_size_bytes: sector,
+    })
 }
 
 pub fn plan_extend(
