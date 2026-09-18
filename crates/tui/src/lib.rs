@@ -19,8 +19,8 @@ use lsm_planner::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, Wrap};
 use ratatui::Terminal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,12 +343,8 @@ fn draw(
     render_section(frame, body[1], snapshot, capabilities, state);
 
     frame.render_widget(
-        Paragraph::new(if state.section() == Section::Plans {
-            " ↑↓ target   [ ] / - _ / = + / PgUp PgDn size   ←→/Tab section   q/Esc quit   preview only, no writes "
-        } else {
-            " ↑↓/jk navigate   ←→/Tab section   1-6 jump   q/Esc quit   no writes are performed "
-        })
-        .block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(toolbar_line(state.section()))
+            .block(Block::default().borders(Borders::ALL)),
         outer[2],
     );
 }
@@ -399,55 +395,42 @@ fn render_devices(
 ) {
     let panes = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
         .split(area);
 
     let rows = visible_device_rows(&snapshot.storage, volumes_only);
-    let mut lines = Vec::new();
-    for (index, row) in rows.iter().enumerate() {
-        let marker = if index == state.selected_device {
-            "›"
-        } else {
-            " "
-        };
-        let fs = row
-            .device
-            .filesystem
-            .as_ref()
-            .map(|item| item.fs_type.as_str())
-            .unwrap_or("-");
-        let role = device_role(snapshot, row.device);
-        let descriptor = if role == "Extended container" {
-            role
-        } else {
-            fs
-        };
-        let path = row.device.path.as_deref().unwrap_or(&row.device.name);
-        let indent = "  ".repeat(row.depth);
-        let line = Line::from(format!(
-            "{marker} {indent}{path:<16} {:>9}  {descriptor}",
-            device_size_for_display(snapshot, row.device)
-        ));
-        lines.push(if index == state.selected_device {
-            line.style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
-        } else {
-            line
-        });
-    }
-    if lines.is_empty() {
-        lines.push(Line::from("No matching devices discovered."));
-    }
-
-    frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(
-            if volumes_only {
-                " Volumes "
+    let title = if volumes_only { " Volumes " } else { " Devices " };
+    if rows.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No matching devices discovered.")
+                .block(Block::default().borders(Borders::ALL).title(title)),
+            panes[0],
+        );
+    } else {
+        let table_rows = rows.iter().enumerate().map(|(index, row)| {
+            let rendered = Row::new(device_table_cells(snapshot, *row));
+            if index == state.selected_device {
+                rendered.style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
             } else {
-                " Devices "
-            },
-        )),
-        panes[0],
-    );
+                rendered
+            }
+        });
+        let header = Row::new(["Device", "Size", "FS / Role", "Mount"])
+            .style(Style::default().add_modifier(Modifier::BOLD));
+        let table = Table::new(
+            table_rows,
+            [
+                Constraint::Min(20),
+                Constraint::Length(11),
+                Constraint::Length(19),
+                Constraint::Min(8),
+            ],
+        )
+        .header(header)
+        .column_spacing(1)
+        .block(Block::default().borders(Borders::ALL).title(title));
+        frame.render_widget(table, panes[0]);
+    }
 
     let detail = rows
         .get(state.selected_device)
@@ -465,29 +448,44 @@ fn render_swap(
     snapshot: &HostSnapshot,
     state: AppState,
 ) {
-    let mut lines = vec![Line::from(format!(
-        "Active swap areas: {}",
-        snapshot.swaps.len()
-    ))];
-    for swap in &snapshot.swaps {
-        lines.push(Line::from(format!(
-            "{}   {}   size {}   used {}   priority {}",
-            swap.name,
-            swap.kind,
-            human_bytes(swap.size_bytes),
-            human_bytes(swap.used_bytes),
-            swap.priority
-        )));
-    }
     if snapshot.swaps.is_empty() {
-        lines.push(Line::from("No active swap areas discovered."));
+        frame.render_widget(
+            Paragraph::new("No active swap areas discovered.")
+                .block(Block::default().borders(Borders::ALL).title(" Swap ")),
+            area,
+        );
+        return;
     }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .scroll((state.content_scroll, 0))
-            .block(Block::default().borders(Borders::ALL).title(" Swap ")),
-        area,
-    );
+
+    let rows = snapshot
+        .swaps
+        .iter()
+        .skip(state.content_scroll as usize)
+        .map(|swap| {
+            Row::new([
+                swap.name.clone(),
+                swap.kind.clone(),
+                human_bytes(swap.size_bytes),
+                human_bytes(swap.used_bytes),
+                swap.priority.to_string(),
+            ])
+        });
+    let header = Row::new(["Device", "Type", "Size", "Used", "Priority"])
+        .style(Style::default().add_modifier(Modifier::BOLD));
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(24),
+            Constraint::Length(12),
+            Constraint::Length(12),
+            Constraint::Length(12),
+            Constraint::Length(10),
+        ],
+    )
+    .header(header)
+    .column_spacing(1)
+    .block(Block::default().borders(Borders::ALL).title(" Swap "));
+    frame.render_widget(table, area);
 }
 
 fn render_mounts(
@@ -496,28 +494,38 @@ fn render_mounts(
     snapshot: &HostSnapshot,
     state: AppState,
 ) {
-    let mut lines = Vec::new();
-    for mount in storage_mounts(snapshot) {
-        lines.push(Line::from(format!(
-            "{:<24}  {:<18}  {}",
-            mount.target,
-            mount.source.as_deref().unwrap_or("-"),
-            mount.fs_type.as_deref().unwrap_or("-")
-        )));
+    let mounts = storage_mounts(snapshot);
+    if mounts.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No storage mounts discovered.")
+                .block(Block::default().borders(Borders::ALL).title(" Storage mounts ")),
+            area,
+        );
+        return;
     }
-    if lines.is_empty() {
-        lines.push(Line::from("No mount entries discovered."));
-    }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .scroll((state.content_scroll, 0))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Storage mounts "),
-            ),
-        area,
+
+    let rows = mounts
+        .into_iter()
+        .skip(state.content_scroll as usize)
+        .map(|mount| Row::new(mount_table_cells(mount)));
+    let header = Row::new(["Target", "Source", "Filesystem"])
+        .style(Style::default().add_modifier(Modifier::BOLD));
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(30),
+            Constraint::Percentage(55),
+            Constraint::Percentage(15),
+        ],
+    )
+    .header(header)
+    .column_spacing(1)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Storage mounts "),
     );
+    frame.render_widget(table, area);
 }
 
 fn render_diagnostics(
@@ -634,6 +642,81 @@ fn render_plan_hint(
             .block(Block::default().borders(Borders::ALL).title(" Plans ")),
         area,
     );
+}
+
+fn device_table_cells(snapshot: &HostSnapshot, row: DeviceRow<'_>) -> [String; 4] {
+    let path = row.device.path.as_deref().unwrap_or(&row.device.name);
+    let label = format!("{}{}", "  ".repeat(row.depth), path);
+    let role = device_role(snapshot, row.device);
+    let filesystem = row
+        .device
+        .filesystem
+        .as_ref()
+        .map(|fs| fs.fs_type.as_str())
+        .unwrap_or("-");
+    let descriptor = if role == "Extended container" {
+        role.to_owned()
+    } else {
+        filesystem.to_owned()
+    };
+    let mount = if row.device.mountpoints.is_empty() {
+        "-".to_owned()
+    } else {
+        row.device.mountpoints.join(", ")
+    };
+    [
+        label,
+        device_size_for_display(snapshot, row.device),
+        descriptor,
+        mount,
+    ]
+}
+
+fn mount_table_cells(mount: &lsm_core::MountEntry) -> [String; 3] {
+    [
+        mount.target.clone(),
+        mount.source.clone().unwrap_or_else(|| "-".to_owned()),
+        mount.fs_type.clone().unwrap_or_else(|| "-".to_owned()),
+    ]
+}
+
+fn toolbar_text(section: Section) -> String {
+    if section == Section::Plans {
+        "↑↓ Target   [ ] / - + Size   PgUp/PgDn Size   ←→/Tab Section   q/Esc Quit   Read-only"
+            .to_owned()
+    } else {
+        "↑↓ Navigate   ←→/Tab Section   1-6 Section   q/Esc Quit   Read-only".to_owned()
+    }
+}
+
+fn toolbar_line(section: Section) -> Line<'static> {
+    let items: Vec<(&'static str, &'static str)> = if section == Section::Plans {
+        vec![
+            ("↑↓", "Target"),
+            ("[ ] / - +", "Size"),
+            ("PgUp/PgDn", "Size"),
+            ("←→/Tab", "Section"),
+            ("q/Esc", "Quit"),
+        ]
+    } else {
+        vec![
+            ("↑↓", "Navigate"),
+            ("←→/Tab", "Section"),
+            ("1-6", "Section"),
+            ("q/Esc", "Quit"),
+        ]
+    };
+
+    let mut spans = vec![Span::raw(" ")];
+    for (key, label) in items {
+        spans.push(Span::styled(
+            key,
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(format!(" {label}   ")));
+    }
+    spans.push(Span::raw("Read-only"));
+    Line::from(spans)
 }
 
 fn device_detail_lines(snapshot: &HostSnapshot, device: &BlockDevice) -> Vec<Line<'static>> {
@@ -1711,7 +1794,6 @@ mod tests {
         assert!(text.contains("[REQ] filesystem-health"));
         assert!(text.contains("filesystem health must be checked"));
     }
-
 
     #[test]
     fn device_table_cells_include_hierarchy_filesystem_and_mount() {
