@@ -12,7 +12,7 @@ use lsm_core::{
     HostSnapshot, NodeKind, StorageGraph,
 };
 use lsm_discovery::analyze_extendability;
-use lsm_planner::{plan_extend, ExtendRequest, Growth, PlanStatus};
+use lsm_planner::{plan_extend, ExtendRequest, Growth, Operation, PlanStatus, PlanStep, Reversibility};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
@@ -920,6 +920,62 @@ fn analysis_summary_lines(analysis: &ExtendAnalysis) -> Vec<Line<'static>> {
     lines
 }
 
+fn operation_summary(operation: &Operation) -> String {
+    match operation {
+        Operation::RevalidateSnapshot => "Revalidate snapshot".to_owned(),
+        Operation::BackupLvmMetadata { .. } => "Backup LVM metadata".to_owned(),
+        Operation::BackupPartitionTableMetadata { disk, .. } => {
+            format!("Backup partition table {disk}")
+        }
+        Operation::ExtendPartition { partition, .. } => {
+            format!("Extend partition {partition}")
+        }
+        Operation::ExtendLogicalVolume {
+            additional_extents, ..
+        } => format!("Extend logical volume by {additional_extents} extents"),
+        Operation::GrowFilesystem {
+            fs_type,
+            mountpoint,
+        } => format!("Grow {fs_type} on {mountpoint}"),
+        Operation::RediscoverAndVerify => "Rediscover and verify".to_owned(),
+    }
+}
+
+fn reversibility_label(reversibility: Reversibility) -> &'static str {
+    match reversibility {
+        Reversibility::NotApplicable => "check",
+        Reversibility::Reversible => "reversible",
+        Reversibility::Irreversible => "irreversible",
+    }
+}
+
+fn plan_step_lines(steps: &[PlanStep]) -> Vec<Line<'static>> {
+    steps
+        .iter()
+        .map(|step| {
+            let dependency = if step.depends_on.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "  after {}",
+                    step.depends_on
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            };
+            Line::from(format!(
+                "{}  {}  [{}]{}",
+                step.id,
+                operation_summary(&step.operation),
+                reversibility_label(step.reversibility),
+                dependency
+            ))
+        })
+        .collect()
+}
+
 fn growth_label(growth: Growth) -> String {
     match growth {
         Growth::ByBytes(bytes) => format!("+{}", human_bytes(bytes)),
@@ -974,6 +1030,9 @@ fn strict_plan_lines(
                     human_bytes(change.remaining_adjacent_free_bytes)
                 )));
             }
+            lines.push(Line::from(""));
+            lines.push(Line::from("Plan steps"));
+            lines.extend(plan_step_lines(plan.steps()));
             lines
         }
         Ok(plan) => {
@@ -1531,7 +1590,6 @@ mod tests {
         assert_eq!(human_bytes_precise(9_711_910_912), "9.045 GiB");
         assert_eq!(human_bytes_precise(9_712_958_464), "9.046 GiB");
     }
-
 
     #[test]
     fn plan_step_lines_show_dependencies_and_reversibility() {
