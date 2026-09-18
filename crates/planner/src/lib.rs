@@ -31,6 +31,20 @@ pub enum PlanStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum PreflightState {
+    Verified,
+    Required,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PreflightCheck {
+    pub code: String,
+    pub state: PreflightState,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Reversibility {
     NotApplicable,
     Reversible,
@@ -118,6 +132,7 @@ pub struct PlanPreview {
     size_change: Option<SizeChange>,
     partition_size_change: Option<PartitionSizeChange>,
     blockers: Vec<Blocker>,
+    preflight_checks: Vec<PreflightCheck>,
     steps: Vec<PlanStep>,
     notices: Vec<String>,
 }
@@ -143,6 +158,10 @@ impl PlanPreview {
 
     pub fn blockers(&self) -> &[Blocker] {
         &self.blockers
+    }
+
+    pub fn preflight_checks(&self) -> &[PreflightCheck] {
+        &self.preflight_checks
     }
 
     pub fn size_change(&self) -> Option<&SizeChange> {
@@ -202,6 +221,12 @@ impl PlanPreview {
                 blocker.code, blocker.message
             ));
         }
+        for check in &self.preflight_checks {
+            text.push_str(&format!(
+                "Preflight {:?} [{}]: {}\n",
+                check.state, check.code, check.message
+            ));
+        }
         for step in &self.steps {
             // Debug formatting escapes control characters in externally supplied strings.
             text.push_str(&format!(
@@ -258,6 +283,7 @@ pub fn plan_extend(
         size_change: None,
         partition_size_change: None,
         blockers: Vec::new(),
+        preflight_checks: Vec::new(),
         steps: Vec::new(),
         notices: vec![
             "M1A produces previews only. No backup, resize, mount or other command is run.".into(),
@@ -270,12 +296,14 @@ pub fn plan_extend(
         Ok(Some((size, steps))) => {
             plan.status = PlanStatus::Preview;
             plan.partition_size_change = Some(size);
+            plan.preflight_checks = partition_preflight_checks();
             plan.steps = steps;
         }
         Ok(None) => match build_candidate(snapshot, capabilities, &plan.request) {
             Ok((size, steps)) => {
                 plan.status = PlanStatus::Preview;
                 plan.size_change = Some(size);
+                plan.preflight_checks = lvm_preflight_checks();
                 plan.steps = steps;
             }
             Err(blocker) => plan.blockers.push(blocker),
@@ -285,6 +313,110 @@ pub fn plan_extend(
     // Includes all preview content except the ID itself (empty at this point).
     plan.plan_id = fingerprint(&plan)?;
     Ok(plan)
+}
+
+fn preflight_check(code: &str, state: PreflightState, message: &str) -> PreflightCheck {
+    PreflightCheck {
+        code: code.to_owned(),
+        state,
+        message: message.to_owned(),
+    }
+}
+
+fn common_verified_preflight() -> Vec<PreflightCheck> {
+    vec![
+        preflight_check(
+            "collectors-complete",
+            PreflightState::Verified,
+            "required discovery collectors completed successfully",
+        ),
+        preflight_check(
+            "diagnostics-clean",
+            PreflightState::Verified,
+            "no error-level storage diagnostics invalidate this preview",
+        ),
+        preflight_check(
+            "mount-rw",
+            PreflightState::Verified,
+            "target has one matching read-write mount",
+        ),
+        preflight_check(
+            "tooling-available",
+            PreflightState::Verified,
+            "required future operation tools are available",
+        ),
+    ]
+}
+
+fn future_execution_gates() -> Vec<PreflightCheck> {
+    vec![
+        preflight_check(
+            "runtime-identity-recheck",
+            PreflightState::Required,
+            "revalidate device, filesystem and plan basis immediately before mutation",
+        ),
+        preflight_check(
+            "filesystem-health",
+            PreflightState::Required,
+            "verify filesystem health, features and supported grow state",
+        ),
+        preflight_check(
+            "exclusive-lock",
+            PreflightState::Required,
+            "acquire an exclusive storage-operation lock and reject concurrent mutation",
+        ),
+        preflight_check(
+            "metadata-backup",
+            PreflightState::Required,
+            "create and verify the required metadata backup before irreversible steps",
+        ),
+        preflight_check(
+            "execution-approval",
+            PreflightState::Required,
+            "obtain explicit approval for the exact fresh plan before execution",
+        ),
+    ]
+}
+
+fn partition_preflight_checks() -> Vec<PreflightCheck> {
+    let mut checks = common_verified_preflight();
+    checks.extend([
+        preflight_check(
+            "partition-geometry-consistent",
+            PreflightState::Verified,
+            "lsblk and partition-table sector/start/size evidence is consistent",
+        ),
+        preflight_check(
+            "adjacent-capacity-verified",
+            PreflightState::Verified,
+            "requested growth fits verified adjacent free sectors",
+        ),
+    ]);
+    checks.extend(future_execution_gates());
+    checks
+}
+
+fn lvm_preflight_checks() -> Vec<PreflightCheck> {
+    let mut checks = common_verified_preflight();
+    checks.extend([
+        preflight_check(
+            "lvm-identity-consistent",
+            PreflightState::Verified,
+            "PV, VG, LV and filesystem identities are internally consistent",
+        ),
+        preflight_check(
+            "lvm-layout-supported",
+            PreflightState::Verified,
+            "LV and VG layout is within the supported linear single-PV preview profile",
+        ),
+        preflight_check(
+            "capacity-verified",
+            PreflightState::Verified,
+            "requested growth fits verified free VG extents",
+        ),
+    ]);
+    checks.extend(future_execution_gates());
+    checks
 }
 
 fn fingerprint(value: &impl Serialize) -> Result<String, PlannerError> {
