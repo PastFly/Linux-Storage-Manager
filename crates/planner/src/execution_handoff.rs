@@ -22,18 +22,68 @@ pub enum ExecutionHandoffStatus {
 /// decision and one execution-guard plan derived from the same immutable snapshot/capability basis.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FrozenExecutionHandoff {
-    pub schema_version: u32,
-    pub handoff_id: String,
-    pub mutation_enabled: bool,
-    pub owner_acceptance_required: bool,
-    pub status: ExecutionHandoffStatus,
-    pub plan: PlanPreview,
-    pub plan_basis_digest: String,
-    pub capabilities_digest: String,
-    pub target_identity: TargetIdentityManifest,
-    pub filesystem_decision: FilesystemGrowthDecision,
-    pub guard: ExecutionGuardPlan,
-    pub blockers: Vec<String>,
+    schema_version: u32,
+    handoff_id: String,
+    mutation_enabled: bool,
+    owner_acceptance_required: bool,
+    status: ExecutionHandoffStatus,
+    plan: PlanPreview,
+    plan_basis_digest: String,
+    capabilities_digest: String,
+    target_identity: TargetIdentityManifest,
+    filesystem_decision: FilesystemGrowthDecision,
+    guard: ExecutionGuardPlan,
+    blockers: Vec<String>,
+}
+
+impl FrozenExecutionHandoff {
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    pub fn handoff_id(&self) -> &str {
+        &self.handoff_id
+    }
+
+    pub fn mutation_enabled(&self) -> bool {
+        self.mutation_enabled
+    }
+
+    pub fn owner_acceptance_required(&self) -> bool {
+        self.owner_acceptance_required
+    }
+
+    pub fn status(&self) -> ExecutionHandoffStatus {
+        self.status
+    }
+
+    pub fn plan(&self) -> &PlanPreview {
+        &self.plan
+    }
+
+    pub fn plan_basis_digest(&self) -> &str {
+        &self.plan_basis_digest
+    }
+
+    pub fn capabilities_digest(&self) -> &str {
+        &self.capabilities_digest
+    }
+
+    pub fn target_identity(&self) -> &TargetIdentityManifest {
+        &self.target_identity
+    }
+
+    pub fn filesystem_decision(&self) -> &FilesystemGrowthDecision {
+        &self.filesystem_decision
+    }
+
+    pub fn guard(&self) -> &ExecutionGuardPlan {
+        &self.guard
+    }
+
+    pub fn blockers(&self) -> &[String] {
+        &self.blockers
+    }
 }
 
 #[derive(Debug, Error)]
