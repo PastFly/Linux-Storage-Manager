@@ -208,6 +208,7 @@ pub enum ProvisioningSpaceKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProvisioningOpportunity {
+    pub id: String,
     pub code: String,
     pub kind: ProvisioningSpaceKind,
     pub source: String,
@@ -220,6 +221,49 @@ pub struct ProvisioningOpportunity {
     pub advisory_only: bool,
     pub future_actions: Vec<String>,
     pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CreatePurpose {
+    Filesystem,
+    Swap,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CreateRequest {
+    pub source_id: String,
+    pub size: Growth,
+    pub purpose: CreatePurpose,
+    pub filesystem: Option<String>,
+    pub mountpoint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CreateAllocation {
+    pub requested_bytes: u64,
+    pub rounded_bytes: u64,
+    pub available_bytes: u64,
+    pub remaining_bytes: u64,
+    pub allocation_unit_bytes: u64,
+    pub start_sector: Option<u64>,
+    pub sector_count: Option<u64>,
+    pub volume_group: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CreatePlanPreview {
+    schema_version: u32,
+    plan_id: String,
+    dry_run: bool,
+    executable: bool,
+    status: PlanStatus,
+    request: CreateRequest,
+    source: Option<ProvisioningOpportunity>,
+    allocation: Option<CreateAllocation>,
+    blockers: Vec<Blocker>,
+    steps: Vec<String>,
+    notices: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,6 +307,63 @@ pub enum PlannerError {
     InvalidSize,
     #[error("size is outside the supported u64 byte range")]
     SizeOverflow,
+}
+
+impl CreatePlanPreview {
+    pub fn status(&self) -> PlanStatus {
+        self.status
+    }
+
+    pub fn plan_id(&self) -> &str {
+        &self.plan_id
+    }
+
+    pub fn source(&self) -> Option<&ProvisioningOpportunity> {
+        self.source.as_ref()
+    }
+
+    pub fn allocation(&self) -> Option<&CreateAllocation> {
+        self.allocation.as_ref()
+    }
+
+    pub fn blockers(&self) -> &[Blocker] {
+        &self.blockers
+    }
+
+    pub fn steps(&self) -> &[String] {
+        &self.steps
+    }
+
+    pub fn render_text(&self) -> String {
+        let mut text = format!(
+            "DRY RUN ONLY - no commands executed; not an execution authorization\nPlan: {}\nStatus: {:?}\nSource ID: {}\nPurpose: {:?}\n",
+            self.plan_id, self.status, self.request.source_id, self.request.purpose
+        );
+        if let Some(source) = &self.source {
+            text.push_str(&format!(
+                "Source: {} ({:?})\nAvailable: {} bytes\n",
+                source.source, source.kind, source.available_bytes
+            ));
+        }
+        if let Some(allocation) = &self.allocation {
+            text.push_str(&format!(
+                "Requested: {} bytes\nAllocated: {} bytes\nRemaining: {} bytes\n",
+                allocation.requested_bytes,
+                allocation.rounded_bytes,
+                allocation.remaining_bytes
+            ));
+        }
+        for blocker in &self.blockers {
+            text.push_str(&format!("BLOCKED [{}]: {}\n", blocker.code, blocker.message));
+        }
+        for (index, step) in self.steps.iter().enumerate() {
+            text.push_str(&format!("{}. {}\n", index + 1, step));
+        }
+        for notice in &self.notices {
+            text.push_str(&format!("Note: {notice}\n"));
+        }
+        text
+    }
 }
 
 impl PlanPreview {
@@ -545,6 +646,28 @@ pub fn list_extend_targets(
     targets
 }
 
+fn provisioning_opportunity_id(
+    kind: ProvisioningSpaceKind,
+    source: &str,
+    disk: Option<&str>,
+    volume_group: Option<&str>,
+    start_sector: Option<u64>,
+    sector_count: Option<u64>,
+) -> String {
+    let material = format!(
+        "{kind:?}|{source}|{}|{}|{}|{}",
+        disk.unwrap_or("-"),
+        volume_group.unwrap_or("-"),
+        start_sector
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_owned()),
+        sector_count
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_owned())
+    );
+    format!("space-{:x}", Sha256::digest(material.as_bytes()))
+}
+
 pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<ProvisioningOpportunity> {
     let mut opportunities = Vec::new();
 
@@ -554,6 +677,14 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
                 continue;
             }
             opportunities.push(ProvisioningOpportunity {
+                id: provisioning_opportunity_id(
+                    ProvisioningSpaceKind::LvmFreeExtents,
+                    &format!("VG {}", vg.name),
+                    None,
+                    Some(&vg.name),
+                    None,
+                    None,
+                ),
                 code: "lvm-vg-free".to_owned(),
                 kind: ProvisioningSpaceKind::LvmFreeExtents,
                 source: format!("VG {}", vg.name),
@@ -608,6 +739,14 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
                 );
             }
             opportunities.push(ProvisioningOpportunity {
+                id: provisioning_opportunity_id(
+                    ProvisioningSpaceKind::BlankDisk,
+                    disk_path,
+                    Some(disk_path),
+                    None,
+                    None,
+                    None,
+                ),
                 code: "blank-disk".to_owned(),
                 kind: ProvisioningSpaceKind::BlankDisk,
                 source: disk_path.clone(),
@@ -661,26 +800,37 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
                 );
             }
 
+            let opportunity_kind = if range.is_tail {
+                ProvisioningSpaceKind::DiskTail
+            } else {
+                ProvisioningSpaceKind::DiskGap
+            };
+            let opportunity_source = if range.is_tail {
+                format!("{disk_path} tail")
+            } else {
+                format!(
+                    "{disk_path} free sectors {}..{}",
+                    range.start_sector,
+                    end_sector.saturating_sub(1)
+                )
+            };
+
             opportunities.push(ProvisioningOpportunity {
+                id: provisioning_opportunity_id(
+                    opportunity_kind,
+                    &opportunity_source,
+                    Some(disk_path),
+                    None,
+                    Some(range.start_sector),
+                    Some(range.sector_count),
+                ),
                 code: if range.is_tail {
                     "disk-tail".to_owned()
                 } else {
                     "disk-gap".to_owned()
                 },
-                kind: if range.is_tail {
-                    ProvisioningSpaceKind::DiskTail
-                } else {
-                    ProvisioningSpaceKind::DiskGap
-                },
-                source: if range.is_tail {
-                    format!("{disk_path} tail")
-                } else {
-                    format!(
-                        "{disk_path} free sectors {}..{}",
-                        range.start_sector,
-                        end_sector.saturating_sub(1)
-                    )
-                },
+                kind: opportunity_kind,
+                source: opportunity_source,
                 disk: Some(disk_path.clone()),
                 volume_group: None,
                 available_bytes,
@@ -704,6 +854,284 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
             .then_with(|| left.code.cmp(&right.code))
     });
     opportunities
+}
+
+pub fn plan_create(
+    snapshot: &HostSnapshot,
+    request: CreateRequest,
+) -> Result<CreatePlanPreview, PlannerError> {
+    let mut plan = CreatePlanPreview {
+        schema_version: 1,
+        plan_id: String::new(),
+        dry_run: true,
+        executable: false,
+        status: PlanStatus::Blocked,
+        request,
+        source: None,
+        allocation: None,
+        blockers: Vec::new(),
+        steps: Vec::new(),
+        notices: vec![
+            "M1A Create plans are advisory only. No partition, LVM, filesystem, mount or swap command is executed.".into(),
+            "A future executor must revalidate source geometry/capacity and choose collision-free identifiers immediately before mutation.".into(),
+        ],
+    };
+
+    let opportunities = list_provisioning_opportunities(snapshot);
+    let mut matches = opportunities
+        .into_iter()
+        .filter(|opportunity| opportunity.id == plan.request.source_id);
+    let Some(source) = matches.next() else {
+        plan.blockers.push(blocked(
+            "create-source-not-found",
+            "the selected free-space source is absent from the current snapshot",
+        ));
+        plan.plan_id = fingerprint(&plan)?;
+        return Ok(plan);
+    };
+    if matches.next().is_some() {
+        plan.blockers.push(blocked(
+            "create-source-ambiguous",
+            "the selected free-space source is not unique",
+        ));
+        plan.plan_id = fingerprint(&plan)?;
+        return Ok(plan);
+    }
+    plan.source = Some(source.clone());
+
+    if source.kind == ProvisioningSpaceKind::BlankDisk {
+        plan.blockers.push(blocked(
+            "blank-disk-policy-required",
+            "blank-disk creation needs an explicit partition-table/alignment policy before an exact allocation can be frozen",
+        ));
+        plan.plan_id = fingerprint(&plan)?;
+        return Ok(plan);
+    }
+
+    let (allocation_unit_bytes, available_bytes) = match source.kind {
+        ProvisioningSpaceKind::LvmFreeExtents => {
+            let Some(vg_name) = source.volume_group.as_deref() else {
+                plan.blockers.push(blocked(
+                    "create-vg-missing",
+                    "the selected VG free-space source has no volume-group identity",
+                ));
+                plan.plan_id = fingerprint(&plan)?;
+                return Ok(plan);
+            };
+            let Some(lvm) = snapshot.lvm.as_ref() else {
+                plan.blockers.push(blocked(
+                    "create-lvm-missing",
+                    "LVM inventory is unavailable for the selected source",
+                ));
+                plan.plan_id = fingerprint(&plan)?;
+                return Ok(plan);
+            };
+            let mut groups = lvm.volume_groups.iter().filter(|vg| vg.name == vg_name);
+            let Some(vg) = groups.next() else {
+                plan.blockers.push(blocked(
+                    "create-vg-not-found",
+                    "the selected volume group no longer exists",
+                ));
+                plan.plan_id = fingerprint(&plan)?;
+                return Ok(plan);
+            };
+            if groups.next().is_some() {
+                plan.blockers.push(blocked(
+                    "create-vg-ambiguous",
+                    "the selected volume-group identity is ambiguous",
+                ));
+                plan.plan_id = fingerprint(&plan)?;
+                return Ok(plan);
+            }
+            let Some(extent) = vg.extent_size_bytes else {
+                plan.blockers.push(blocked(
+                    "create-extent-missing",
+                    "VG extent size is unavailable",
+                ));
+                plan.plan_id = fingerprint(&plan)?;
+                return Ok(plan);
+            };
+            if extent < 512 || !extent.is_power_of_two() || vg.free_bytes != source.available_bytes {
+                plan.blockers.push(blocked(
+                    "create-capacity-mismatch",
+                    "VG free-space identity or extent geometry changed",
+                ));
+                plan.plan_id = fingerprint(&plan)?;
+                return Ok(plan);
+            }
+            (extent, vg.free_bytes)
+        }
+        ProvisioningSpaceKind::DiskGap | ProvisioningSpaceKind::DiskTail => {
+            let Some(sector) = source.sector_size_bytes else {
+                plan.blockers.push(blocked(
+                    "create-sector-size-missing",
+                    "selected partition-table free space has no sector size",
+                ));
+                plan.plan_id = fingerprint(&plan)?;
+                return Ok(plan);
+            };
+            if sector < 512
+                || !sector.is_power_of_two()
+                || source.start_sector.is_none()
+                || source.sector_count.is_none()
+            {
+                plan.blockers.push(blocked(
+                    "create-geometry-invalid",
+                    "selected partition-table free-space geometry is incomplete",
+                ));
+                plan.plan_id = fingerprint(&plan)?;
+                return Ok(plan);
+            }
+            (sector, source.available_bytes)
+        }
+        ProvisioningSpaceKind::BlankDisk => unreachable!(),
+    };
+
+    let requested_bytes = match plan.request.size {
+        Growth::ByBytes(bytes) => bytes,
+        Growth::MaxFree => available_bytes,
+    };
+    if requested_bytes == 0 {
+        plan.blockers.push(blocked(
+            "create-size-zero",
+            "requested creation size must be greater than zero",
+        ));
+        plan.plan_id = fingerprint(&plan)?;
+        return Ok(plan);
+    }
+    let units = requested_bytes / allocation_unit_bytes
+        + u64::from(requested_bytes % allocation_unit_bytes != 0);
+    let Some(rounded_bytes) = units.checked_mul(allocation_unit_bytes) else {
+        plan.blockers.push(blocked(
+            "size-overflow",
+            "requested creation size exceeds the supported range",
+        ));
+        plan.plan_id = fingerprint(&plan)?;
+        return Ok(plan);
+    };
+    if rounded_bytes > available_bytes {
+        plan.blockers.push(blocked(
+            "create-insufficient-capacity",
+            "allocation-unit-rounded request exceeds the selected free-space source",
+        ));
+        plan.plan_id = fingerprint(&plan)?;
+        return Ok(plan);
+    }
+
+    match plan.request.purpose {
+        CreatePurpose::Filesystem => {
+            let Some(fs_type) = plan.request.filesystem.as_deref() else {
+                plan.blockers.push(blocked(
+                    "create-filesystem-required",
+                    "filesystem purpose requires an explicit filesystem type",
+                ));
+                plan.plan_id = fingerprint(&plan)?;
+                return Ok(plan);
+            };
+            if !matches!(fs_type, "ext4" | "xfs") {
+                plan.blockers.push(blocked(
+                    "create-filesystem-unsupported",
+                    "M1A Create preview supports ext4 or XFS filesystem intent",
+                ));
+                plan.plan_id = fingerprint(&plan)?;
+                return Ok(plan);
+            }
+            if let Some(mountpoint) = plan.request.mountpoint.as_deref() {
+                if !mountpoint.starts_with('/')
+                    || mountpoint.chars().any(char::is_control)
+                    || snapshot.mounts.iter().any(|mount| mount.target == mountpoint)
+                    || snapshot.fstab.iter().any(|entry| entry.target == mountpoint)
+                {
+                    plan.blockers.push(blocked(
+                        "create-mountpoint-invalid",
+                        "mountpoint must be an unused absolute path without control characters",
+                    ));
+                    plan.plan_id = fingerprint(&plan)?;
+                    return Ok(plan);
+                }
+            }
+        }
+        CreatePurpose::Swap => {
+            if plan.request.filesystem.is_some() || plan.request.mountpoint.is_some() {
+                plan.blockers.push(blocked(
+                    "create-swap-options-invalid",
+                    "swap creation does not accept filesystem or mountpoint options",
+                ));
+                plan.plan_id = fingerprint(&plan)?;
+                return Ok(plan);
+            }
+        }
+    }
+
+    let allocated_sectors = if matches!(
+        source.kind,
+        ProvisioningSpaceKind::DiskGap | ProvisioningSpaceKind::DiskTail
+    ) {
+        Some(rounded_bytes / allocation_unit_bytes)
+    } else {
+        None
+    };
+
+    plan.allocation = Some(CreateAllocation {
+        requested_bytes,
+        rounded_bytes,
+        available_bytes,
+        remaining_bytes: available_bytes - rounded_bytes,
+        allocation_unit_bytes,
+        start_sector: source.start_sector,
+        sector_count: allocated_sectors,
+        volume_group: source.volume_group.clone(),
+    });
+
+    plan.steps.push(
+        "revalidate the complete storage snapshot and exact selected free-space source".to_owned(),
+    );
+    match source.kind {
+        ProvisioningSpaceKind::LvmFreeExtents => {
+            plan.steps
+                .push("create and verify LVM metadata backup".to_owned());
+            plan.steps.push(format!(
+                "create a new logical volume in {} with {} bytes of extent-aligned capacity",
+                source.volume_group.as_deref().unwrap_or("-"),
+                rounded_bytes
+            ));
+        }
+        ProvisioningSpaceKind::DiskGap | ProvisioningSpaceKind::DiskTail => {
+            plan.steps
+                .push("create and verify partition-table metadata backup".to_owned());
+            plan.steps.push(format!(
+                "create a new partition at sector {} using {} sectors ({} bytes)",
+                source.start_sector.unwrap_or(0),
+                allocated_sectors.unwrap_or(0),
+                rounded_bytes
+            ));
+        }
+        ProvisioningSpaceKind::BlankDisk => unreachable!(),
+    }
+    match plan.request.purpose {
+        CreatePurpose::Filesystem => {
+            let fs_type = plan.request.filesystem.as_deref().unwrap_or("-");
+            plan.steps
+                .push(format!("format the new block volume as {fs_type}"));
+            if let Some(mountpoint) = plan.request.mountpoint.as_deref() {
+                plan.steps.push(format!(
+                    "mount the new filesystem at {mountpoint} and prepare a guarded persistent mount entry"
+                ));
+            }
+        }
+        CreatePurpose::Swap => {
+            plan.steps
+                .push("initialize the new block volume as Linux swap".to_owned());
+            plan.steps.push(
+                "activate swap and prepare guarded persistent swap configuration".to_owned(),
+            );
+        }
+    }
+    plan.steps
+        .push("rediscover and verify the complete resulting storage topology".to_owned());
+    plan.status = PlanStatus::Preview;
+    plan.plan_id = fingerprint(&plan)?;
+    Ok(plan)
 }
 
 fn partition_free_ranges(disk: &BlockDevice, table: &PartitionTable) -> Option<PartitionFreeSpace> {
