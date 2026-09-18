@@ -11,7 +11,7 @@ use lsm_core::{
     BlockDevice, DiagnosticSeverity, ExtendAnalysis, ExtendabilityStatus, HostCapabilities,
     HostSnapshot, NodeKind, StorageGraph,
 };
-use lsm_discovery::analyze_extendability;
+use lsm_discovery::{analyze_extendability, discover_capabilities, discover_snapshot};
 use lsm_planner::{
     plan_extend, ExtendRequest, Growth, Operation, PlanStatus, PlanStep, PreflightCheck,
     PreflightState, Reversibility,
@@ -26,6 +26,7 @@ use ratatui::Terminal;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LoopControl {
     Continue,
+    Refresh,
     Quit,
 }
 
@@ -193,7 +194,7 @@ struct DeviceRow<'a> {
     device: &'a BlockDevice,
 }
 
-pub fn run(snapshot: &HostSnapshot, capabilities: &HostCapabilities) -> Result<()> {
+pub fn run(snapshot: HostSnapshot, capabilities: HostCapabilities) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -211,18 +212,41 @@ pub fn run(snapshot: &HostSnapshot, capabilities: &HostCapabilities) -> Result<(
 
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    snapshot: &HostSnapshot,
-    capabilities: &HostCapabilities,
+    mut snapshot: HostSnapshot,
+    mut capabilities: HostCapabilities,
 ) -> Result<()> {
-    let mut state = AppState::new(snapshot);
+    let mut state = AppState::new(&snapshot);
+    let mut refresh_status: Option<String> = None;
 
     loop {
-        terminal.draw(|frame| draw(frame, snapshot, capabilities, state))?;
+        terminal.draw(|frame| {
+            draw(
+                frame,
+                &snapshot,
+                &capabilities,
+                state,
+                refresh_status.as_deref(),
+            )
+        })?;
 
         if event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
-                if handle_key_event(&mut state, snapshot, key) == LoopControl::Quit {
-                    return Ok(());
+                match handle_key_event(&mut state, &snapshot, key) {
+                    LoopControl::Quit => return Ok(()),
+                    LoopControl::Refresh => match discover_snapshot() {
+                        Ok(fresh) => {
+                            snapshot = fresh;
+                            capabilities = discover_capabilities();
+                            state.content_scroll = 0;
+                            state.plan_growth_index = 0;
+                            state.clamp_device_selection(&snapshot);
+                            refresh_status = Some("Refreshed".to_owned());
+                        }
+                        Err(error) => {
+                            refresh_status = Some(format!("Refresh failed: {error}"));
+                        }
+                    },
+                    LoopControl::Continue => {}
                 }
             }
         }
@@ -236,6 +260,7 @@ fn handle_key_event(state: &mut AppState, snapshot: &HostSnapshot, key: KeyEvent
 
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => LoopControl::Quit,
+        KeyCode::Char('r') | KeyCode::Char('R') => LoopControl::Refresh,
         KeyCode::Up | KeyCode::Char('k') => {
             match state.section() {
                 Section::Disks | Section::Volumes => state.select_previous_device(),
@@ -317,6 +342,7 @@ fn draw(
     snapshot: &HostSnapshot,
     capabilities: &HostCapabilities,
     state: AppState,
+    refresh_status: Option<&str>,
 ) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -349,7 +375,8 @@ fn draw(
     render_section(frame, body[1], snapshot, capabilities, state);
 
     frame.render_widget(
-        Paragraph::new(toolbar_line(state.section())).block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(toolbar_line(state.section(), refresh_status))
+            .block(Block::default().borders(Borders::ALL)),
         outer[2],
     );
 }
@@ -932,6 +959,7 @@ fn mount_table_cells(mount: &lsm_core::MountEntry) -> [String; 3] {
     ]
 }
 
+#[cfg(test)]
 fn diagnostic_table_cells(item: &lsm_core::StorageDiagnostic) -> [String; 3] {
     let severity = match item.severity {
         DiagnosticSeverity::Info => "Info",
@@ -966,7 +994,7 @@ fn device_detail_rows(snapshot: &HostSnapshot, device: &BlockDevice) -> Vec<[Str
     } else {
         device.mountpoints.join(", ")
     };
-    vec![
+    let mut rows = vec![
         ["Device".to_owned(), path.to_owned()],
         ["Type".to_owned(), device_role(snapshot, device).to_owned()],
         ["Size".to_owned(), device_size_for_display(snapshot, device)],
@@ -980,7 +1008,13 @@ fn device_detail_rows(snapshot: &HostSnapshot, device: &BlockDevice) -> Vec<[Str
             "Kernel name".to_owned(),
             device.kernel_name.as_deref().unwrap_or("-").to_owned(),
         ],
-    ]
+    ];
+    if matches!(device.kind, NodeKind::Disk | NodeKind::Loop) {
+        if let Some(bytes) = disk_tail_free_bytes(snapshot, device) {
+            rows.push(["Tail free".to_owned(), human_bytes(bytes)]);
+        }
+    }
+    rows
 }
 
 fn preflight_display_detail(check: &PreflightCheck) -> &'static str {
@@ -1115,18 +1149,19 @@ fn plan_preview_summary_lines(plan: &lsm_planner::PlanPreview) -> Vec<Line<'stat
 #[cfg(test)]
 fn toolbar_text(section: Section) -> String {
     if section == Section::Plans {
-        "↑↓ Target   PgUp/PgDn Size   Tab Section   q Quit   Read-only".to_owned()
+        "↑↓ Target   PgUp/PgDn Size   Tab Section   R Refresh   q Quit   Read-only".to_owned()
     } else {
-        "↑↓ Navigate   Tab Section   1-6 Jump   q Quit   Read-only".to_owned()
+        "↑↓ Navigate   Tab Section   1-6 Jump   R Refresh   q Quit   Read-only".to_owned()
     }
 }
 
-fn toolbar_line(section: Section) -> Line<'static> {
+fn toolbar_line(section: Section, refresh_status: Option<&str>) -> Line<'static> {
     let items: Vec<(&'static str, &'static str)> = if section == Section::Plans {
         vec![
             ("↑↓", "Target"),
             ("PgUp/PgDn", "Size"),
             ("Tab", "Section"),
+            ("R", "Refresh"),
             ("q", "Quit"),
         ]
     } else {
@@ -1134,6 +1169,7 @@ fn toolbar_line(section: Section) -> Line<'static> {
             ("↑↓", "Navigate"),
             ("Tab", "Section"),
             ("1-6", "Jump"),
+            ("R", "Refresh"),
             ("q", "Quit"),
         ]
     };
@@ -1147,6 +1183,9 @@ fn toolbar_line(section: Section) -> Line<'static> {
         spans.push(Span::raw(format!(" {label}  ")));
     }
     spans.push(Span::raw("Read-only"));
+    if let Some(status) = refresh_status {
+        spans.push(Span::raw(format!("   {status}")));
+    }
     Line::from(spans)
 }
 
@@ -1237,6 +1276,39 @@ fn is_extended_partition(snapshot: &HostSnapshot, device: &BlockDevice) -> bool 
                     .unwrap_or(false)
             })
     })
+}
+
+fn disk_tail_free_bytes(snapshot: &HostSnapshot, disk: &BlockDevice) -> Option<u64> {
+    if !matches!(disk.kind, NodeKind::Disk | NodeKind::Loop) {
+        return None;
+    }
+    let disk_path = disk.path.as_deref()?;
+    let table = snapshot
+        .partition_tables
+        .iter()
+        .find(|table| table.device == disk_path)?;
+    let sector_size = table.sector_size_bytes?;
+    if sector_size == 0 {
+        return None;
+    }
+
+    let disk_sectors = disk.size_bytes / sector_size;
+    let limit = match table.label.as_deref()? {
+        "dos" => disk_sectors,
+        "gpt" => table
+            .last_lba
+            .and_then(|last| last.checked_add(1))
+            .map(|usable| usable.min(disk_sectors))?,
+        _ => return None,
+    };
+    let last_partition_end = table
+        .partitions
+        .iter()
+        .filter_map(|record| record.start_sector.checked_add(record.size_sectors))
+        .max()
+        .unwrap_or(0);
+    let free_sectors = limit.checked_sub(last_partition_end)?;
+    free_sectors.checked_mul(sector_size)
 }
 
 fn visible_device_rows(graph: &StorageGraph, volumes_only: bool) -> Vec<DeviceRow<'_>> {
