@@ -323,6 +323,50 @@ def storage_facts(snapshot: dict[str, Any], loop: str, vg: str | None) -> Any:
     return tables, inventory, devices
 
 
+def fixture_identity_ready(snapshot: dict[str, Any], loop: str, vg: str | None) -> bool:
+    if vg is None:
+        return True
+
+    lvm = snapshot.get("lvm")
+    storage = snapshot.get("storage")
+    if not isinstance(lvm, dict) or not isinstance(storage, dict):
+        return False
+
+    pvs = [row for row in lvm.get("physical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg]
+    vgs = [row for row in lvm.get("volume_groups", [])
+           if isinstance(row, dict) and row.get("name") == vg]
+    lvs = [row for row in lvm.get("logical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg]
+    if len(pvs) != 1 or len(vgs) != 1 or len(lvs) != 1:
+        return False
+    if not all(isinstance(row.get("uuid"), str) and row["uuid"] for row in (pvs[0], vgs[0], lvs[0])):
+        return False
+
+    roots = [node for node in storage.get("block_devices", [])
+             if isinstance(node, dict) and node.get("path") == loop]
+    if len(roots) != 1:
+        return False
+
+    nodes: list[dict[str, Any]] = []
+    def visit(node: dict[str, Any]) -> None:
+        nodes.append(node)
+        for child in node.get("children", []):
+            if isinstance(child, dict):
+                visit(child)
+    visit(roots[0])
+
+    pv_nodes = [node for node in nodes if node.get("path") == pvs[0].get("name")]
+    lvm_nodes = [node for node in nodes if node.get("kind") == "lvm"]
+    return (
+        len(pv_nodes) == 1
+        and pv_nodes[0].get("uuid") == pvs[0]["uuid"]
+        and len(lvm_nodes) == 1
+        and isinstance(lvm_nodes[0].get("uuid"), str)
+        and bool(lvm_nodes[0]["uuid"])
+    )
+
+
 def ready_snapshot(binary: Runner, loop: str, vg: str | None) -> dict[str, Any]:
     """Require settled, repeatable fixture facts BEFORE testing nonmutation.
 
@@ -334,7 +378,7 @@ def ready_snapshot(binary: Runner, loop: str, vg: str | None) -> dict[str, Any]:
     for attempt in range(20):
         snapshot = binary.json("storagemgr", "snapshot")
         facts = storage_facts(snapshot, loop, vg)
-        if previous is not None and facts == previous:
+        if previous is not None and facts == previous and fixture_identity_ready(snapshot, loop, vg):
             return snapshot
         previous = facts
         if attempt < 19:
