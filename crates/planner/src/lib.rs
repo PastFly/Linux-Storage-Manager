@@ -527,6 +527,10 @@ impl PlanPreview {
         &self.request.target
     }
 
+    pub fn basis_digest(&self) -> &str {
+        &self.snapshot_digest
+    }
+
     /// Exact-input freshness check only. Does not validate runtime safety or authorize writes.
     /// Any array ordering or usage change can conservatively invalidate this preview.
     pub fn matches_basis(
