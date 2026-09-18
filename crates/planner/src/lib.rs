@@ -214,6 +214,7 @@ pub struct GrowthRouteAlternative {
 pub enum ExtendTargetKind {
     DirectPartition,
     LvmLogicalVolume,
+    WholeBlockFilesystem,
     LayeredOrOther,
 }
 
@@ -694,6 +695,7 @@ pub fn list_extend_targets(
         let kind = match device.kind {
             NodeKind::Partition => ExtendTargetKind::DirectPartition,
             NodeKind::Lvm => ExtendTargetKind::LvmLogicalVolume,
+            NodeKind::Disk | NodeKind::Loop => ExtendTargetKind::WholeBlockFilesystem,
             _ => ExtendTargetKind::LayeredOrOther,
         };
 
