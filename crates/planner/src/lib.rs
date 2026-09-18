@@ -1,6 +1,13 @@
 //! Read-only, in-memory plan previews. No process, filesystem or device I/O.
 //! A preview is NOT an executable plan or authorization to modify storage.
 
+mod route_graph;
+
+pub use route_graph::{
+    analyze_layer_route, LayerRoute, LayerRouteStatus, RouteIssue, RouteIssueKind, RouteLayer,
+    RouteLayerKind,
+};
+
 use lsm_core::{
     BlockDevice, CollectorState, DiagnosticSeverity, FilesystemProbeState, HostCapabilities,
     HostSnapshot, LvmLogicalVolume, NodeKind, PartitionTable,
