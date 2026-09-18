@@ -323,6 +323,18 @@ def storage_facts(snapshot: dict[str, Any], loop: str, vg: str | None) -> Any:
     return tables, inventory, devices
 
 
+def refresh_fixture_udev(binary: Runner, sysname: str) -> None:
+    if re.fullmatch(r"[A-Za-z0-9._+!-]+", sysname) is None:
+        raise SafetyError("invalid block sysname for targeted udev refresh")
+    binary.run(
+        "udevadm",
+        "trigger",
+        "--action=change",
+        f"--sysname-match={sysname}",
+    )
+    binary.run("udevadm", "settle", "--timeout=30")
+
+
 def fixture_identity_gaps(snapshot: dict[str, Any], loop: str, vg: str | None) -> list[str]:
     if vg is None:
         return []
@@ -480,6 +492,8 @@ def main(argv: list[str] | None = None) -> int:
             vg = "lsmtest" + os.urandom(12).hex() if lvm else None
             source = resources.create_vg(loop, partition, vg) if vg else partition
             runner.run("mkfs." + filesystem, "-f" if filesystem == "xfs" else "-F", source)
+            canonical_source = Path(source).resolve(strict=True)
+            refresh_fixture_udev(runner, canonical_source.name)
             target = resources.mount(source, label + "-mount")
             exercise(resources, runner, loop, target, vg)
     except (OSError, ValueError, KeyError, TypeError, SafetyError, subprocess.SubprocessError, KeyboardInterrupt) as error:
