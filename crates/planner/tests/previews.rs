@@ -330,6 +330,7 @@ fn lvm_preview_exposes_profile_preflight_and_future_gates() {
     assert!(checks.iter().any(|check| {
         check.code == "filesystem-health" && check.state == PreflightState::Required
     }));
+}
 
 #[test]
 fn catalog_exposes_selectable_growth_targets_without_mutation() {
