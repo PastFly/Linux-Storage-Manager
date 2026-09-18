@@ -1154,7 +1154,9 @@ fn render_plan_compact(
 ) {
     let mut lines = plan_summary_lines(target, growth, analysis);
     lines.push(Line::from(""));
-    lines.extend(layer_route_summary_lines(&analyze_layer_route(snapshot, target)));
+    lines.extend(layer_route_summary_lines(&analyze_layer_route(
+        snapshot, target,
+    )));
     lines.push(Line::from(""));
     lines.extend(strict_plan_lines(snapshot, capabilities, target, growth));
     if let Some((opportunity_growth, alternative)) =
@@ -1206,7 +1208,9 @@ fn render_plan_wide(
 
     let mut summary = plan_summary_lines(target, growth, analysis);
     summary.push(Line::from(""));
-    summary.extend(layer_route_summary_lines(&analyze_layer_route(snapshot, target)));
+    summary.extend(layer_route_summary_lines(&analyze_layer_route(
+        snapshot, target,
+    )));
     match &plan {
         Ok(plan) if plan.status() == PlanStatus::Preview => {
             summary.extend(plan_preview_summary_lines(plan));
