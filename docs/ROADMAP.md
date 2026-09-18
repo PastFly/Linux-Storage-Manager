@@ -54,18 +54,27 @@ Goal: safely understand a host before changing anything.
 - [x] Add `plan create SOURCE_ID --by SIZE|--max --purpose filesystem|swap` plus TUI size/purpose/ext4-XFS controls.
 - [x] Keep blank-disk Create plans blocked until partition-table/alignment policy is explicitly resolved instead of guessing.
 - [x] Add read-only ext4/XFS filesystem metadata/version/features preflight evidence and expose it in strict previews.
-- [ ] Add executor-grade filesystem health decision policy, including required offline checks, before write support.
+- [x] Add filesystem block-size/block-count/total-size evidence from ext4 superblock and XFS data geometry.
+- [x] Add executor-grade read-only filesystem decision policy: ext4 online/offline gating, XFS mounted grow dry-run plus explicit no-modify scrub requirement, and no automatic repair.
+- [x] Expose filesystem execution-gate decisions through CLI and TUI without executing the proposed health command.
 - [x] Add target-scoped identity manifests and fresh-snapshot revalidation for disk/partition/PV/VG/LV/filesystem/mount chains.
-- [ ] Add concurrency/per-host exclusive locking design for M1B.
+- [x] Bind observed filesystem size separately from backing-device size into target identity manifests.
+- [x] Add concurrency/per-host exclusive locking design for M1B.
+- [x] Add an interruption-safe operation journal state machine; once mutation may have started, interruption requires recovery/reconciliation rather than blind replay.
 - [x] Detect advisory whole-disk/backing-device LVM growth routes where the backing device is larger than the current PV.
 - [x] Detect advisory partition -> PV -> VG -> LV -> filesystem routes when authoritative adjacent capacity is proven.
 - [x] Add a reusable semantic layer graph for disk -> partition -> encryption/RAID -> PV -> VG -> LV -> filesystem -> mount topology.
 - [x] Add explicit CLI/TUI route diagnostics for LUKS/crypt, RAID, multi-PV/nonstandard LVM, Btrfs/ZFS and unknown filesystems so unsupported paths remain visible and fail closed.
 - [x] Add `plan route TARGET [--json]` for scriptable read-only route inspection.
-- [ ] Refactor grow/create plan generation to consume the semantic layer graph for every supported chained adapter instead of maintaining topology-specific planner branches.
+- [x] Route Extend target selection through semantic profiles for direct partitions, LVM and whole-device filesystems while retaining proven geometry/extent builders.
+- [x] Use semantic layer issue codes for unsupported layered targets instead of leaking unrelated LVM/direct-partition errors.
+- [x] Add filesystem-only ext4/XFS previews when verified filesystem geometry proves the backing disk/loop device is already larger than the filesystem.
+- [ ] Refactor the remaining chained grow and Create builders to consume reusable semantic route adapters instead of topology-specific planner branches.
 - [x] Add initial scenario-matrix contract tests for multiple selectable targets, blocked unknown filesystems, free ranges and chained LVM routes.
 - [x] Add semantic route-graph tests for direct, LVM, LUKS/crypt, multi-PV and unknown-filesystem paths.
-- [x] Add target identity revalidation tests, including target geometry/LVM changes and unrelated-disk non-invalidation.
+- [x] Add target identity revalidation tests, including target geometry/LVM changes, filesystem-size changes and unrelated-disk non-invalidation.
+- [x] Add whole-device ext4/XFS filesystem-only growth tests, including max-safe and filesystem-block-aligned partial growth.
+- [x] Add lock/journal regression tests for stale identity, exact approval, pre-mutation abort and post-mutation recovery-required states.
 - [ ] Continue expanding scenario-matrix fixtures until every supported/blocked topology in docs/SCENARIO_MATRIX.md has a stable regression case.
 
 M0 must still pass its acceptance gates. M1A has no executor, cannot perform a
@@ -79,7 +88,9 @@ verified route automatically; the user must not have to manually compose `sfdisk
 
 - authoritative immutable operation plans with live identity and health checks;
 - explicit owner acceptance of M0 and M1A before executor rollout;
-- per-host exclusive operation lock and stale-plan rejection;
+- implement the already-designed host-exclusive advisory lock boundary in the future executor;
+- wire the existing target-manifest revalidation into the locked execution path;
+- persist the existing operation-journal model durably before the first mutating command;
 - partition-table metadata backup plus recovery drill;
 - LVM metadata backup plus recovery drill;
 - grow GPT/MBR partition where safe without moving a partition start;
