@@ -1498,7 +1498,7 @@ fn try_build_partition_candidate(
     ensure(
         matches!(fs.fs_type.as_str(), "ext4" | "xfs"),
         "unsupported-filesystem",
-        "direct partition preview supports only ext4 and XFS",
+        "direct partition filesystem is unsupported; only ext4 and XFS previews are supported",
     )?;
 
     let mount = unique(
@@ -2586,7 +2586,7 @@ fn build_candidate(
     ensure(
         matches!(fs.fs_type.as_str(), "ext4" | "xfs"),
         "unsupported-filesystem",
-        "only ext4 and XFS previews are supported",
+        "filesystem is unsupported; only ext4 and XFS previews are supported",
     )?;
     let mount = unique(
         snapshot.mounts.iter().filter(|m| {
