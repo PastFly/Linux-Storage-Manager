@@ -1380,6 +1380,262 @@ fn apply_lvm_outcome(
     }
 }
 
+fn build_whole_filesystem_candidate(
+    snapshot: &HostSnapshot,
+    capabilities: &HostCapabilities,
+    request: &ExtendRequest,
+) -> Result<(FilesystemSizeChange, Vec<PlanStep>), Blocker> {
+    for component in ["lsblk", "mounts", "fstab", "swap"] {
+        let status = unique(
+            snapshot
+                .collectors
+                .iter()
+                .filter(|status| status.component == component),
+            "collector-incomplete",
+        )?;
+        ensure(
+            status.state == CollectorState::Complete,
+            "collector-incomplete",
+            "all whole-device filesystem preview collectors must complete",
+        )?;
+    }
+    ensure(
+        !snapshot
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error),
+        "diagnostic-error",
+        "the snapshot contains error-level diagnostics",
+    )?;
+
+    let route = analyze_layer_route(snapshot, &request.target);
+    ensure(
+        route.resolved_device.is_some(),
+        "route-device-not-found",
+        "whole-device filesystem target did not resolve to one device",
+    )?;
+    let device_path = route.resolved_device.as_deref().unwrap_or_default();
+    let nodes = flatten(&snapshot.storage.block_devices);
+    let device = unique(
+        nodes
+            .iter()
+            .copied()
+            .filter(|device| node_alias(device, device_path)),
+        "ambiguous-device",
+    )?;
+    ensure(
+        matches!(device.kind, NodeKind::Disk | NodeKind::Loop),
+        "unsupported-layout",
+        "whole-device filesystem preview requires a disk or loop-device target",
+    )?;
+    ensure(
+        device.children.is_empty(),
+        "unsupported-layout",
+        "whole-device filesystem target has stacked consumers",
+    )?;
+
+    let fs = device
+        .filesystem
+        .as_ref()
+        .ok_or_else(|| blocked("filesystem-missing", "filesystem type is absent"))?;
+    ensure(
+        matches!(fs.fs_type.as_str(), "ext4" | "xfs"),
+        "unsupported-filesystem",
+        "whole-device filesystem preview supports only ext4 and XFS",
+    )?;
+    ensure(
+        device.uuid.as_deref().is_some_and(|uuid| !uuid.is_empty()),
+        "identity-missing",
+        "filesystem UUID is required for whole-device preview",
+    )?;
+
+    let mountpoint = route
+        .mountpoint
+        .as_deref()
+        .ok_or_else(|| blocked("mount-not-unique", "target filesystem is not uniquely mounted"))?;
+    let mount = unique(
+        snapshot
+            .mounts
+            .iter()
+            .filter(|mount| mount.target == mountpoint),
+        "mount-not-unique",
+    )?;
+    ensure(
+        mount
+            .source
+            .as_deref()
+            .is_some_and(|source| node_alias(device, source))
+            && mount.fs_type.as_deref() == Some(fs.fs_type.as_str())
+            && mount.options.iter().any(|option| option == "rw")
+            && !mount
+                .options
+                .iter()
+                .any(|option| matches!(option.as_str(), "ro" | "bind" | "rbind"))
+            && device.mountpoints == vec![mount.target.clone()],
+        "mount-state-mismatch",
+        "one matching read-write mount must be confirmed by lsblk and findmnt",
+    )?;
+    ensure(
+        !snapshot
+            .swaps
+            .iter()
+            .any(|swap| node_alias(device, &swap.name)),
+        "active-swap",
+        "the target is reported as active swap",
+    )?;
+
+    let grow_tool = if fs.fs_type == "xfs" {
+        "xfs_growfs"
+    } else {
+        "resize2fs"
+    };
+    let capability = unique(
+        capabilities
+            .tools
+            .iter()
+            .filter(|capability| capability.name == grow_tool),
+        "tool-unavailable",
+    )?;
+    ensure(
+        capability.available,
+        "tool-unavailable",
+        "required filesystem grow tool is unavailable",
+    )?;
+
+    let evidence = unique(
+        snapshot.filesystem_preflight.iter().filter(|evidence| {
+            evidence.device == device_path
+                && evidence.mountpoint.as_deref() == Some(mount.target.as_str())
+                && evidence.fs_type == fs.fs_type
+        }),
+        "filesystem-size-evidence-missing",
+    )?;
+    ensure(
+        evidence.state == FilesystemProbeState::Verified,
+        "filesystem-size-evidence-incomplete",
+        "filesystem metadata/geometry evidence must be verified",
+    )?;
+    let block_size = evidence.block_size_bytes.ok_or_else(|| {
+        blocked(
+            "filesystem-block-size-missing",
+            "filesystem block size is absent from read-only metadata evidence",
+        )
+    })?;
+    let block_count = evidence.block_count.ok_or_else(|| {
+        blocked(
+            "filesystem-block-count-missing",
+            "filesystem block count is absent from read-only metadata evidence",
+        )
+    })?;
+    let filesystem_size = evidence.size_bytes.ok_or_else(|| {
+        blocked(
+            "filesystem-size-evidence-missing",
+            "filesystem size is absent from read-only metadata evidence",
+        )
+    })?;
+    ensure(
+        block_size >= 512 && block_size.is_power_of_two(),
+        "filesystem-block-size-invalid",
+        "filesystem block size is invalid",
+    )?;
+    ensure(
+        block_count.checked_mul(block_size) == Some(filesystem_size),
+        "filesystem-geometry-mismatch",
+        "filesystem block count, block size and total size disagree",
+    )?;
+    ensure(
+        filesystem_size > 0 && filesystem_size <= device.size_bytes,
+        "filesystem-capacity-mismatch",
+        "filesystem size exceeds or invalidates the backing device capacity",
+    )?;
+
+    let raw_available = device.size_bytes - filesystem_size;
+    let available_blocks = raw_available / block_size;
+    let max_growth = available_blocks
+        .checked_mul(block_size)
+        .ok_or_else(|| blocked("size-overflow", "filesystem growth exceeds u64"))?;
+    ensure(
+        max_growth > 0,
+        "no-growth",
+        "backing device has less than one filesystem block of verified free capacity",
+    )?;
+
+    let (requested, rounded) = match request.growth {
+        Growth::ByBytes(bytes) => {
+            ensure(bytes > 0, "no-growth", "requested growth is zero")?;
+            let blocks = bytes / block_size + u64::from(bytes % block_size != 0);
+            let rounded = blocks
+                .checked_mul(block_size)
+                .ok_or_else(|| blocked("size-overflow", "filesystem growth exceeds u64"))?;
+            (bytes, rounded)
+        }
+        Growth::MaxFree => (max_growth, max_growth),
+    };
+    ensure(
+        rounded <= max_growth,
+        "insufficient-capacity",
+        "filesystem-block-aligned request exceeds verified backing-device slack",
+    )?;
+
+    let expected_size = filesystem_size
+        .checked_add(rounded)
+        .ok_or_else(|| blocked("size-overflow", "new filesystem size exceeds u64"))?;
+    ensure(
+        expected_size <= device.size_bytes,
+        "filesystem-capacity-mismatch",
+        "expected filesystem size exceeds backing device capacity",
+    )?;
+
+    let size = FilesystemSizeChange {
+        device: device_path.to_owned(),
+        mountpoint: mount.target.clone(),
+        fs_type: fs.fs_type.clone(),
+        current_filesystem_size_bytes: filesystem_size,
+        backing_device_size_bytes: device.size_bytes,
+        requested_growth_bytes: requested,
+        rounded_growth_bytes: rounded,
+        expected_filesystem_size_bytes: expected_size,
+        filesystem_block_size_bytes: block_size,
+        remaining_backing_free_bytes: device.size_bytes - expected_size,
+    };
+    let steps = vec![
+        step(
+            1,
+            Operation::RevalidateSnapshot,
+            Reversibility::NotApplicable,
+        ),
+        step(
+            2,
+            Operation::GrowFilesystem {
+                fs_type: fs.fs_type.clone(),
+                mountpoint: mount.target.clone(),
+            },
+            Reversibility::Irreversible,
+        ),
+        step(
+            3,
+            Operation::RediscoverAndVerify,
+            Reversibility::NotApplicable,
+        ),
+    ];
+    Ok((size, steps))
+}
+
+fn apply_whole_filesystem_outcome(
+    plan: &mut PlanPreview,
+    outcome: Result<(FilesystemSizeChange, Vec<PlanStep>), Blocker>,
+) {
+    match outcome {
+        Ok((size, steps)) => {
+            plan.status = PlanStatus::Preview;
+            plan.filesystem_size_change = Some(size);
+            plan.preflight_checks = whole_filesystem_preflight_checks();
+            plan.steps = steps;
+        }
+        Err(blocker) => plan.blockers.push(blocker),
+    }
+}
+
 fn semantic_layer_blocker(snapshot: &HostSnapshot, target: &str) -> Option<Blocker> {
     let route = analyze_layer_route(snapshot, target);
     if route.resolved_device.is_none() || route.status == LayerRouteStatus::SupportedProfile {
@@ -1444,10 +1700,9 @@ pub fn plan_extend(
             apply_lvm_outcome(&mut plan, snapshot, lvm);
         }
         ExtendPlannerProfile::WholeBlockFilesystem => {
-            plan.blockers.push(blocked(
-                "whole-device-filesystem-capacity-unmodeled",
-                "filesystem is directly on a disk/loop device; exact filesystem allocation/size evidence is required before a safe growth amount can be frozen",
-            ));
+            let filesystem =
+                build_whole_filesystem_candidate(snapshot, capabilities, &plan.request);
+            apply_whole_filesystem_outcome(&mut plan, filesystem);
         }
         ExtendPlannerProfile::LegacyFailClosed => {
             if let Some(blocker) = semantic_layer_blocker(snapshot, &plan.request.target) {
@@ -1551,6 +1806,28 @@ fn partition_preflight_checks() -> Vec<PreflightCheck> {
         ),
     ]);
     checks.extend(future_execution_gates());
+    checks
+}
+
+fn whole_filesystem_preflight_checks() -> Vec<PreflightCheck> {
+    let mut checks = common_verified_preflight();
+    checks.extend([
+        preflight_check(
+            "filesystem-geometry-consistent",
+            PreflightState::Verified,
+            "read-only filesystem block size/count/size evidence is internally consistent",
+        ),
+        preflight_check(
+            "backing-capacity-verified",
+            PreflightState::Verified,
+            "requested growth fits verified unused capacity already present on the backing device",
+        ),
+    ]);
+    checks.extend(
+        future_execution_gates()
+            .into_iter()
+            .filter(|check| check.code != "metadata-backup"),
+    );
     checks
 }
 
