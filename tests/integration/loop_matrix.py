@@ -276,18 +276,32 @@ def check_preview(plan: Any, expected_status: str) -> None:
     if plan.get("status") != expected_status:
         raise SafetyError(f"unexpected plan status: {plan.get('status')!r}; blockers={plan.get('blockers')!r}")
     if expected_status == "blocked":
-        if plan.get("steps") != [] or not plan.get("blockers") or plan.get("size_change") is not None:
+        if (plan.get("steps") != [] or not plan.get("blockers")
+                or plan.get("size_change") is not None
+                or plan.get("partition_size_change") is not None):
             raise SafetyError("blocked plan contains operations or lacks a reason")
     else:
-        change = plan.get("size_change")
-        if not isinstance(change, dict) or not plan.get("steps") or plan.get("blockers") != []:
-            raise SafetyError("preview lacks a size change or contains blockers")
-        extent = change.get("extent_size_bytes")
-        growth = change.get("rounded_growth_bytes")
-        if (type(extent) is not int or extent <= 0 or type(growth) is not int or growth <= 0
-                or growth % extent or growth < change["requested_growth_bytes"]
-                or change["current_lv_size_bytes"] + growth != change["expected_lv_size_bytes"]):
-            raise SafetyError("inconsistent preview size arithmetic")
+        lvm_change = plan.get("size_change")
+        partition_change = plan.get("partition_size_change")
+        if ((isinstance(lvm_change, dict) + isinstance(partition_change, dict)) != 1
+                or not plan.get("steps") or plan.get("blockers") != []):
+            raise SafetyError("preview must contain exactly one size change and no blockers")
+        if isinstance(lvm_change, dict):
+            extent = lvm_change.get("extent_size_bytes")
+            growth = lvm_change.get("rounded_growth_bytes")
+            if (type(extent) is not int or extent <= 0 or type(growth) is not int or growth <= 0
+                    or growth % extent or growth < lvm_change["requested_growth_bytes"]
+                    or lvm_change["current_lv_size_bytes"] + growth
+                    != lvm_change["expected_lv_size_bytes"]):
+                raise SafetyError("inconsistent LVM preview size arithmetic")
+        else:
+            sector = partition_change.get("sector_size_bytes")
+            growth = partition_change.get("rounded_growth_bytes")
+            if (type(sector) is not int or sector <= 0 or type(growth) is not int or growth <= 0
+                    or growth % sector or growth < partition_change["requested_growth_bytes"]
+                    or partition_change["current_partition_size_bytes"] + growth
+                    != partition_change["expected_partition_size_bytes"]):
+                raise SafetyError("inconsistent partition preview size arithmetic")
 
 
 def storage_facts(snapshot: dict[str, Any], loop: str, vg: str | None) -> Any:
@@ -332,12 +346,11 @@ def exercise(resources: Resources, binary: Runner, loop: Loop, target: Path, vg:
     before = ready_snapshot(binary, loop.device, vg)
     facts = storage_facts(before, loop.device, vg)
     sentinel = (target / "readonly-sentinel").read_bytes()
-    # Direct partition planning is deliberately unsupported in M1A.
     for flag, value in (("--by", "8MiB"), ("--max", None), ("--by", "1TiB")):
         arguments = ["plan", "extend", str(target), flag]
         if value is not None:
             arguments.append(value)
-        expected = "blocked" if vg is None or value == "1TiB" else "preview"
+        expected = "blocked" if value == "1TiB" else "preview"
         output = binary.run("storagemgr", *arguments, "--json", allowed=(2,) if expected == "blocked" else (0,))
         check_preview(json.loads(output.stdout), expected)
     result = binary.run("storagemgr", "plan", "extend", str(target), "--max", "--apply", allowed=(2,))
