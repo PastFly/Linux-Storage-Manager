@@ -75,11 +75,7 @@ fn guard_uses_one_nonblocking_host_exclusive_storage_lock() {
         .resource_keys
         .iter()
         .any(|key| key == "filesystem:/dev/sda1"));
-    assert!(guard
-        .lock
-        .resource_keys
-        .iter()
-        .any(|key| key == "mount:/"));
+    assert!(guard.lock.resource_keys.iter().any(|key| key == "mount:/"));
     assert!(guard.journal_path.ends_with(".json"));
     assert_eq!(guard.gates.len(), 8);
 }
