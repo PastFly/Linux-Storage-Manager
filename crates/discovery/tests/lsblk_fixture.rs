@@ -22,7 +22,6 @@ fn normalizes_lvm_ext4_topology() {
     assert_eq!(root_lv.filesystem.as_ref().unwrap().fs_type, "ext4");
 }
 
-
 #[test]
 fn normalizes_multipath_device_without_collapsing_to_unknown() {
     let fixture = r#"{
