@@ -96,7 +96,7 @@ jobs:
         run: cargo build --locked --release --workspace
       - name: Test planning on disposable ext4 and XFS fixtures
         run: >-
-          sudo python3 -I tests/integration/loop_matrix.py
+          sudo python3 -I tools/trace_loop_matrix.py
           --allow-disposable-loop-tests
           "${GITHUB_WORKSPACE}/target/release/storagemgr"
 
