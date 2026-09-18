@@ -717,6 +717,7 @@ fn partition_free_ranges(
     }
 
     let disk_sectors = disk.size_bytes / sector;
+    let is_dos = table.label.as_deref() == Some("dos");
     let (first_usable, limit) = match table.label.as_deref()? {
         "gpt" => (
             table.first_lba?,
@@ -754,8 +755,23 @@ fn partition_free_ranges(
     }
 
     let has_partitions = !merged.is_empty();
-    let mut cursor = first_usable;
     let mut free_ranges = Vec::new();
+    let mut merged = merged.into_iter();
+    let mut cursor = first_usable;
+
+    if is_dos {
+        let Some((_, first_end)) = merged.next() else {
+            return Some(PartitionFreeSpace {
+                ranges: free_ranges,
+                sector_size_bytes: sector,
+            });
+        };
+        // DOS/MBR has no authoritative first-usable-LBA field. Sectors between the
+        // MBR and the first partition may contain bootloader embedding data, so they
+        // are deliberately not exposed as generic provisioning space.
+        cursor = first_end;
+    }
+
     for (start, end) in merged {
         if start > cursor {
             free_ranges.push(PartitionFreeRange {
