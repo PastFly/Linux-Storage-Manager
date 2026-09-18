@@ -2,7 +2,7 @@ use std::io;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -19,6 +19,12 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Terminal;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopControl {
+    Continue,
+    Quit,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
@@ -187,59 +193,98 @@ fn event_loop(
 
         if event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Up | KeyCode::Char('k') => match state.section() {
-                        Section::Disks | Section::Volumes | Section::Plans => {
-                            state.select_previous_device()
-                        }
-                        _ => state.scroll_up(),
-                    },
-                    KeyCode::Down | KeyCode::Char('j') => match state.section() {
-                        Section::Disks | Section::Volumes => {
-                            let volumes_only = state.section() == Section::Volumes;
-                            state.select_next_device(snapshot, volumes_only)
-                        }
-                        Section::Plans => state.select_next_plan_candidate(snapshot),
-                        _ => state.scroll_down(),
-                    },
-                    KeyCode::Left | KeyCode::BackTab => {
-                        state.previous_section();
-                        state.clamp_device_selection(snapshot);
-                    }
-                    KeyCode::Right | KeyCode::Tab => {
-                        state.next_section();
-                        state.clamp_device_selection(snapshot);
-                    }
-                    KeyCode::Char('1') => {
-                        state.set_section(0);
-                        state.clamp_device_selection(snapshot);
-                    }
-                    KeyCode::Char('2') => {
-                        state.set_section(1);
-                        state.clamp_device_selection(snapshot);
-                    }
-                    KeyCode::Char('3') => state.set_section(2),
-                    KeyCode::Char('4') => state.set_section(3),
-                    KeyCode::Char('5') => state.set_section(4),
-                    KeyCode::Char('6') => {
-                        state.set_section(5);
-                        state.clamp_device_selection(snapshot);
-                    }
-                    KeyCode::Char('[') | KeyCode::Char('-')
-                        if state.section() == Section::Plans =>
-                    {
-                        state.previous_plan_growth();
-                    }
-                    KeyCode::Char(']') | KeyCode::Char('+')
-                        if state.section() == Section::Plans =>
-                    {
-                        state.next_plan_growth();
-                    }
-                    _ => {}
+                if handle_key_event(&mut state, snapshot, key) == LoopControl::Quit {
+                    return Ok(());
                 }
             }
         }
+    }
+}
+
+fn handle_key_event(
+    state: &mut AppState,
+    snapshot: &HostSnapshot,
+    key: KeyEvent,
+) -> LoopControl {
+    if key.kind != KeyEventKind::Press {
+        return LoopControl::Continue;
+    }
+
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => LoopControl::Quit,
+        KeyCode::Up | KeyCode::Char('k') => {
+            match state.section() {
+                Section::Disks | Section::Volumes | Section::Plans => {
+                    state.select_previous_device()
+                }
+                _ => state.scroll_up(),
+            }
+            LoopControl::Continue
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            match state.section() {
+                Section::Disks | Section::Volumes => {
+                    let volumes_only = state.section() == Section::Volumes;
+                    state.select_next_device(snapshot, volumes_only)
+                }
+                Section::Plans => state.select_next_plan_candidate(snapshot),
+                _ => state.scroll_down(),
+            }
+            LoopControl::Continue
+        }
+        KeyCode::Left | KeyCode::BackTab => {
+            state.previous_section();
+            state.clamp_device_selection(snapshot);
+            LoopControl::Continue
+        }
+        KeyCode::Right | KeyCode::Tab => {
+            state.next_section();
+            state.clamp_device_selection(snapshot);
+            LoopControl::Continue
+        }
+        KeyCode::Char('1') => {
+            state.set_section(0);
+            state.clamp_device_selection(snapshot);
+            LoopControl::Continue
+        }
+        KeyCode::Char('2') => {
+            state.set_section(1);
+            state.clamp_device_selection(snapshot);
+            LoopControl::Continue
+        }
+        KeyCode::Char('3') => {
+            state.set_section(2);
+            LoopControl::Continue
+        }
+        KeyCode::Char('4') => {
+            state.set_section(3);
+            LoopControl::Continue
+        }
+        KeyCode::Char('5') => {
+            state.set_section(4);
+            LoopControl::Continue
+        }
+        KeyCode::Char('6') => {
+            state.set_section(5);
+            state.clamp_device_selection(snapshot);
+            LoopControl::Continue
+        }
+        KeyCode::Char('[') | KeyCode::Char('-') if state.section() == Section::Plans => {
+            state.previous_plan_growth();
+            LoopControl::Continue
+        }
+        KeyCode::Char(']') | KeyCode::Char('+') if state.section() == Section::Plans => {
+            state.next_plan_growth();
+            LoopControl::Continue
+        }
+        KeyCode::Char('=')
+            if state.section() == Section::Plans
+                && key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            state.next_plan_growth();
+            LoopControl::Continue
+        }
+        _ => LoopControl::Continue,
     }
 }
 
