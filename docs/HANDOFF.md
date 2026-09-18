@@ -1,68 +1,118 @@
 # Linux Storage Manager handoff
 
 Repository: PastFly/Linux-Storage-Manager. Default branch: master.
-The owner made the repository public on 2026-09-18. Do not change visibility,
-billing, permissions or merge the default branch without appropriate approval.
-Read AGENTS.md and docs/SAFETY.md before writing.
+The owner made the repository public on 2026-09-18 so GitHub-hosted Actions can run.
+Do not change visibility, billing, permissions or merge the default branch without
+appropriate approval. Read AGENTS.md and docs/SAFETY.md before writing.
 
 ## Development boundary
 
-- M0 is unmerged PR #1, bootstrap/m0-storage-discovery, at
-  2e447f1d5bc52f403adc08916480a35f634c85e4.
-- Continue on draft PR #2, feature/m1a-read-only-planner. It includes unmerged M0.
-- No executor or apply command. Previews always have dry_run=true/executable=false.
-- M1A supports only mounted ext4/XFS on a normal public linear LV in a local,
-  complete single-PV VG, using existing free extents. Read docs/M1A_PLANNER.md.
-- Legacy explain is advisory; the stricter planner never trusts its Ready state.
-- Geometry/target follow-ups: 24929b73cef10ef151730de545f82cf82c151407 and
-  8390a5ee0dbcb6d555e3e272bfee884c57586136. Read GEOMETRY_AUDIT.md and
-  TARGET_RESOLUTION_AUDIT.md. Immediate-VG advisory audit remains open.
+- M0 remains unmerged PR #1.
+- Continue on draft PR #2, feature/m1a-read-only-planner. It includes M0.
+- No executor or apply command. Every preview remains dry_run=true/executable=false.
+- M1A now supports TWO read-only preview profiles:
+  1. mounted ext4/XFS on a normal public linear LV in a local complete single-PV VG,
+     using existing free extents;
+  2. mounted ext4/XFS directly on an ordinary partition with verified adjacent free
+     space on DOS/MBR or GPT.
+- Direct DOS logical-partition growth inside an extended container is still unsupported.
+- Legacy explain is advisory. Strict plan previews perform their own fail-closed checks.
 
-## Actual build and test evidence
+## Current validated evidence
 
-Historical CI through #115 failed before runner assignment due the owner's
-billing/spending-limit error. Do not apply that explanation to newer runs.
-CI #117 at 8390a5e passed Clippy, 74 Rust tests and 24 Python harness mocks;
-Format alone failed. The real formatter patch and Cargo.lock from its artifact
-were verified against source tree 54ca412436f4c8e3e56495272fe19db5b7f949cf.
-Formatting/import commit c2b65c3f83bf7f751f615e2bc8aaebe6d309f9a3 pins that lock.
-The temporary Git-blob exporter was removed; normal CI uses contents: read.
+Exact validated source before this documentation refresh:
+cbcf838afa8d6f1432832c7313a0ca7c0a1329a6
 
-CI #119 / 35331638796 passed fmt, Clippy, Rust tests and release compilation,
-but the first plain-ext4 integration case saw different before/after facts.
-That run did not record the exact differing field; do not claim proven data
-corruption or a conclusively identified udev race from that message alone.
-Observation-only CI #120 / 35331995907 at
-9a1f471228d0de33bfa99b8e7bdf86a41d1d0c59 passed ALL THREE JOBS, including actual
-plain-ext4, LVM/ext4, LVM/XFS fixture tests and complete cleanup. It packaged the
-tested Linux x86_64 release prototype. This is not production-write acceptance.
+CI #175 / run 35352595585:
+- harness safety tests PASS;
+- rustfmt PASS;
+- Clippy with -D warnings PASS;
+- Rust workspace tests PASS;
+- loop integration PASS;
+- matrix executes three repetitions and includes plain ext4 direct-partition preview,
+  LVM/ext4 and LVM/XFS;
+- strict before/after owned storage facts and sentinel checks remain enabled;
+- cleanup completed.
 
-## Readiness follow-up in this tree
+Portable Linux #54 / run 35352595536:
+- static musl x86_64 PASS;
+- static musl aarch64 PASS;
+- same binaries smoke-tested in Debian 12, Ubuntu 22.04, Ubuntu 24.04,
+  Rocky Linux 9 and Alpine 3.22;
+- Debian 12 collector probe PASS.
 
-Before testing nonmutation, the harness now waits for udev's queue and requires
-two equal owned-fixture samples. Setup waiting is bounded and fails closed.
-After planning starts, any changed geometry/identity/sentinel still fails
-immediately; post-test mismatches are never retried or ignored. Such failures now
-include before/after OWNED facts (not the full host snapshot). Temporary trace
-wrapper removed. CI runs the complete matrix three times; any failure stops it.
+Artifacts for that exact head:
+- x86_64: storagemgr-linux-x86_64-musl-35352595536
+- aarch64: storagemgr-linux-aarch64-musl-35352595536
 
-A mocked unstable-setup regression failed on the old harness and passed after
-this change. All 28 Python harness tests pass locally, including settle timeout,
-baseline timeout, genuine post-plan drift and resource ownership/cleanup tests.
-Read this exact head's CI result; do not assume #120 validates the follow-up.
-Reference: lsblk(8) documents udev synchronization after device creation/changes.
+The user's live Debian 12 host srv-phpIPAM also validated the real DOS layout:
+sda1 ext4 root + sda2 extended container + sda5 swap logical sibling.
+explain / reported 1,047,552 bytes adjacent capacity and needs_underlying_resize.
+TUI navigation, direct-partition analysis and key handling were exercised live.
 
-## Resume and release gates
+## Planner behavior
 
-Read live PR heads, latest CI and PR #2 validation comments once. Preserve the
-committed Cargo.lock; use --locked. The local assistant container lacks Rust,
-so compiler evidence comes from actual GitHub jobs, not local source checks.
-Run privileged integration ONLY in a dedicated disposable Linux VM with explicit
---allow-disposable-loop-tests; read docs/VALIDATION.md first.
+LVM preview:
+- requires all six collectors complete;
+- requires verified PV/VG/LV/filesystem identities;
+- single-PV public linear active LV only;
+- ext4/XFS read-write mount only;
+- freezes extent-rounded growth into the preview.
 
-Artifacts are Linux x86_64 binaries built/tested on Ubuntu 24.04, not universal
-Linux packages. TUI visual/PTY acceptance, ARM64 and broader distribution tests,
-remaining advisory review and future mutation safety are separate next gates.
-No merge without explicit owner approval of the exact reviewed head. Do not
-silently mark PR #1 green based on PR #2: their source trees differ.
-Cache unchanged blob SHAs in this chat and preserve existing feature work.
+Direct-partition preview:
+- requires lsblk, partition_tables, mounts, fstab and swap collectors complete;
+- LVM collector may be unavailable;
+- target must resolve to a mounted ext4/XFS partition;
+- parent must be a disk or disposable loop device;
+- sfdisk/lsblk sector/start/size evidence must agree;
+- DOS/MBR extended containers are boundaries; logical partition growth inside them is
+  intentionally unsupported;
+- GPT requires authoritative usable LBA bounds;
+- --max freezes verified adjacent capacity;
+- an oversized sector-rounded request blocks with no steps.
+
+Typed partition preview steps:
+1. revalidate snapshot;
+2. require partition-table metadata backup;
+3. describe extending the partition end only;
+4. describe filesystem growth;
+5. rediscover and verify.
+
+These are descriptions only. No subprocess or device I/O exists in lsm-planner.
+
+## Integration readiness lesson
+
+Fixture setup may briefly expose stable-looking but incomplete udev identities after
+LVM/filesystem creation. The harness therefore waits for TWO equal owned-fixture
+samples AND required PV/VG/LV/filesystem UUIDs before plan testing begins.
+After the first plan command, no mismatch is retried or ignored.
+
+Do not weaken planner identity requirements to make a test pass. Setup stabilization is
+bounded and fail-closed; diagnostic timeout messages list missing identities.
+
+## TUI state
+
+The TUI is a two-pane dashboard with:
+- Disks / Volumes / Swap / Mounts / Diagnostics / Plans;
+- DOS extended containers rendered as containers;
+- pseudo-filesystems hidden from the default Mounts view;
+- integrated advisory Can Grow analysis;
+- strict plan preview for LVM and direct partitions;
+- safe size presets only; no key executes mutations.
+
+Plans key compatibility:
+- increase: =, +, ], PageDown;
+- decrease: -, _, [, PageUp;
+- only KeyEventKind::Press mutates state; Repeat/Release are ignored.
+
+## Remaining gates before any executor work
+
+- broader direct-partition fixtures: GPT/XFS and 4K logical sectors;
+- filesystem feature/health/version preflight;
+- concurrency and locking model;
+- fresh runtime device identity immediately before mutation;
+- verified backup policy and recovery drills;
+- explicit owner approval for exact reviewed code before any M1B executor work.
+
+No merge to master without explicit owner approval. Preserve Cargo.lock and use --locked.
+Cache unchanged blob SHAs during one working context.
