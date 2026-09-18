@@ -987,10 +987,7 @@ fn preflight_lines(checks: &[PreflightCheck]) -> Vec<Line<'static>> {
                 PreflightState::Verified => "[OK] ",
                 PreflightState::Required => "[REQ]",
             };
-            Line::from(format!(
-                "{marker} {:<30} {}",
-                check.code, check.message
-            ))
+            Line::from(format!("{marker} {:<30} {}", check.code, check.message))
         })
         .collect()
 }
