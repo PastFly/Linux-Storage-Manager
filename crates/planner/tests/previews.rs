@@ -369,7 +369,6 @@ fn catalog_exposes_free_vg_space_for_future_create_workflows() {
         .any(|action| action.contains("logical volume")));
 }
 
-
 fn with_gpt_tail(mut snapshot: HostSnapshot) -> HostSnapshot {
     let partition_size = 16 * GIB + EXTENT;
     let sector = 512_u64;
@@ -444,7 +443,6 @@ fn max_target_catalog_includes_verified_lvm_underlying_route_capacity() {
     assert!(targets[0].layout_growth_bytes.unwrap() > 8 * GIB);
 }
 
-
 #[test]
 fn chained_lvm_route_handles_pv_directly_on_an_enlarged_disk() {
     let (mut snapshot, caps) = input();
@@ -484,4 +482,3 @@ fn chained_lvm_route_handles_pv_directly_on_an_enlarged_disk() {
     assert_eq!(plan.growth_route_alternatives().len(), 1);
 }
 
-}
