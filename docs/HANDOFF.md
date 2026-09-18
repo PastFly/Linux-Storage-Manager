@@ -25,16 +25,16 @@ appropriate approval. Read AGENTS.md and docs/SAFETY.md before writing.
 
 Exact validated code head:
 
-`759b6f2d959cf6412de4d68cd2b024ebdecacad8`
+`cba3f17de0adc4eb9631c90709bffcdea3875423`
 
-CI #277 / run `35385883388`:
+CI #312 / run `35387848591`:
 - harness safety tests PASS;
 - rustfmt PASS;
 - Clippy with `-D warnings` PASS;
-- Rust workspace tests PASS, including target/Create scenario contracts;
+- Rust workspace tests PASS, including Create, route-graph and target-identity regression tests;
 - repeated disposable loop integration PASS.
 
-Portable Linux #156 / run `35385883384`:
+Portable Linux #191 / run `35387848583`:
 - static musl x86_64 PASS;
 - static musl aarch64 PASS;
 - same binaries smoke-tested across Debian 12, Ubuntu 22.04, Ubuntu 24.04,
@@ -42,8 +42,9 @@ Portable Linux #156 / run `35385883384`:
 - Debian 12 collector probe PASS.
 
 Artifacts:
-- x86_64: `storagemgr-linux-x86_64-musl-35385883384`
-- aarch64: `storagemgr-linux-aarch64-musl-35385883384`
+- CI-tested x86_64: `storagemgr-linux-x86_64-35387848591`
+- portable x86_64: `storagemgr-linux-x86_64-musl-35387848583`
+- portable aarch64: `storagemgr-linux-aarch64-musl-35387848583`
 
 The branch may contain documentation-only commits after that code head. Do not claim a
 later code head is validated unless its own workflows have completed.
@@ -109,10 +110,52 @@ explicitly resolved. The planner never guesses GPT/DOS policy.
 
 CLI:
 - `storagemgr plan targets [--json]`
+- `storagemgr plan route TARGET [--json]`
 - `storagemgr plan create-spaces [--json]`
 - `storagemgr plan create SOURCE_ID --by SIZE|--max --purpose filesystem|swap [--fs ext4|xfs] [--mount PATH] [--json]`
 
 No Create operation is executable in M1A.
+
+## Semantic layer route graph
+
+M1A now has a pure read-only semantic route analyzer. It resolves the selected target
+into an ordered topology such as:
+
+`disk -> partition -> PV -> VG -> LV -> filesystem -> mount`
+
+and can also expose layers that are not yet writable by the generic planner:
+
+- LUKS/device-mapper encryption;
+- RAID;
+- multi-PV or nonstandard LVM;
+- Btrfs/ZFS/unknown filesystems;
+- zram/ROM/unknown block layers.
+
+Each route is classified as `SupportedProfile`, `AdapterRequired` or `Blocked`.
+Unsupported layers stay visible with an explicit issue code instead of disappearing.
+
+The route is available through `storagemgr plan route TARGET [--json]` and is summarized
+inside the TUI Extend view. Route analysis performs no storage mutation.
+
+## Target-scoped identity guard
+
+M1A can capture a target identity manifest and revalidate it against a fresh snapshot.
+The manifest is intentionally scoped to the selected storage chain and records:
+
+- disk/device path, kernel identity, model/serial, UUIDs and capacity;
+- authoritative partition-table label/ID and exact sector geometry;
+- PV/VG/LV UUIDs, sizes and relevant allocation facts;
+- filesystem type/version/UUID/capacity;
+- active mount source/options;
+- semantic route status and route issue codes.
+
+Revalidation reports classified changes such as partition geometry, LVM identity/capacity,
+filesystem identity, mount state or device-chain replacement. A change to an unrelated
+disk does not invalidate the selected target manifest.
+
+Future M1B execution should acquire the exclusive operation lock, rediscover the host,
+revalidate this target manifest, and reject the operation before mutation if any relevant
+identity changed.
 
 ## Planner profiles
 
@@ -226,8 +269,8 @@ Verified examples:
 - partition geometry or LVM identities/capacity consistent.
 
 Required before future execution:
-- fresh runtime identity recheck;
-- filesystem health/features/grow-support validation;
+- target-scoped fresh runtime identity recheck (read-only manifest/revalidation is now implemented);
+- executor-grade filesystem health/grow decision, including any required offline check;
 - exclusive operation lock;
 - verified partition/LVM metadata backup where relevant;
 - recovery procedure validation;
@@ -251,6 +294,7 @@ Current UI:
 - structured Diagnostics list with Details panel;
 - capabilities panel;
 - responsive Extend view with Summary / Preflight / Plan steps;
+- semantic storage-route summary with explicit adapter/block reason;
 - selectable filesystem targets even when a route is blocked;
 - automatic chained LVM route details where proven;
 - compact fallback on narrow terminals;
@@ -277,9 +321,9 @@ Only `KeyEventKind::Press` mutates state; Repeat/Release are ignored.
 
 ## Remaining gates before any executor work
 
-- filesystem feature/health/version preflight;
+- executor-grade filesystem health decision policy, including required offline checks;
 - concurrency and per-host exclusive locking design;
-- fresh runtime device identity immediately before every mutation boundary;
+- wire the validated target identity manifest into the future executor immediately before every mutation boundary;
 - verified backup policy and recovery drills;
 - operation journal/resume semantics for interruption or power loss;
 - dedicated safety adapters for multi-PV LVM, LUKS, mdraid, multipath, Btrfs,
