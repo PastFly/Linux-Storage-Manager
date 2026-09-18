@@ -530,7 +530,6 @@ fn whole_disk_filesystem_uses_verified_filesystem_geometry_for_max_growth() {
     assert_eq!(targets[0].verified_growth_bytes, Some(8589934592));
 }
 
-
 #[test]
 fn whole_disk_xfs_uses_verified_geometry_for_filesystem_only_growth() {
     let snapshot: HostSnapshot = serde_json::from_value(json!({
@@ -656,8 +655,5 @@ fn whole_disk_filesystem_by_size_rounds_up_to_filesystem_block_size() {
     assert_eq!(change.requested_growth_bytes, 1_048_577);
     assert_eq!(change.rounded_growth_bytes, 1_052_672);
     assert_eq!(change.filesystem_block_size_bytes, 4096);
-    assert_eq!(
-        change.expected_filesystem_size_bytes,
-        34_360_791_040
-    );
+    assert_eq!(change.expected_filesystem_size_bytes, 34_360_791_040);
 }
