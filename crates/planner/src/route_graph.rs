@@ -133,12 +133,11 @@ pub fn analyze_layer_route(snapshot: &HostSnapshot, target: &str) -> LayerRoute 
             .iter()
             .filter(|lv| lv_alias(lv, &source))
         {
-            for device in nodes
-                .iter()
-                .copied()
-                .filter(|device| lv_device(lv, device))
-            {
-                if !candidates.iter().any(|candidate| std::ptr::eq(*candidate, device)) {
+            for device in nodes.iter().copied().filter(|device| lv_device(lv, device)) {
+                if !candidates
+                    .iter()
+                    .any(|candidate| std::ptr::eq(*candidate, device))
+                {
                     candidates.push(device);
                 }
             }
@@ -174,9 +173,9 @@ pub fn analyze_layer_route(snapshot: &HostSnapshot, target: &str) -> LayerRoute 
                 mount.source.as_deref().is_some_and(|mount_source| {
                     node_alias(device, mount_source)
                         || snapshot.lvm.as_ref().is_some_and(|lvm| {
-                            lvm.logical_volumes.iter().any(|lv| {
-                                lv_device(lv, device) && lv_alias(lv, mount_source)
-                            })
+                            lvm.logical_volumes
+                                .iter()
+                                .any(|lv| lv_device(lv, device) && lv_alias(lv, mount_source))
                         })
                 })
             })
@@ -312,7 +311,9 @@ fn append_block_layer(snapshot: &HostSnapshot, device: &BlockDevice, route: &mut
             ));
         }
         NodeKind::Unknown => {
-            route.layers.push(block_layer(RouteLayerKind::Unknown, device));
+            route
+                .layers
+                .push(block_layer(RouteLayerKind::Unknown, device));
             route.issues.push(blocker(
                 "unknown-layer",
                 "unknown block-device layer prevents a proven mutation order",
@@ -370,10 +371,7 @@ fn append_lvm_pv_and_vg(snapshot: &HostSnapshot, device: &BlockDevice, route: &m
         identity: pv.uuid.clone().unwrap_or_else(|| pv.name.clone()),
         device: Some(pv.name.clone()),
         size_bytes: Some(pv.size_bytes),
-        detail: pv
-            .vg_name
-            .as_ref()
-            .map(|vg_name| format!("vg={vg_name}")),
+        detail: pv.vg_name.as_ref().map(|vg_name| format!("vg={vg_name}")),
     });
 
     let Some(vg_name) = pv.vg_name.as_deref() else {
@@ -407,6 +405,13 @@ fn append_lvm_pv_and_vg(snapshot: &HostSnapshot, device: &BlockDevice, route: &m
                 route.issues.push(adapter(
                     "lvm-multi-pv-adapter-required",
                     "multi-PV allocation impact requires a dedicated route adapter",
+                    Some(vg.name.clone()),
+                ));
+            }
+            if vg.attributes.as_deref() != Some("wz--n-") {
+                route.issues.push(adapter(
+                    "lvm-vg-profile-adapter-required",
+                    "volume group is outside the proven writable/resizable local profile",
                     Some(vg.name.clone()),
                 ));
             }
@@ -487,14 +492,11 @@ fn append_lvm_lv(snapshot: &HostSnapshot, device: &BlockDevice, route: &mut Laye
 
     if lv.layout.as_deref() != Some("linear")
         || lv.role.as_deref() != Some("public")
-        || lv
-            .attributes
-            .as_deref()
-            .is_none_or(|attributes| !attributes.starts_with("-wi-"))
+        || lv.attributes.as_deref() != Some("-wi-ao----")
     {
         route.issues.push(adapter(
             "lvm-layout-adapter-required",
-            "thin/cache/RAID/snapshot or otherwise nonstandard LVM layouts require a dedicated adapter",
+            "nonstandard, inactive or otherwise unsupported LVM logical-volume profiles require a dedicated adapter",
             Some(device_path(device)),
         ));
     }
