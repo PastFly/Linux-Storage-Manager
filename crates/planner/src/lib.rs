@@ -2,10 +2,17 @@
 //! A preview is NOT an executable plan or authorization to modify storage.
 
 mod route_graph;
+mod identity_guard;
 
 pub use route_graph::{
     analyze_layer_route, LayerRoute, LayerRouteStatus, RouteIssue, RouteIssueKind, RouteLayer,
     RouteLayerKind,
+};
+
+pub use identity_guard::{
+    capture_target_identity, revalidate_target_identity, DeviceIdentity, FilesystemIdentity,
+    IdentityChange, IdentityGuardError, IdentityRevalidation, LvmIdentity, LvmIdentityKind,
+    MountIdentity, PartitionGeometryIdentity, TargetIdentityManifest,
 };
 
 use lsm_core::{
