@@ -131,7 +131,19 @@ impl AppState {
     fn select_next_plan_candidate(&mut self, snapshot: &HostSnapshot) {
         let len = plan_candidate_rows(snapshot).len();
         if len > 0 {
-            self.selected_device = (self.selected_device + 1).min(len - 1);
+            let next = (self.selected_device + 1).min(len - 1);
+            if next != self.selected_device {
+                self.selected_device = next;
+                self.plan_growth_index = 0;
+            }
+        }
+    }
+
+    fn select_previous_plan_candidate(&mut self) {
+        let previous = self.selected_device.saturating_sub(1);
+        if previous != self.selected_device {
+            self.selected_device = previous;
+            self.plan_growth_index = 0;
         }
     }
 
@@ -139,8 +151,23 @@ impl AppState {
         PLAN_GROWTH_PRESETS[self.plan_growth_index]
     }
 
+    fn plan_growth_for_snapshot(&self, snapshot: &HostSnapshot) -> Growth {
+        let options = plan_growth_options(snapshot, self.selected_device);
+        options
+            .get(self.plan_growth_index.min(options.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(Growth::MaxFree)
+    }
+
     fn next_plan_growth(&mut self) {
         self.plan_growth_index = (self.plan_growth_index + 1).min(PLAN_GROWTH_PRESETS.len() - 1);
+    }
+
+    fn next_plan_growth_for_snapshot(&mut self, snapshot: &HostSnapshot) {
+        let len = plan_growth_options(snapshot, self.selected_device).len();
+        if len > 0 {
+            self.plan_growth_index = (self.plan_growth_index + 1).min(len - 1);
+        }
     }
 
     fn previous_plan_growth(&mut self) {
@@ -210,9 +237,8 @@ fn handle_key_event(state: &mut AppState, snapshot: &HostSnapshot, key: KeyEvent
         KeyCode::Char('q') | KeyCode::Esc => LoopControl::Quit,
         KeyCode::Up | KeyCode::Char('k') => {
             match state.section() {
-                Section::Disks | Section::Volumes | Section::Plans => {
-                    state.select_previous_device()
-                }
+                Section::Disks | Section::Volumes => state.select_previous_device(),
+                Section::Plans => state.select_previous_plan_candidate(),
                 _ => state.scroll_up(),
             }
             LoopControl::Continue
@@ -274,11 +300,11 @@ fn handle_key_event(state: &mut AppState, snapshot: &HostSnapshot, key: KeyEvent
         KeyCode::Char(']') | KeyCode::Char('+') | KeyCode::PageDown
             if state.section() == Section::Plans =>
         {
-            state.next_plan_growth();
+            state.next_plan_growth_for_snapshot(snapshot);
             LoopControl::Continue
         }
         KeyCode::Char('=') if state.section() == Section::Plans => {
-            state.next_plan_growth();
+            state.next_plan_growth_for_snapshot(snapshot);
             LoopControl::Continue
         }
         _ => LoopControl::Continue,
@@ -566,7 +592,7 @@ fn render_plan_hint(
                         "Current size    {}",
                         analysis
                             .current_size_bytes
-                            .map(human_bytes)
+                            .map(human_bytes_precise)
                             .unwrap_or_else(|| "-".to_owned())
                     )),
                     Line::from(""),
@@ -576,13 +602,13 @@ fn render_plan_hint(
                 lines.push(Line::from("Strict plan preview"));
                 lines.push(Line::from(format!(
                     "Requested       {}",
-                    growth_label(state.plan_growth())
+                    growth_label(state.plan_growth_for_snapshot(snapshot))
                 )));
                 lines.extend(strict_plan_lines(
                     snapshot,
                     capabilities,
                     &target,
-                    state.plan_growth(),
+                    state.plan_growth_for_snapshot(snapshot),
                 ));
                 lines.push(Line::from(""));
                 lines.push(Line::from("No changes will be made."));
@@ -805,6 +831,48 @@ fn plan_candidate_rows(snapshot: &HostSnapshot) -> Vec<DeviceRow<'_>> {
         .collect()
 }
 
+fn growth_presets_for_capacity(capacity: Option<u64>) -> Vec<Growth> {
+    const ADAPTIVE_BYTES: [u64; 7] = [
+        512 * 1024,
+        1024 * 1024,
+        8 * 1024 * 1024,
+        64 * 1024 * 1024,
+        512 * 1024 * 1024,
+        1024 * 1024 * 1024,
+        4 * 1024 * 1024 * 1024,
+    ];
+
+    let Some(capacity) = capacity else {
+        return PLAN_GROWTH_PRESETS.to_vec();
+    };
+
+    let mut options: Vec<Growth> = ADAPTIVE_BYTES
+        .into_iter()
+        .filter(|bytes| *bytes <= capacity)
+        .map(Growth::ByBytes)
+        .collect();
+    options.push(Growth::MaxFree);
+    options
+}
+
+fn plan_growth_options(snapshot: &HostSnapshot, selected_device: usize) -> Vec<Growth> {
+    let rows = plan_candidate_rows(snapshot);
+    let Some(row) = rows.get(selected_device) else {
+        return vec![Growth::MaxFree];
+    };
+    let target = plan_target(row.device);
+    let capacity = analyze_extendability(snapshot, &target)
+        .ok()
+        .and_then(|analysis| {
+            analysis
+                .immediate_growth_bytes
+                .or(analysis.potential_underlying_growth_bytes)
+        })
+        .filter(|bytes| *bytes > 0);
+
+    growth_presets_for_capacity(capacity)
+}
+
 fn analysis_summary_lines(analysis: &ExtendAnalysis) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
@@ -891,7 +959,7 @@ fn strict_plan_lines(
                 )));
                 lines.push(Line::from(format!(
                     "Expected size   {}",
-                    human_bytes(change.expected_lv_size_bytes)
+                    human_bytes_precise(change.expected_lv_size_bytes)
                 )));
                 lines.push(Line::from(format!(
                     "VG free after   {}",
@@ -907,7 +975,7 @@ fn strict_plan_lines(
                 )));
                 lines.push(Line::from(format!(
                     "Expected size   {}",
-                    human_bytes(change.expected_partition_size_bytes)
+                    human_bytes_precise(change.expected_partition_size_bytes)
                 )));
                 lines.push(Line::from(format!(
                     "Adjacent after  {}",
@@ -955,6 +1023,21 @@ fn human_bytes(bytes: u64) -> String {
         format!("{bytes} {}", UNITS[unit])
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn human_bytes_precise(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    match unit {
+        0 => format!("{bytes} {}", UNITS[unit]),
+        1 | 2 => format!("{value:.1} {}", UNITS[unit]),
+        _ => format!("{value:.3} {}", UNITS[unit]),
     }
 }
 
@@ -1405,7 +1488,6 @@ mod tests {
         );
         assert_eq!(state.plan_growth(), Growth::ByBytes(1024 * 1024 * 1024));
     }
-
 
     #[test]
     fn adaptive_growth_presets_hide_values_larger_than_verified_capacity() {
