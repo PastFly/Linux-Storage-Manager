@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SPEC = importlib.util.spec_from_file_location("loop_matrix", Path(__file__).with_name("loop_matrix.py"))
 M = importlib.util.module_from_spec(SPEC)
@@ -260,7 +260,11 @@ class ExerciseTests(unittest.TestCase):
     def test_detects_geometry_drift_after_readonly_commands(self):
         self._exercise(True)
 
-    def _exercise(self, drift):
+    def test_waits_for_fixture_metadata_before_starting_readonly_commands(self):
+        with patch.object(M.time, "sleep"):
+            self._exercise(False, readiness_drift=True)
+
+    def _exercise(self, drift, readiness_drift=False):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
             (target / "readonly-sentinel").write_bytes(b"original")
@@ -281,11 +285,21 @@ class ExerciseTests(unittest.TestCase):
             calls = []
             class FakeApplication:
                 def __init__(self):
-                    self.snapshots = iter((before, after))
+                    self.sample_count = 0
                 def json(self, name, *args):
                     assert args == ("snapshot",)
-                    return next(self.snapshots)
+                    self.sample_count += 1
+                    if calls:
+                        return after
+                    if readiness_drift and self.sample_count == 1:
+                        early = copy.deepcopy(before)
+                        early["storage"]["block_devices"][0]["uuid"] = None
+                        return early
+                    return before
                 def run(self, name, *args, allowed=(0,)):
+                    if name == "udevadm":
+                        assert args == ("settle", "--timeout=30")
+                        return subprocess.CompletedProcess(args, 0, "", "")
                     calls.append((args, allowed))
                     refusal = "1TiB" in args or "--apply" in args
                     assert allowed == ((2,) if refusal else (0,))
@@ -300,6 +314,33 @@ class ExerciseTests(unittest.TestCase):
                 M.exercise(None, application, loop, target, "lsmtestabc")
             self.assertEqual(len(calls), 4)
             self.assertEqual((target / "readonly-sentinel").read_bytes(), b"original")
+
+
+class ReadinessTests(unittest.TestCase):
+    def test_settle_failure_prevents_baseline_collection(self):
+        runner = Mock()
+        runner.run.side_effect = M.SafetyError("udev queue timeout")
+        with self.assertRaisesRegex(M.SafetyError, "udev queue timeout"):
+            M.ready_snapshot(runner, "/dev/loop987654", None)
+        runner.json.assert_not_called()
+
+    def test_unstable_baseline_is_bounded_and_refused(self):
+        runner = Mock()
+        runner.json.side_effect = list(range(20))
+        with patch.object(M, "storage_facts", side_effect=lambda sample, *_: sample), \
+                patch.object(M.time, "sleep"):
+            with self.assertRaisesRegex(M.SafetyError, "did not stabilize"):
+                M.ready_snapshot(runner, "/dev/loop987654", None)
+        self.assertEqual(runner.json.call_count, 20)
+        runner.run.assert_called_once_with("udevadm", "settle", "--timeout=30")
+
+    def test_baseline_requires_two_identical_owned_samples(self):
+        runner = Mock()
+        runner.json.side_effect = [1, 2, 2]
+        with patch.object(M, "storage_facts", side_effect=lambda sample, *_: sample), \
+                patch.object(M.time, "sleep"):
+            self.assertEqual(M.ready_snapshot(runner, "/dev/loop987654", None), 2)
+        self.assertEqual(runner.json.call_count, 3)
 
 
 if __name__ == "__main__":

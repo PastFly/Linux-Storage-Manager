@@ -30,7 +30,7 @@ class Runner:
     def __init__(self, binary: Path):
         names = ("losetup", "sfdisk", "partx", "mkfs.ext4", "mkfs.xfs", "pvcreate",
                  "vgcreate", "lvcreate", "vgremove", "vgs", "pvs", "mount", "umount",
-                 "findmnt", "vgcfgbackup", "lvextend", "resize2fs", "xfs_growfs")
+                 "findmnt", "vgcfgbackup", "lvextend", "resize2fs", "xfs_growfs", "udevadm")
         self.tools = {}
         for name in names:
             path = shutil.which(name)
@@ -304,8 +304,27 @@ def storage_facts(snapshot: dict[str, Any], loop: str, vg: str | None) -> Any:
     return tables, inventory, devices
 
 
+def ready_snapshot(binary: Runner, loop: str, vg: str | None) -> dict[str, Any]:
+    """Require settled, repeatable fixture facts BEFORE testing nonmutation.
+
+    This is fixture setup, not an acceptance retry. Changes after any planning
+    command still fail immediately; no mismatching post-test sample is retried.
+    """
+    binary.run("udevadm", "settle", "--timeout=30")
+    previous = None
+    for attempt in range(20):
+        snapshot = binary.json("storagemgr", "snapshot")
+        facts = storage_facts(snapshot, loop, vg)
+        if previous is not None and facts == previous:
+            return snapshot
+        previous = facts
+        if attempt < 19:
+            time.sleep(0.1)
+    raise SafetyError("fixture metadata did not stabilize before read-only tests")
+
+
 def exercise(resources: Resources, binary: Runner, loop: Loop, target: Path, vg: str | None) -> None:
-    before = binary.json("storagemgr", "snapshot")
+    before = ready_snapshot(binary, loop.device, vg)
     facts = storage_facts(before, loop.device, vg)
     sentinel = (target / "readonly-sentinel").read_bytes()
     # Direct partition planning is deliberately unsupported in M1A.
@@ -320,8 +339,12 @@ def exercise(resources: Resources, binary: Runner, loop: Loop, target: Path, vg:
     if result.returncode != 2:
         raise SafetyError("--apply must be rejected by the CLI")
     after = binary.json("storagemgr", "snapshot")
-    if facts != storage_facts(after, loop.device, vg) or sentinel != (target / "readonly-sentinel").read_bytes():
-        raise SafetyError("storage metadata or sentinel changed during read-only planning")
+    after_facts = storage_facts(after, loop.device, vg)
+    if facts != after_facts:
+        evidence = json.dumps({"before": facts, "after": after_facts}, sort_keys=True)
+        raise SafetyError("owned storage facts changed during read-only planning: " + evidence)
+    if sentinel != (target / "readonly-sentinel").read_bytes():
+        raise SafetyError("sentinel changed during read-only planning")
     for snapshot in (before, after):
         for item in snapshot["diagnostics"]:
             device = item.get("device") or ""

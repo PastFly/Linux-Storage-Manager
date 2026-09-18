@@ -95,10 +95,13 @@ jobs:
       - name: Build storagemgr
         run: cargo build --locked --release --workspace
       - name: Test planning on disposable ext4 and XFS fixtures
-        run: >-
-          sudo python3 -I tools/trace_loop_matrix.py
-          --allow-disposable-loop-tests
-          "${GITHUB_WORKSPACE}/target/release/storagemgr"
+        run: |
+          for attempt in 1 2 3; do
+            echo "Integration repetition ${attempt}/3"
+            sudo python3 -I tests/integration/loop_matrix.py \
+              --allow-disposable-loop-tests \
+              "${GITHUB_WORKSPACE}/target/release/storagemgr"
+          done
 
       - name: Package tested read-only prototype
         env:
