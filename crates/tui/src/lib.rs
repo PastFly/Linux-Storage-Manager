@@ -15,8 +15,9 @@ use lsm_core::{
 use lsm_discovery::{analyze_extendability, discover_capabilities, discover_snapshot};
 use lsm_planner::{
     analyze_layer_route, analyze_layout_opportunity, analyze_lvm_underlying_growth,
-    list_provisioning_opportunities, plan_create, plan_extend, CreatePlanPreview, CreatePurpose,
-    CreateRequest, ExtendRequest, Growth, GrowthRouteAlternative, LayerRoute, LayerRouteStatus,
+    decide_filesystem_growth, list_provisioning_opportunities, plan_create, plan_extend,
+    CreatePlanPreview, CreatePurpose, CreateRequest, ExtendRequest, FilesystemDecisionState,
+    FilesystemGrowthDecision, Growth, GrowthRouteAlternative, LayerRoute, LayerRouteStatus,
     LayoutAlternative, Operation, PlanStatus, PlanStep, PreflightCheck, PreflightState,
     ProvisioningOpportunity, ProvisioningSpaceKind, Reversibility, RouteLayerKind,
 };
@@ -1158,6 +1159,12 @@ fn render_plan_compact(
         snapshot, target,
     )));
     lines.push(Line::from(""));
+    lines.extend(filesystem_decision_lines(&decide_filesystem_growth(
+        snapshot,
+        capabilities,
+        target,
+    )));
+    lines.push(Line::from(""));
     lines.extend(strict_plan_lines(snapshot, capabilities, target, growth));
     if let Some((opportunity_growth, alternative)) =
         probe_layout_opportunity(snapshot, capabilities, target)
@@ -1210,6 +1217,12 @@ fn render_plan_wide(
     summary.push(Line::from(""));
     summary.extend(layer_route_summary_lines(&analyze_layer_route(
         snapshot, target,
+    )));
+    summary.push(Line::from(""));
+    summary.extend(filesystem_decision_lines(&decide_filesystem_growth(
+        snapshot,
+        capabilities,
+        target,
     )));
     match &plan {
         Ok(plan) if plan.status() == PlanStatus::Preview => {
@@ -2044,6 +2057,32 @@ fn layer_route_summary_lines(route: &LayerRoute) -> Vec<Line<'static>> {
             "Route note      [{}] {}",
             issue.code, issue.message
         )));
+    }
+    lines
+}
+
+fn filesystem_decision_lines(decision: &FilesystemGrowthDecision) -> Vec<Line<'static>> {
+    let state = match decision.state {
+        FilesystemDecisionState::ReadyOnlineGrow => "Online grow ready",
+        FilesystemDecisionState::ReadOnlyHealthCheckRequired => "Read-only health check required",
+        FilesystemDecisionState::OfflineHealthCheckRequired => "Offline check required",
+        FilesystemDecisionState::MountRequired => "Mount required",
+        FilesystemDecisionState::Blocked => "Blocked",
+        FilesystemDecisionState::AdapterRequired => "Adapter required",
+    };
+    let mut lines = vec![
+        Line::from("Filesystem gate"),
+        Line::from(format!("FS state        {state}")),
+    ];
+    if let Some(check) = &decision.read_only_check {
+        lines.push(Line::from(format!(
+            "Health check    {} {}",
+            check.tool,
+            check.args.join(" ")
+        )));
+    }
+    if let Some(reason) = decision.reasons.first() {
+        lines.push(Line::from(format!("FS note         {reason}")));
     }
     lines
 }
