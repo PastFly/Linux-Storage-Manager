@@ -186,8 +186,7 @@ fn xfs_requires_explicit_no_modify_scrub_after_grow_dry_run_passes() {
 fn unmounted_xfs_requires_mount_before_growth() {
     let snapshot = snapshot("xfs", false, &[]);
 
-    let decision =
-        decide_filesystem_growth(&snapshot, &capabilities(), "/dev/sda1");
+    let decision = decide_filesystem_growth(&snapshot, &capabilities(), "/dev/sda1");
 
     assert_eq!(decision.state, FilesystemDecisionState::MountRequired);
     assert!(decision.read_only_check.is_none());
