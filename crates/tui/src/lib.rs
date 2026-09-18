@@ -895,6 +895,54 @@ mod tests {
         assert!(!text.contains("tools"));
     }
 
+
+    #[test]
+    fn plans_only_include_growable_filesystem_targets() {
+        let mut snap = snapshot();
+        let mut extended = device("sda2", NodeKind::Partition, vec![]);
+        extended.size_bytes = 1024;
+        let mut swap = device("sda5", NodeKind::Partition, vec![]);
+        swap.filesystem = Some(Filesystem {
+            fs_type: "swap".into(),
+            version: Some("1".into()),
+        });
+        swap.mountpoints = vec!["[SWAP]".into()];
+        snap.storage.block_devices[0].children.push(extended);
+        snap.storage.block_devices[0].children.push(swap);
+
+        let rows = plan_candidate_rows(&snap);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].device.name, "sda1");
+    }
+
+    #[test]
+    fn analysis_summary_exposes_capacity_and_reason() {
+        let analysis = lsm_core::ExtendAnalysis {
+            target: "/".into(),
+            device: Some("/dev/sda1".into()),
+            filesystem: Some("ext4".into()),
+            current_size_bytes: Some(9_711_910_912),
+            immediate_growth_bytes: None,
+            potential_underlying_growth_bytes: Some(1_047_552),
+            status: lsm_core::ExtendabilityStatus::NeedsUnderlyingResize,
+            reasons: vec![
+                "1047552 bytes of adjacent capacity were detected after the target partition".into(),
+            ],
+            steps: vec!["grow the partition into verified adjacent free space".into()],
+        };
+
+        let text = analysis_summary_lines(&analysis)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("Can grow"));
+        assert!(text.contains("1023.0 KiB"));
+        assert!(text.contains("Adjacent free"));
+        assert!(text.contains("grow the partition"));
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
