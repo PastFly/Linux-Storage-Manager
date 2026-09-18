@@ -31,10 +31,10 @@ storagemgr lvm              # PV/VG/LV inventory
 storagemgr capabilities     # available host storage tools
 storagemgr diagnose         # topology and cross-source diagnostics
 storagemgr explain /        # read-only growth explanation for a target
-storagemgr targets           # selectable Grow targets and current blockers
-storagemgr create-sources    # verified/blocked provisioning sources
+storagemgr plan targets      # selectable Grow targets and current blockers
+storagemgr plan create-spaces # verified/blocked provisioning sources
 storagemgr plan extend / --max
-storagemgr plan create --source <id> --max --purpose filesystem --fs ext4
+storagemgr plan create <id> --max --purpose filesystem --fs ext4
 ```
 
 ## Current execution boundary
