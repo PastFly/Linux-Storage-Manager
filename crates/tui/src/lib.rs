@@ -1204,7 +1204,10 @@ mod tests {
         state.next_plan_growth();
         assert_eq!(state.plan_growth(), lsm_planner::Growth::MaxFree);
         state.previous_plan_growth();
-        assert_eq!(state.plan_growth(), lsm_planner::Growth::ByBytes(4 * 1024 * 1024 * 1024));
+        assert_eq!(
+            state.plan_growth(),
+            lsm_planner::Growth::ByBytes(4 * 1024 * 1024 * 1024)
+        );
     }
 
     #[test]
