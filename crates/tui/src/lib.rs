@@ -2693,9 +2693,13 @@ mod tests {
         assert!(plans.contains("Target"));
 
         let disks = toolbar_text(Section::Disks);
-        assert!(disks.contains("1-6"));
+        assert!(disks.contains("1-7"));
         assert!(disks.contains("Section"));
         assert!(!disks.contains("PgUp/PgDn"));
+
+        let create = toolbar_text(Section::Create);
+        assert!(create.contains("1-7"));
+        assert!(create.contains("Navigate"));
     }
 
     #[test]
