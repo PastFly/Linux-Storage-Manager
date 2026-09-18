@@ -136,7 +136,26 @@ fn adjacent_capacity_dos_primary(
         return None;
     }
 
+    let extended_ranges: Vec<_> = table
+        .partitions
+        .iter()
+        .filter_map(|record| {
+            let kind = parse_dos_type(record.partition_type.as_deref()?)?;
+            matches!(kind, 0x05 | 0x0f | 0x85).then_some((
+                record.start_sector,
+                record.start_sector.checked_add(record.size_sectors)?,
+                record.node.as_str(),
+            ))
+        })
+        .collect();
+
+    if extended_ranges.len() > 1 {
+        return None;
+    }
+
     let mut primary_ranges = Vec::new();
+    let mut logical_ranges = Vec::new();
+
     for child in disk
         .children
         .iter()
@@ -148,38 +167,52 @@ fn adjacent_capacity_dos_primary(
             .iter()
             .filter(|record| record.node == child_path))?;
         let partition_type = parse_dos_type(record.partition_type.as_deref()?)?;
-        if partition_type == 0x00 || partition_type == 0xee {
+        if partition_type == 0x00 || partition_type == 0xee || record.size_sectors == 0 {
             return None;
         }
 
         let start_bytes = record.start_sector.checked_mul(sector)?;
+        let end = record.start_sector.checked_add(record.size_sectors)?;
         if child.logical_sector_bytes != Some(sector)
             || child.start_512_sector?.checked_mul(512)? != start_bytes
-            || record.size_sectors == 0
+            || record.start_sector < 1
+            || end > limit
         {
             return None;
         }
 
-        let end = record.start_sector.checked_add(record.size_sectors)?;
-        if record.start_sector < 1 || end > limit {
-            return None;
-        }
+        let is_extended = matches!(partition_type, 0x05 | 0x0f | 0x85);
+        let inside_extended = extended_ranges.iter().any(|(ext_start, ext_end, ext_node)| {
+            child_path != *ext_node
+                && record.start_sector >= *ext_start
+                && end <= *ext_end
+        });
 
-        if !matches!(partition_type, 0x05 | 0x0f | 0x85) {
+        if !is_extended {
             let size_bytes = record.size_sectors.checked_mul(sector)?;
             if child.size_bytes != size_bytes {
                 return None;
             }
         }
 
-        primary_ranges.push((record.start_sector, end, child_path));
+        if inside_extended {
+            logical_ranges.push((record.start_sector, end));
+        } else {
+            primary_ranges.push((record.start_sector, end, child_path));
+        }
     }
 
     if primary_ranges.is_empty() {
         return None;
     }
+
     primary_ranges.sort_unstable();
     if primary_ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+        return None;
+    }
+
+    logical_ranges.sort_unstable();
+    if logical_ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
         return None;
     }
 
