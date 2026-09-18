@@ -4,9 +4,9 @@ use lsm_core::{
 };
 use lsm_planner::{
     analyze_lvm_underlying_growth, list_extend_targets, list_provisioning_opportunities,
-    parse_growth_size, plan_create, plan_extend, CreatePurpose, CreateRequest, ExtendRequest,
-    ExtendTargetAvailability, ExtendTargetKind, Growth, Operation, PlanStatus, PreflightState,
-    ProvisioningSpaceKind,
+    parse_growth_size, plan_create, plan_extend, resolve_create_source_adapter, CreatePurpose,
+    CreateRequest, ExtendRequest, ExtendTargetAvailability, ExtendTargetKind, Growth, Operation,
+    PlanStatus, PreflightState, ProvisioningSpaceKind,
 };
 use serde_json::json;
 
@@ -884,6 +884,63 @@ fn create_plan_accepts_unique_source_id_prefix() {
 
     assert_eq!(plan.status(), PlanStatus::Preview);
     assert_eq!(plan.source().unwrap().id, source.id);
+}
+
+#[test]
+fn create_source_adapter_normalizes_vg_free_extent_geometry() {
+    let (snapshot, _caps) = input();
+    let source = list_provisioning_opportunities(&snapshot)
+        .into_iter()
+        .find(|space| space.kind == ProvisioningSpaceKind::LvmFreeExtents)
+        .expect("expected VG free source");
+
+    let adapter = resolve_create_source_adapter(&snapshot, &source, None).unwrap();
+
+    assert_eq!(adapter.source_id, source.id);
+    assert_eq!(adapter.kind, ProvisioningSpaceKind::LvmFreeExtents);
+    assert_eq!(adapter.volume_group.as_deref(), Some("vg0"));
+    assert_eq!(adapter.allocation_unit_bytes, EXTENT);
+    assert_eq!(adapter.available_bytes, 8 * GIB);
+    assert_eq!(adapter.start_sector, None);
+    assert_eq!(adapter.sector_count, None);
+}
+
+#[test]
+fn create_source_adapter_revalidates_exact_partition_free_range() {
+    let (snapshot, _caps) = input();
+    let snapshot = with_gpt_tail(snapshot);
+    let source = list_provisioning_opportunities(&snapshot)
+        .into_iter()
+        .find(|space| space.kind == ProvisioningSpaceKind::DiskTail)
+        .expect("expected GPT tail source");
+
+    let adapter = resolve_create_source_adapter(&snapshot, &source, None).unwrap();
+
+    assert_eq!(adapter.source_id, source.id);
+    assert_eq!(adapter.kind, ProvisioningSpaceKind::DiskTail);
+    assert_eq!(adapter.disk.as_deref(), Some("/dev/vda"));
+    assert_eq!(adapter.allocation_unit_bytes, 512);
+    assert_eq!(adapter.available_bytes, source.available_bytes);
+    assert_eq!(adapter.start_sector, source.start_sector);
+    assert_eq!(adapter.sector_count, source.sector_count);
+}
+
+#[test]
+fn create_source_adapter_fails_closed_when_partition_range_changes() {
+    let (snapshot, _caps) = input();
+    let snapshot = with_gpt_tail(snapshot);
+    let source = list_provisioning_opportunities(&snapshot)
+        .into_iter()
+        .find(|space| space.kind == ProvisioningSpaceKind::DiskTail)
+        .expect("expected GPT tail source");
+    let mut changed = snapshot.clone();
+    changed.partition_tables[0].last_lba = changed.partition_tables[0]
+        .last_lba
+        .map(|value| value.saturating_sub(2048));
+
+    let error = resolve_create_source_adapter(&changed, &source, None).unwrap_err();
+
+    assert_eq!(error.code, "create-geometry-changed");
 }
 
 #[test]

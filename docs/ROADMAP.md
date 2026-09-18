@@ -70,7 +70,7 @@ Goal: safely understand a host before changing anything.
 - [x] Route Extend target selection through semantic profiles for direct partitions, LVM and whole-device filesystems while retaining proven geometry/extent builders.
 - [x] Use semantic layer issue codes for unsupported layered targets instead of leaking unrelated LVM/direct-partition errors.
 - [x] Add filesystem-only ext4/XFS previews when verified filesystem geometry proves the backing disk/loop device is already larger than the filesystem.
-- [ ] Refactor the remaining chained grow and Create builders to consume reusable semantic route adapters instead of topology-specific planner branches.
+- [x] Refactor the remaining chained grow and Create builders to consume reusable semantic route/source adapters instead of topology-specific planner branches.
 - [x] Add initial scenario-matrix contract tests for multiple selectable targets, blocked unknown filesystems, free ranges and chained LVM routes.
 - [x] Add semantic route-graph tests for direct, LVM, LUKS/crypt, multi-PV and unknown-filesystem paths.
 - [x] Add target identity revalidation tests, including target geometry/LVM changes, filesystem-size changes and unrelated-disk non-invalidation.
