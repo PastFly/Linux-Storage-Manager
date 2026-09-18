@@ -143,12 +143,10 @@ fn adjacent_capacity_dos_primary(
         .filter(|child| child.kind == NodeKind::Partition)
     {
         let child_path = child.path.as_deref()?;
-        let record = one(
-            table
-                .partitions
-                .iter()
-                .filter(|record| record.node == child_path),
-        )?;
+        let record = one(table
+            .partitions
+            .iter()
+            .filter(|record| record.node == child_path))?;
         let partition_type = parse_dos_type(record.partition_type.as_deref()?)?;
         if partition_type == 0x00 || partition_type == 0xee {
             return None;
@@ -189,12 +187,10 @@ fn adjacent_capacity_dos_primary(
     let index = primary_ranges
         .iter()
         .position(|range| range.2 == target_path)?;
-    let target_record = one(
-        table
-            .partitions
-            .iter()
-            .filter(|record| record.node == target_path),
-    )?;
+    let target_record = one(table
+        .partitions
+        .iter()
+        .filter(|record| record.node == target_path))?;
     if matches!(
         parse_dos_type(target_record.partition_type.as_deref()?)?,
         0x05 | 0x0f | 0x85
