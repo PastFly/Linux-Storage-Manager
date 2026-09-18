@@ -2854,7 +2854,7 @@ pub fn analyze_lvm_underlying_growth(
         return None;
     }
     let resolved_device = route.resolved_device.as_deref()?;
-    let lv_device = unique(
+    let resolved_lv_device = unique(
         nodes
             .iter()
             .copied()
@@ -2865,13 +2865,13 @@ pub fn analyze_lvm_underlying_growth(
     let lv = unique(
         lvm.logical_volumes
             .iter()
-            .filter(|lv| lv_device(lv, lv_device)),
+            .filter(|lv| lv_device(lv, resolved_lv_device)),
         "ambiguous-lv",
     )
     .ok()?;
-    if lv_device.kind != NodeKind::Lvm
-        || !lv_device.children.is_empty()
-        || !supported_chain(&snapshot.storage.block_devices, lv_device, true)
+    if resolved_lv_device.kind != NodeKind::Lvm
+        || !resolved_lv_device.children.is_empty()
+        || !supported_chain(&snapshot.storage.block_devices, resolved_lv_device, true)
         || lv.layout.as_deref() != Some("linear")
         || lv.role.as_deref() != Some("public")
         || lv.attributes.as_deref() != Some("-wi-ao----")
@@ -2879,7 +2879,7 @@ pub fn analyze_lvm_underlying_growth(
         return None;
     }
 
-    let fs = lv_device.filesystem.as_ref()?;
+    let fs = resolved_lv_device.filesystem.as_ref()?;
     if !matches!(fs.fs_type.as_str(), "ext4" | "xfs") {
         return None;
     }
@@ -2895,14 +2895,14 @@ pub fn analyze_lvm_underlying_growth(
     if !mount
         .source
         .as_deref()
-        .is_some_and(|source| node_alias(lv_device, source) || lv_alias(lv, source))
+        .is_some_and(|source| node_alias(resolved_lv_device, source) || lv_alias(lv, source))
         || mount.fs_type.as_deref() != Some(fs.fs_type.as_str())
         || !mount.options.iter().any(|option| option == "rw")
         || mount
             .options
             .iter()
             .any(|option| matches!(option.as_str(), "ro" | "bind" | "rbind"))
-        || lv_device.mountpoints != vec![mount.target.clone()]
+        || resolved_lv_device.mountpoints != vec![mount.target.clone()]
     {
         return None;
     }
@@ -2947,7 +2947,7 @@ pub fn analyze_lvm_underlying_growth(
     if !matches!(
         pv_device.kind,
         NodeKind::Disk | NodeKind::Partition | NodeKind::Loop
-    ) || !contains_device(pv_device, lv_device)
+    ) || !contains_device(pv_device, resolved_lv_device)
         || pv_device
             .filesystem
             .as_ref()
