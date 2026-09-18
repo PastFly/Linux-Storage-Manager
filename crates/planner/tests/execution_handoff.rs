@@ -52,26 +52,28 @@ fn snapshot(with_filesystem_evidence: bool) -> HostSnapshot {
     .unwrap();
 
     if with_filesystem_evidence {
-        snapshot.filesystem_preflight.push(FilesystemPreflightEvidence {
-            device: "/dev/sda1".into(),
-            mountpoint: Some("/data".into()),
-            fs_type: "ext4".into(),
-            fs_version: Some("1.0".into()),
-            state: FilesystemProbeState::Verified,
-            filesystem_state: Some("clean".into()),
-            revision: Some("1 (dynamic)".into()),
-            features: vec![
-                "has_journal".into(),
-                "extent".into(),
-                "64bit".into(),
-                "metadata_csum".into(),
-            ],
-            block_size_bytes: Some(4096),
-            block_count: Some(partition_bytes / 4096),
-            size_bytes: Some(partition_bytes),
-            grow_check_passed: None,
-            detail: None,
-        });
+        snapshot
+            .filesystem_preflight
+            .push(FilesystemPreflightEvidence {
+                device: "/dev/sda1".into(),
+                mountpoint: Some("/data".into()),
+                fs_type: "ext4".into(),
+                fs_version: Some("1.0".into()),
+                state: FilesystemProbeState::Verified,
+                filesystem_state: Some("clean".into()),
+                revision: Some("1 (dynamic)".into()),
+                features: vec![
+                    "has_journal".into(),
+                    "extent".into(),
+                    "64bit".into(),
+                    "metadata_csum".into(),
+                ],
+                block_size_bytes: Some(4096),
+                block_count: Some(partition_bytes / 4096),
+                size_bytes: Some(partition_bytes),
+                grow_check_passed: None,
+                detail: None,
+            });
     }
 
     snapshot
