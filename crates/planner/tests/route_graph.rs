@@ -442,11 +442,11 @@ fn layered_targets_use_semantic_blocker_instead_of_unrelated_builder_error() {
 }
 
 #[test]
-fn whole_disk_filesystem_gets_explicit_capacity_evidence_blocker() {
+fn whole_disk_filesystem_uses_verified_filesystem_geometry_for_max_growth() {
     let snapshot: HostSnapshot = serde_json::from_value(json!({
         "storage": {"block_devices": [{
             "name":"vdb","kernel_name":"vdb","path":"/dev/vdb","kind":"disk",
-            "size_bytes":40_000_000_000u64,"uuid":"whole-fs",
+            "size_bytes":42949672960u64,"uuid":"whole-fs",
             "filesystem":{"fs_type":"ext4","version":"1.0"},
             "mountpoints":["/archive"],"children":[]
         }]},
@@ -457,8 +457,28 @@ fn whole_disk_filesystem_gets_explicit_capacity_evidence_blocker() {
         "fstab":[],
         "swaps":[],
         "lvm":null,
+        "filesystem_preflight":[{
+            "device":"/dev/vdb",
+            "mountpoint":"/archive",
+            "fs_type":"ext4",
+            "fs_version":"1.0",
+            "state":"verified",
+            "filesystem_state":"clean",
+            "revision":"1 (dynamic)",
+            "features":["has_journal","extent","64bit","metadata_csum"],
+            "block_size_bytes":4096,
+            "block_count":8388608,
+            "size_bytes":34359738368u64,
+            "grow_check_passed":null,
+            "detail":null
+        }],
         "diagnostics":[],
-        "collectors":[]
+        "collectors":[
+            {"component":"lsblk","state":"complete"},
+            {"component":"mounts","state":"complete"},
+            {"component":"fstab","state":"complete"},
+            {"component":"swap","state":"complete"}
+        ]
     }))
     .unwrap();
 
@@ -469,7 +489,12 @@ fn whole_disk_filesystem_gets_explicit_capacity_evidence_blocker() {
 
     let plan = plan_extend(
         &snapshot,
-        &HostCapabilities { tools: vec![] },
+        &HostCapabilities {
+            tools: vec![lsm_core::ToolCapability {
+                name: "resize2fs".into(),
+                available: true,
+            }],
+        },
         ExtendRequest {
             target: "/archive".into(),
             growth: Growth::MaxFree,
@@ -477,9 +502,16 @@ fn whole_disk_filesystem_gets_explicit_capacity_evidence_blocker() {
     )
     .unwrap();
 
-    assert_eq!(plan.status(), PlanStatus::Blocked);
-    assert_eq!(
-        plan.blockers()[0].code,
-        "whole-device-filesystem-capacity-unmodeled"
-    );
+    assert_eq!(plan.status(), PlanStatus::Preview);
+    let change = plan
+        .filesystem_size_change()
+        .expect("whole-device preview must expose filesystem size change");
+    assert_eq!(change.current_filesystem_size_bytes, 34359738368);
+    assert_eq!(change.backing_device_size_bytes, 42949672960);
+    assert_eq!(change.rounded_growth_bytes, 8589934592);
+    assert_eq!(change.expected_filesystem_size_bytes, 42949672960);
+    assert_eq!(change.remaining_backing_free_bytes, 0);
+    assert_eq!(plan.steps().len(), 3);
+    assert!(plan.partition_size_change().is_none());
+    assert!(plan.size_change().is_none());
 }
