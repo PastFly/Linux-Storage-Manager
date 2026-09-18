@@ -1174,6 +1174,7 @@ pub fn plan_create(
         start_sector: source.start_sector,
         sector_count: allocated_sectors,
         volume_group: source.volume_group.clone(),
+        partition_table: plan.request.partition_table,
     });
 
     plan.steps.push(
