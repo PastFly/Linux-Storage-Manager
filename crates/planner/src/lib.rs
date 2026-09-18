@@ -3464,12 +3464,10 @@ fn build_candidate(
         "unsupported-filesystem",
         "filesystem is unsupported; only ext4 and XFS previews are supported",
     )?;
-    let mountpoint = route.mountpoint.as_deref().ok_or_else(|| {
-        blocked(
-            "mount-not-unique",
-            "LVM target is not uniquely mounted",
-        )
-    })?;
+    let mountpoint = route
+        .mountpoint
+        .as_deref()
+        .ok_or_else(|| blocked("mount-not-unique", "LVM target is not uniquely mounted"))?;
     let mount = unique(
         snapshot
             .mounts
