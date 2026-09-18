@@ -76,11 +76,17 @@ impl AppState {
         self.section_index = self.section_index.saturating_sub(1);
     }
 
-    fn select_next_device(&mut self, snapshot: &HostSnapshot) {
-        let len = device_rows(&snapshot.storage).len();
+    fn select_next_device(&mut self, snapshot: &HostSnapshot, volumes_only: bool) {
+        let len = visible_device_rows(&snapshot.storage, volumes_only).len();
         if len > 0 {
             self.selected_device = (self.selected_device + 1).min(len - 1);
         }
+    }
+
+    fn clamp_device_selection(&mut self, snapshot: &HostSnapshot) {
+        let volumes_only = self.section() == Section::Volumes;
+        let len = visible_device_rows(&snapshot.storage, volumes_only).len();
+        self.selected_device = self.selected_device.min(len.saturating_sub(1));
     }
 
     fn select_previous_device(&mut self) {
@@ -132,18 +138,34 @@ fn event_loop(
                     },
                     KeyCode::Down | KeyCode::Char('j') => match state.section() {
                         Section::Disks | Section::Volumes | Section::Plans => {
-                            state.select_next_device(snapshot)
+                            let volumes_only = state.section() == Section::Volumes;
+                            state.select_next_device(snapshot, volumes_only)
                         }
                         _ => state.next_section(),
                     },
-                    KeyCode::Left | KeyCode::BackTab => state.previous_section(),
-                    KeyCode::Right | KeyCode::Tab => state.next_section(),
-                    KeyCode::Char('1') => state.section_index = 0,
-                    KeyCode::Char('2') => state.section_index = 1,
+                    KeyCode::Left | KeyCode::BackTab => {
+                        state.previous_section();
+                        state.clamp_device_selection(snapshot);
+                    }
+                    KeyCode::Right | KeyCode::Tab => {
+                        state.next_section();
+                        state.clamp_device_selection(snapshot);
+                    }
+                    KeyCode::Char('1') => {
+                        state.section_index = 0;
+                        state.clamp_device_selection(snapshot);
+                    }
+                    KeyCode::Char('2') => {
+                        state.section_index = 1;
+                        state.clamp_device_selection(snapshot);
+                    }
                     KeyCode::Char('3') => state.section_index = 2,
                     KeyCode::Char('4') => state.section_index = 3,
                     KeyCode::Char('5') => state.section_index = 4,
-                    KeyCode::Char('6') => state.section_index = 5,
+                    KeyCode::Char('6') => {
+                        state.section_index = 5;
+                        state.clamp_device_selection(snapshot);
+                    }
                     _ => {}
                 }
             }
@@ -263,17 +285,9 @@ fn render_devices(
         .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
         .split(area);
 
-    let rows = device_rows(&snapshot.storage);
+    let rows = visible_device_rows(&snapshot.storage, volumes_only);
     let mut lines = Vec::new();
     for (index, row) in rows.iter().enumerate() {
-        if volumes_only
-            && matches!(
-                row.device.kind,
-                NodeKind::Disk | NodeKind::Loop | NodeKind::Rom
-            )
-        {
-            continue;
-        }
         let marker = if index == state.selected_device {
             "›"
         } else {
@@ -356,7 +370,7 @@ fn render_mounts(
     snapshot: &HostSnapshot,
 ) {
     let mut lines = Vec::new();
-    for mount in &snapshot.mounts {
+    for mount in storage_mounts(snapshot) {
         lines.push(Line::from(format!(
             "{:<24}  {:<18}  {}",
             mount.target,
@@ -473,6 +487,54 @@ fn append_device_rows<'a>(device: &'a BlockDevice, depth: usize, rows: &mut Vec<
     }
 }
 
+fn visible_device_rows(graph: &StorageGraph, volumes_only: bool) -> Vec<DeviceRow<'_>> {
+    device_rows(graph)
+        .into_iter()
+        .filter(|row| {
+            !volumes_only
+                || !matches!(
+                    row.device.kind,
+                    NodeKind::Disk | NodeKind::Loop | NodeKind::Rom
+                )
+        })
+        .collect()
+}
+
+fn storage_mounts(snapshot: &HostSnapshot) -> Vec<&lsm_core::MountEntry> {
+    const PSEUDO_FS: &[&str] = &[
+        "proc",
+        "sysfs",
+        "securityfs",
+        "cgroup",
+        "cgroup2",
+        "pstore",
+        "bpf",
+        "tracefs",
+        "debugfs",
+        "configfs",
+        "fusectl",
+        "devtmpfs",
+        "devpts",
+        "tmpfs",
+        "hugetlbfs",
+        "mqueue",
+        "ramfs",
+        "autofs",
+    ];
+
+    snapshot
+        .mounts
+        .iter()
+        .filter(|mount| {
+            mount
+                .fs_type
+                .as_deref()
+                .map(|fs| !PSEUDO_FS.contains(&fs))
+                .unwrap_or(true)
+        })
+        .collect()
+}
+
 fn plan_target(device: &BlockDevice) -> String {
     device
         .mountpoints
@@ -580,7 +642,7 @@ mod tests {
         assert_eq!(rows[1].device.name, "sda1");
 
         let mut state = AppState::new(&snap);
-        state.select_next_device(&snap);
+        state.select_next_device(&snap, false);
         assert_eq!(state.selected_device, 1);
         state.select_next_device(&snap);
         assert_eq!(state.selected_device, 1);
