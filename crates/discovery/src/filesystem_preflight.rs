@@ -97,10 +97,7 @@ fn probe_ext4(device: &BlockDevice) -> FilesystemPreflightEvidence {
 }
 
 fn probe_xfs(device: &BlockDevice) -> FilesystemPreflightEvidence {
-    let device_name = device
-        .path
-        .clone()
-        .unwrap_or_else(|| device.name.clone());
+    let device_name = device.path.clone().unwrap_or_else(|| device.name.clone());
     let fs_version = device.filesystem.as_ref().and_then(|fs| fs.version.clone());
     let Some(mountpoint) = first_real_mountpoint(device) else {
         return evidence(
