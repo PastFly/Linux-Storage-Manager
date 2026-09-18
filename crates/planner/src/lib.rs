@@ -3,7 +3,7 @@
 
 use lsm_core::{
     BlockDevice, CollectorState, DiagnosticSeverity, HostCapabilities, HostSnapshot,
-    LvmLogicalVolume, NodeKind,
+    LvmLogicalVolume, NodeKind, PartitionTable,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -44,6 +44,18 @@ pub enum Operation {
     BackupLvmMetadata {
         vg_uuid: String,
     },
+    BackupPartitionTableMetadata {
+        disk: String,
+        table_label: String,
+        table_id: Option<String>,
+    },
+    ExtendPartition {
+        partition: String,
+        start_sector: u64,
+        old_size_sectors: u64,
+        new_size_sectors: u64,
+        sector_size_bytes: u64,
+    },
     ExtendLogicalVolume {
         lv_uuid: String,
         additional_extents: u64,
@@ -81,6 +93,18 @@ pub struct SizeChange {
     pub remaining_vg_free_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PartitionSizeChange {
+    pub device: String,
+    pub disk: String,
+    pub current_partition_size_bytes: u64,
+    pub requested_growth_bytes: u64,
+    pub rounded_growth_bytes: u64,
+    pub expected_partition_size_bytes: u64,
+    pub sector_size_bytes: u64,
+    pub remaining_adjacent_free_bytes: u64,
+}
+
 // Private fields, no setters and deliberately no Deserialize implementation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlanPreview {
@@ -92,6 +116,7 @@ pub struct PlanPreview {
     status: PlanStatus,
     request: ExtendRequest,
     size_change: Option<SizeChange>,
+    partition_size_change: Option<PartitionSizeChange>,
     blockers: Vec<Blocker>,
     steps: Vec<PlanStep>,
     notices: Vec<String>,
@@ -124,6 +149,10 @@ impl PlanPreview {
         self.size_change.as_ref()
     }
 
+    pub fn partition_size_change(&self) -> Option<&PartitionSizeChange> {
+        self.partition_size_change.as_ref()
+    }
+
     pub fn plan_id(&self) -> &str {
         &self.plan_id
     }
@@ -154,6 +183,17 @@ impl PlanPreview {
                 size.requested_growth_bytes,
                 size.rounded_growth_bytes,
                 size.remaining_vg_free_bytes
+            ));
+        }
+        if let Some(size) = &self.partition_size_change {
+            text.push_str(&format!(
+                "Partition size: {} -> {} bytes\nRequested growth: {} bytes\n\
+                 Sector-aligned growth: {} bytes\nAdjacent free after preview: {} bytes\n",
+                size.current_partition_size_bytes,
+                size.expected_partition_size_bytes,
+                size.requested_growth_bytes,
+                size.rounded_growth_bytes,
+                size.remaining_adjacent_free_bytes
             ));
         }
         for blocker in &self.blockers {
@@ -216,6 +256,7 @@ pub fn plan_extend(
         status: PlanStatus::Blocked,
         request,
         size_change: None,
+        partition_size_change: None,
         blockers: Vec::new(),
         steps: Vec::new(),
         notices: vec![
@@ -225,12 +266,20 @@ pub fn plan_extend(
             "Metadata backups are not backups of user data; filesystem growth has no automatic rollback.".into(),
         ],
     };
-    match build_candidate(snapshot, capabilities, &plan.request) {
-        Ok((size, steps)) => {
+    match try_build_partition_candidate(snapshot, capabilities, &plan.request) {
+        Ok(Some((size, steps))) => {
             plan.status = PlanStatus::Preview;
-            plan.size_change = Some(size);
+            plan.partition_size_change = Some(size);
             plan.steps = steps;
         }
+        Ok(None) => match build_candidate(snapshot, capabilities, &plan.request) {
+            Ok((size, steps)) => {
+                plan.status = PlanStatus::Preview;
+                plan.size_change = Some(size);
+                plan.steps = steps;
+            }
+            Err(blocker) => plan.blockers.push(blocker),
+        },
         Err(blocker) => plan.blockers.push(blocker),
     }
     // Includes all preview content except the ID itself (empty at this point).
@@ -267,6 +316,453 @@ fn unique<T>(mut items: impl Iterator<Item = T>, code: &str) -> Result<T, Blocke
         "evidence is ambiguous or duplicated",
     )?;
     Ok(first)
+}
+
+fn try_build_partition_candidate(
+    snapshot: &HostSnapshot,
+    capabilities: &HostCapabilities,
+    request: &ExtendRequest,
+) -> Result<Option<(PartitionSizeChange, Vec<PlanStep>)>, Blocker> {
+    for component in ["lsblk", "partition_tables", "mounts", "fstab", "swap"] {
+        let status = unique(
+            snapshot
+                .collectors
+                .iter()
+                .filter(|status| status.component == component),
+            "collector-incomplete",
+        )?;
+        ensure(
+            status.state == CollectorState::Complete,
+            "collector-incomplete",
+            "all direct-partition preview collectors must complete",
+        )?;
+    }
+
+    ensure(
+        !snapshot
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error),
+        "diagnostic-error",
+        "the snapshot contains error-level diagnostics",
+    )?;
+    ensure(
+        !request.target.is_empty() && !request.target.chars().any(char::is_control),
+        "invalid-target",
+        "target must be a nonempty device path or exact mountpoint",
+    )?;
+
+    let nodes = flatten(&snapshot.storage.block_devices);
+    let source = if request.target.starts_with("/dev/") {
+        request.target.as_str()
+    } else {
+        unique(
+            snapshot
+                .mounts
+                .iter()
+                .filter(|mount| mount.target == request.target),
+            "ambiguous-target",
+        )?
+        .source
+        .as_deref()
+        .ok_or_else(|| blocked("unknown-source", "mount source is absent"))?
+    };
+
+    let device = unique(
+        nodes.iter().copied().filter(|device| node_alias(device, source)),
+        "ambiguous-device",
+    )?;
+    if device.kind != NodeKind::Partition {
+        return Ok(None);
+    }
+
+    ensure(
+        device.children.is_empty(),
+        "unsupported-layout",
+        "stacked consumers above the partition are not supported",
+    )?;
+    let fs = device
+        .filesystem
+        .as_ref()
+        .ok_or_else(|| blocked("filesystem-missing", "filesystem type is absent"))?;
+    ensure(
+        matches!(fs.fs_type.as_str(), "ext4" | "xfs"),
+        "unsupported-filesystem",
+        "direct partition preview supports only ext4 and XFS",
+    )?;
+
+    let mount = unique(
+        snapshot.mounts.iter().filter(|mount| {
+            mount
+                .source
+                .as_deref()
+                .is_some_and(|source| node_alias(device, source))
+        }),
+        "mount-not-unique",
+    )?;
+    ensure(
+        mount.fs_type.as_deref() == Some(fs.fs_type.as_str())
+            && mount.options.iter().any(|option| option == "rw")
+            && !mount
+                .options
+                .iter()
+                .any(|option| matches!(option.as_str(), "ro" | "bind" | "rbind"))
+            && device.mountpoints == vec![mount.target.clone()]
+            && snapshot
+                .mounts
+                .iter()
+                .filter(|candidate| candidate.target == mount.target)
+                .count()
+                == 1,
+        "mount-state-mismatch",
+        "one matching read-write mount must be confirmed by lsblk and findmnt",
+    )?;
+    ensure(
+        !snapshot
+            .swaps
+            .iter()
+            .any(|swap| node_alias(device, &swap.name)),
+        "active-swap",
+        "the target is reported as active swap",
+    )?;
+
+    for tool in [
+        "sfdisk",
+        if fs.fs_type == "xfs" {
+            "xfs_growfs"
+        } else {
+            "resize2fs"
+        },
+    ] {
+        let capability = unique(
+            capabilities.tools.iter().filter(|capability| capability.name == tool),
+            "tool-unavailable",
+        )?;
+        ensure(
+            capability.available,
+            "tool-unavailable",
+            "a required future operation tool is unavailable",
+        )?;
+    }
+
+    let parent_name = device
+        .parent_kernel_name
+        .as_deref()
+        .ok_or_else(|| blocked("parent-missing", "partition parent is unknown"))?;
+    let disk = unique(
+        nodes.iter().copied().filter(|candidate| {
+            candidate.kind == NodeKind::Disk
+                && candidate.kernel_name.as_deref() == Some(parent_name)
+        }),
+        "parent-not-resolved",
+    )?;
+    let disk_path = disk
+        .path
+        .as_deref()
+        .ok_or_else(|| blocked("parent-not-resolved", "disk path is absent"))?;
+    let device_path = device
+        .path
+        .as_deref()
+        .ok_or_else(|| blocked("device-path-missing", "partition path is absent"))?;
+    let table = unique(
+        snapshot
+            .partition_tables
+            .iter()
+            .filter(|table| table.device == disk_path),
+        "partition-table-not-unique",
+    )?;
+    let sector = table
+        .sector_size_bytes
+        .ok_or_else(|| blocked("sector-size-missing", "partition sector size is unknown"))?;
+    ensure(
+        sector >= 512
+            && sector.is_power_of_two()
+            && device.logical_sector_bytes == Some(sector),
+        "sector-size-mismatch",
+        "partition-table and block-device logical sector sizes disagree",
+    )?;
+
+    let record = unique(
+        table
+            .partitions
+            .iter()
+            .filter(|record| record.node == device_path),
+        "partition-record-not-unique",
+    )?;
+    let start_bytes = record
+        .start_sector
+        .checked_mul(sector)
+        .ok_or_else(|| blocked("size-overflow", "partition start exceeds u64"))?;
+    ensure(
+        device
+            .start_512_sector
+            .and_then(|start| start.checked_mul(512))
+            == Some(start_bytes),
+        "partition-start-mismatch",
+        "lsblk and partition table disagree on partition start",
+    )?;
+    let current_size = record
+        .size_sectors
+        .checked_mul(sector)
+        .ok_or_else(|| blocked("size-overflow", "partition size exceeds u64"))?;
+    ensure(
+        current_size == device.size_bytes,
+        "partition-size-mismatch",
+        "lsblk and partition table disagree on target partition size",
+    )?;
+
+    let adjacent_sectors = adjacent_free_sectors(disk, table, record)?;
+    let adjacent_bytes = adjacent_sectors
+        .checked_mul(sector)
+        .ok_or_else(|| blocked("size-overflow", "adjacent capacity exceeds u64"))?;
+    let requested = match request.growth {
+        Growth::ByBytes(bytes) => bytes,
+        Growth::MaxFree => adjacent_bytes,
+    };
+    ensure(
+        requested > 0,
+        "no-growth",
+        "requested growth or verified adjacent capacity is zero",
+    )?;
+    let growth_sectors = requested / sector + u64::from(requested % sector != 0);
+    ensure(
+        growth_sectors <= adjacent_sectors,
+        "insufficient-adjacent-capacity",
+        "sector-rounded request exceeds verified adjacent free space",
+    )?;
+    let rounded = growth_sectors
+        .checked_mul(sector)
+        .ok_or_else(|| blocked("size-overflow", "growth exceeds u64"))?;
+    let new_size_sectors = record
+        .size_sectors
+        .checked_add(growth_sectors)
+        .ok_or_else(|| blocked("size-overflow", "new partition size exceeds u64"))?;
+    let expected_size = new_size_sectors
+        .checked_mul(sector)
+        .ok_or_else(|| blocked("size-overflow", "new partition size exceeds u64"))?;
+
+    let label = table
+        .label
+        .clone()
+        .ok_or_else(|| blocked("partition-label-missing", "partition table label is unknown"))?;
+    let size = PartitionSizeChange {
+        device: device_path.to_owned(),
+        disk: disk_path.to_owned(),
+        current_partition_size_bytes: current_size,
+        requested_growth_bytes: requested,
+        rounded_growth_bytes: rounded,
+        expected_partition_size_bytes: expected_size,
+        sector_size_bytes: sector,
+        remaining_adjacent_free_bytes: adjacent_bytes - rounded,
+    };
+    let steps = vec![
+        step(
+            1,
+            Operation::RevalidateSnapshot,
+            Reversibility::NotApplicable,
+        ),
+        step(
+            2,
+            Operation::BackupPartitionTableMetadata {
+                disk: disk_path.to_owned(),
+                table_label: label,
+                table_id: table.id.clone(),
+            },
+            Reversibility::Reversible,
+        ),
+        step(
+            3,
+            Operation::ExtendPartition {
+                partition: device_path.to_owned(),
+                start_sector: record.start_sector,
+                old_size_sectors: record.size_sectors,
+                new_size_sectors,
+                sector_size_bytes: sector,
+            },
+            Reversibility::Irreversible,
+        ),
+        step(
+            4,
+            Operation::GrowFilesystem {
+                fs_type: fs.fs_type.clone(),
+                mountpoint: mount.target.clone(),
+            },
+            Reversibility::Irreversible,
+        ),
+        step(
+            5,
+            Operation::RediscoverAndVerify,
+            Reversibility::NotApplicable,
+        ),
+    ];
+
+    Ok(Some((size, steps)))
+}
+
+fn adjacent_free_sectors(
+    disk: &BlockDevice,
+    table: &PartitionTable,
+    target: &lsm_core::PartitionRecord,
+) -> Result<u64, Blocker> {
+    let sector = table
+        .sector_size_bytes
+        .ok_or_else(|| blocked("sector-size-missing", "partition sector size is unknown"))?;
+    let disk_sectors = disk.size_bytes / sector;
+    let label = table
+        .label
+        .as_deref()
+        .ok_or_else(|| blocked("partition-label-missing", "partition table label is unknown"))?;
+
+    match label {
+        "dos" => adjacent_free_dos(table, target, disk_sectors),
+        "gpt" => adjacent_free_gpt(table, target),
+        _ => Err(blocked(
+            "unsupported-partition-table",
+            "direct partition preview supports only DOS/MBR and GPT",
+        )),
+    }
+}
+
+fn adjacent_free_gpt(
+    table: &PartitionTable,
+    target: &lsm_core::PartitionRecord,
+) -> Result<u64, Blocker> {
+    let first = table
+        .first_lba
+        .ok_or_else(|| blocked("gpt-bounds-missing", "GPT first usable LBA is unknown"))?;
+    let last = table
+        .last_lba
+        .ok_or_else(|| blocked("gpt-bounds-missing", "GPT last usable LBA is unknown"))?;
+    let limit = last
+        .checked_add(1)
+        .ok_or_else(|| blocked("size-overflow", "GPT usable limit exceeds u64"))?;
+
+    let mut ranges = Vec::new();
+    for record in &table.partitions {
+        let end = record
+            .start_sector
+            .checked_add(record.size_sectors)
+            .ok_or_else(|| blocked("size-overflow", "partition range exceeds u64"))?;
+        ensure(
+            record.size_sectors > 0 && record.start_sector >= first && end <= limit,
+            "invalid-partition-range",
+            "GPT partition lies outside the usable range",
+        )?;
+        ranges.push((record.start_sector, end, record.node.as_str()));
+    }
+    ranges.sort_unstable();
+    ensure(
+        !ranges.windows(2).any(|pair| pair[0].1 > pair[1].0),
+        "overlapping-partitions",
+        "GPT partition ranges overlap",
+    )?;
+    adjacent_from_ranges(&ranges, target, limit)
+}
+
+fn adjacent_free_dos(
+    table: &PartitionTable,
+    target: &lsm_core::PartitionRecord,
+    disk_sectors: u64,
+) -> Result<u64, Blocker> {
+    let limit = disk_sectors.min(u64::from(u32::MAX) + 1);
+    let mut extended = Vec::new();
+    for record in &table.partitions {
+        let kind = parse_dos_type(record.partition_type.as_deref().ok_or_else(|| {
+            blocked("partition-type-missing", "DOS partition type is unknown")
+        })?)?;
+        if matches!(kind, 0x05 | 0x0f | 0x85) {
+            let end = record
+                .start_sector
+                .checked_add(record.size_sectors)
+                .ok_or_else(|| blocked("size-overflow", "extended range exceeds u64"))?;
+            extended.push((record.start_sector, end, record.node.as_str()));
+        }
+    }
+    ensure(
+        extended.len() <= 1,
+        "unsupported-dos-layout",
+        "multiple extended partition containers are not supported",
+    )?;
+
+    let target_kind = parse_dos_type(target.partition_type.as_deref().ok_or_else(|| {
+        blocked("partition-type-missing", "DOS partition type is unknown")
+    })?)?;
+    ensure(
+        !matches!(target_kind, 0x05 | 0x0f | 0x85),
+        "unsupported-dos-layout",
+        "extended partition containers cannot be grown as filesystem targets",
+    )?;
+    if let Some((ext_start, ext_end, _)) = extended.first() {
+        ensure(
+            !(target.start_sector >= *ext_start
+                && target
+                    .start_sector
+                    .checked_add(target.size_sectors)
+                    .is_some_and(|end| end <= *ext_end)),
+            "unsupported-logical-partition",
+            "logical partition growth inside an extended container is not supported",
+        )?;
+    }
+
+    let mut primary = Vec::new();
+    for record in &table.partitions {
+        let end = record
+            .start_sector
+            .checked_add(record.size_sectors)
+            .ok_or_else(|| blocked("size-overflow", "partition range exceeds u64"))?;
+        ensure(
+            record.size_sectors > 0 && record.start_sector >= 1 && end <= limit,
+            "invalid-partition-range",
+            "DOS partition lies outside the addressable range",
+        )?;
+        let kind = parse_dos_type(record.partition_type.as_deref().ok_or_else(|| {
+            blocked("partition-type-missing", "DOS partition type is unknown")
+        })?)?;
+        ensure(
+            kind != 0x00 && kind != 0xee,
+            "unsupported-dos-layout",
+            "empty/protective DOS partition types are not supported",
+        )?;
+
+        let inside_extended = extended.first().is_some_and(|(start, finish, node)| {
+            record.node != *node && record.start_sector >= *start && end <= *finish
+        });
+        if !inside_extended {
+            primary.push((record.start_sector, end, record.node.as_str()));
+        }
+    }
+    primary.sort_unstable();
+    ensure(
+        !primary.windows(2).any(|pair| pair[0].1 > pair[1].0),
+        "overlapping-partitions",
+        "DOS primary/extended partition ranges overlap",
+    )?;
+    adjacent_from_ranges(&primary, target, limit)
+}
+
+fn adjacent_from_ranges(
+    ranges: &[(u64, u64, &str)],
+    target: &lsm_core::PartitionRecord,
+    limit: u64,
+) -> Result<u64, Blocker> {
+    let index = ranges
+        .iter()
+        .position(|range| range.2 == target.node)
+        .ok_or_else(|| blocked("target-not-primary", "target partition is not a supported boundary"))?;
+    let end = ranges[index].1;
+    let next = ranges.get(index + 1).map_or(limit, |range| range.0);
+    next.checked_sub(end)
+        .ok_or_else(|| blocked("overlapping-partitions", "next partition overlaps the target"))
+}
+
+fn parse_dos_type(raw: &str) -> Result<u8, Blocker> {
+    let trimmed = raw.trim();
+    let normalized = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    u8::from_str_radix(normalized, 16)
+        .map_err(|_| blocked("invalid-partition-type", "DOS partition type is invalid"))
 }
 
 fn build_candidate(
