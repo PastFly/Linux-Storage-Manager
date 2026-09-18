@@ -2,7 +2,7 @@ use lsm_core::{
     BlockDevice, CollectorState, CollectorStatus, Filesystem, HostCapabilities, HostSnapshot,
     MountEntry, NodeKind, PartitionRecord, PartitionTable, StorageGraph, ToolCapability,
 };
-use lsm_planner::{plan_extend, ExtendRequest, Growth, PlanStatus};
+use lsm_planner::{plan_extend, ExtendRequest, Growth, PlanStatus, PreflightState};
 
 fn device(
     name: &str,
@@ -320,4 +320,55 @@ fn direct_gpt_xfs_4k_partition_rounds_growth_to_logical_sector() {
     assert_eq!(change.rounded_growth_bytes, 1_003_520);
     assert_eq!(change.expected_partition_size_bytes, 34_557_952);
     assert_eq!(change.remaining_adjacent_free_bytes, 31_481_856);
+}
+
+
+#[test]
+fn direct_partition_preview_exposes_verified_and_required_preflight() {
+    let plan = plan_extend(
+        &live_debian_snapshot(),
+        &capabilities(),
+        ExtendRequest {
+            target: "/".into(),
+            growth: Growth::MaxFree,
+        },
+    )
+    .unwrap();
+
+    let checks = plan.preflight_checks();
+    assert!(checks.iter().any(|check| {
+        check.code == "partition-geometry-consistent"
+            && check.state == PreflightState::Verified
+    }));
+    assert!(checks.iter().any(|check| {
+        check.code == "adjacent-capacity-verified"
+            && check.state == PreflightState::Verified
+    }));
+    for code in [
+        "runtime-identity-recheck",
+        "filesystem-health",
+        "exclusive-lock",
+        "metadata-backup",
+        "execution-approval",
+    ] {
+        assert!(checks.iter().any(|check| {
+            check.code == code && check.state == PreflightState::Required
+        }), "missing required preflight check: {code}");
+    }
+}
+
+#[test]
+fn blocked_direct_partition_plan_has_no_success_preflight() {
+    let plan = plan_extend(
+        &live_debian_snapshot(),
+        &capabilities(),
+        ExtendRequest {
+            target: "/".into(),
+            growth: Growth::ByBytes(2 * 1024 * 1024),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert!(plan.preflight_checks().is_empty());
 }
