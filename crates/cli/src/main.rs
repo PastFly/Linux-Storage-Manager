@@ -5,7 +5,10 @@ use lsm_discovery::{
     analyze_extendability, discover_capabilities, discover_fstab, discover_lvm, discover_mounts,
     discover_partition_tables, discover_snapshot, discover_storage, discover_swaps,
 };
-use lsm_planner::{parse_growth_size, plan_extend, ExtendRequest, Growth, PlanStatus};
+use lsm_planner::{
+    list_extend_targets, list_provisioning_opportunities, parse_growth_size, plan_extend,
+    ExtendRequest, Growth, PlanStatus,
+};
 use std::process::ExitCode;
 
 #[derive(Debug, Parser)]
@@ -57,17 +60,29 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum PlanCommand {
-    /// Preview growing a mounted linear LV using only existing VG free extents.
+    /// Preview growing a selected filesystem target.
     Extend {
-        /// Exact mountpoint or LV path.
+        /// Exact mountpoint or block-device/LV path.
         target: String,
-        /// Additional capacity, e.g. 8GiB; rounded up to whole extents.
+        /// Additional capacity, e.g. 8GiB; rounded to the storage layer's allocation unit.
         #[arg(long, conflicts_with = "max", required_unless_present = "max")]
         by: Option<String>,
-        /// Freeze the request to all currently reported free VG extents.
+        /// Freeze the request to the maximum currently verified growth path.
         #[arg(long)]
         max: bool,
         /// Emit structured JSON instead of the human-readable preview.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List filesystem targets that can be selected for growth planning.
+    Targets {
+        /// Emit structured JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List discovered free-space sources for future create/provision workflows.
+    CreateSpaces {
+        /// Emit structured JSON.
         #[arg(long)]
         json: bool,
     },
@@ -151,6 +166,63 @@ fn run() -> Result<ExitCode> {
                 ExitCode::SUCCESS
             });
         }
+        Some(Command::Plan {
+            command: PlanCommand::Targets { json },
+        }) => {
+            let snapshot = discover_snapshot()?;
+            let capabilities = discover_capabilities();
+            let targets = list_extend_targets(&snapshot, &capabilities);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&targets)?);
+            } else if targets.is_empty() {
+                println!("No filesystem targets discovered.");
+            } else {
+                for target in targets {
+                    println!(
+                        "{:<18} {:<28} fs={:<10} status={:?} verified={} layout={}  {}",
+                        target.target,
+                        target.device,
+                        target.filesystem,
+                        target.availability,
+                        target
+                            .verified_growth_bytes
+                            .map(|bytes| bytes.to_string())
+                            .unwrap_or_else(|| "-".to_owned()),
+                        target
+                            .layout_growth_bytes
+                            .map(|bytes| bytes.to_string())
+                            .unwrap_or_else(|| "-".to_owned()),
+                        target.reason
+                    );
+                }
+            }
+        }
+        Some(Command::Plan {
+            command: PlanCommand::CreateSpaces { json },
+        }) => {
+            let snapshot = discover_snapshot()?;
+            let spaces = list_provisioning_opportunities(&snapshot);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&spaces)?);
+            } else if spaces.is_empty() {
+                println!("No verified free-space sources discovered.");
+            } else {
+                for space in spaces {
+                    println!(
+                        "{:<16} {:<28} available={} advisory_only={} blockers={}",
+                        format!("{:?}", space.kind),
+                        space.source,
+                        space.available_bytes,
+                        space.advisory_only,
+                        if space.blockers.is_empty() {
+                            "-".to_owned()
+                        } else {
+                            space.blockers.join("; ")
+                        }
+                    );
+                }
+            }
+        }
         Some(Command::Tree) => {
             let graph = discover_storage()?;
             for device in &graph.block_devices {
@@ -226,6 +298,12 @@ mod tests {
         .is_err());
         assert!(
             Cli::try_parse_from(["storagemgr", "plan", "extend", "/", "--max", "--apply"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["storagemgr", "plan", "targets"]).is_ok());
+        assert!(Cli::try_parse_from(["storagemgr", "plan", "targets", "--json"]).is_ok());
+        assert!(Cli::try_parse_from(["storagemgr", "plan", "create-spaces"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["storagemgr", "plan", "create-spaces", "--json"]).is_ok()
         );
     }
 }
