@@ -302,14 +302,8 @@ fn run() -> Result<ExitCode> {
                 println!("{}", serde_json::to_string_pretty(&decision)?);
             } else {
                 println!("Target: {}", decision.target);
-                println!(
-                    "Device: {}",
-                    decision.device.as_deref().unwrap_or("-")
-                );
-                println!(
-                    "Filesystem: {}",
-                    decision.fs_type.as_deref().unwrap_or("-")
-                );
+                println!("Device: {}", decision.device.as_deref().unwrap_or("-"));
+                println!("Filesystem: {}", decision.fs_type.as_deref().unwrap_or("-"));
                 println!("State: {:?}", decision.state);
                 if let Some(check) = &decision.read_only_check {
                     println!("Read-only check: {} {}", check.tool, check.args.join(" "));
@@ -322,14 +316,16 @@ fn run() -> Result<ExitCode> {
                     println!("Required: {action}");
                 }
             }
-            return Ok(if matches!(
-                decision.state,
-                FilesystemDecisionState::Blocked | FilesystemDecisionState::AdapterRequired
-            ) {
-                ExitCode::from(2)
-            } else {
-                ExitCode::SUCCESS
-            });
+            return Ok(
+                if matches!(
+                    decision.state,
+                    FilesystemDecisionState::Blocked | FilesystemDecisionState::AdapterRequired
+                ) {
+                    ExitCode::from(2)
+                } else {
+                    ExitCode::SUCCESS
+                },
+            );
         }
         Some(Command::Plan {
             command: PlanCommand::CreateSpaces { json },
@@ -484,14 +480,10 @@ mod tests {
         assert!(Cli::try_parse_from(["storagemgr", "plan", "targets", "--json"]).is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "route", "/"]).is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "filesystem", "/"]).is_ok());
-        assert!(Cli::try_parse_from([
-            "storagemgr",
-            "plan",
-            "filesystem",
-            "/dev/sda1",
-            "--json"
-        ])
-        .is_ok());
+        assert!(
+            Cli::try_parse_from(["storagemgr", "plan", "filesystem", "/dev/sda1", "--json"])
+                .is_ok()
+        );
         assert!(Cli::try_parse_from([
             "storagemgr",
             "plan",
