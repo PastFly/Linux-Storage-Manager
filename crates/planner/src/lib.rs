@@ -793,7 +793,10 @@ pub fn analyze_layout_opportunity(
     let source = if target.starts_with("/dev/") {
         target
     } else {
-        let mut mounts = snapshot.mounts.iter().filter(|mount| mount.target == target);
+        let mut mounts = snapshot
+            .mounts
+            .iter()
+            .filter(|mount| mount.target == target);
         let mount = mounts.next()?;
         if mounts.next().is_some() {
             return None;
@@ -947,8 +950,7 @@ fn detect_tail_swap_migration(
     let opportunity = analyze_layout_opportunity(snapshot, &request.target)?;
     let requested_sectors = requested_growth_bytes / opportunity.sector_size_bytes
         + u64::from(requested_growth_bytes % opportunity.sector_size_bytes != 0);
-    let rounded_requested_bytes =
-        requested_sectors.checked_mul(opportunity.sector_size_bytes)?;
+    let rounded_requested_bytes = requested_sectors.checked_mul(opportunity.sector_size_bytes)?;
     if rounded_requested_bytes > opportunity.max_target_growth_bytes {
         return None;
     }
