@@ -1,5 +1,8 @@
 use lsm_core::HostSnapshot;
-use lsm_planner::{analyze_layer_route, LayerRouteStatus, RouteIssueKind, RouteLayerKind};
+use lsm_planner::{
+    analyze_layer_route, select_extend_planner_profile, ExtendPlannerProfile, LayerRouteStatus,
+    RouteIssueKind, RouteLayerKind,
+};
 use serde_json::json;
 
 fn direct_snapshot() -> HostSnapshot {
@@ -293,4 +296,100 @@ fn multipath_layer_is_visible_and_requires_dedicated_adapter() {
     assert!(route.issues.iter().any(|issue| {
         issue.kind == RouteIssueKind::AdapterRequired && issue.code == "multipath-adapter-required"
     }));
+}
+
+#[test]
+fn semantic_profile_selects_direct_partition_builder_for_plain_partition_targets() {
+    let snapshot = direct_snapshot();
+
+    assert_eq!(
+        select_extend_planner_profile(&snapshot, "/data"),
+        ExtendPlannerProfile::DirectPartition
+    );
+}
+
+#[test]
+fn semantic_profile_selects_lvm_builder_even_when_lvm_adapter_is_required() {
+    let mut snapshot = lvm_snapshot();
+    snapshot.lvm.as_mut().unwrap().volume_groups[0].pv_count = 2;
+
+    assert_eq!(
+        select_extend_planner_profile(&snapshot, "/"),
+        ExtendPlannerProfile::Lvm
+    );
+}
+
+#[test]
+fn unknown_filesystem_on_plain_partition_still_uses_direct_partition_builder() {
+    let mut snapshot = direct_snapshot();
+    snapshot.storage.block_devices[0].children[0]
+        .filesystem
+        .as_mut()
+        .unwrap()
+        .fs_type = "mysteryfs".into();
+    snapshot.mounts[0].fs_type = Some("mysteryfs".into());
+
+    assert_eq!(
+        select_extend_planner_profile(&snapshot, "/data"),
+        ExtendPlannerProfile::DirectPartition
+    );
+}
+
+#[test]
+fn encryption_and_multipath_targets_stay_on_legacy_fail_closed_path() {
+    let crypt: HostSnapshot = serde_json::from_value(json!({
+        "storage": {"block_devices": [{
+            "name":"sda","kernel_name":"sda","path":"/dev/sda","kind":"disk",
+            "size_bytes":20_000_000_000u64,"mountpoints":[],"children":[{
+                "name":"sda2","kernel_name":"sda2","path":"/dev/sda2","kind":"partition",
+                "size_bytes":12_000_000_000u64,"start_512_sector":2048,
+                "logical_sector_bytes":512,"mountpoints":[],"parent_kernel_name":"sda",
+                "children":[{
+                    "name":"cryptdata","kernel_name":"dm-0","path":"/dev/mapper/cryptdata",
+                    "kind":"crypt","size_bytes":11_900_000_000u64,"uuid":"crypt-fs",
+                    "filesystem":{"fs_type":"ext4","version":"1.0"},
+                    "mountpoints":["/secure"],"parent_kernel_name":"sda2","children":[]
+                }]
+            }]
+        }]},
+        "partition_tables":[],
+        "mounts":[
+            {"source":"/dev/mapper/cryptdata","target":"/secure","fs_type":"ext4","options":["rw"]}
+        ],
+        "fstab":[],
+        "swaps":[],
+        "lvm":null,
+        "diagnostics":[],
+        "collectors":[]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        select_extend_planner_profile(&crypt, "/secure"),
+        ExtendPlannerProfile::LegacyFailClosed
+    );
+
+    let multipath: HostSnapshot = serde_json::from_value(json!({
+        "storage": {"block_devices": [{
+            "name":"mpatha","kernel_name":"dm-0","path":"/dev/mapper/mpatha",
+            "kind":"multipath","size_bytes":40_000_000_000u64,"uuid":"fs-san",
+            "filesystem":{"fs_type":"xfs","version":"5"},
+            "mountpoints":["/san"],"children":[]
+        }]},
+        "partition_tables":[],
+        "mounts":[
+            {"source":"/dev/mapper/mpatha","target":"/san","fs_type":"xfs","options":["rw"]}
+        ],
+        "fstab":[],
+        "swaps":[],
+        "lvm":null,
+        "diagnostics":[],
+        "collectors":[]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        select_extend_planner_profile(&multipath, "/san"),
+        ExtendPlannerProfile::LegacyFailClosed
+    );
 }
