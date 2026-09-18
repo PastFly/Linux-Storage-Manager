@@ -18,9 +18,8 @@ use lsm_planner::{
     decide_filesystem_growth, list_provisioning_opportunities, plan_create, plan_extend,
     CreatePartitionTablePolicy, CreatePlanPreview, CreatePurpose, CreateRequest, ExtendRequest,
     FilesystemDecisionState, FilesystemGrowthDecision, Growth, GrowthRouteAlternative, LayerRoute,
-    LayerRouteStatus,
-    LayoutAlternative, Operation, PlanStatus, PlanStep, PreflightCheck, PreflightState,
-    ProvisioningOpportunity, ProvisioningSpaceKind, Reversibility, RouteLayerKind,
+    LayerRouteStatus, LayoutAlternative, Operation, PlanStatus, PlanStep, PreflightCheck,
+    PreflightState, ProvisioningOpportunity, ProvisioningSpaceKind, Reversibility, RouteLayerKind,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -236,8 +235,7 @@ impl AppState {
     }
 
     fn create_partition_table(self) -> CreatePartitionTablePolicy {
-        CREATE_PARTITION_TABLES
-            [self.create_partition_table_index % CREATE_PARTITION_TABLES.len()]
+        CREATE_PARTITION_TABLES[self.create_partition_table_index % CREATE_PARTITION_TABLES.len()]
     }
 
     fn plan_growth_for_snapshot(&self, snapshot: &HostSnapshot) -> Growth {
