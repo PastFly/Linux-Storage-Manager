@@ -701,7 +701,7 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
                     "mount it and optionally persist the mount".to_owned(),
                 ],
                 blockers: vec![
-                    "M2 provisioning planner/executor is not implemented yet".to_owned(),
+                    "storage-mutating Create executor is not implemented in M1A".to_owned(),
                 ],
             });
         }
@@ -731,7 +731,7 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
 
         if matching_tables.is_empty() && disk.children.is_empty() && disk.filesystem.is_none() {
             let mut blockers =
-                vec!["M2 provisioning planner/executor is not implemented yet".to_owned()];
+                vec!["storage-mutating Create executor is not implemented in M1A".to_owned()];
             if !partition_tables_complete {
                 blockers.push(
                     "authoritative partition-table discovery must complete before creation"
@@ -788,7 +788,7 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
                 continue;
             };
             let mut blockers =
-                vec!["M2 provisioning planner/executor is not implemented yet".to_owned()];
+                vec!["storage-mutating Create executor is not implemented in M1A".to_owned()];
             blockers.push(
                 "partition alignment, partition-number allocation and boot constraints must be revalidated before creation"
                     .to_owned(),
