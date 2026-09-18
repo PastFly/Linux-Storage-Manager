@@ -88,7 +88,7 @@ enum PlanCommand {
     },
     /// Preview creating a filesystem volume or swap from a discovered free-space source.
     Create {
-        /// Stable source ID reported by `plan create-spaces`.
+        /// Stable source ID or unique 16+ character prefix reported by `plan create-spaces`.
         source_id: String,
         /// Requested capacity, e.g. 8GiB; rounded to sectors or LVM extents.
         #[arg(long, conflicts_with = "max", required_unless_present = "max")]
@@ -248,7 +248,7 @@ fn run() -> Result<ExitCode> {
                 for space in spaces {
                     println!(
                         "{:<14} {:<16} {:<28} available={} advisory_only={} blockers={}",
-                        &space.id[..space.id.len().min(12)],
+                        &space.id[..space.id.len().min(16)],
                         format!("{:?}", space.kind),
                         space.source,
                         space.available_bytes,
