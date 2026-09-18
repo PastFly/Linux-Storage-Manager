@@ -335,7 +335,6 @@ const GPT_PARTITION_ENTRY_SIZE_BYTES: u64 = 128;
 struct BlankDiskGeometry {
     sector_size_bytes: u64,
     start_sector: u64,
-    available_sector_count: u64,
     available_bytes: u64,
 }
 
@@ -1106,7 +1105,6 @@ fn blank_disk_geometry(
     Ok(BlankDiskGeometry {
         sector_size_bytes: sector,
         start_sector: start,
-        available_sector_count,
         available_bytes,
     })
 }
