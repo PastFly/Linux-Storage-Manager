@@ -192,9 +192,10 @@ pub fn capture_target_identity(
                 || mount.source.as_deref().is_some_and(|source| {
                     node_alias(device, source)
                         || snapshot.lvm.as_ref().is_some_and(|inventory| {
-                            inventory.logical_volumes.iter().any(|lv| {
-                                lv_device(lv, device) && lv_alias(lv, source)
-                            })
+                            inventory
+                                .logical_volumes
+                                .iter()
+                                .any(|lv| lv_device(lv, device) && lv_alias(lv, source))
                         })
                 })
         })
@@ -340,10 +341,7 @@ pub fn revalidate_target_identity(
     }
 }
 
-fn partition_identity(
-    snapshot: &HostSnapshot,
-    device: &BlockDevice,
-) -> PartitionGeometryIdentity {
+fn partition_identity(snapshot: &HostSnapshot, device: &BlockDevice) -> PartitionGeometryIdentity {
     let partition = device_path(device);
     let mut matches = snapshot.partition_tables.iter().filter_map(|table| {
         table
@@ -391,7 +389,10 @@ fn partition_identity(
         sector_size_bytes: table.sector_size_bytes,
         start_sector: Some(record.start_sector),
         size_sectors: Some(record.size_sectors),
-        record_uuid: record.uuid.clone().or_else(|| device.partition_uuid.clone()),
+        record_uuid: record
+            .uuid
+            .clone()
+            .or_else(|| device.partition_uuid.clone()),
     }
 }
 
