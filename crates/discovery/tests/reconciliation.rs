@@ -41,6 +41,7 @@ fn reports_missing_sources_across_collectors() {
             volume_groups: Vec::new(),
             logical_volumes: Vec::new(),
         }),
+        filesystem_preflight: Vec::new(),
         diagnostics: Vec::new(),
         collectors: Vec::new(),
     };
