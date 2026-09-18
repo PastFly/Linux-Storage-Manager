@@ -28,6 +28,8 @@ pub struct FrozenExecutionHandoff {
     pub owner_acceptance_required: bool,
     pub status: ExecutionHandoffStatus,
     pub plan: PlanPreview,
+    pub plan_basis_digest: String,
+    pub capabilities_digest: String,
     pub target_identity: TargetIdentityManifest,
     pub filesystem_decision: FilesystemGrowthDecision,
     pub guard: ExecutionGuardPlan,
@@ -68,6 +70,7 @@ pub fn build_frozen_execution_handoff(
     let target_identity = capture_target_identity(snapshot, plan.target())?;
     let filesystem_decision = decide_filesystem_growth(snapshot, capabilities, plan.target());
     let guard = build_execution_guard_plan(plan.plan_id(), &target_identity)?;
+    let capabilities_digest = crate::fingerprint(capabilities)?;
 
     let mut blockers = guard.blockers.clone();
     if matches!(
@@ -100,6 +103,8 @@ pub fn build_frozen_execution_handoff(
         owner_acceptance_required: true,
         status,
         plan: plan.clone(),
+        plan_basis_digest: plan.basis_digest().to_owned(),
+        capabilities_digest,
         target_identity,
         filesystem_decision,
         guard,
@@ -108,6 +113,8 @@ pub fn build_frozen_execution_handoff(
     handoff.handoff_id = crate::fingerprint(&(
         handoff.schema_version,
         handoff.plan.plan_id(),
+        &handoff.plan_basis_digest,
+        &handoff.capabilities_digest,
         &handoff.target_identity.manifest_digest,
         &handoff.filesystem_decision,
         &handoff.guard.guard_id,
