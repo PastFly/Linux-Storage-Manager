@@ -936,12 +936,14 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
         }
 
         if !partition_tables_complete {
-            opportunities.push(blocked_disk_opportunity(
-                disk,
-                disk_path,
-                "partition-table-discovery-incomplete",
-                "authoritative partition-table discovery is incomplete; provisioning geometry is not trusted",
-            ));
+            if !matching_tables.is_empty() {
+                opportunities.push(blocked_disk_opportunity(
+                    disk,
+                    disk_path,
+                    "partition-table-discovery-incomplete",
+                    "authoritative partition-table discovery is incomplete; provisioning geometry is not trusted",
+                ));
+            }
             continue;
         }
 
