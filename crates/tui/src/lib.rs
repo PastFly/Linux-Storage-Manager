@@ -688,6 +688,80 @@ mod tests {
         assert_eq!(mounts[1].target, "/mnt/share");
     }
 
+
+    #[test]
+    fn dos_extended_partition_is_presented_as_container_not_one_kib_volume() {
+        let mut snap = snapshot();
+        snap.storage.block_devices[0].children.push(device(
+            "sda2",
+            NodeKind::Partition,
+            vec![device("sda5", NodeKind::Partition, vec![])],
+        ));
+        snap.storage.block_devices[0].children[1].size_bytes = 1024;
+        snap.partition_tables.push(lsm_core::PartitionTable {
+            device: "/dev/sda".into(),
+            label: Some("dos".into()),
+            id: None,
+            unit: Some("sectors".into()),
+            first_lba: None,
+            last_lba: None,
+            sector_size_bytes: Some(512),
+            partitions: vec![
+                lsm_core::PartitionRecord {
+                    node: "/dev/sda2".into(),
+                    start_sector: 100,
+                    size_sectors: 1000,
+                    partition_type: Some("5".into()),
+                    uuid: None,
+                    name: None,
+                    attrs: None,
+                    bootable: None,
+                },
+                lsm_core::PartitionRecord {
+                    node: "/dev/sda5".into(),
+                    start_sector: 101,
+                    size_sectors: 999,
+                    partition_type: Some("82".into()),
+                    uuid: None,
+                    name: None,
+                    attrs: None,
+                    bootable: None,
+                },
+            ],
+        });
+
+        let extended = &snap.storage.block_devices[0].children[1];
+        assert_eq!(device_role(&snap, extended), "Extended container");
+        assert_eq!(device_size_for_display(&snap, extended), "container");
+    }
+
+    #[test]
+    fn content_scroll_resets_when_section_changes() {
+        let snap = snapshot();
+        let mut state = AppState::new(&snap);
+        state.section_index = 3;
+        state.scroll_down();
+        state.scroll_down();
+        assert_eq!(state.content_scroll, 2);
+        state.next_section();
+        assert_eq!(state.content_scroll, 0);
+    }
+
+    #[test]
+    fn compact_header_reports_only_readonly_and_actionable_diagnostics() {
+        let mut snap = snapshot();
+        snap.diagnostics.push(lsm_core::StorageDiagnostic {
+            code: "warn".into(),
+            severity: DiagnosticSeverity::Warning,
+            message: "warning".into(),
+            device: None,
+        });
+        let text = header_text(&snap);
+        assert!(text.contains("Read-only"));
+        assert!(text.contains("1 warning"));
+        assert!(!text.contains("tools"));
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
