@@ -1042,6 +1042,48 @@ mod tests {
         assert!(text.contains("grow the partition"));
     }
 
+
+    #[test]
+    fn default_mount_view_hides_binfmt_misc() {
+        let mut snap = snapshot();
+        snap.mounts = vec![
+            lsm_core::MountEntry {
+                source: Some("binfmt_misc".into()),
+                target: "/proc/sys/fs/binfmt_misc".into(),
+                fs_type: Some("binfmt_misc".into()),
+                options: vec!["rw".into()],
+            },
+            lsm_core::MountEntry {
+                source: Some("/dev/sda1".into()),
+                target: "/".into(),
+                fs_type: Some("ext4".into()),
+                options: vec!["rw".into()],
+            },
+        ];
+
+        let mounts = storage_mounts(&snap);
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].target, "/");
+    }
+
+    #[test]
+    fn plan_growth_presets_are_safe_and_cycle_without_execution() {
+        let mut state = AppState::new(&snapshot());
+        state.section_index = 5;
+
+        assert_eq!(state.plan_growth(), lsm_planner::Growth::ByBytes(512 * 1024 * 1024));
+        state.next_plan_growth();
+        assert_eq!(state.plan_growth(), lsm_planner::Growth::ByBytes(1024 * 1024 * 1024));
+        state.next_plan_growth();
+        assert_eq!(state.plan_growth(), lsm_planner::Growth::ByBytes(4 * 1024 * 1024 * 1024));
+        state.next_plan_growth();
+        assert_eq!(state.plan_growth(), lsm_planner::Growth::MaxFree);
+        state.next_plan_growth();
+        assert_eq!(state.plan_growth(), lsm_planner::Growth::MaxFree);
+        state.previous_plan_growth();
+        assert_eq!(state.plan_growth(), lsm_planner::Growth::ByBytes(4 * 1024 * 1024 * 1024));
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
