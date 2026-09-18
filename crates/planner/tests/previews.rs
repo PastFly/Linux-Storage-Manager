@@ -1,7 +1,9 @@
 use lsm_core::{
     CollectorState, DiagnosticSeverity, HostCapabilities, HostSnapshot, StorageDiagnostic,
 };
-use lsm_planner::{parse_growth_size, plan_extend, ExtendRequest, Growth, Operation, PlanStatus};
+use lsm_planner::{
+    parse_growth_size, plan_extend, ExtendRequest, Growth, Operation, PlanStatus, PreflightState,
+};
 use serde_json::json;
 
 const GIB: u64 = 1 << 30;
@@ -299,4 +301,29 @@ fn validates_explicit_binary_units_without_float_conversion() {
     ] {
         assert!(parse_growth_size(value).is_err(), "accepted {value}");
     }
+}
+
+
+#[test]
+fn lvm_preview_exposes_profile_preflight_and_future_gates() {
+    let (snapshot, caps) = input();
+    let plan = plan_extend(&snapshot, &caps, request("/", Growth::MaxFree)).unwrap();
+
+    let checks = plan.preflight_checks();
+    for code in [
+        "collectors-complete",
+        "diagnostics-clean",
+        "mount-rw",
+        "tooling-available",
+        "lvm-identity-consistent",
+        "lvm-layout-supported",
+        "capacity-verified",
+    ] {
+        assert!(checks.iter().any(|check| {
+            check.code == code && check.state == PreflightState::Verified
+        }), "missing verified preflight check: {code}");
+    }
+    assert!(checks.iter().any(|check| {
+        check.code == "filesystem-health" && check.state == PreflightState::Required
+    }));
 }
