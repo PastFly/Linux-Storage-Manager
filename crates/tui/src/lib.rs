@@ -1532,6 +1532,83 @@ mod tests {
         assert_eq!(human_bytes_precise(9_712_958_464), "9.046 GiB");
     }
 
+
+    #[test]
+    fn plan_step_lines_show_dependencies_and_reversibility() {
+        let steps = vec![
+            lsm_planner::PlanStep {
+                id: 1,
+                depends_on: vec![],
+                operation: lsm_planner::Operation::RevalidateSnapshot,
+                reversibility: lsm_planner::Reversibility::NotApplicable,
+            },
+            lsm_planner::PlanStep {
+                id: 2,
+                depends_on: vec![1],
+                operation: lsm_planner::Operation::BackupPartitionTableMetadata {
+                    disk: "/dev/sda".into(),
+                    table_label: "dos".into(),
+                    table_id: Some("0xf5b1b569".into()),
+                },
+                reversibility: lsm_planner::Reversibility::Reversible,
+            },
+            lsm_planner::PlanStep {
+                id: 3,
+                depends_on: vec![2],
+                operation: lsm_planner::Operation::ExtendPartition {
+                    partition: "/dev/sda1".into(),
+                    start_sector: 2048,
+                    old_size_sectors: 18_968_576,
+                    new_size_sectors: 18_969_600,
+                    sector_size_bytes: 512,
+                },
+                reversibility: lsm_planner::Reversibility::Irreversible,
+            },
+            lsm_planner::PlanStep {
+                id: 4,
+                depends_on: vec![3],
+                operation: lsm_planner::Operation::GrowFilesystem {
+                    fs_type: "ext4".into(),
+                    mountpoint: "/".into(),
+                },
+                reversibility: lsm_planner::Reversibility::Irreversible,
+            },
+            lsm_planner::PlanStep {
+                id: 5,
+                depends_on: vec![4],
+                operation: lsm_planner::Operation::RediscoverAndVerify,
+                reversibility: lsm_planner::Reversibility::NotApplicable,
+            },
+        ];
+
+        let text = plan_step_lines(&steps)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("1  Revalidate snapshot"));
+        assert!(text.contains("2  Backup partition table /dev/sda"));
+        assert!(text.contains("after 1"));
+        assert!(text.contains("3  Extend partition /dev/sda1"));
+        assert!(text.contains("irreversible"));
+        assert!(text.contains("4  Grow ext4 on /"));
+        assert!(text.contains("5  Rediscover and verify"));
+    }
+
+    #[test]
+    fn operation_summary_keeps_lvm_preview_human_readable() {
+        let operation = lsm_planner::Operation::ExtendLogicalVolume {
+            lv_uuid: "lv-uuid".into(),
+            additional_extents: 8,
+            expected_lv_size_bytes: 42 * 1024 * 1024,
+        };
+        assert_eq!(
+            operation_summary(&operation),
+            "Extend logical volume by 8 extents"
+        );
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
