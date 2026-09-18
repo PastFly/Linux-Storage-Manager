@@ -148,6 +148,20 @@ pub struct PartitionSizeChange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FilesystemSizeChange {
+    pub device: String,
+    pub mountpoint: String,
+    pub fs_type: String,
+    pub current_filesystem_size_bytes: u64,
+    pub backing_device_size_bytes: u64,
+    pub requested_growth_bytes: u64,
+    pub rounded_growth_bytes: u64,
+    pub expected_filesystem_size_bytes: u64,
+    pub filesystem_block_size_bytes: u64,
+    pub remaining_backing_free_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LayoutOpportunity {
     pub code: String,
     pub disk: String,
@@ -328,6 +342,7 @@ pub struct PlanPreview {
     request: ExtendRequest,
     size_change: Option<SizeChange>,
     partition_size_change: Option<PartitionSizeChange>,
+    filesystem_size_change: Option<FilesystemSizeChange>,
     layout_alternatives: Vec<LayoutAlternative>,
     growth_route_alternatives: Vec<GrowthRouteAlternative>,
     blockers: Vec<Blocker>,
@@ -429,6 +444,10 @@ impl PlanPreview {
         self.partition_size_change.as_ref()
     }
 
+    pub fn filesystem_size_change(&self) -> Option<&FilesystemSizeChange> {
+        self.filesystem_size_change.as_ref()
+    }
+
     pub fn layout_alternatives(&self) -> &[LayoutAlternative] {
         &self.layout_alternatives
     }
@@ -478,6 +497,18 @@ impl PlanPreview {
                 size.requested_growth_bytes,
                 size.rounded_growth_bytes,
                 size.remaining_adjacent_free_bytes
+            ));
+        }
+        if let Some(size) = &self.filesystem_size_change {
+            text.push_str(&format!(
+                "Filesystem size: {} -> {} bytes\nBacking device: {} bytes\nRequested growth: {} bytes\n\
+                 Filesystem-block-aligned growth: {} bytes\nBacking free after preview: {} bytes\n",
+                size.current_filesystem_size_bytes,
+                size.expected_filesystem_size_bytes,
+                size.backing_device_size_bytes,
+                size.requested_growth_bytes,
+                size.rounded_growth_bytes,
+                size.remaining_backing_free_bytes
             ));
         }
         for alternative in &self.layout_alternatives {
@@ -598,6 +629,10 @@ pub fn list_extend_targets(
                 .map(|change| change.rounded_growth_bytes)
                 .or_else(|| {
                     plan.partition_size_change()
+                        .map(|change| change.rounded_growth_bytes)
+                })
+                .or_else(|| {
+                    plan.filesystem_size_change()
                         .map(|change| change.rounded_growth_bytes)
                 })
         });
@@ -1383,6 +1418,7 @@ pub fn plan_extend(
         request,
         size_change: None,
         partition_size_change: None,
+        filesystem_size_change: None,
         layout_alternatives: Vec::new(),
         growth_route_alternatives: Vec::new(),
         blockers: Vec::new(),
