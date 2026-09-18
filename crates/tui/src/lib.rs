@@ -588,6 +588,45 @@ mod tests {
         assert_eq!(state.selected_device, 0);
     }
 
+
+    #[test]
+    fn volumes_selection_uses_filtered_rows_not_global_device_index() {
+        let snap = snapshot();
+        let rows = visible_device_rows(&snap.storage, true);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].device.name, "sda1");
+    }
+
+    #[test]
+    fn default_mount_view_hides_pseudo_filesystems_but_keeps_real_storage() {
+        let mut snap = snapshot();
+        snap.mounts = vec![
+            lsm_core::MountEntry {
+                source: Some("proc".into()),
+                target: "/proc".into(),
+                fs_type: Some("proc".into()),
+                options: vec!["rw".into()],
+            },
+            lsm_core::MountEntry {
+                source: Some("/dev/sda1".into()),
+                target: "/".into(),
+                fs_type: Some("ext4".into()),
+                options: vec!["rw".into()],
+            },
+            lsm_core::MountEntry {
+                source: Some("//server/share".into()),
+                target: "/mnt/share".into(),
+                fs_type: Some("cifs".into()),
+                options: vec!["rw".into()],
+            },
+        ];
+
+        let mounts = storage_mounts(&snap);
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[0].target, "/");
+        assert_eq!(mounts[1].target, "/mnt/share");
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
