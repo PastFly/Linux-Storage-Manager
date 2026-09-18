@@ -547,6 +547,30 @@ fn ordinary_linux_gpt_partition_remains_growable_after_role_guard() {
 }
 
 #[test]
+fn unknown_partition_table_label_blocks_direct_growth_with_explicit_reason() {
+    let mut snapshot =
+        gpt_ext4_snapshot(Some("0FC63DAF-8483-4772-8E79-3D69D8477DE4"));
+    snapshot.partition_tables[0].label = Some("sun".into());
+
+    let plan = plan_extend(
+        &snapshot,
+        &capabilities(),
+        ExtendRequest {
+            target: "/boot-test".into(),
+            growth: Growth::MaxFree,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert!(plan
+        .blockers()
+        .iter()
+        .any(|blocker| blocker.code == "unsupported-partition-table"));
+    assert!(plan.partition_size_change().is_none());
+}
+
+#[test]
 fn direct_partition_request_larger_than_verified_gap_is_blocked() {
     let plan = plan_extend(
         &live_debian_snapshot(),
