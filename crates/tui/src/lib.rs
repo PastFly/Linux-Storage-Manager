@@ -1669,6 +1669,33 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn preflight_lines_distinguish_verified_and_required_checks() {
+        let checks = vec![
+            lsm_planner::PreflightCheck {
+                code: "geometry".into(),
+                state: lsm_planner::PreflightState::Verified,
+                message: "partition geometry is consistent".into(),
+            },
+            lsm_planner::PreflightCheck {
+                code: "filesystem-health".into(),
+                state: lsm_planner::PreflightState::Required,
+                message: "filesystem health must be checked".into(),
+            },
+        ];
+
+        let text = preflight_lines(&checks)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("[OK]  geometry"));
+        assert!(text.contains("[REQ] filesystem-health"));
+        assert!(text.contains("filesystem health must be checked"));
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
