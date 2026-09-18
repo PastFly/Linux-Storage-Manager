@@ -66,6 +66,12 @@ pub struct FilesystemPreflightEvidence {
     pub revision: Option<String>,
     #[serde(default)]
     pub features: Vec<String>,
+    #[serde(default)]
+    pub block_size_bytes: Option<u64>,
+    #[serde(default)]
+    pub block_count: Option<u64>,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
     pub grow_check_passed: Option<bool>,
     pub detail: Option<String>,
 }
