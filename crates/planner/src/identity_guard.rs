@@ -78,7 +78,8 @@ pub struct FilesystemIdentity {
     pub fs_type: String,
     pub fs_version: Option<String>,
     pub uuid: Option<String>,
-    pub size_bytes: u64,
+    pub backing_device_size_bytes: u64,
+    pub observed_filesystem_size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -171,12 +172,29 @@ pub fn capture_target_identity(
         if matches!(filesystem.fs_type.as_str(), "LVM2_member" | "swap") {
             None
         } else {
+            let path = device_path(device);
+            let matching_evidence = snapshot
+                .filesystem_preflight
+                .iter()
+                .filter(|evidence| {
+                    evidence.device == path
+                        && evidence.fs_type == filesystem.fs_type
+                        && route.mountpoint.as_deref().is_none_or(|mountpoint| {
+                            evidence.mountpoint.as_deref() == Some(mountpoint)
+                        })
+                })
+                .collect::<Vec<_>>();
+            let observed_filesystem_size_bytes = (matching_evidence.len() == 1)
+                .then_some(matching_evidence[0].size_bytes)
+                .flatten();
+
             Some(FilesystemIdentity {
-                device: device_path(device),
+                device: path,
                 fs_type: filesystem.fs_type.clone(),
                 fs_version: filesystem.version.clone(),
                 uuid: device.uuid.clone(),
-                size_bytes: device.size_bytes,
+                backing_device_size_bytes: device.size_bytes,
+                observed_filesystem_size_bytes,
             })
         }
     });
