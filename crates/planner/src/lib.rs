@@ -456,7 +456,7 @@ fn try_build_partition_candidate(
         .ok_or_else(|| blocked("parent-missing", "partition parent is unknown"))?;
     let disk = unique(
         nodes.iter().copied().filter(|candidate| {
-            candidate.kind == NodeKind::Disk
+            matches!(candidate.kind, NodeKind::Disk | NodeKind::Loop)
                 && candidate.kernel_name.as_deref() == Some(parent_name)
         }),
         "parent-not-resolved",
