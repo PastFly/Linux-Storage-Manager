@@ -7,8 +7,9 @@ use lsm_discovery::{
 };
 use lsm_planner::{
     analyze_layer_route, decide_filesystem_growth, list_extend_targets,
-    list_provisioning_opportunities, parse_growth_size, plan_create, plan_extend, CreatePurpose,
-    CreateRequest, ExtendRequest, FilesystemDecisionState, Growth, PlanStatus,
+    list_provisioning_opportunities, parse_growth_size, plan_create, plan_extend,
+    CreatePartitionTablePolicy, CreatePurpose, CreateRequest, ExtendRequest,
+    FilesystemDecisionState, Growth, PlanStatus,
 };
 use std::process::ExitCode;
 
@@ -122,6 +123,9 @@ enum PlanCommand {
         /// Optional future mountpoint for filesystem purpose.
         #[arg(long)]
         mount: Option<String>,
+        /// Partition-table policy for a blank-disk source.
+        #[arg(long, value_enum)]
+        partition_table: Option<CreatePartitionTableArg>,
         /// Emit structured JSON instead of the human-readable preview.
         #[arg(long)]
         json: bool,
@@ -139,6 +143,21 @@ impl From<CreatePurposeArg> for CreatePurpose {
         match value {
             CreatePurposeArg::Filesystem => CreatePurpose::Filesystem,
             CreatePurposeArg::Swap => CreatePurpose::Swap,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CreatePartitionTableArg {
+    Gpt,
+    Dos,
+}
+
+impl From<CreatePartitionTableArg> for CreatePartitionTablePolicy {
+    fn from(value: CreatePartitionTableArg) -> Self {
+        match value {
+            CreatePartitionTableArg::Gpt => CreatePartitionTablePolicy::Gpt,
+            CreatePartitionTableArg::Dos => CreatePartitionTablePolicy::Dos,
         }
     }
 }
@@ -363,6 +382,7 @@ fn run() -> Result<ExitCode> {
                     purpose,
                     fs,
                     mount,
+                    partition_table,
                     json,
                 },
         }) => {
@@ -387,7 +407,7 @@ fn run() -> Result<ExitCode> {
                     purpose,
                     filesystem: fs,
                     mountpoint: mount,
-                    partition_table: None,
+                    partition_table: partition_table.map(CreatePartitionTablePolicy::from),
                 },
             )?;
             if json {
@@ -510,6 +530,44 @@ mod tests {
             "/data"
         ])
         .is_ok());
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "create",
+            "blank-source",
+            "--max",
+            "--purpose",
+            "filesystem",
+            "--fs",
+            "xfs",
+            "--partition-table",
+            "gpt"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "create",
+            "blank-source",
+            "--max",
+            "--purpose",
+            "swap",
+            "--partition-table",
+            "dos"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "create",
+            "blank-source",
+            "--max",
+            "--purpose",
+            "swap",
+            "--partition-table",
+            "mbr"
+        ])
+        .is_err());
         assert!(Cli::try_parse_from([
             "storagemgr",
             "plan",
