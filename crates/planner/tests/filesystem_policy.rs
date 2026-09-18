@@ -95,6 +95,9 @@ fn xfs_evidence(grow_check_passed: Option<bool>) -> FilesystemPreflightEvidence 
         filesystem_state: None,
         revision: None,
         features: vec!["crc=1".into(), "reflink=1".into(), "bigtime=1".into()],
+        block_size_bytes: None,
+        block_count: None,
+        size_bytes: None,
         grow_check_passed,
         detail: None,
     }
