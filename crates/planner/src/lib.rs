@@ -345,13 +345,15 @@ fn try_build_partition_candidate(
         .ok_or_else(|| blocked("unknown-source", "mount source is absent"))?
     };
 
-    let device = unique(
-        nodes.iter().copied().filter(|device| node_alias(device, source)),
-        "ambiguous-device",
-    )?;
-    if device.kind != NodeKind::Partition {
+    let partition_matches: Vec<_> = nodes
+        .iter()
+        .copied()
+        .filter(|device| device.kind == NodeKind::Partition && node_alias(device, source))
+        .collect();
+    if partition_matches.is_empty() {
         return Ok(None);
     }
+    let device = unique(partition_matches.into_iter(), "ambiguous-device")?;
 
     for component in ["lsblk", "partition_tables", "mounts", "fstab", "swap"] {
         let status = unique(
