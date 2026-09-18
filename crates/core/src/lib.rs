@@ -33,6 +33,7 @@ pub enum NodeKind {
     Lvm,
     Crypt,
     Raid,
+    Multipath,
     Loop,
     Rom,
     Zram,
