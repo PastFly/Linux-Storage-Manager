@@ -644,12 +644,11 @@ mod tests {
         let mut state = AppState::new(&snap);
         state.select_next_device(&snap, false);
         assert_eq!(state.selected_device, 1);
-        state.select_next_device(&snap);
+        state.select_next_device(&snap, false);
         assert_eq!(state.selected_device, 1);
         state.select_previous_device();
         assert_eq!(state.selected_device, 0);
     }
-
 
     #[test]
     fn volumes_selection_uses_filtered_rows_not_global_device_index() {
