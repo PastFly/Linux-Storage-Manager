@@ -65,6 +65,24 @@ class FakeRunner:
         return json.loads(self.run(name, *args).stdout)
 
 
+class RunnerDiagnosticsTests(unittest.TestCase):
+    def test_unexpected_exit_includes_stdout_and_stderr(self):
+        fake = object.__new__(M.Runner)
+        fake.tools = {"storagemgr": "/tmp/storagemgr"}
+        completed = subprocess.CompletedProcess(
+            ("/tmp/storagemgr", "plan"),
+            2,
+            '{"status":"blocked","blockers":[{"code":"example"}]}',
+            "diagnostic stderr",
+        )
+        with patch.object(M.subprocess, "run", return_value=completed):
+            with self.assertRaises(M.SafetyError) as error:
+                fake.run("storagemgr", "plan")
+        message = str(error.exception)
+        self.assertIn('"status":"blocked"', message)
+        self.assertIn("diagnostic stderr", message)
+
+
 class CleanupTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="lsm-unit-")
