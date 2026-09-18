@@ -261,7 +261,7 @@ pub fn plan_extend(
         steps: Vec::new(),
         notices: vec![
             "M1A produces previews only. No backup, resize, mount or other command is run.".into(),
-            "The preview covers LV capacity, not measured filesystem capacity or health.".into(),
+            "The preview covers block-layer capacity, not measured filesystem capacity or health.".into(),
             "A future executor needs fresh identity/health checks, locks, verified backups and explicit approval.".into(),
             "Metadata backups are not backups of user data; filesystem growth has no automatic rollback.".into(),
         ],
