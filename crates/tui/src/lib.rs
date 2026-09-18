@@ -982,6 +982,7 @@ fn render_create(
             purpose: state.create_purpose,
             filesystem,
             mountpoint: None,
+            partition_table: None,
         },
     );
 
