@@ -365,6 +365,9 @@ fn ext4_filesystem_evidence_upgrades_observable_preflight_checks() {
                 "64bit".into(),
                 "metadata_csum".into(),
             ],
+            block_size_bytes: None,
+            block_count: None,
+            size_bytes: None,
             grow_check_passed: None,
             detail: None,
         });
@@ -410,6 +413,9 @@ fn xfs_read_only_grow_probe_is_exposed_as_verified_preflight() {
             filesystem_state: None,
             revision: None,
             features: vec!["crc=1".into(), "reflink=1".into(), "bigtime=1".into()],
+            block_size_bytes: None,
+            block_count: None,
+            size_bytes: None,
             grow_check_passed: Some(true),
             detail: None,
         });
