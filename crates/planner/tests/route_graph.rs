@@ -1,7 +1,8 @@
 use lsm_core::{HostCapabilities, HostSnapshot};
 use lsm_planner::{
-    analyze_layer_route, plan_extend, select_extend_planner_profile, ExtendPlannerProfile,
-    ExtendRequest, Growth, LayerRouteStatus, PlanStatus, RouteIssueKind, RouteLayerKind,
+    analyze_layer_route, list_extend_targets, plan_extend, select_extend_planner_profile,
+    ExtendPlannerProfile, ExtendRequest, ExtendTargetKind, Growth, LayerRouteStatus, PlanStatus,
+    RouteIssueKind, RouteLayerKind,
 };
 use serde_json::json;
 
@@ -514,4 +515,17 @@ fn whole_disk_filesystem_uses_verified_filesystem_geometry_for_max_growth() {
     assert_eq!(plan.steps().len(), 3);
     assert!(plan.partition_size_change().is_none());
     assert!(plan.size_change().is_none());
+
+    let targets = list_extend_targets(
+        &snapshot,
+        &HostCapabilities {
+            tools: vec![lsm_core::ToolCapability {
+                name: "resize2fs".into(),
+                available: true,
+            }],
+        },
+    );
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].kind, ExtendTargetKind::WholeBlockFilesystem);
+    assert_eq!(targets[0].verified_growth_bytes, Some(8589934592));
 }
