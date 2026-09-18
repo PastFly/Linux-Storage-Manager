@@ -2,7 +2,9 @@ use lsm_core::{
     CollectorState, DiagnosticSeverity, HostCapabilities, HostSnapshot, StorageDiagnostic,
 };
 use lsm_planner::{
-    parse_growth_size, plan_extend, ExtendRequest, Growth, Operation, PlanStatus, PreflightState,
+    list_extend_targets, list_provisioning_opportunities, parse_growth_size, plan_extend,
+    ExtendRequest, ExtendTargetAvailability, ExtendTargetKind, Growth, Operation, PlanStatus,
+    PreflightState, ProvisioningSpaceKind,
 };
 use serde_json::json;
 
@@ -328,4 +330,42 @@ fn lvm_preview_exposes_profile_preflight_and_future_gates() {
     assert!(checks.iter().any(|check| {
         check.code == "filesystem-health" && check.state == PreflightState::Required
     }));
+
+#[test]
+fn catalog_exposes_selectable_growth_targets_without_mutation() {
+    let (snapshot, caps) = input();
+    let before = snapshot.clone();
+
+    let targets = list_extend_targets(&snapshot, &caps);
+
+    assert_eq!(snapshot, before);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].target, "/");
+    assert_eq!(targets[0].device, "/dev/mapper/vg0-root");
+    assert_eq!(targets[0].filesystem, "ext4");
+    assert_eq!(targets[0].kind, ExtendTargetKind::LvmLogicalVolume);
+    assert_eq!(
+        targets[0].availability,
+        ExtendTargetAvailability::PreviewReady
+    );
+    assert_eq!(targets[0].verified_growth_bytes, Some(8 * GIB));
+}
+
+#[test]
+fn catalog_exposes_free_vg_space_for_future_create_workflows() {
+    let (snapshot, _caps) = input();
+
+    let spaces = list_provisioning_opportunities(&snapshot);
+
+    assert_eq!(spaces.len(), 1);
+    assert_eq!(spaces[0].kind, ProvisioningSpaceKind::LvmFreeExtents);
+    assert_eq!(spaces[0].source, "VG vg0");
+    assert_eq!(spaces[0].available_bytes, 8 * GIB);
+    assert!(spaces[0].advisory_only);
+    assert!(spaces[0]
+        .future_actions
+        .iter()
+        .any(|action| action.contains("logical volume")));
+}
+
 }
