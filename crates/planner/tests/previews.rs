@@ -117,13 +117,14 @@ fn max_is_frozen_to_observed_capacity() {
 #[test]
 fn recognizes_device_mapper_kernel_and_lvm_aliases() {
     let (snapshot, caps) = input();
-    for target in ["/", "/dev/vg0/root", "/dev/mapper/vg0-root", "/dev/dm-0"] {
-        assert_eq!(
-            plan_extend(&snapshot, &caps, request(target, Growth::MaxFree))
-                .unwrap()
-                .status(),
-            PlanStatus::Preview
-        );
+    let baseline = plan_extend(&snapshot, &caps, request("/", Growth::MaxFree)).unwrap();
+    assert_eq!(baseline.status(), PlanStatus::Preview);
+
+    for target in ["/dev/vg0/root", "/dev/mapper/vg0-root", "/dev/dm-0"] {
+        let alias = plan_extend(&snapshot, &caps, request(target, Growth::MaxFree)).unwrap();
+        assert_eq!(alias.status(), PlanStatus::Preview);
+        assert_eq!(alias.size_change(), baseline.size_change());
+        assert_eq!(alias.steps(), baseline.steps());
     }
 }
 

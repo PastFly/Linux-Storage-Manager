@@ -200,6 +200,39 @@ fn direct_dos_partition_max_free_builds_nonexecutable_preview() {
 }
 
 #[test]
+fn direct_partition_device_alias_matches_mountpoint_geometry() {
+    let snapshot = live_debian_snapshot();
+    let caps = capabilities();
+
+    let by_mount = plan_extend(
+        &snapshot,
+        &caps,
+        ExtendRequest {
+            target: "/".into(),
+            growth: Growth::MaxFree,
+        },
+    )
+    .unwrap();
+    let by_device = plan_extend(
+        &snapshot,
+        &caps,
+        ExtendRequest {
+            target: "/dev/sda1".into(),
+            growth: Growth::MaxFree,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(by_mount.status(), PlanStatus::Preview);
+    assert_eq!(by_device.status(), PlanStatus::Preview);
+    assert_eq!(
+        by_mount.partition_size_change(),
+        by_device.partition_size_change()
+    );
+    assert_eq!(by_mount.steps(), by_device.steps());
+}
+
+#[test]
 fn direct_partition_request_larger_than_verified_gap_is_blocked() {
     let plan = plan_extend(
         &live_debian_snapshot(),
