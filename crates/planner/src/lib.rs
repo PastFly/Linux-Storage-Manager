@@ -1173,7 +1173,7 @@ pub fn resolve_create_source_adapter(
         ));
     }
 
-    match source_adapter.kind {
+    match source.kind {
         ProvisioningSpaceKind::LvmFreeExtents => {
             let vg_name = source.volume_group.as_deref().ok_or_else(|| {
                 blocked(
@@ -1199,9 +1199,9 @@ pub fn resolve_create_source_adapter(
                 "create-vg-ambiguous",
                 "the selected volume-group identity is ambiguous",
             )?;
-            let extent = vg.extent_size_bytes.ok_or_else(|| {
-                blocked("create-extent-missing", "VG extent size is unavailable")
-            })?;
+            let extent = vg
+                .extent_size_bytes
+                .ok_or_else(|| blocked("create-extent-missing", "VG extent size is unavailable"))?;
             ensure(
                 extent >= 512
                     && extent.is_power_of_two()
@@ -1400,18 +1400,15 @@ pub fn plan_create(
     }
     plan.source = Some(source.clone());
 
-    let source_adapter = match resolve_create_source_adapter(
-        snapshot,
-        &source,
-        plan.request.partition_table,
-    ) {
-        Ok(adapter) => adapter,
-        Err(blocker) => {
-            plan.blockers.push(blocker);
-            plan.plan_id = fingerprint(&plan)?;
-            return Ok(plan);
-        }
-    };
+    let source_adapter =
+        match resolve_create_source_adapter(snapshot, &source, plan.request.partition_table) {
+            Ok(adapter) => adapter,
+            Err(blocker) => {
+                plan.blockers.push(blocker);
+                plan.plan_id = fingerprint(&plan)?;
+                return Ok(plan);
+            }
+        };
     let allocation_start_sector = source_adapter.start_sector;
     let allocation_partition_table = source_adapter.partition_table;
     let allocation_unit_bytes = source_adapter.allocation_unit_bytes;
