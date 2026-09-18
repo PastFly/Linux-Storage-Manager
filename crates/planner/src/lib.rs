@@ -152,13 +152,14 @@ pub struct GrowthRouteAlternative {
     pub summary: String,
     pub target: String,
     pub disk: String,
-    pub partition: String,
+    pub partition: Option<String>,
     pub physical_volume: String,
     pub volume_group: String,
     pub logical_volume: String,
     pub extent_size_bytes: u64,
     pub sector_size_bytes: u64,
     pub existing_vg_free_bytes: u64,
+    pub pv_device_slack_bytes: u64,
     pub adjacent_partition_free_bytes: u64,
     pub max_growth_bytes: u64,
     pub requested_growth_bytes: u64,
@@ -1391,6 +1392,323 @@ fn detect_tail_swap_migration(
             ),
             "rediscover the complete storage layout and verify no unexpected raw tail or identity changes".to_owned(),
         ],
+    })
+}
+
+pub fn analyze_lvm_underlying_growth(
+    snapshot: &HostSnapshot,
+    request: &ExtendRequest,
+) -> Option<GrowthRouteAlternative> {
+    if request.target.is_empty() || request.target.chars().any(char::is_control) {
+        return None;
+    }
+    for component in [
+        "lsblk",
+        "partition_tables",
+        "mounts",
+        "fstab",
+        "swap",
+        "lvm",
+    ] {
+        let status = unique(
+            snapshot
+                .collectors
+                .iter()
+                .filter(|status| status.component == component),
+            "collector-incomplete",
+        )
+        .ok()?;
+        if status.state != CollectorState::Complete {
+            return None;
+        }
+    }
+    if snapshot
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+    {
+        return None;
+    }
+
+    let lvm = snapshot.lvm.as_ref()?;
+    let nodes = flatten(&snapshot.storage.block_devices);
+    let source = if request.target.starts_with("/dev/") {
+        request.target.as_str()
+    } else {
+        unique(
+            snapshot
+                .mounts
+                .iter()
+                .filter(|mount| mount.target == request.target),
+            "ambiguous-target",
+        )
+        .ok()?
+        .source
+        .as_deref()?
+    };
+
+    let lv = unique(
+        lvm.logical_volumes.iter().filter(|lv| {
+            lv_alias(lv, source)
+                || nodes
+                    .iter()
+                    .any(|device| node_alias(device, source) && lv_device(lv, device))
+        }),
+        "ambiguous-lv",
+    )
+    .ok()?;
+    let lv_device = unique(
+        nodes.iter().copied().filter(|device| lv_device(lv, device)),
+        "ambiguous-device",
+    )
+    .ok()?;
+    if lv_device.kind != NodeKind::Lvm
+        || !lv_device.children.is_empty()
+        || !supported_chain(&snapshot.storage.block_devices, lv_device, true)
+        || lv.layout.as_deref() != Some("linear")
+        || lv.role.as_deref() != Some("public")
+        || lv.attributes.as_deref() != Some("-wi-ao----")
+    {
+        return None;
+    }
+
+    let fs = lv_device.filesystem.as_ref()?;
+    if !matches!(fs.fs_type.as_str(), "ext4" | "xfs") {
+        return None;
+    }
+    let mount = unique(
+        snapshot.mounts.iter().filter(|mount| {
+            mount
+                .source
+                .as_deref()
+                .is_some_and(|source| node_alias(lv_device, source) || lv_alias(lv, source))
+        }),
+        "mount-not-unique",
+    )
+    .ok()?;
+    if mount.fs_type.as_deref() != Some(fs.fs_type.as_str())
+        || !mount.options.iter().any(|option| option == "rw")
+        || mount
+            .options
+            .iter()
+            .any(|option| matches!(option.as_str(), "ro" | "bind" | "rbind"))
+        || lv_device.mountpoints != vec![mount.target.clone()]
+    {
+        return None;
+    }
+
+    let vg = unique(
+        lvm.volume_groups.iter().filter(|vg| vg.name == lv.vg_name),
+        "ambiguous-vg",
+    )
+    .ok()?;
+    if vg.attributes.as_deref() != Some("wz--n-")
+        || vg.missing_pv_count != Some(0)
+        || vg.pv_count != 1
+    {
+        return None;
+    }
+    let extent = vg.extent_size_bytes?;
+    let free_extents = vg.free_extent_count?;
+    if extent < 512
+        || !extent.is_power_of_two()
+        || free_extents.checked_mul(extent) != Some(vg.free_bytes)
+        || vg.size_bytes % extent != 0
+        || lv.size_bytes % extent != 0
+    {
+        return None;
+    }
+
+    let pv = unique(
+        lvm.physical_volumes
+            .iter()
+            .filter(|pv| pv.vg_name.as_deref() == Some(vg.name.as_str())),
+        "ambiguous-pv",
+    )
+    .ok()?;
+    let pv_device = unique(
+        nodes.iter().copied().filter(|device| node_alias(device, &pv.name)),
+        "pv-not-resolved",
+    )
+    .ok()?;
+    if !matches!(
+        pv_device.kind,
+        NodeKind::Disk | NodeKind::Partition | NodeKind::Loop
+    ) || !contains_device(pv_device, lv_device)
+        || pv_device
+            .filesystem
+            .as_ref()
+            .map(|filesystem| filesystem.fs_type.as_str())
+            != Some("LVM2_member")
+        || pv_device.uuid != pv.uuid
+        || pv.size_bytes > pv_device.size_bytes
+        || pv.size_bytes % extent != 0
+        || pv.free_bytes != vg.free_bytes
+    {
+        return None;
+    }
+
+    let pv_device_slack_bytes = pv_device.size_bytes.checked_sub(pv.size_bytes)?;
+    let mut disk_path = pv_device
+        .path
+        .clone()
+        .unwrap_or_else(|| pv_device.name.clone());
+    let mut partition_path = None;
+    let mut adjacent_partition_free_bytes = 0_u64;
+    let mut sector_size_bytes = pv_device.logical_sector_bytes.unwrap_or(512);
+
+    if pv_device.kind == NodeKind::Partition {
+        let parent_name = pv_device.parent_kernel_name.as_deref()?;
+        let disk = unique(
+            nodes.iter().copied().filter(|candidate| {
+                matches!(candidate.kind, NodeKind::Disk | NodeKind::Loop)
+                    && candidate.kernel_name.as_deref() == Some(parent_name)
+            }),
+            "parent-not-resolved",
+        )
+        .ok()?;
+        disk_path = disk.path.clone().unwrap_or_else(|| disk.name.clone());
+        let pv_path = pv_device.path.as_deref()?;
+        partition_path = Some(pv_path.to_owned());
+
+        let table = unique(
+            snapshot
+                .partition_tables
+                .iter()
+                .filter(|table| table.device == disk_path),
+            "partition-table-not-unique",
+        )
+        .ok()?;
+        sector_size_bytes = table.sector_size_bytes?;
+        if sector_size_bytes < 512
+            || !sector_size_bytes.is_power_of_two()
+            || pv_device.logical_sector_bytes != Some(sector_size_bytes)
+        {
+            return None;
+        }
+        let record = unique(
+            table
+                .partitions
+                .iter()
+                .filter(|record| record.node == pv_path),
+            "partition-record-not-unique",
+        )
+        .ok()?;
+        let record_size_bytes = record.size_sectors.checked_mul(sector_size_bytes)?;
+        let record_start_bytes = record.start_sector.checked_mul(sector_size_bytes)?;
+        if record_size_bytes != pv_device.size_bytes
+            || pv_device
+                .start_512_sector
+                .and_then(|start| start.checked_mul(512))
+                != Some(record_start_bytes)
+        {
+            return None;
+        }
+        adjacent_partition_free_bytes = adjacent_free_sectors(disk, table, record)
+            .ok()?
+            .checked_mul(sector_size_bytes)?;
+    }
+
+    let underlying_bytes = pv_device_slack_bytes.checked_add(adjacent_partition_free_bytes)?;
+    let additional_extents = underlying_bytes / extent;
+    if additional_extents == 0 {
+        return None;
+    }
+    let max_growth_bytes = free_extents
+        .checked_add(additional_extents)?
+        .checked_mul(extent)?;
+    if max_growth_bytes <= vg.free_bytes {
+        return None;
+    }
+
+    let requested_growth_bytes = match request.growth {
+        Growth::ByBytes(bytes) => bytes,
+        Growth::MaxFree => max_growth_bytes,
+    };
+    if requested_growth_bytes == 0 {
+        return None;
+    }
+    let requested_extents =
+        requested_growth_bytes / extent + u64::from(requested_growth_bytes % extent != 0);
+    if requested_extents <= free_extents
+        || requested_extents > free_extents.checked_add(additional_extents)?
+    {
+        return None;
+    }
+
+    let required_new_extents = requested_extents.checked_sub(free_extents)?;
+    let required_pv_growth_bytes = required_new_extents.checked_mul(extent)?;
+    let raw_partition_growth_bytes =
+        required_pv_growth_bytes.saturating_sub(pv_device_slack_bytes);
+    let required_partition_growth_bytes = if raw_partition_growth_bytes == 0 {
+        0
+    } else {
+        let sectors = raw_partition_growth_bytes / sector_size_bytes
+            + u64::from(raw_partition_growth_bytes % sector_size_bytes != 0);
+        sectors.checked_mul(sector_size_bytes)?
+    };
+    if required_partition_growth_bytes > adjacent_partition_free_bytes {
+        return None;
+    }
+
+    let lv_path = lv
+        .path
+        .clone()
+        .unwrap_or_else(|| format!("/dev/{}/{}", lv.vg_name, lv.name));
+    let mut steps = vec![
+        "revalidate the complete storage snapshot and exact device identities".to_owned(),
+        "create and verify LVM metadata backup".to_owned(),
+    ];
+    if required_partition_growth_bytes > 0 {
+        steps.push("create and verify partition-table metadata backup".to_owned());
+        steps.push(format!(
+            "extend {} by {} bytes without moving its start sector",
+            partition_path.as_deref()?,
+            required_partition_growth_bytes
+        ));
+        steps.push("notify/revalidate the kernel partition geometry".to_owned());
+    }
+    steps.push(format!(
+        "resize LVM PV {} to consume the verified larger backing device",
+        pv.name
+    ));
+    steps.push(format!(
+        "extend logical volume {lv_path} by the requested extent-aligned capacity"
+    ));
+    steps.push(format!(
+        "grow {} filesystem mounted at {}",
+        fs.fs_type, mount.target
+    ));
+    steps.push("rediscover and verify every layer and the final filesystem size".to_owned());
+
+    Some(GrowthRouteAlternative {
+        code: if required_partition_growth_bytes > 0 {
+            "grow-partition-pv-lv-filesystem".to_owned()
+        } else {
+            "grow-pv-lv-filesystem".to_owned()
+        },
+        summary: if required_partition_growth_bytes > 0 {
+            "verified raw capacity can be routed through partition -> PV -> VG -> LV -> filesystem"
+                .to_owned()
+        } else {
+            "the PV backing device is already larger than the PV; capacity can be routed through PV -> VG -> LV -> filesystem"
+                .to_owned()
+        },
+        target: request.target.clone(),
+        disk: disk_path,
+        partition: partition_path,
+        physical_volume: pv.name.clone(),
+        volume_group: vg.name.clone(),
+        logical_volume: lv_path,
+        extent_size_bytes: extent,
+        sector_size_bytes,
+        existing_vg_free_bytes: vg.free_bytes,
+        pv_device_slack_bytes,
+        adjacent_partition_free_bytes,
+        max_growth_bytes,
+        requested_growth_bytes,
+        required_partition_growth_bytes,
+        steps,
     })
 }
 
