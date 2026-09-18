@@ -259,8 +259,7 @@ fn event_loop(
                                         state.content_scroll = 0;
                                         state.plan_growth_index = 0;
                                         state.clamp_device_selection(&snapshot);
-                                        refresh_status =
-                                            Some(format!("Rescanned {kernel_name}"));
+                                        refresh_status = Some(format!("Rescanned {kernel_name}"));
                                     }
                                     Err(error) => {
                                         refresh_status = Some(format!(
@@ -1298,8 +1297,7 @@ fn selected_disk_kernel_name(snapshot: &HostSnapshot, state: AppState) -> Option
                 .block_devices
                 .iter()
                 .find(|device| {
-                    device.kind == NodeKind::Disk
-                        && device.kernel_name.as_deref() == Some(parent)
+                    device.kind == NodeKind::Disk && device.kernel_name.as_deref() == Some(parent)
                 })
                 .and_then(|device| device.kernel_name.clone())
         }
@@ -1317,8 +1315,7 @@ fn kernel_rescan_selected_disk(snapshot: &HostSnapshot, state: AppState) -> Resu
             "kernel rescan control is unavailable for /dev/{kernel_name}"
         ));
     }
-    std::fs::write(&path, b"1\n")
-        .with_context(|| format!("write {}", path.display()))?;
+    std::fs::write(&path, b"1\n").with_context(|| format!("write {}", path.display()))?;
     Ok(kernel_name)
 }
 
