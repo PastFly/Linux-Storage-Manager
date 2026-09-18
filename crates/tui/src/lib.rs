@@ -30,6 +30,12 @@ enum LoopControl {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanLayoutMode {
+    Compact,
+    Wide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
     Disks,
     Volumes,
@@ -435,14 +441,24 @@ fn render_devices(
         frame.render_widget(table, panes[0]);
     }
 
-    let detail = rows
-        .get(state.selected_device)
-        .map(|row| device_detail_lines(snapshot, row.device))
-        .unwrap_or_else(|| vec![Line::from("No device selected.")]);
-    frame.render_widget(
-        Paragraph::new(detail).block(Block::default().borders(Borders::ALL).title(" Details ")),
-        panes[1],
-    );
+    if let Some(row) = rows.get(state.selected_device) {
+        let details = device_detail_rows(snapshot, row.device)
+            .into_iter()
+            .map(Row::new);
+        let table = Table::new(
+            details,
+            [Constraint::Length(14), Constraint::Min(10)],
+        )
+        .column_spacing(1)
+        .block(Block::default().borders(Borders::ALL).title(" Details "));
+        frame.render_widget(table, panes[1]);
+    } else {
+        frame.render_widget(
+            Paragraph::new("No device selected.")
+                .block(Block::default().borders(Borders::ALL).title(" Details ")),
+            panes[1],
+        );
+    }
 }
 
 fn render_swap(
@@ -478,8 +494,8 @@ fn render_swap(
     let table = Table::new(
         rows,
         [
-            Constraint::Min(24),
-            Constraint::Length(12),
+            Constraint::Length(30),
+            Constraint::Length(14),
             Constraint::Length(12),
             Constraint::Length(12),
             Constraint::Length(10),
@@ -519,9 +535,9 @@ fn render_mounts(
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(30),
-            Constraint::Percentage(55),
-            Constraint::Percentage(15),
+            Constraint::Length(28),
+            Constraint::Min(40),
+            Constraint::Length(14),
         ],
     )
     .header(header)
@@ -541,35 +557,66 @@ fn render_diagnostics(
     capabilities: &HostCapabilities,
     state: AppState,
 ) {
-    let mut lines = Vec::new();
-    for item in &snapshot.diagnostics {
-        lines.push(Line::from(format!("{:?}  {}", item.severity, item.code)));
-        lines.push(Line::from(format!("  {}", item.message)));
-        lines.push(Line::from(""));
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(6), Constraint::Length(5)])
+        .split(area);
+
+    if snapshot.diagnostics.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No diagnostics reported.")
+                .block(Block::default().borders(Borders::ALL).title(" Diagnostics ")),
+            sections[0],
+        );
+    } else {
+        let rows = snapshot
+            .diagnostics
+            .iter()
+            .skip(state.content_scroll as usize)
+            .map(|item| Row::new(diagnostic_table_cells(item)));
+        let header = Row::new(["Severity", "Code", "Message"])
+            .style(Style::default().add_modifier(Modifier::BOLD));
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(9),
+                Constraint::Length(34),
+                Constraint::Min(30),
+            ],
+        )
+        .header(header)
+        .column_spacing(1)
+        .block(Block::default().borders(Borders::ALL).title(" Diagnostics "));
+        frame.render_widget(table, sections[0]);
     }
-    if lines.is_empty() {
-        lines.push(Line::from("No diagnostics reported."));
-        lines.push(Line::from(""));
-    }
+
     let available = capabilities
         .tools
         .iter()
         .filter(|tool| tool.available)
         .count();
-    lines.push(Line::from(format!(
-        "Capabilities: {available}/{} tools available",
-        capabilities.tools.len()
-    )));
+    let missing = capabilities
+        .tools
+        .iter()
+        .filter(|tool| !tool.available)
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let capability_lines = vec![
+        Line::from(format!(
+            "Available: {available}/{} tools",
+            capabilities.tools.len()
+        )),
+        Line::from(format!(
+            "Missing: {}",
+            if missing.is_empty() { "none" } else { &missing }
+        )),
+    ];
     frame.render_widget(
-        Paragraph::new(lines)
+        Paragraph::new(capability_lines)
             .wrap(Wrap { trim: false })
-            .scroll((state.content_scroll, 0))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Diagnostics "),
-            ),
-        area,
+            .block(Block::default().borders(Borders::ALL).title(" Capabilities ")),
+        sections[1],
     );
 }
 
@@ -581,66 +628,67 @@ fn render_plan_hint(
     state: AppState,
 ) {
     let rows = plan_candidate_rows(snapshot);
-    let lines = if let Some(row) = rows.get(state.selected_device) {
-        let target = plan_target(row.device);
-        match analyze_extendability(snapshot, &target) {
-            Ok(analysis) => {
-                let mut lines = vec![
+    let Some(row) = rows.get(state.selected_device) else {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from("No supported filesystem targets were discovered."),
+                Line::from(""),
+                Line::from("Plans currently analyzes ext4/XFS filesystems only."),
+                Line::from("No changes will be made."),
+            ])
+            .block(Block::default().borders(Borders::ALL).title(" Plans ")),
+            area,
+        );
+        return;
+    };
+
+    let target = plan_target(row.device);
+    let analysis = match analyze_extendability(snapshot, &target) {
+        Ok(analysis) => analysis,
+        Err(error) => {
+            frame.render_widget(
+                Paragraph::new(vec![
                     Line::from("Growth analysis"),
                     Line::from(""),
                     Line::from(format!("Target          {target}")),
-                    Line::from(format!(
-                        "Device          {}",
-                        analysis.device.as_deref().unwrap_or("-")
-                    )),
-                    Line::from(format!(
-                        "Filesystem      {}",
-                        analysis.filesystem.as_deref().unwrap_or("-")
-                    )),
-                    Line::from(format!(
-                        "Current size    {}",
-                        analysis
-                            .current_size_bytes
-                            .map(human_bytes_precise)
-                            .unwrap_or_else(|| "-".to_owned())
-                    )),
+                    Line::from("Status          Analysis unavailable"),
+                    Line::from(format!("Reason          {error}")),
                     Line::from(""),
-                ];
-                lines.extend(analysis_summary_lines(&analysis));
-                lines.push(Line::from(""));
-                lines.push(Line::from("Strict plan preview"));
-                lines.push(Line::from(format!(
-                    "Requested       {}",
-                    growth_label(state.plan_growth_for_snapshot(snapshot))
-                )));
-                lines.extend(strict_plan_lines(
-                    snapshot,
-                    capabilities,
-                    &target,
-                    state.plan_growth_for_snapshot(snapshot),
-                ));
-                lines.push(Line::from(""));
-                lines.push(Line::from("No changes will be made."));
-                lines
-            }
-            Err(error) => vec![
-                Line::from("Growth analysis"),
-                Line::from(""),
-                Line::from(format!("Target          {target}")),
-                Line::from("Status          Analysis unavailable"),
-                Line::from(format!("Reason          {error}")),
-                Line::from(""),
-                Line::from("No changes will be made."),
-            ],
+                    Line::from("No changes will be made."),
+                ])
+                .wrap(Wrap { trim: false })
+                .block(Block::default().borders(Borders::ALL).title(" Plans ")),
+                area,
+            );
+            return;
         }
-    } else {
-        vec![
-            Line::from("No supported filesystem targets were discovered."),
-            Line::from(""),
-            Line::from("Plans currently analyzes ext4/XFS filesystems only."),
-            Line::from("No changes will be made."),
-        ]
     };
+    let growth = state.plan_growth_for_snapshot(snapshot);
+
+    match plan_layout_mode(area.width) {
+        PlanLayoutMode::Wide => {
+            render_plan_wide(frame, area, snapshot, capabilities, &target, growth, &analysis)
+        }
+        PlanLayoutMode::Compact => {
+            render_plan_compact(frame, area, snapshot, capabilities, &target, growth, &analysis)
+        }
+    }
+}
+
+fn render_plan_compact(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    snapshot: &HostSnapshot,
+    capabilities: &HostCapabilities,
+    target: &str,
+    growth: Growth,
+    analysis: &ExtendAnalysis,
+) {
+    let mut lines = plan_summary_lines(target, growth, analysis);
+    lines.push(Line::from(""));
+    lines.extend(strict_plan_lines(snapshot, capabilities, target, growth));
+    lines.push(Line::from(""));
+    lines.push(Line::from("No changes will be made."));
 
     frame.render_widget(
         Paragraph::new(lines)
@@ -648,6 +696,141 @@ fn render_plan_hint(
             .block(Block::default().borders(Borders::ALL).title(" Plans ")),
         area,
     );
+}
+
+fn render_plan_wide(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    snapshot: &HostSnapshot,
+    capabilities: &HostCapabilities,
+    target: &str,
+    growth: Growth,
+    analysis: &ExtendAnalysis,
+) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(area);
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+        .split(columns[1]);
+
+    let plan = plan_extend(
+        snapshot,
+        capabilities,
+        ExtendRequest {
+            target: target.to_owned(),
+            growth,
+        },
+    );
+
+    let mut summary = plan_summary_lines(target, growth, analysis);
+    match &plan {
+        Ok(plan) if plan.status() == PlanStatus::Preview => {
+            summary.extend(plan_preview_summary_lines(plan));
+        }
+        Ok(plan) => {
+            summary.push(Line::from(""));
+            summary.push(Line::from("Strict preview"));
+            summary.push(Line::from("Planner         Blocked"));
+            if let Some(blocker) = plan.blockers().first() {
+                summary.push(Line::from(format!(
+                    "Blocker         [{}] {}",
+                    blocker.code, blocker.message
+                )));
+            }
+        }
+        Err(error) => {
+            summary.push(Line::from(""));
+            summary.push(Line::from("Strict preview"));
+            summary.push(Line::from("Planner         Error"));
+            summary.push(Line::from(format!("Reason          {error}")));
+        }
+    }
+    summary.push(Line::from(""));
+    summary.push(Line::from("No changes will be made."));
+
+    frame.render_widget(
+        Paragraph::new(summary)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(" Summary ")),
+        columns[0],
+    );
+
+    match plan {
+        Ok(plan) if plan.status() == PlanStatus::Preview => {
+            let preflight_rows = plan.preflight_checks().iter().map(|check| {
+                let row = Row::new(preflight_table_cells(check));
+                if check.state == PreflightState::Required {
+                    row.style(Style::default().add_modifier(Modifier::BOLD))
+                } else {
+                    row
+                }
+            });
+            let preflight = Table::new(
+                preflight_rows,
+                [
+                    Constraint::Length(6),
+                    Constraint::Length(30),
+                    Constraint::Min(24),
+                ],
+            )
+            .header(
+                Row::new(["State", "Check", "Details"])
+                    .style(Style::default().add_modifier(Modifier::BOLD)),
+            )
+            .column_spacing(1)
+            .block(Block::default().borders(Borders::ALL).title(" Preflight "));
+            frame.render_widget(preflight, right[0]);
+
+            let step_rows = plan.steps().iter().map(|step| {
+                let row = Row::new(plan_step_table_cells(step));
+                if step.reversibility == Reversibility::Irreversible {
+                    row.style(Style::default().add_modifier(Modifier::BOLD))
+                } else {
+                    row
+                }
+            });
+            let steps = Table::new(
+                step_rows,
+                [
+                    Constraint::Length(3),
+                    Constraint::Min(26),
+                    Constraint::Length(12),
+                    Constraint::Length(8),
+                ],
+            )
+            .header(
+                Row::new(["#", "Operation", "Risk", "After"])
+                    .style(Style::default().add_modifier(Modifier::BOLD)),
+            )
+            .column_spacing(1)
+            .block(Block::default().borders(Borders::ALL).title(" Plan steps "));
+            frame.render_widget(steps, right[1]);
+        }
+        Ok(plan) => {
+            let message = plan
+                .blockers()
+                .first()
+                .map(|blocker| format!("[{}] {}", blocker.code, blocker.message))
+                .unwrap_or_else(|| "No blocker details available.".to_owned());
+            frame.render_widget(
+                Paragraph::new(message)
+                    .wrap(Wrap { trim: false })
+                    .block(Block::default().borders(Borders::ALL).title(" Preflight ")),
+                columns[1],
+            );
+        }
+        Err(error) => {
+            frame.render_widget(
+                Paragraph::new(error.to_string())
+                    .wrap(Wrap { trim: false })
+                    .block(Block::default().borders(Borders::ALL).title(" Preflight ")),
+                columns[1],
+            );
+        }
+    }
 }
 
 fn device_table_cells(snapshot: &HostSnapshot, row: DeviceRow<'_>) -> [String; 4] {
@@ -686,49 +869,22 @@ fn mount_table_cells(mount: &lsm_core::MountEntry) -> [String; 3] {
     ]
 }
 
-#[cfg(test)]
-fn toolbar_text(section: Section) -> String {
-    if section == Section::Plans {
-        "↑↓ Target   [ ] / - + Size   PgUp/PgDn Size   ←→/Tab Section   q/Esc Quit   Read-only"
-            .to_owned()
-    } else {
-        "↑↓ Navigate   ←→/Tab Section   1-6 Section   q/Esc Quit   Read-only".to_owned()
-    }
-}
-
-fn toolbar_line(section: Section) -> Line<'static> {
-    let items: Vec<(&'static str, &'static str)> = if section == Section::Plans {
-        vec![
-            ("↑↓", "Target"),
-            ("[ ] / - +", "Size"),
-            ("PgUp/PgDn", "Size"),
-            ("←→/Tab", "Section"),
-            ("q/Esc", "Quit"),
-        ]
-    } else {
-        vec![
-            ("↑↓", "Navigate"),
-            ("←→/Tab", "Section"),
-            ("1-6", "Section"),
-            ("q/Esc", "Quit"),
-        ]
+fn diagnostic_table_cells(item: &lsm_core::StorageDiagnostic) -> [String; 3] {
+    let severity = match item.severity {
+        DiagnosticSeverity::Info => "Info",
+        DiagnosticSeverity::Warning => "Warning",
+        DiagnosticSeverity::Error => "Error",
     };
-
-    let mut spans = vec![Span::raw(" ")];
-    for (key, label) in items {
-        spans.push(Span::styled(
-            key,
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::raw(format!(" {label}   ")));
-    }
-    spans.push(Span::raw("Read-only"));
-    Line::from(spans)
+    [
+        severity.to_owned(),
+        item.code.clone(),
+        item.message.clone(),
+    ]
 }
 
-fn device_detail_lines(snapshot: &HostSnapshot, device: &BlockDevice) -> Vec<Line<'static>> {
+fn device_detail_rows(snapshot: &HostSnapshot, device: &BlockDevice) -> Vec<[String; 2]> {
     let path = device.path.as_deref().unwrap_or(&device.name);
-    let fs = device
+    let filesystem = device
         .filesystem
         .as_ref()
         .map(|item| item.fs_type.as_str())
@@ -738,26 +894,169 @@ fn device_detail_lines(snapshot: &HostSnapshot, device: &BlockDevice) -> Vec<Lin
     } else {
         device.mountpoints.join(", ")
     };
-
     vec![
-        Line::from(format!("Device       {path}")),
-        Line::from(format!("Type         {}", device_role(snapshot, device))),
-        Line::from(format!(
-            "Size         {}",
-            device_size_for_display(snapshot, device)
-        )),
-        Line::from(format!("Filesystem   {fs}")),
-        Line::from(format!("Mounted at   {mounts}")),
-        Line::from(format!(
-            "Partition tbl {}",
-            device.partition_table.as_deref().unwrap_or("-")
-        )),
-        Line::from(format!(
-            "Kernel name   {}",
-            device.kernel_name.as_deref().unwrap_or("-")
-        )),
+        ["Device".to_owned(), path.to_owned()],
+        ["Type".to_owned(), device_role(snapshot, device).to_owned()],
+        [
+            "Size".to_owned(),
+            device_size_for_display(snapshot, device),
+        ],
+        ["Filesystem".to_owned(), filesystem.to_owned()],
+        ["Mounted at".to_owned(), mounts],
+        [
+            "Partition tbl".to_owned(),
+            device.partition_table.as_deref().unwrap_or("-").to_owned(),
+        ],
+        [
+            "Kernel name".to_owned(),
+            device.kernel_name.as_deref().unwrap_or("-").to_owned(),
+        ],
     ]
 }
+
+fn preflight_table_cells(check: &PreflightCheck) -> [String; 3] {
+    let state = match check.state {
+        PreflightState::Verified => "[OK]",
+        PreflightState::Required => "[REQ]",
+    };
+    [
+        state.to_owned(),
+        check.code.clone(),
+        check.message.clone(),
+    ]
+}
+
+fn plan_step_table_cells(step: &PlanStep) -> [String; 4] {
+    [
+        step.id.to_string(),
+        operation_summary(&step.operation),
+        reversibility_label(step.reversibility).to_owned(),
+        if step.depends_on.is_empty() {
+            "-".to_owned()
+        } else {
+            step.depends_on
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        },
+    ]
+}
+
+fn plan_layout_mode(width: u16) -> PlanLayoutMode {
+    if width >= 120 {
+        PlanLayoutMode::Wide
+    } else {
+        PlanLayoutMode::Compact
+    }
+}
+
+fn plan_summary_lines(target: &str, growth: Growth, analysis: &ExtendAnalysis) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from("Growth analysis"),
+        Line::from(""),
+        Line::from(format!("Target          {target}")),
+        Line::from(format!(
+            "Device          {}",
+            analysis.device.as_deref().unwrap_or("-")
+        )),
+        Line::from(format!(
+            "Filesystem      {}",
+            analysis.filesystem.as_deref().unwrap_or("-")
+        )),
+        Line::from(format!(
+            "Current size    {}",
+            analysis
+                .current_size_bytes
+                .map(human_bytes_precise)
+                .unwrap_or_else(|| "-".to_owned())
+        )),
+        Line::from(""),
+    ];
+    lines.extend(analysis_summary_lines(analysis));
+    lines.push(Line::from(""));
+    lines.push(Line::from("Strict preview"));
+    lines.push(Line::from(format!(
+        "Requested       {}",
+        growth_label(growth)
+    )));
+    lines
+}
+
+fn plan_preview_summary_lines(plan: &lsm_planner::PlanPreview) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from("Planner         Preview ready")];
+    if let Some(change) = plan.size_change() {
+        lines.push(Line::from("Layout          LVM"));
+        lines.push(Line::from(format!(
+            "Growth          {}",
+            human_bytes(change.rounded_growth_bytes)
+        )));
+        lines.push(Line::from(format!(
+            "Expected size   {}",
+            human_bytes_precise(change.expected_lv_size_bytes)
+        )));
+        lines.push(Line::from(format!(
+            "VG free after   {}",
+            human_bytes(change.remaining_vg_free_bytes)
+        )));
+    }
+    if let Some(change) = plan.partition_size_change() {
+        lines.push(Line::from("Layout          Direct partition"));
+        lines.push(Line::from(format!("Disk            {}", change.disk)));
+        lines.push(Line::from(format!(
+            "Growth          {}",
+            human_bytes(change.rounded_growth_bytes)
+        )));
+        lines.push(Line::from(format!(
+            "Expected size   {}",
+            human_bytes_precise(change.expected_partition_size_bytes)
+        )));
+        lines.push(Line::from(format!(
+            "Adjacent after  {}",
+            human_bytes(change.remaining_adjacent_free_bytes)
+        )));
+    }
+    lines
+}
+
+#[cfg(test)]
+fn toolbar_text(section: Section) -> String {
+    if section == Section::Plans {
+        "↑↓ Target   PgUp/PgDn Size   Tab Section   q Quit   Read-only".to_owned()
+    } else {
+        "↑↓ Navigate   Tab Section   1-6 Jump   q Quit   Read-only".to_owned()
+    }
+}
+
+fn toolbar_line(section: Section) -> Line<'static> {
+    let items: Vec<(&'static str, &'static str)> = if section == Section::Plans {
+        vec![
+            ("↑↓", "Target"),
+            ("PgUp/PgDn", "Size"),
+            ("Tab", "Section"),
+            ("q", "Quit"),
+        ]
+    } else {
+        vec![
+            ("↑↓", "Navigate"),
+            ("Tab", "Section"),
+            ("1-6", "Jump"),
+            ("q", "Quit"),
+        ]
+    };
+
+    let mut spans = vec![Span::raw(" ")];
+    for (key, label) in items {
+        spans.push(Span::styled(
+            format!(" {key} "),
+            Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        ));
+        spans.push(Span::raw(format!(" {label}  ")));
+    }
+    spans.push(Span::raw("Read-only"));
+    Line::from(spans)
+}
+
 
 fn device_rows(graph: &StorageGraph) -> Vec<DeviceRow<'_>> {
     let mut rows = Vec::new();
@@ -1844,7 +2143,6 @@ mod tests {
         assert!(disks.contains("Section"));
         assert!(!disks.contains("PgUp/PgDn"));
     }
-
 
     #[test]
     fn diagnostic_cells_keep_severity_code_and_message_separate() {
