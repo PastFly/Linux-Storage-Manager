@@ -3,8 +3,8 @@ use lsm_core::{
 };
 use lsm_planner::{
     list_extend_targets, list_provisioning_opportunities, parse_growth_size, plan_extend,
-    ExtendRequest, ExtendTargetAvailability, ExtendTargetKind, Growth, Operation, PlanStatus,
-    PreflightState, ProvisioningSpaceKind,
+    analyze_lvm_underlying_growth, ExtendRequest, ExtendTargetAvailability, ExtendTargetKind,
+    Growth, Operation, PlanStatus, PreflightState, ProvisioningSpaceKind,
 };
 use serde_json::json;
 
@@ -367,6 +367,81 @@ fn catalog_exposes_free_vg_space_for_future_create_workflows() {
         .future_actions
         .iter()
         .any(|action| action.contains("logical volume")));
+}
+
+
+fn with_gpt_tail(mut snapshot: HostSnapshot) -> HostSnapshot {
+    let partition_size = 16 * GIB + EXTENT;
+    let sector = 512_u64;
+    let start = 2048_u64;
+    let disk_sectors = snapshot.storage.block_devices[0].size_bytes / sector;
+    snapshot.partition_tables = vec![lsm_core::PartitionTable {
+        device: "/dev/vda".into(),
+        label: Some("gpt".into()),
+        id: Some("gpt-test".into()),
+        unit: Some("sectors".into()),
+        first_lba: Some(34),
+        last_lba: Some(disk_sectors - 34),
+        sector_size_bytes: Some(sector),
+        partitions: vec![lsm_core::PartitionRecord {
+            node: "/dev/vda1".into(),
+            start_sector: start,
+            size_sectors: partition_size / sector,
+            partition_type: Some(
+                "E6D6D379-F507-44C2-A23C-238F2A3DF928".into(),
+            ),
+            uuid: Some("part-1".into()),
+            name: None,
+            attrs: None,
+            bootable: None,
+        }],
+    }];
+    snapshot
+}
+
+#[test]
+fn chained_lvm_route_uses_partition_tail_when_vg_free_is_insufficient() {
+    let (snapshot, caps) = input();
+    let snapshot = with_gpt_tail(snapshot);
+    let request = request("/", Growth::ByBytes(10 * GIB));
+
+    let route = analyze_lvm_underlying_growth(&snapshot, &request)
+        .expect("expected chained LVM growth opportunity");
+
+    assert_eq!(route.partition.as_deref(), Some("/dev/vda1"));
+    assert_eq!(route.physical_volume, "/dev/vda1");
+    assert_eq!(route.volume_group, "vg0");
+    assert_eq!(route.logical_volume, "/dev/vg0/root");
+    assert_eq!(route.existing_vg_free_bytes, 8 * GIB);
+    assert!(route.pv_device_slack_bytes >= EXTENT);
+    assert!(route.adjacent_partition_free_bytes > 2 * GIB);
+    assert!(route.max_growth_bytes >= 10 * GIB);
+    assert!(route.required_partition_growth_bytes > 0);
+    assert!(route
+        .steps
+        .iter()
+        .any(|step| step.contains("resize LVM PV")));
+
+    let plan = plan_extend(&snapshot, &caps, request).unwrap();
+    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert_eq!(plan.growth_route_alternatives().len(), 1);
+    assert!(plan
+        .blockers()
+        .iter()
+        .any(|blocker| blocker.code == "insufficient-capacity"));
+}
+
+#[test]
+fn max_target_catalog_includes_verified_lvm_underlying_route_capacity() {
+    let (snapshot, caps) = input();
+    let snapshot = with_gpt_tail(snapshot);
+
+    let targets = list_extend_targets(&snapshot, &caps);
+
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].availability, ExtendTargetAvailability::PreviewReady);
+    assert_eq!(targets[0].verified_growth_bytes, Some(8 * GIB));
+    assert!(targets[0].layout_growth_bytes.unwrap() > 8 * GIB);
 }
 
 }
