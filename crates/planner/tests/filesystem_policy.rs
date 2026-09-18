@@ -2,19 +2,13 @@ use lsm_core::{
     DiagnosticSeverity, FilesystemPreflightEvidence, FilesystemProbeState, HostCapabilities,
     HostSnapshot, StorageDiagnostic, ToolCapability,
 };
-use lsm_planner::{
-    decide_filesystem_growth, FilesystemCheckKind, FilesystemDecisionState,
-};
+use lsm_planner::{decide_filesystem_growth, FilesystemCheckKind, FilesystemDecisionState};
 use serde_json::json;
 
 const GIB: u64 = 1 << 30;
 
 fn snapshot(fs_type: &str, mounted: bool, mount_options: &[&str]) -> HostSnapshot {
-    let mountpoints = if mounted {
-        json!(["/data"])
-    } else {
-        json!([])
-    };
+    let mountpoints = if mounted { json!(["/data"]) } else { json!([]) };
     let mounts = if mounted {
         json!([{
             "source":"/dev/sda1",
@@ -145,8 +139,7 @@ fn questionable_mounted_ext4_requires_explicit_offline_read_only_check() {
 fn unmounted_ext4_requires_offline_health_check_before_resize() {
     let snapshot = snapshot("ext4", false, &[]);
 
-    let decision =
-        decide_filesystem_growth(&snapshot, &capabilities(), "/dev/sda1");
+    let decision = decide_filesystem_growth(&snapshot, &capabilities(), "/dev/sda1");
 
     assert_eq!(
         decision.state,
@@ -203,7 +196,9 @@ fn unmounted_xfs_requires_mount_before_growth() {
 #[test]
 fn failed_xfs_grow_dry_run_blocks_health_promotion() {
     let mut snapshot = snapshot("xfs", true, &["rw"]);
-    snapshot.filesystem_preflight.push(xfs_evidence(Some(false)));
+    snapshot
+        .filesystem_preflight
+        .push(xfs_evidence(Some(false)));
 
     let decision = decide_filesystem_growth(&snapshot, &capabilities(), "/data");
 
@@ -240,10 +235,7 @@ fn unknown_filesystem_requires_dedicated_adapter() {
 
     let decision = decide_filesystem_growth(&snapshot, &capabilities(), "/data");
 
-    assert_eq!(
-        decision.state,
-        FilesystemDecisionState::AdapterRequired
-    );
+    assert_eq!(decision.state, FilesystemDecisionState::AdapterRequired);
     assert!(decision
         .reasons
         .iter()
