@@ -240,22 +240,14 @@ pub struct OperationJournal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JournalTransition<'a> {
     HostLockAcquired,
-    IdentityRevalidated {
-        fresh_manifest_digest: &'a str,
-    },
+    IdentityRevalidated { fresh_manifest_digest: &'a str },
     PreconditionsVerified,
-    ExactPlanApproved {
-        approved_plan_id: &'a str,
-    },
+    ExactPlanApproved { approved_plan_id: &'a str },
     ExecutionStarted,
     VerificationStarted,
     Completed,
-    Interrupted {
-        reason: &'a str,
-    },
-    Abort {
-        reason: &'a str,
-    },
+    Interrupted { reason: &'a str },
+    Abort { reason: &'a str },
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -296,14 +288,12 @@ impl OperationJournal {
         }
 
         match transition {
-            JournalTransition::HostLockAcquired => {
-                self.advance(
-                    JournalPhase::Planned,
-                    JournalPhase::HostLockHeld,
-                    "host-lock-acquired",
-                    "host-exclusive storage-operation lock acquired",
-                )
-            }
+            JournalTransition::HostLockAcquired => self.advance(
+                JournalPhase::Planned,
+                JournalPhase::HostLockHeld,
+                "host-lock-acquired",
+                "host-exclusive storage-operation lock acquired",
+            ),
             JournalTransition::IdentityRevalidated {
                 fresh_manifest_digest,
             } => {
@@ -369,7 +359,10 @@ impl OperationJournal {
             JournalTransition::Interrupted { reason } => {
                 let from = self.phase;
                 if self.mutation_may_have_started
-                    || matches!(self.phase, JournalPhase::Executing | JournalPhase::Verifying)
+                    || matches!(
+                        self.phase,
+                        JournalPhase::Executing | JournalPhase::Verifying
+                    )
                 {
                     self.phase = JournalPhase::RecoveryRequired;
                     self.push_event(
@@ -411,9 +404,9 @@ impl OperationJournal {
     pub fn resume_disposition(&self) -> ResumeDisposition {
         match self.phase {
             JournalPhase::Completed => ResumeDisposition::Complete,
-            JournalPhase::Executing
-            | JournalPhase::Verifying
-            | JournalPhase::RecoveryRequired => ResumeDisposition::RecoveryRequired,
+            JournalPhase::Executing | JournalPhase::Verifying | JournalPhase::RecoveryRequired => {
+                ResumeDisposition::RecoveryRequired
+            }
             JournalPhase::Planned
             | JournalPhase::HostLockHeld
             | JournalPhase::IdentityRevalidated
@@ -427,8 +420,8 @@ impl OperationJournal {
         &mut self,
         expected: JournalPhase,
         next: JournalPhase,
-        code: &str,
-        detail: &str,
+        code: &'static str,
+        detail: &'static str,
     ) -> Result<(), JournalError> {
         if self.phase != expected {
             return Err(self.invalid(code));
