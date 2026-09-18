@@ -188,6 +188,7 @@ fn fixture_snapshot(vg_free: u64) -> HostSnapshot {
             volume_groups: parse_vgs_json(&vgs).unwrap(),
             logical_volumes: parse_lvs_json(lvs).unwrap(),
         }),
+        filesystem_preflight: Vec::new(),
         diagnostics: Vec::new(),
         collectors: geometry_collectors(),
     }
@@ -249,6 +250,7 @@ fn dos_primary_before_extended_container_has_known_zero_adjacent_capacity() {
         fstab: Vec::new(),
         swaps: Vec::new(),
         lvm: None,
+        filesystem_preflight: Vec::new(),
         diagnostics: Vec::new(),
         collectors: geometry_collectors(),
     };
@@ -318,6 +320,7 @@ fn debian12_dos_logical_sibling_reports_real_gap_before_extended_container() {
         fstab: Vec::new(),
         swaps: Vec::new(),
         lvm: None,
+        filesystem_preflight: Vec::new(),
         diagnostics: Vec::new(),
         collectors: geometry_collectors(),
     };
