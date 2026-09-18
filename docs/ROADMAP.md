@@ -40,7 +40,7 @@ Goal: safely understand a host before changing anything.
 - [x] Add strict read-only LVM/ext4 and LVM/XFS growth previews using existing VG free extents.
 - [x] Add strict read-only direct-partition ext4/XFS previews for verified adjacent free space on DOS/MBR or GPT.
 - [x] Expose advisory extendability and strict previews in the TUI without an executor.
-- [ ] Add broader fixture coverage for direct GPT/XFS and 4K-sector partition previews.
+- [x] Add broader fixture coverage for direct GPT/XFS and 4K-sector partition previews.
 - [ ] Add filesystem feature/health/version preflight before any future executor work.
 - [ ] Add concurrency/locking design and fresh runtime identity revalidation for M1B.
 
