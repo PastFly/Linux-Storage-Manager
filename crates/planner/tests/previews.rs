@@ -483,3 +483,180 @@ fn chained_lvm_route_handles_pv_directly_on_an_enlarged_disk() {
     assert_eq!(plan.status(), PlanStatus::Blocked);
     assert_eq!(plan.growth_route_alternatives().len(), 1);
 }
+
+#[test]
+fn create_catalog_reports_internal_gpt_gap_with_exact_geometry() {
+    let (mut snapshot, _caps) = input();
+    let sector = 512_u64;
+    let disk_sectors = snapshot.storage.block_devices[0].size_bytes / sector;
+    let first_start = 2048_u64;
+    let first_size = 2 * GIB / sector;
+    let second_start = 8 * GIB / sector;
+    let second_size = 2 * GIB / sector;
+    let expected_gap_start = first_start + first_size;
+    let expected_gap_sectors = second_start - expected_gap_start;
+
+    snapshot.partition_tables = vec![lsm_core::PartitionTable {
+        device: "/dev/vda".into(),
+        label: Some("gpt".into()),
+        id: Some("gpt-gap-test".into()),
+        unit: Some("sectors".into()),
+        first_lba: Some(34),
+        last_lba: Some(disk_sectors - 34),
+        sector_size_bytes: Some(sector),
+        partitions: vec![
+            lsm_core::PartitionRecord {
+                node: "/dev/vda1".into(),
+                start_sector: first_start,
+                size_sectors: first_size,
+                partition_type: Some("8300".into()),
+                uuid: Some("part-1".into()),
+                name: None,
+                attrs: None,
+                bootable: None,
+            },
+            lsm_core::PartitionRecord {
+                node: "/dev/vda2".into(),
+                start_sector: second_start,
+                size_sectors: second_size,
+                partition_type: Some("8300".into()),
+                uuid: Some("part-2".into()),
+                name: None,
+                attrs: None,
+                bootable: None,
+            },
+        ],
+    }];
+
+    let spaces = list_provisioning_opportunities(&snapshot);
+    let gap = spaces
+        .iter()
+        .find(|space| {
+            space.kind == ProvisioningSpaceKind::DiskGap
+                && space.start_sector == Some(expected_gap_start)
+        })
+        .expect("expected internal GPT free range");
+
+    assert_eq!(gap.sector_size_bytes, Some(sector));
+    assert_eq!(gap.sector_count, Some(expected_gap_sectors));
+    assert_eq!(gap.available_bytes, expected_gap_sectors * sector);
+    assert!(gap.advisory_only);
+    assert!(gap
+        .blockers
+        .iter()
+        .any(|blocker| blocker.contains("alignment")));
+
+    let tail = spaces
+        .iter()
+        .find(|space| space.kind == ProvisioningSpaceKind::DiskTail)
+        .expect("expected GPT tail range");
+    assert!(tail.start_sector.unwrap() > second_start);
+}
+
+#[test]
+fn create_catalog_exposes_empty_gpt_usable_range_without_calling_it_blank() {
+    let (mut snapshot, _caps) = input();
+    let sector = 512_u64;
+    let disk_sectors = snapshot.storage.block_devices[0].size_bytes / sector;
+    snapshot.storage.block_devices[0].children.clear();
+    snapshot.lvm = None;
+    snapshot.partition_tables = vec![lsm_core::PartitionTable {
+        device: "/dev/vda".into(),
+        label: Some("gpt".into()),
+        id: Some("gpt-empty-test".into()),
+        unit: Some("sectors".into()),
+        first_lba: Some(34),
+        last_lba: Some(disk_sectors - 34),
+        sector_size_bytes: Some(sector),
+        partitions: vec![],
+    }];
+
+    let spaces = list_provisioning_opportunities(&snapshot);
+
+    assert_eq!(spaces.len(), 1);
+    assert_eq!(spaces[0].kind, ProvisioningSpaceKind::DiskGap);
+    assert_eq!(spaces[0].start_sector, Some(34));
+    assert_eq!(
+        spaces[0].sector_count,
+        Some((disk_sectors - 33) - 34)
+    );
+}
+
+#[test]
+fn dos_extended_container_hides_its_internal_logical_space_from_generic_create() {
+    let (mut snapshot, _caps) = input();
+    let sector = 512_u64;
+    let disk_sectors = snapshot.storage.block_devices[0].size_bytes / sector;
+    let primary_start = 2048_u64;
+    let primary_size = 2 * GIB / sector;
+    let extended_start = 6 * GIB / sector;
+    let extended_size = 8 * GIB / sector;
+    let logical_start = extended_start + 2048;
+    let logical_size = 2 * GIB / sector;
+
+    snapshot.partition_tables = vec![lsm_core::PartitionTable {
+        device: "/dev/vda".into(),
+        label: Some("dos".into()),
+        id: Some("0x12345678".into()),
+        unit: Some("sectors".into()),
+        first_lba: None,
+        last_lba: None,
+        sector_size_bytes: Some(sector),
+        partitions: vec![
+            lsm_core::PartitionRecord {
+                node: "/dev/vda1".into(),
+                start_sector: primary_start,
+                size_sectors: primary_size,
+                partition_type: Some("83".into()),
+                uuid: None,
+                name: None,
+                attrs: None,
+                bootable: Some(false),
+            },
+            lsm_core::PartitionRecord {
+                node: "/dev/vda2".into(),
+                start_sector: extended_start,
+                size_sectors: extended_size,
+                partition_type: Some("5".into()),
+                uuid: None,
+                name: None,
+                attrs: None,
+                bootable: Some(false),
+            },
+            lsm_core::PartitionRecord {
+                node: "/dev/vda5".into(),
+                start_sector: logical_start,
+                size_sectors: logical_size,
+                partition_type: Some("82".into()),
+                uuid: None,
+                name: None,
+                attrs: None,
+                bootable: Some(false),
+            },
+        ],
+    }];
+
+    let extended_end = extended_start + extended_size;
+    let spaces = list_provisioning_opportunities(&snapshot);
+
+    assert!(!spaces.iter().any(|space| {
+        space.kind == ProvisioningSpaceKind::DiskGap
+            && space
+                .start_sector
+                .is_some_and(|start| start >= extended_start && start < extended_end)
+    }));
+    assert!(spaces
+        .iter()
+        .filter(|space| {
+            matches!(
+                space.kind,
+                ProvisioningSpaceKind::DiskGap | ProvisioningSpaceKind::DiskTail
+            )
+        })
+        .all(|space| {
+            space
+                .blockers
+                .iter()
+                .any(|blocker| blocker.contains("DOS/MBR"))
+        }));
+}
