@@ -7,7 +7,9 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use lsm_core::{BlockDevice, DiagnosticSeverity, HostCapabilities, HostSnapshot, NodeKind, StorageGraph};
+use lsm_core::{
+    BlockDevice, DiagnosticSeverity, HostCapabilities, HostSnapshot, NodeKind, StorageGraph,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
@@ -54,8 +56,8 @@ struct AppState {
 }
 
 impl AppState {
-    fn new(snapshot: &HostSnapshot) -> Self {
-        let selected_device = if device_rows(&snapshot.storage).is_empty() { 0 } else { 0 };
+    fn new(_snapshot: &HostSnapshot) -> Self {
+        let selected_device = 0;
         Self {
             section_index: 0,
             selected_device,
@@ -164,7 +166,11 @@ fn draw(
         ])
         .split(frame.area());
 
-    let available = capabilities.tools.iter().filter(|tool| tool.available).count();
+    let available = capabilities
+        .tools
+        .iter()
+        .filter(|tool| tool.available)
+        .count();
     let errors = snapshot
         .diagnostics
         .iter()
@@ -193,15 +199,18 @@ fn draw(
         .split(outer[1]);
 
     frame.render_widget(
-        Paragraph::new(sidebar_lines(state)).block(Block::default().borders(Borders::ALL).title(" Storage ")),
+        Paragraph::new(sidebar_lines(state))
+            .block(Block::default().borders(Borders::ALL).title(" Storage ")),
         body[0],
     );
 
     render_section(frame, body[1], snapshot, state);
 
     frame.render_widget(
-        Paragraph::new(" ↑↓/jk navigate   ←→/Tab section   1-6 jump   q/Esc quit   no writes are performed ")
-            .block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(
+            " ↑↓/jk navigate   ←→/Tab section   1-6 jump   q/Esc quit   no writes are performed ",
+        )
+        .block(Block::default().borders(Borders::ALL)),
         outer[2],
     );
 }
@@ -211,7 +220,11 @@ fn sidebar_lines(state: AppState) -> Vec<Line<'static>> {
         .iter()
         .enumerate()
         .map(|(index, section)| {
-            let marker = if index == state.section_index { "›" } else { " " };
+            let marker = if index == state.section_index {
+                "›"
+            } else {
+                " "
+            };
             let line = Line::from(format!("{marker} {}  {}", index + 1, section.label()));
             if index == state.section_index {
                 line.style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
@@ -254,11 +267,18 @@ fn render_devices(
     let mut lines = Vec::new();
     for (index, row) in rows.iter().enumerate() {
         if volumes_only
-            && matches!(row.device.kind, NodeKind::Disk | NodeKind::Loop | NodeKind::Rom)
+            && matches!(
+                row.device.kind,
+                NodeKind::Disk | NodeKind::Loop | NodeKind::Rom
+            )
         {
             continue;
         }
-        let marker = if index == state.selected_device { "›" } else { " " };
+        let marker = if index == state.selected_device {
+            "›"
+        } else {
+            " "
+        };
         let fs = row
             .device
             .filesystem
@@ -282,11 +302,13 @@ fn render_devices(
     }
 
     frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(if volumes_only { " Volumes " } else { " Devices " }),
-        ),
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(
+            if volumes_only {
+                " Volumes "
+            } else {
+                " Devices "
+            },
+        )),
         panes[0],
     );
 
@@ -300,8 +322,15 @@ fn render_devices(
     );
 }
 
-fn render_swap(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, snapshot: &HostSnapshot) {
-    let mut lines = vec![Line::from(format!("Active swap areas: {}", snapshot.swaps.len()))];
+fn render_swap(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    snapshot: &HostSnapshot,
+) {
+    let mut lines = vec![Line::from(format!(
+        "Active swap areas: {}",
+        snapshot.swaps.len()
+    ))];
     for swap in &snapshot.swaps {
         lines.push(Line::from(format!(
             "{}   {}   size {}   used {}   priority {}",
@@ -321,7 +350,11 @@ fn render_swap(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, snap
     );
 }
 
-fn render_mounts(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, snapshot: &HostSnapshot) {
+fn render_mounts(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    snapshot: &HostSnapshot,
+) {
     let mut lines = Vec::new();
     for mount in &snapshot.mounts {
         lines.push(Line::from(format!(
@@ -356,7 +389,11 @@ fn render_diagnostics(
         lines.push(Line::from("No diagnostics reported."));
     }
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Diagnostics ")),
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Diagnostics "),
+        ),
         area,
     );
 }
@@ -374,7 +411,9 @@ fn render_plan_hint(
             Line::from("Plan preview is CLI-backed and remains non-executable."),
             Line::from(""),
             Line::from(format!("Selected target: {target}")),
-            Line::from(format!("Preview: storagemgr plan extend {target} --by 1GiB")),
+            Line::from(format!(
+                "Preview: storagemgr plan extend {target} --by 1GiB"
+            )),
             Line::from(format!("Explain: storagemgr explain {target}")),
             Line::from(""),
             Line::from("No apply/executor exists in this build."),
