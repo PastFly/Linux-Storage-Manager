@@ -1,0 +1,5 @@
+FROM debian:12-slim
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    python3 util-linux fdisk lvm2 e2fsprogs xfsprogs \
+    && rm -rf /var/lib/apt/lists/*
+USER 65534:65534

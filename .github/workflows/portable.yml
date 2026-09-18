@@ -1,0 +1,105 @@
+name: Portable Linux
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portable-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable:
+    name: Static musl (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      TARGET: ${{ matrix.target }}
+      ARCH: ${{ matrix.arch }}
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: '-C target-feature=+crt-static'
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: '-C target-feature=+crt-static'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust and musl target
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install native musl linker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends musl-tools binutils
+      - name: Test workspace on musl target
+        run: cargo test --locked --workspace --target "$TARGET"
+      - name: Build portable prototype
+        run: cargo build --locked --release --workspace --target "$TARGET"
+      - name: Stage and verify no runtime library dependency
+        run: |
+          mkdir -p "$RUNNER_TEMP/portable-probe"
+          cp "target/$TARGET/release/storagemgr" "$RUNNER_TEMP/portable-probe/storagemgr"
+          bash tests/portability/check-elf.sh "$RUNNER_TEMP/portable-probe/storagemgr" "$ARCH" \
+            | tee "$RUNNER_TEMP/portable-probe/PORTABILITY.txt"
+      - name: Test same binary in five Linux userlands
+        run: |
+          set -euo pipefail
+          for image in debian:12-slim ubuntu:22.04 ubuntu:24.04 rockylinux:9 alpine:3.22; do
+            docker pull "$image"
+            docker image inspect --format '{{json .RepoDigests}}' "$image" \
+              | tee -a "$RUNNER_TEMP/portable-probe/PORTABILITY.txt"
+            timeout 90s docker run --rm --network none --read-only --cap-drop ALL \
+              --security-opt no-new-privileges --user 65534:65534 \
+              --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+              -v "$RUNNER_TEMP/portable-probe:/probe:ro" \
+              -v "$GITHUB_WORKSPACE/tests/portability:/checks:ro" \
+              --entrypoint /bin/sh "$image" /checks/smoke.sh \
+              | tee -a "$RUNNER_TEMP/portable-probe/PORTABILITY.txt"
+            echo "USERLAND_OK image=$image arch=$ARCH" \
+              | tee -a "$RUNNER_TEMP/portable-probe/PORTABILITY.txt"
+          done
+      - name: Test Debian 12 collectors without host device access
+        run: |
+          set -euo pipefail
+          docker build -f tests/portability/Dockerfile.debian12 -t lsm-debian12-probe tests/portability
+          timeout 120s docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+            -v "$RUNNER_TEMP/portable-probe:/probe:ro" \
+            -v "$GITHUB_WORKSPACE/tests/portability:/checks:ro" \
+            lsm-debian12-probe python3 -I /checks/debian-smoke.py \
+            | tee -a "$RUNNER_TEMP/portable-probe/PORTABILITY.txt"
+      - name: Package portability-tested read-only candidate
+        env:
+          SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          OUT="$RUNNER_TEMP/portable-probe"
+          printf 'Source head: %s\nTested checkout: %s\nTarget: %s\nMode: read-only M0/M1A prototype; no apply/executor\nAcceptance: static linkage and userland smoke only; disk integration is separate CI\n' \
+            "$SOURCE_HEAD" "$(git rev-parse HEAD)" "$TARGET" > "$OUT/BUILD_INFO.txt"
+          cp docs/PORTABILITY.md "$OUT/README.md"
+          (cd "$OUT" && sha256sum storagemgr > SHA256SUMS)
+          tar -C "$OUT" -czf "$RUNNER_TEMP/storagemgr-linux-$ARCH-musl.tar.gz" \
+            storagemgr BUILD_INFO.txt PORTABILITY.txt README.md SHA256SUMS
+      - name: Upload portable candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: storagemgr-linux-${{ matrix.arch }}-musl-${{ github.run_id }}
+          path: ${{ runner.temp }}/storagemgr-linux-${{ matrix.arch }}-musl.tar.gz
+          retention-days: 7
+          if-no-files-found: error
