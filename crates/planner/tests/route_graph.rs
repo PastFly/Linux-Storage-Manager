@@ -267,6 +267,161 @@ fn ambiguous_mount_target_fails_closed() {
 }
 
 #[test]
+fn mdraid_filesystem_route_is_visible_and_requires_dedicated_adapter() {
+    let snapshot: HostSnapshot = serde_json::from_value(json!({
+        "storage": {"block_devices": [{
+            "name":"md0","kernel_name":"md0","path":"/dev/md0",
+            "kind":"raid","size_bytes":40_000_000_000u64,"uuid":"fs-raid",
+            "filesystem":{"fs_type":"ext4","version":"1.0"},
+            "mountpoints":["/raid"],"children":[]
+        }]},
+        "partition_tables":[],
+        "mounts":[
+            {"source":"/dev/md0","target":"/raid","fs_type":"ext4","options":["rw"]}
+        ],
+        "fstab":[],
+        "swaps":[],
+        "lvm":null,
+        "diagnostics":[],
+        "collectors":[]
+    }))
+    .unwrap();
+
+    let route = analyze_layer_route(&snapshot, "/raid");
+    let adapter = resolve_extend_route_adapter(&snapshot, "/raid");
+
+    assert_eq!(route.status, LayerRouteStatus::AdapterRequired);
+    assert!(route
+        .layers
+        .iter()
+        .any(|layer| layer.kind == RouteLayerKind::Raid));
+    assert!(route.issues.iter().any(|issue| {
+        issue.kind == RouteIssueKind::AdapterRequired && issue.code == "raid-adapter-required"
+    }));
+    assert_eq!(adapter.profile, ExtendPlannerProfile::LegacyFailClosed);
+    assert!(adapter
+        .issue_codes
+        .iter()
+        .any(|code| code == "raid-adapter-required"));
+}
+
+#[test]
+fn mdraid_lvm_route_keeps_array_and_lvm_layers_visible_but_fail_closed() {
+    let snapshot: HostSnapshot = serde_json::from_value(json!({
+        "storage": {"block_devices": [{
+            "name":"md0","kernel_name":"md0","path":"/dev/md0",
+            "kind":"raid","size_bytes":40_000_000_000u64,"uuid":"pv-md0",
+            "filesystem":{"fs_type":"LVM2_member","version":"LVM2 001"},
+            "mountpoints":[],"children":[{
+                "name":"vgraid-data","kernel_name":"dm-1","path":"/dev/mapper/vgraid-data",
+                "kind":"lvm","size_bytes":20_000_000_000u64,"uuid":"fs-raid-lvm",
+                "filesystem":{"fs_type":"xfs","version":"5"},
+                "mountpoints":["/raid-lvm"],"parent_kernel_name":"md0","children":[]
+            }]
+        }]},
+        "partition_tables":[],
+        "mounts":[
+            {"source":"/dev/vgraid/data","target":"/raid-lvm","fs_type":"xfs","options":["rw"]}
+        ],
+        "fstab":[],
+        "swaps":[],
+        "lvm":{
+            "physical_volumes":[{
+                "name":"/dev/md0","uuid":"pv-md0","vg_name":"vgraid",
+                "size_bytes":40_000_000_000u64,"free_bytes":20_000_000_000u64
+            }],
+            "volume_groups":[{
+                "name":"vgraid","uuid":"vg-raid","size_bytes":40_000_000_000u64,
+                "free_bytes":20_000_000_000u64,"pv_count":1,"lv_count":1,
+                "extent_size_bytes":4_194_304u64,"free_extent_count":4768,
+                "missing_pv_count":0,"attributes":"wz--n-"
+            }],
+            "logical_volumes":[{
+                "name":"data","path":"/dev/vgraid/data","uuid":"lv-raid-data","vg_name":"vgraid",
+                "size_bytes":20_000_000_000u64,"attributes":"-wi-ao----",
+                "layout":"linear","role":"public"
+            }]
+        },
+        "diagnostics":[],
+        "collectors":[]
+    }))
+    .unwrap();
+
+    let route = analyze_layer_route(&snapshot, "/raid-lvm");
+    let adapter = resolve_extend_route_adapter(&snapshot, "/raid-lvm");
+
+    assert_eq!(route.status, LayerRouteStatus::AdapterRequired);
+    assert!(route
+        .layers
+        .iter()
+        .any(|layer| layer.kind == RouteLayerKind::Raid));
+    assert!(route
+        .layers
+        .iter()
+        .any(|layer| layer.kind == RouteLayerKind::LvmPhysicalVolume));
+    assert!(route
+        .layers
+        .iter()
+        .any(|layer| layer.kind == RouteLayerKind::LvmLogicalVolume));
+    assert!(route
+        .issues
+        .iter()
+        .any(|issue| issue.code == "raid-adapter-required"));
+    assert_eq!(adapter.profile, ExtendPlannerProfile::Lvm);
+    assert_eq!(adapter.status, LayerRouteStatus::AdapterRequired);
+}
+
+#[test]
+fn btrfs_route_is_visible_but_requires_filesystem_specific_adapter() {
+    let mut snapshot = direct_snapshot();
+    snapshot.storage.block_devices[0].children[0]
+        .filesystem
+        .as_mut()
+        .unwrap()
+        .fs_type = "btrfs".into();
+    snapshot.mounts[0].fs_type = Some("btrfs".into());
+
+    let route = analyze_layer_route(&snapshot, "/data");
+    let adapter = resolve_extend_route_adapter(&snapshot, "/data");
+
+    assert_eq!(route.status, LayerRouteStatus::AdapterRequired);
+    assert!(route.issues.iter().any(|issue| {
+        issue.kind == RouteIssueKind::AdapterRequired && issue.code == "btrfs-adapter-required"
+    }));
+    assert_eq!(adapter.profile, ExtendPlannerProfile::DirectPartition);
+    assert_eq!(adapter.status, LayerRouteStatus::AdapterRequired);
+    assert!(adapter
+        .issue_codes
+        .iter()
+        .any(|code| code == "btrfs-adapter-required"));
+}
+
+#[test]
+fn zfs_route_is_visible_but_never_treated_as_generic_filesystem_growth() {
+    let mut snapshot = direct_snapshot();
+    snapshot.storage.block_devices[0].children[0]
+        .filesystem
+        .as_mut()
+        .unwrap()
+        .fs_type = "zfs_member".into();
+    snapshot.mounts[0].fs_type = Some("zfs_member".into());
+
+    let route = analyze_layer_route(&snapshot, "/data");
+    let adapter = resolve_extend_route_adapter(&snapshot, "/data");
+
+    assert_eq!(route.status, LayerRouteStatus::AdapterRequired);
+    assert!(route.issues.iter().any(|issue| {
+        issue.kind == RouteIssueKind::AdapterRequired && issue.code == "zfs-adapter-required"
+    }));
+    assert_eq!(adapter.profile, ExtendPlannerProfile::DirectPartition);
+    assert_eq!(adapter.status, LayerRouteStatus::AdapterRequired);
+    assert!(adapter
+        .issue_codes
+        .iter()
+        .any(|code| code == "zfs-adapter-required"));
+}
+
+#[test]
 fn multipath_layer_is_visible_and_requires_dedicated_adapter() {
     let snapshot: HostSnapshot = serde_json::from_value(json!({
         "storage": {"block_devices": [{
