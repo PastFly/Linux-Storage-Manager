@@ -1011,13 +1011,11 @@ fn render_create(
     }
 
     frame.render_widget(
-        Paragraph::new(detail)
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Create preview "),
-            ),
+        Paragraph::new(detail).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Create preview "),
+        ),
         panes[1],
     );
 }
@@ -2973,7 +2971,6 @@ mod tests {
             ]
         );
     }
-
 
     #[test]
     fn create_controls_cycle_intent_without_execution() {
