@@ -373,7 +373,6 @@ fn blocked_direct_partition_plan_has_no_success_preflight() {
     assert!(plan.preflight_checks().is_empty());
 }
 
-
 fn grown_live_debian_snapshot() -> HostSnapshot {
     let mut snapshot = live_debian_snapshot();
     snapshot.storage.block_devices[0].size_bytes = 11 * 1024 * 1024 * 1024;
