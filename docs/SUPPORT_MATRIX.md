@@ -10,7 +10,7 @@ Status values: `Discovery`, `Preview`, `Planned`, `Later`, `Not supported`.
 | DOS/MBR primary partitions | Discovery + authoritative `sfdisk` cross-check + grow preview | Planned guarded grow/create |
 | DOS extended/logical partitions | Discovery + conservative topology model | Planned after dedicated route rules |
 | Partition geometry reconciliation | Discovery | Planned mandatory preflight enforcement |
-| Blank disks | Discovery + Create opportunity preview | Planned GPT/DOS initialization |
+| Blank disks | Discovery + exact GPT/DOS Create preview with 1 MiB alignment | Planned guarded GPT/DOS initialization |
 | Verified raw disk tail | Discovery + Create opportunity preview | Planned partition creation |
 | Internal partition-table gaps | Discovery | Planned after range/slot validation |
 | LVM PV / VG / LV | Discovery + existing-VG-free grow preview | Planned chained PV/VG/LV grow |
@@ -31,8 +31,8 @@ Status values: `Discovery`, `Preview`, `Planned`, `Later`, `Not supported`.
 | Selectable growth target catalog | Preview | Planned executor input |
 | Create/free-space catalog | Preview | Planned provisioning input |
 | Automatic multi-layer route selection | Partial advisory | Planned disk -> partition -> PV -> VG -> LV -> filesystem |
-| Filesystem health/features gate | Planned | Required before executor |
-| Exclusive operation lock | Planned | Required before executor |
+| Filesystem health/features gate | ext4/XFS decision policy + explicit read-only check plan | Required before executor |
+| Exclusive operation lock | Host-exclusive lock + interruption journal model | Required before executor |
 | Metadata backup/recovery verification | Planned | Required before executor |
 | Shrink/move partition starts | Not supported | Not supported in first write release |
 
