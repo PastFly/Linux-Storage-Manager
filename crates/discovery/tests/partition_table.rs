@@ -82,7 +82,6 @@ fn reports_authoritative_geometry_and_uuid_mismatch() {
     assert!(codes.contains(&"partition-uuid-mismatch"));
 }
 
-
 #[test]
 fn dos_extended_partition_container_does_not_trigger_false_size_mismatch() {
     let storage = parse_lsblk_json(
