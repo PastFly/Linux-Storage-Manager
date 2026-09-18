@@ -113,33 +113,33 @@ fn fresh_preview_builds_repeatable_non_mutating_handoff() {
 
     assert_eq!(first, second);
     assert_eq!(
-        first.status,
+        first.status(),
         ExecutionHandoffStatus::FutureExecutorGatesRequired
     );
-    assert!(!first.mutation_enabled);
-    assert!(first.owner_acceptance_required);
-    assert_eq!(first.plan.plan_id(), plan.plan_id());
-    assert_eq!(first.plan.target(), "/data");
-    assert_eq!(first.plan_basis_digest, plan.basis_digest());
-    assert!(!first.capabilities_digest.is_empty());
-    assert_eq!(first.target_identity.target, "/data");
+    assert!(!first.mutation_enabled());
+    assert!(first.owner_acceptance_required());
+    assert_eq!(first.plan().plan_id(), plan.plan_id());
+    assert_eq!(first.plan().target(), "/data");
+    assert_eq!(first.plan_basis_digest(), plan.basis_digest());
+    assert!(!first.capabilities_digest().is_empty());
+    assert_eq!(first.target_identity().target, "/data");
     assert_eq!(
-        first.guard.baseline_manifest_digest,
-        first.target_identity.manifest_digest
+        first.guard().baseline_manifest_digest,
+        first.target_identity().manifest_digest
     );
     assert_eq!(
-        first.filesystem_decision.state,
+        first.filesystem_decision().state,
         FilesystemDecisionState::ReadyOnlineGrow
     );
-    assert!(first.blockers.is_empty());
-    assert!(!first.handoff_id.is_empty());
+    assert!(first.blockers().is_empty());
+    assert!(!first.handoff_id().is_empty());
     assert!(first
-        .guard
+        .guard()
         .gates
         .iter()
         .any(|gate| gate.kind == GuardGateKind::RecordExactPlanApproval));
     assert!(first
-        .guard
+        .guard()
         .gates
         .iter()
         .any(|gate| gate.kind == GuardGateKind::CreateDurableJournal));
@@ -186,15 +186,15 @@ fn missing_filesystem_preflight_evidence_keeps_handoff_blocked() {
 
     let handoff = build_frozen_execution_handoff(&snapshot, &capabilities, &plan).unwrap();
 
-    assert_eq!(handoff.status, ExecutionHandoffStatus::Blocked);
-    assert!(!handoff.mutation_enabled);
-    assert!(handoff.owner_acceptance_required);
+    assert_eq!(handoff.status(), ExecutionHandoffStatus::Blocked);
+    assert!(!handoff.mutation_enabled());
+    assert!(handoff.owner_acceptance_required());
     assert_eq!(
-        handoff.filesystem_decision.state,
+        handoff.filesystem_decision().state,
         FilesystemDecisionState::Blocked
     );
     assert!(handoff
-        .blockers
+        .blockers()
         .iter()
         .any(|blocker| blocker.contains("metadata evidence")));
 }
