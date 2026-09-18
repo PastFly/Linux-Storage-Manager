@@ -216,7 +216,6 @@ fn direct_partition_request_larger_than_verified_gap_is_blocked() {
     assert!(plan.partition_size_change().is_none());
 }
 
-
 #[test]
 fn direct_gpt_xfs_4k_partition_rounds_growth_to_logical_sector() {
     let mut disk = device("nvme0n1", NodeKind::Disk, 64 * 1024 * 1024, None, None);
@@ -257,9 +256,7 @@ fn direct_gpt_xfs_4k_partition_rounds_growth_to_logical_sector() {
                 node: "/dev/nvme0n1p1".into(),
                 start_sector: 256,
                 size_sectors: 8_192,
-                partition_type: Some(
-                    "0FC63DAF-8483-4772-8E79-3D69D8477DE4".into(),
-                ),
+                partition_type: Some("0FC63DAF-8483-4772-8E79-3D69D8477DE4".into()),
                 uuid: Some("gpt-part-uuid".into()),
                 name: None,
                 attrs: None,
