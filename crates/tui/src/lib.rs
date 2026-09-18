@@ -307,7 +307,11 @@ fn render_devices(
             .map(|item| item.fs_type.as_str())
             .unwrap_or("-");
         let role = device_role(snapshot, row.device);
-        let descriptor = if role == "Extended container" { role } else { fs };
+        let descriptor = if role == "Extended container" {
+            role
+        } else {
+            fs
+        };
         let path = row.device.path.as_deref().unwrap_or(&row.device.name);
         let indent = "  ".repeat(row.depth);
         let line = Line::from(format!(
@@ -397,7 +401,11 @@ fn render_mounts(
     frame.render_widget(
         Paragraph::new(lines)
             .scroll((state.content_scroll, 0))
-            .block(Block::default().borders(Borders::ALL).title(" Storage mounts ")),
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Storage mounts "),
+            ),
         area,
     );
 }
@@ -467,7 +475,10 @@ fn render_plan_hint(
             Line::from("Growth preview"),
             Line::from(""),
             Line::from(format!("Target        {target}")),
-            Line::from(format!("Type          {}", device_role(snapshot, row.device))),
+            Line::from(format!(
+                "Type          {}",
+                device_role(snapshot, row.device)
+            )),
             Line::from(format!("Filesystem    {filesystem}")),
             Line::from(format!("Mounted at    {mount}")),
             Line::from(format!(
