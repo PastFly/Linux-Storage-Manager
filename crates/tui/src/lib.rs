@@ -13,7 +13,8 @@ use lsm_core::{
 };
 use lsm_discovery::analyze_extendability;
 use lsm_planner::{
-    plan_extend, ExtendRequest, Growth, Operation, PlanStatus, PlanStep, Reversibility,
+    plan_extend, ExtendRequest, Growth, Operation, PlanStatus, PlanStep, PreflightCheck,
+    PreflightState, Reversibility,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -978,6 +979,22 @@ fn plan_step_lines(steps: &[PlanStep]) -> Vec<Line<'static>> {
         .collect()
 }
 
+fn preflight_lines(checks: &[PreflightCheck]) -> Vec<Line<'static>> {
+    checks
+        .iter()
+        .map(|check| {
+            let marker = match check.state {
+                PreflightState::Verified => "[OK] ",
+                PreflightState::Required => "[REQ]",
+            };
+            Line::from(format!(
+                "{marker} {:<30} {}",
+                check.code, check.message
+            ))
+        })
+        .collect()
+}
+
 fn growth_label(growth: Growth) -> String {
     match growth {
         Growth::ByBytes(bytes) => format!("+{}", human_bytes(bytes)),
@@ -1032,6 +1049,9 @@ fn strict_plan_lines(
                     human_bytes(change.remaining_adjacent_free_bytes)
                 )));
             }
+            lines.push(Line::from(""));
+            lines.push(Line::from("Preflight"));
+            lines.extend(preflight_lines(plan.preflight_checks()));
             lines.push(Line::from(""));
             lines.push(Line::from("Plan steps"));
             lines.extend(plan_step_lines(plan.steps()));
@@ -1668,7 +1688,6 @@ mod tests {
             "Extend logical volume by 8 extents"
         );
     }
-
 
     #[test]
     fn preflight_lines_distinguish_verified_and_required_checks() {
