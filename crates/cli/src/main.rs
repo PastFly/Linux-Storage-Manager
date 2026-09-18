@@ -6,8 +6,9 @@ use lsm_discovery::{
     discover_partition_tables, discover_snapshot, discover_storage, discover_swaps,
 };
 use lsm_planner::{
-    analyze_layer_route, list_extend_targets, list_provisioning_opportunities, parse_growth_size,
-    plan_create, plan_extend, CreatePurpose, CreateRequest, ExtendRequest, Growth, PlanStatus,
+    analyze_layer_route, decide_filesystem_growth, list_extend_targets,
+    list_provisioning_opportunities, parse_growth_size, plan_create, plan_extend, CreatePurpose,
+    CreateRequest, ExtendRequest, FilesystemDecisionState, Growth, PlanStatus,
 };
 use std::process::ExitCode;
 
@@ -82,6 +83,14 @@ enum PlanCommand {
     },
     /// Explain the discovered storage-layer route for a selected target.
     Route {
+        /// Exact mountpoint or block-device/LV path.
+        target: String,
+        /// Emit structured JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Explain the filesystem execution decision for a selected growth target.
+    Filesystem {
         /// Exact mountpoint or block-device/LV path.
         target: String,
         /// Emit structured JSON.
@@ -284,6 +293,45 @@ fn run() -> Result<ExitCode> {
             });
         }
         Some(Command::Plan {
+            command: PlanCommand::Filesystem { target, json },
+        }) => {
+            let snapshot = discover_snapshot()?;
+            let capabilities = discover_capabilities();
+            let decision = decide_filesystem_growth(&snapshot, &capabilities, &target);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&decision)?);
+            } else {
+                println!("Target: {}", decision.target);
+                println!(
+                    "Device: {}",
+                    decision.device.as_deref().unwrap_or("-")
+                );
+                println!(
+                    "Filesystem: {}",
+                    decision.fs_type.as_deref().unwrap_or("-")
+                );
+                println!("State: {:?}", decision.state);
+                if let Some(check) = &decision.read_only_check {
+                    println!("Read-only check: {} {}", check.tool, check.args.join(" "));
+                    println!("Automatic refresh: {}", check.run_automatically_on_refresh);
+                }
+                for reason in &decision.reasons {
+                    println!("Reason: {reason}");
+                }
+                for action in &decision.required_actions {
+                    println!("Required: {action}");
+                }
+            }
+            return Ok(if matches!(
+                decision.state,
+                FilesystemDecisionState::Blocked | FilesystemDecisionState::AdapterRequired
+            ) {
+                ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
+            });
+        }
+        Some(Command::Plan {
             command: PlanCommand::CreateSpaces { json },
         }) => {
             let snapshot = discover_snapshot()?;
@@ -435,6 +483,15 @@ mod tests {
         assert!(Cli::try_parse_from(["storagemgr", "plan", "targets"]).is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "targets", "--json"]).is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "route", "/"]).is_ok());
+        assert!(Cli::try_parse_from(["storagemgr", "plan", "filesystem", "/"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "filesystem",
+            "/dev/sda1",
+            "--json"
+        ])
+        .is_ok());
         assert!(Cli::try_parse_from([
             "storagemgr",
             "plan",
