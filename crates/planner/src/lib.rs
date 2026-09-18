@@ -878,9 +878,11 @@ pub fn plan_create(
     };
 
     let opportunities = list_provisioning_opportunities(snapshot);
-    let mut matches = opportunities
-        .into_iter()
-        .filter(|opportunity| opportunity.id == plan.request.source_id);
+    let source_selector = plan.request.source_id.as_str();
+    let mut matches = opportunities.into_iter().filter(|opportunity| {
+        opportunity.id == source_selector
+            || (source_selector.len() >= 16 && opportunity.id.starts_with(source_selector))
+    });
     let Some(source) = matches.next() else {
         plan.blockers.push(blocked(
             "create-source-not-found",
