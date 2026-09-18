@@ -1341,6 +1341,17 @@ fn apply_lvm_outcome(
     }
 }
 
+fn semantic_layer_blocker(snapshot: &HostSnapshot, target: &str) -> Option<Blocker> {
+    let route = analyze_layer_route(snapshot, target);
+    if route.resolved_device.is_none() || route.status == LayerRouteStatus::SupportedProfile {
+        return None;
+    }
+    route
+        .issues
+        .first()
+        .map(|issue| blocked(&issue.code, &issue.message))
+}
+
 fn apply_legacy_extend_profile(
     plan: &mut PlanPreview,
     snapshot: &HostSnapshot,
@@ -1393,7 +1404,11 @@ pub fn plan_extend(
             apply_lvm_outcome(&mut plan, snapshot, lvm);
         }
         ExtendPlannerProfile::LegacyFailClosed => {
-            apply_legacy_extend_profile(&mut plan, snapshot, capabilities);
+            if let Some(blocker) = semantic_layer_blocker(snapshot, &plan.request.target) {
+                plan.blockers.push(blocker);
+            } else {
+                apply_legacy_extend_profile(&mut plan, snapshot, capabilities);
+            }
         }
     }
 
