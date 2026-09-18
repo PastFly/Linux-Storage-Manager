@@ -1173,7 +1173,7 @@ pub fn resolve_create_source_adapter(
         ));
     }
 
-    match source.kind {
+    match source_adapter.kind {
         ProvisioningSpaceKind::LvmFreeExtents => {
             let vg_name = source.volume_group.as_deref().ok_or_else(|| {
                 blocked(
@@ -1500,7 +1500,7 @@ pub fn plan_create(
     }
 
     let allocated_sectors = if matches!(
-        source.kind,
+        source_adapter.kind,
         ProvisioningSpaceKind::BlankDisk
             | ProvisioningSpaceKind::DiskGap
             | ProvisioningSpaceKind::DiskTail
@@ -1531,7 +1531,7 @@ pub fn plan_create(
                 .push("create and verify LVM metadata backup".to_owned());
             plan.steps.push(format!(
                 "create a new logical volume in {} with {} bytes of extent-aligned capacity",
-                source.volume_group.as_deref().unwrap_or("-"),
+                source_adapter.volume_group.as_deref().unwrap_or("-"),
                 rounded_bytes
             ));
         }
@@ -1540,7 +1540,7 @@ pub fn plan_create(
                 .push("create and verify partition-table metadata backup".to_owned());
             plan.steps.push(format!(
                 "create a new partition at sector {} using {} sectors ({} bytes)",
-                source.start_sector.unwrap_or(0),
+                source_adapter.start_sector.unwrap_or(0),
                 allocated_sectors.unwrap_or(0),
                 rounded_bytes
             ));
@@ -1561,7 +1561,7 @@ pub fn plan_create(
             };
             plan.steps.push(format!(
                 "verify {} is still blank and record its pre-mutation identity baseline",
-                source.disk.as_deref().unwrap_or("-")
+                source_adapter.disk.as_deref().unwrap_or("-")
             ));
             plan.steps.push(format!(
                 "initialize a {label} partition table with 1 MiB-aligned usable geometry"
