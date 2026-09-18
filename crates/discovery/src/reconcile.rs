@@ -19,10 +19,7 @@ pub fn reconcile_snapshot(snapshot: &HostSnapshot) -> Vec<StorageDiagnostic> {
     diagnostics
 }
 
-fn reconcile_partition_tables(
-    snapshot: &HostSnapshot,
-    diagnostics: &mut Vec<StorageDiagnostic>,
-) {
+fn reconcile_partition_tables(snapshot: &HostSnapshot, diagnostics: &mut Vec<StorageDiagnostic>) {
     for table in &snapshot.partition_tables {
         let Some(disk) = find_graph_alias(&snapshot.storage.block_devices, &table.device) else {
             diagnostics.push(StorageDiagnostic {
@@ -181,7 +178,11 @@ fn reconcile_sfdisk_partitions(
         let Some(path) = child.path.as_deref() else {
             continue;
         };
-        if !table.partitions.iter().any(|partition| partition.node == path) {
+        if !table
+            .partitions
+            .iter()
+            .any(|partition| partition.node == path)
+        {
             diagnostics.push(StorageDiagnostic {
                 code: "lsblk-partition-not-in-sfdisk".to_owned(),
                 severity: DiagnosticSeverity::Error,
@@ -199,13 +200,15 @@ fn reconcile_lvm(snapshot: &HostSnapshot, diagnostics: &mut Vec<StorageDiagnosti
     };
 
     for pv in &lvm.physical_volumes {
-        if pv.name.starts_with("/dev/") && !graph_has_alias(&snapshot.storage.block_devices, &pv.name)
+        if pv.name.starts_with("/dev/")
+            && !graph_has_alias(&snapshot.storage.block_devices, &pv.name)
         {
             diagnostics.push(StorageDiagnostic {
                 code: "lvm-pv-not-in-lsblk".to_owned(),
                 severity: DiagnosticSeverity::Warning,
-                message: "LVM reports a physical volume that is not represented in the lsblk topology"
-                    .to_owned(),
+                message:
+                    "LVM reports a physical volume that is not represented in the lsblk topology"
+                        .to_owned(),
                 device: Some(pv.name.clone()),
             });
         }
@@ -267,11 +270,7 @@ fn reconcile_fstab(snapshot: &HostSnapshot, diagnostics: &mut Vec<StorageDiagnos
     let mut targets = HashMap::<&str, usize>::new();
     let mut uuids = HashSet::new();
     let mut partuuids = HashSet::new();
-    collect_ids(
-        &snapshot.storage.block_devices,
-        &mut uuids,
-        &mut partuuids,
-    );
+    collect_ids(&snapshot.storage.block_devices, &mut uuids, &mut partuuids);
 
     for entry in &snapshot.fstab {
         *targets.entry(entry.target.as_str()).or_default() += 1;
@@ -338,8 +337,9 @@ fn reconcile_swaps(snapshot: &HostSnapshot, diagnostics: &mut Vec<StorageDiagnos
             diagnostics.push(StorageDiagnostic {
                 code: "swap-device-not-in-lsblk".to_owned(),
                 severity: DiagnosticSeverity::Warning,
-                message: "active block-device swap is not represented in the discovered lsblk topology"
-                    .to_owned(),
+                message:
+                    "active block-device swap is not represented in the discovered lsblk topology"
+                        .to_owned(),
                 device: Some(swap.name.clone()),
             });
         }
@@ -356,9 +356,7 @@ fn source_resolves_to_graph(snapshot: &HostSnapshot, source: &str) -> bool {
         .as_ref()
         .map(|lvm| {
             lvm.logical_volumes.iter().any(|lv| {
-                lv_aliases(lv)
-                    .iter()
-                    .any(|alias| alias.as_str() == source)
+                lv_aliases(lv).iter().any(|alias| alias.as_str() == source)
                     && lv_present_in_graph(snapshot, lv)
             })
         })

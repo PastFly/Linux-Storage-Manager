@@ -113,17 +113,20 @@ fn failed_partition_tables(error: &PartitionTableDiscoveryError) -> CollectorSta
 }
 
 fn failed_mounts(error: &MountDiscoveryError) -> CollectorStatus {
-    let unavailable = matches!(error, MountDiscoveryError::Io(source) if source.kind() == ErrorKind::NotFound);
+    let unavailable =
+        matches!(error, MountDiscoveryError::Io(source) if source.kind() == ErrorKind::NotFound);
     failed("mounts", error.to_string(), unavailable)
 }
 
 fn failed_fstab(error: &FstabDiscoveryError) -> CollectorStatus {
-    let unavailable = matches!(error, FstabDiscoveryError::Io(source) if source.kind() == ErrorKind::NotFound);
+    let unavailable =
+        matches!(error, FstabDiscoveryError::Io(source) if source.kind() == ErrorKind::NotFound);
     failed("fstab", error.to_string(), unavailable)
 }
 
 fn failed_swap(error: &SwapDiscoveryError) -> CollectorStatus {
-    let unavailable = matches!(error, SwapDiscoveryError::Io(source) if source.kind() == ErrorKind::NotFound);
+    let unavailable =
+        matches!(error, SwapDiscoveryError::Io(source) if source.kind() == ErrorKind::NotFound);
     failed("swap", error.to_string(), unavailable)
 }
 

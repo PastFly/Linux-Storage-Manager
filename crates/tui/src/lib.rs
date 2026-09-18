@@ -4,7 +4,9 @@ use std::time::Duration;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use lsm_core::{BlockDevice, HostCapabilities, StorageGraph};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -45,7 +47,11 @@ fn event_loop(
                 append_device_lines(device, 0, &mut lines);
             }
 
-            let available = capabilities.tools.iter().filter(|tool| tool.available).count();
+            let available = capabilities
+                .tools
+                .iter()
+                .filter(|tool| tool.available)
+                .count();
             let title = format!(
                 " Linux Storage Manager — M0 read-only | tools {available}/{} ",
                 capabilities.tools.len()

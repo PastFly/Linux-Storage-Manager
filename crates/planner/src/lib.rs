@@ -41,13 +41,18 @@ pub enum Reversibility {
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum Operation {
     RevalidateSnapshot,
-    BackupLvmMetadata { vg_uuid: String },
+    BackupLvmMetadata {
+        vg_uuid: String,
+    },
     ExtendLogicalVolume {
         lv_uuid: String,
         additional_extents: u64,
         expected_lv_size_bytes: u64,
     },
-    GrowFilesystem { fs_type: String, mountpoint: String },
+    GrowFilesystem {
+        fs_type: String,
+        mountpoint: String,
+    },
     RediscoverAndVerify,
 }
 
@@ -152,7 +157,10 @@ impl PlanPreview {
             ));
         }
         for blocker in &self.blockers {
-            text.push_str(&format!("BLOCKED [{}]: {}\n", blocker.code, blocker.message));
+            text.push_str(&format!(
+                "BLOCKED [{}]: {}\n",
+                blocker.code, blocker.message
+            ));
         }
         for step in &self.steps {
             // Debug formatting escapes control characters in externally supplied strings.
@@ -235,16 +243,29 @@ fn fingerprint(value: &impl Serialize) -> Result<String, PlannerError> {
 }
 
 fn blocked(code: &str, message: &str) -> Blocker {
-    Blocker { code: code.to_owned(), message: message.to_owned() }
+    Blocker {
+        code: code.to_owned(),
+        message: message.to_owned(),
+    }
 }
 
 fn ensure(condition: bool, code: &str, message: &str) -> Result<(), Blocker> {
-    if condition { Ok(()) } else { Err(blocked(code, message)) }
+    if condition {
+        Ok(())
+    } else {
+        Err(blocked(code, message))
+    }
 }
 
 fn unique<T>(mut items: impl Iterator<Item = T>, code: &str) -> Result<T, Blocker> {
-    let first = items.next().ok_or_else(|| blocked(code, "required evidence is absent"))?;
-    ensure(items.next().is_none(), code, "evidence is ambiguous or duplicated")?;
+    let first = items
+        .next()
+        .ok_or_else(|| blocked(code, "required evidence is absent"))?;
+    ensure(
+        items.next().is_none(),
+        code,
+        "evidence is ambiguous or duplicated",
+    )?;
     Ok(first)
 }
 
@@ -254,92 +275,249 @@ fn build_candidate(
     request: &ExtendRequest,
 ) -> Result<(SizeChange, Vec<PlanStep>), Blocker> {
     // Missing collector records are NOT treated as successful discovery.
-    for component in ["lsblk", "partition_tables", "mounts", "fstab", "swap", "lvm"] {
+    for component in [
+        "lsblk",
+        "partition_tables",
+        "mounts",
+        "fstab",
+        "swap",
+        "lvm",
+    ] {
         let status = unique(
-            snapshot.collectors.iter().filter(|s| s.component == component),
+            snapshot
+                .collectors
+                .iter()
+                .filter(|s| s.component == component),
             "collector-incomplete",
         )?;
-        ensure(status.state == CollectorState::Complete, "collector-incomplete",
-            "all six collectors must complete for the initial preview profile")?;
+        ensure(
+            status.state == CollectorState::Complete,
+            "collector-incomplete",
+            "all six collectors must complete for the initial preview profile",
+        )?;
     }
-    ensure(!snapshot.diagnostics.iter().any(|d| d.severity == DiagnosticSeverity::Error),
-        "diagnostic-error", "the snapshot contains error-level diagnostics")?;
-    ensure(!request.target.is_empty() && !request.target.chars().any(char::is_control),
-        "invalid-target", "target must be a nonempty device path or exact mountpoint")?;
+    ensure(
+        !snapshot
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == DiagnosticSeverity::Error),
+        "diagnostic-error",
+        "the snapshot contains error-level diagnostics",
+    )?;
+    ensure(
+        !request.target.is_empty() && !request.target.chars().any(char::is_control),
+        "invalid-target",
+        "target must be a nonempty device path or exact mountpoint",
+    )?;
 
-    let lvm = snapshot.lvm.as_ref().ok_or_else(|| blocked("lvm-missing", "LVM inventory is absent"))?;
+    let lvm = snapshot
+        .lvm
+        .as_ref()
+        .ok_or_else(|| blocked("lvm-missing", "LVM inventory is absent"))?;
     let nodes = flatten(&snapshot.storage.block_devices);
     let source = if request.target.starts_with("/dev/") {
         request.target.as_str()
     } else {
-        unique(snapshot.mounts.iter().filter(|m| m.target == request.target), "ambiguous-target")?
-            .source.as_deref().ok_or_else(|| blocked("unknown-source", "mount source is absent"))?
+        unique(
+            snapshot
+                .mounts
+                .iter()
+                .filter(|m| m.target == request.target),
+            "ambiguous-target",
+        )?
+        .source
+        .as_deref()
+        .ok_or_else(|| blocked("unknown-source", "mount source is absent"))?
     };
     // Resolve all common aliases; never accept the first match silently.
-    let lv = unique(lvm.logical_volumes.iter().filter(|lv| {
-        lv_alias(lv, source) || nodes.iter().any(|d| node_alias(d, source) && lv_device(lv, d))
-    }), "ambiguous-lv")?;
-    let device = unique(nodes.iter().copied().filter(|d| lv_device(lv, d)), "ambiguous-device")?;
-    ensure(device.kind == NodeKind::Lvm, "unsupported-layout", "target must be an LVM logical volume")?;
-    ensure(device.children.is_empty(), "unsupported-layout", "stacked consumers above the LV are not supported")?;
-    ensure(supported_chain(&snapshot.storage.block_devices, device, true), "unsupported-layout",
-        "encrypted, RAID, multipath or unknown ancestor layers are not supported")?;
-    ensure(lv.layout.as_deref() == Some("linear") && lv.role.as_deref() == Some("public")
-        && lv.attributes.as_deref() == Some("-wi-ao----"), "unsupported-lv",
-        "M1A requires a public, linear, writable, active LV with normal inherited allocation")?;
-    let vg = unique(lvm.volume_groups.iter().filter(|v| v.name == lv.vg_name), "ambiguous-vg")?;
-    ensure(vg.attributes.as_deref() == Some("wz--n-") && vg.missing_pv_count == Some(0),
-        "unsupported-vg", "VG must be local, writable, resizable, nonpartial and nonshared")?;
-    ensure(vg.pv_count == 1, "multi-pv-not-supported", "M1A previews are limited to a single-PV VG")?;
-    let pv = unique(lvm.physical_volumes.iter().filter(|p| p.vg_name.as_deref() == Some(vg.name.as_str())),
-        "ambiguous-pv")?;
-    let pv_device = unique(nodes.iter().copied().filter(|d| node_alias(d, &pv.name)), "pv-not-resolved")?;
-    ensure(matches!(pv_device.kind, NodeKind::Disk | NodeKind::Partition | NodeKind::Loop)
-        && contains_device(pv_device, device)
-        && pv_device.filesystem.as_ref().map(|fs| fs.fs_type.as_str()) == Some("LVM2_member"),
-        "pv-topology-mismatch", "the PV must be the verified ancestor of this LV")?;
+    let lv = unique(
+        lvm.logical_volumes.iter().filter(|lv| {
+            lv_alias(lv, source)
+                || nodes
+                    .iter()
+                    .any(|d| node_alias(d, source) && lv_device(lv, d))
+        }),
+        "ambiguous-lv",
+    )?;
+    let device = unique(
+        nodes.iter().copied().filter(|d| lv_device(lv, d)),
+        "ambiguous-device",
+    )?;
+    ensure(
+        device.kind == NodeKind::Lvm,
+        "unsupported-layout",
+        "target must be an LVM logical volume",
+    )?;
+    ensure(
+        device.children.is_empty(),
+        "unsupported-layout",
+        "stacked consumers above the LV are not supported",
+    )?;
+    ensure(
+        supported_chain(&snapshot.storage.block_devices, device, true),
+        "unsupported-layout",
+        "encrypted, RAID, multipath or unknown ancestor layers are not supported",
+    )?;
+    ensure(
+        lv.layout.as_deref() == Some("linear")
+            && lv.role.as_deref() == Some("public")
+            && lv.attributes.as_deref() == Some("-wi-ao----"),
+        "unsupported-lv",
+        "M1A requires a public, linear, writable, active LV with normal inherited allocation",
+    )?;
+    let vg = unique(
+        lvm.volume_groups.iter().filter(|v| v.name == lv.vg_name),
+        "ambiguous-vg",
+    )?;
+    ensure(
+        vg.attributes.as_deref() == Some("wz--n-") && vg.missing_pv_count == Some(0),
+        "unsupported-vg",
+        "VG must be local, writable, resizable, nonpartial and nonshared",
+    )?;
+    ensure(
+        vg.pv_count == 1,
+        "multi-pv-not-supported",
+        "M1A previews are limited to a single-PV VG",
+    )?;
+    let pv = unique(
+        lvm.physical_volumes
+            .iter()
+            .filter(|p| p.vg_name.as_deref() == Some(vg.name.as_str())),
+        "ambiguous-pv",
+    )?;
+    let pv_device = unique(
+        nodes.iter().copied().filter(|d| node_alias(d, &pv.name)),
+        "pv-not-resolved",
+    )?;
+    ensure(
+        matches!(
+            pv_device.kind,
+            NodeKind::Disk | NodeKind::Partition | NodeKind::Loop
+        ) && contains_device(pv_device, device)
+            && pv_device.filesystem.as_ref().map(|fs| fs.fs_type.as_str()) == Some("LVM2_member"),
+        "pv-topology-mismatch",
+        "the PV must be the verified ancestor of this LV",
+    )?;
     for id in [&pv.uuid, &vg.uuid, &lv.uuid, &device.uuid] {
-        ensure(id.as_deref().is_some_and(|s| !s.is_empty()), "identity-missing",
-            "PV, VG, LV and filesystem UUIDs are required")?;
+        ensure(
+            id.as_deref().is_some_and(|s| !s.is_empty()),
+            "identity-missing",
+            "PV, VG, LV and filesystem UUIDs are required",
+        )?;
     }
-    ensure(pv_device.uuid == pv.uuid, "pv-uuid-mismatch", "lsblk and LVM disagree on the PV UUID")?;
-    ensure(lv.size_bytes == device.size_bytes && lv.size_bytes > 0
-        && pv.size_bytes <= pv_device.size_bytes && vg.size_bytes <= pv.size_bytes
-        && vg.free_bytes <= vg.size_bytes && pv.free_bytes == vg.free_bytes,
-        "capacity-mismatch", "LVM and block-device capacities are inconsistent")?;
+    ensure(
+        pv_device.uuid == pv.uuid,
+        "pv-uuid-mismatch",
+        "lsblk and LVM disagree on the PV UUID",
+    )?;
+    ensure(
+        lv.size_bytes == device.size_bytes
+            && lv.size_bytes > 0
+            && pv.size_bytes <= pv_device.size_bytes
+            && vg.size_bytes <= pv.size_bytes
+            && vg.free_bytes <= vg.size_bytes
+            && pv.free_bytes == vg.free_bytes,
+        "capacity-mismatch",
+        "LVM and block-device capacities are inconsistent",
+    )?;
 
-    let fs = device.filesystem.as_ref().ok_or_else(|| blocked("filesystem-missing", "filesystem type is absent"))?;
-    ensure(matches!(fs.fs_type.as_str(), "ext4" | "xfs"), "unsupported-filesystem",
-        "only ext4 and XFS previews are supported")?;
-    let mount = unique(snapshot.mounts.iter().filter(|m| m.source.as_deref().is_some_and(|s|
-        node_alias(device, s) || lv_alias(lv, s))), "mount-not-unique")?;
-    ensure(mount.fs_type.as_deref() == Some(fs.fs_type.as_str())
-        && mount.options.iter().any(|o| o == "rw")
-        && !mount.options.iter().any(|o| matches!(o.as_str(), "ro" | "bind" | "rbind"))
-        && device.mountpoints == vec![mount.target.clone()]
-        && snapshot.mounts.iter().filter(|m| m.target == mount.target).count() == 1,
-        "mount-state-mismatch", "one matching read-write mount must be confirmed by lsblk and findmnt")?;
-    ensure(!snapshot.swaps.iter().any(|s| node_alias(device, &s.name) || lv_alias(lv, &s.name)),
-        "active-swap", "the target is reported as active swap")?;
-    for tool in ["vgcfgbackup", "lvextend", if fs.fs_type == "xfs" { "xfs_growfs" } else { "resize2fs" }] {
-        let capability = unique(capabilities.tools.iter().filter(|t| t.name == tool), "tool-unavailable")?;
-        ensure(capability.available, "tool-unavailable", "a required future operation tool is unavailable")?;
+    let fs = device
+        .filesystem
+        .as_ref()
+        .ok_or_else(|| blocked("filesystem-missing", "filesystem type is absent"))?;
+    ensure(
+        matches!(fs.fs_type.as_str(), "ext4" | "xfs"),
+        "unsupported-filesystem",
+        "only ext4 and XFS previews are supported",
+    )?;
+    let mount = unique(
+        snapshot.mounts.iter().filter(|m| {
+            m.source
+                .as_deref()
+                .is_some_and(|s| node_alias(device, s) || lv_alias(lv, s))
+        }),
+        "mount-not-unique",
+    )?;
+    ensure(
+        mount.fs_type.as_deref() == Some(fs.fs_type.as_str())
+            && mount.options.iter().any(|o| o == "rw")
+            && !mount
+                .options
+                .iter()
+                .any(|o| matches!(o.as_str(), "ro" | "bind" | "rbind"))
+            && device.mountpoints == vec![mount.target.clone()]
+            && snapshot
+                .mounts
+                .iter()
+                .filter(|m| m.target == mount.target)
+                .count()
+                == 1,
+        "mount-state-mismatch",
+        "one matching read-write mount must be confirmed by lsblk and findmnt",
+    )?;
+    ensure(
+        !snapshot
+            .swaps
+            .iter()
+            .any(|s| node_alias(device, &s.name) || lv_alias(lv, &s.name)),
+        "active-swap",
+        "the target is reported as active swap",
+    )?;
+    for tool in [
+        "vgcfgbackup",
+        "lvextend",
+        if fs.fs_type == "xfs" {
+            "xfs_growfs"
+        } else {
+            "resize2fs"
+        },
+    ] {
+        let capability = unique(
+            capabilities.tools.iter().filter(|t| t.name == tool),
+            "tool-unavailable",
+        )?;
+        ensure(
+            capability.available,
+            "tool-unavailable",
+            "a required future operation tool is unavailable",
+        )?;
     }
-    let extent = vg.extent_size_bytes.ok_or_else(|| blocked("extent-missing", "VG extent size is unknown"))?;
-    let free_extents = vg.free_extent_count.ok_or_else(|| blocked("extent-missing", "free extent count is unknown"))?;
-    ensure(extent >= 512 && extent.is_power_of_two(), "invalid-extent", "invalid VG extent size")?;
-    ensure(free_extents.checked_mul(extent) == Some(vg.free_bytes)
-        && vg.size_bytes % extent == 0 && lv.size_bytes % extent == 0,
-        "extent-mismatch", "reported bytes and extent counts do not agree")?;
+    let extent = vg
+        .extent_size_bytes
+        .ok_or_else(|| blocked("extent-missing", "VG extent size is unknown"))?;
+    let free_extents = vg
+        .free_extent_count
+        .ok_or_else(|| blocked("extent-missing", "free extent count is unknown"))?;
+    ensure(
+        extent >= 512 && extent.is_power_of_two(),
+        "invalid-extent",
+        "invalid VG extent size",
+    )?;
+    ensure(
+        free_extents.checked_mul(extent) == Some(vg.free_bytes)
+            && vg.size_bytes % extent == 0
+            && lv.size_bytes % extent == 0,
+        "extent-mismatch",
+        "reported bytes and extent counts do not agree",
+    )?;
     let requested = match request.growth {
         Growth::ByBytes(bytes) => bytes,
         Growth::MaxFree => vg.free_bytes,
     };
-    ensure(requested > 0, "no-growth", "requested growth or existing VG free capacity is zero")?;
+    ensure(
+        requested > 0,
+        "no-growth",
+        "requested growth or existing VG free capacity is zero",
+    )?;
     let extents = requested / extent + u64::from(requested % extent != 0);
     ensure(extents <= free_extents, "insufficient-capacity", "extent-rounded request exceeds existing VG free space; partition/PV resize is not attempted")?;
-    let rounded = extents.checked_mul(extent).ok_or_else(|| blocked("size-overflow", "growth exceeds u64"))?;
-    let new_size = lv.size_bytes.checked_add(rounded).ok_or_else(|| blocked("size-overflow", "new LV size exceeds u64"))?;
+    let rounded = extents
+        .checked_mul(extent)
+        .ok_or_else(|| blocked("size-overflow", "growth exceeds u64"))?;
+    let new_size = lv
+        .size_bytes
+        .checked_add(rounded)
+        .ok_or_else(|| blocked("size-overflow", "new LV size exceeds u64"))?;
     let size = SizeChange {
         device: device.path.clone().unwrap_or_else(|| device.name.clone()),
         current_lv_size_bytes: lv.size_bytes,
@@ -350,21 +528,51 @@ fn build_candidate(
         remaining_vg_free_bytes: vg.free_bytes - rounded,
     };
     let steps = vec![
-        step(1, Operation::RevalidateSnapshot, Reversibility::NotApplicable),
-        step(2, Operation::BackupLvmMetadata { vg_uuid: vg.uuid.clone().unwrap_or_default() }, Reversibility::Reversible),
-        step(3, Operation::ExtendLogicalVolume {
-            lv_uuid: lv.uuid.clone().unwrap_or_default(),
-            additional_extents: extents,
-            expected_lv_size_bytes: new_size,
-        }, Reversibility::Irreversible),
-        step(4, Operation::GrowFilesystem { fs_type: fs.fs_type.clone(), mountpoint: mount.target.clone() }, Reversibility::Irreversible),
-        step(5, Operation::RediscoverAndVerify, Reversibility::NotApplicable),
+        step(
+            1,
+            Operation::RevalidateSnapshot,
+            Reversibility::NotApplicable,
+        ),
+        step(
+            2,
+            Operation::BackupLvmMetadata {
+                vg_uuid: vg.uuid.clone().unwrap_or_default(),
+            },
+            Reversibility::Reversible,
+        ),
+        step(
+            3,
+            Operation::ExtendLogicalVolume {
+                lv_uuid: lv.uuid.clone().unwrap_or_default(),
+                additional_extents: extents,
+                expected_lv_size_bytes: new_size,
+            },
+            Reversibility::Irreversible,
+        ),
+        step(
+            4,
+            Operation::GrowFilesystem {
+                fs_type: fs.fs_type.clone(),
+                mountpoint: mount.target.clone(),
+            },
+            Reversibility::Irreversible,
+        ),
+        step(
+            5,
+            Operation::RediscoverAndVerify,
+            Reversibility::NotApplicable,
+        ),
     ];
     Ok((size, steps))
 }
 
 fn step(id: u32, operation: Operation, reversibility: Reversibility) -> PlanStep {
-    PlanStep { id, depends_on: if id == 1 { Vec::new() } else { vec![id - 1] }, operation, reversibility }
+    PlanStep {
+        id,
+        depends_on: if id == 1 { Vec::new() } else { vec![id - 1] },
+        operation,
+        reversibility,
+    }
 }
 
 fn flatten(devices: &[BlockDevice]) -> Vec<&BlockDevice> {
@@ -378,21 +586,34 @@ fn flatten(devices: &[BlockDevice]) -> Vec<&BlockDevice> {
 
 fn node_alias(device: &BlockDevice, alias: &str) -> bool {
     device.path.as_deref() == Some(alias)
-        || device.kernel_name.as_ref().is_some_and(|n| format!("/dev/{n}") == alias)
+        || device
+            .kernel_name
+            .as_ref()
+            .is_some_and(|n| format!("/dev/{n}") == alias)
 }
 
 fn lv_alias(lv: &LvmLogicalVolume, alias: &str) -> bool {
     lv.path.as_deref() == Some(alias)
         || format!("/dev/{}/{}", lv.vg_name, lv.name) == alias
-        || format!("/dev/mapper/{}-{}", lv.vg_name.replace('-', "--"), lv.name.replace('-', "--")) == alias
+        || format!(
+            "/dev/mapper/{}-{}",
+            lv.vg_name.replace('-', "--"),
+            lv.name.replace('-', "--")
+        ) == alias
 }
 
 fn lv_device(lv: &LvmLogicalVolume, device: &BlockDevice) -> bool {
-    device.path.as_deref().is_some_and(|path| lv_alias(lv, path))
+    device
+        .path
+        .as_deref()
+        .is_some_and(|path| lv_alias(lv, path))
 }
 
 fn contains_device(parent: &BlockDevice, target: &BlockDevice) -> bool {
-    parent.children.iter().any(|child| std::ptr::eq(child, target) || contains_device(child, target))
+    parent
+        .children
+        .iter()
+        .any(|child| std::ptr::eq(child, target) || contains_device(child, target))
 }
 
 fn supported_chain(devices: &[BlockDevice], target: &BlockDevice, safe: bool) -> bool {
@@ -400,7 +621,11 @@ fn supported_chain(devices: &[BlockDevice], target: &BlockDevice, safe: bool) ->
         if std::ptr::eq(device, target) {
             return safe;
         }
-        let safe = safe && matches!(device.kind, NodeKind::Disk | NodeKind::Partition | NodeKind::Loop);
+        let safe = safe
+            && matches!(
+                device.kind,
+                NodeKind::Disk | NodeKind::Partition | NodeKind::Loop
+            );
         supported_chain(&device.children, target, safe)
     })
 }

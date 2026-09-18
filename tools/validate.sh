@@ -32,7 +32,7 @@ if [[ ${VERSION} != 'rustc 1.88.0 '* ]]; then
 fi
 
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo build --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo build --locked --workspace
 printf '%s\n' 'RUST_VALIDATION_OK real-storage-integration=not-run'

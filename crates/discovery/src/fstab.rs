@@ -67,11 +67,7 @@ pub fn parse_fstab(input: &str) -> Result<Vec<FstabEntry>, FstabDiscoveryError> 
     Ok(entries)
 }
 
-fn parse_u32(
-    value: &str,
-    line: usize,
-    field: &'static str,
-) -> Result<u32, FstabDiscoveryError> {
+fn parse_u32(value: &str, line: usize, field: &'static str) -> Result<u32, FstabDiscoveryError> {
     value
         .parse::<u32>()
         .map_err(|_| FstabDiscoveryError::InvalidNumber {

@@ -1,6 +1,4 @@
-use lsm_core::{
-    FstabEntry, HostSnapshot, LvmInventory, LvmPhysicalVolume, MountEntry, SwapEntry,
-};
+use lsm_core::{FstabEntry, HostSnapshot, LvmInventory, LvmPhysicalVolume, MountEntry, SwapEntry};
 use lsm_discovery::{parse_lsblk_json, reconcile_snapshot};
 
 #[test]

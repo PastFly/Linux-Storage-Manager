@@ -31,37 +31,51 @@ fn reports_adjacent_partition_capacity_below_full_vg() {
     assert_eq!(analysis.status, ExtendabilityStatus::NeedsUnderlyingResize);
     assert_eq!(analysis.immediate_growth_bytes, Some(0));
     // Last usable GPT LBA is inclusive: use the reported bound, not disk size - 34 sectors.
-    assert_eq!(analysis.potential_underlying_growth_bytes, Some(41_874_865_664));
+    assert_eq!(
+        analysis.potential_underlying_growth_bytes,
+        Some(41_874_865_664)
+    );
 }
 
 #[test]
 fn lsblk_start_remains_512_byte_based_on_4k_logical_sector_disk() {
-    let storage = parse_lsblk_json(r#"{"blockdevices":[{
+    let storage = parse_lsblk_json(
+        r#"{"blockdevices":[{
         "name":"vdb","kname":"vdb","path":"/dev/vdb","type":"disk",
         "size":10737418240,"log-sec":4096,"pttype":"gpt","children":[{
             "name":"vdb1","kname":"vdb1","path":"/dev/vdb1","type":"part",
             "size":5368709120,"start":2048,"log-sec":4096,"fstype":"ext4",
             "mountpoints":["/data"],"pkname":"vdb","partuuid":"PART-DATA"
         }]
-    }]}"#).unwrap();
-    let table = parse_sfdisk_json(r#"{"partitiontable":{
+    }]}"#,
+    )
+    .unwrap();
+    let table = parse_sfdisk_json(
+        r#"{"partitiontable":{
         "device":"/dev/vdb","label":"gpt","unit":"sectors","sectorsize":4096,
         "firstlba":6,"lastlba":2621434,"partitions":[{
             "node":"/dev/vdb1","start":256,"size":1310720,"uuid":"PART-DATA"
         }]
-    }}"#).unwrap();
+    }}"#,
+    )
+    .unwrap();
     let mut snapshot = fixture_snapshot(0);
     snapshot.storage = storage;
     snapshot.lvm = None;
     snapshot.partition_tables = vec![table];
     snapshot.collectors = geometry_collectors();
     snapshot.mounts = vec![MountEntry {
-        source: Some("/dev/vdb1".into()), target: "/data".into(),
-        fs_type: Some("ext4".into()), options: vec!["rw".into()],
+        source: Some("/dev/vdb1".into()),
+        target: "/data".into(),
+        fs_type: Some("ext4".into()),
+        options: vec!["rw".into()],
     }];
     let analysis = analyze_extendability(&snapshot, "/data").unwrap();
     assert_eq!(analysis.status, ExtendabilityStatus::NeedsUnderlyingResize);
-    assert_eq!(analysis.potential_underlying_growth_bytes, Some(5_367_640_064));
+    assert_eq!(
+        analysis.potential_underlying_growth_bytes,
+        Some(5_367_640_064)
+    );
 }
 
 #[test]
@@ -115,23 +129,32 @@ fn error_diagnostics_also_block_lvm_free_capacity_claims() {
 }
 
 fn geometry_collectors() -> Vec<CollectorStatus> {
-    ["lsblk", "partition_tables", "mounts", "lvm"].into_iter().map(|component| CollectorStatus {
-        component: component.into(), state: CollectorState::Complete, detail: None,
-    }).collect()
+    ["lsblk", "partition_tables", "mounts", "lvm"]
+        .into_iter()
+        .map(|component| CollectorStatus {
+            component: component.into(),
+            state: CollectorState::Complete,
+            detail: None,
+        })
+        .collect()
 }
 
 fn tail_snapshot() -> HostSnapshot {
     let mut snapshot = fixture_snapshot(0);
     snapshot.storage = parse_lsblk_json(include_str!(
         "../../../tests/fixtures/lsblk-lvm-ext4-tail.json"
-    )).unwrap();
-    snapshot.partition_tables = vec![parse_sfdisk_json(r#"{"partitiontable":{
+    ))
+    .unwrap();
+    snapshot.partition_tables = vec![parse_sfdisk_json(
+        r#"{"partitiontable":{
         "device":"/dev/sda","label":"gpt","unit":"sectors","sectorsize":512,
         "firstlba":34,"lastlba":461373406,"partitions":[
             {"node":"/dev/sda1","start":2048,"size":2097152,"uuid":"PART-EFI"},
             {"node":"/dev/sda2","start":2099200,"size":377487360,"uuid":"PART-LVM"}
         ]
-    }}"#).unwrap()];
+    }}"#,
+    )
+    .unwrap()];
     snapshot.collectors = geometry_collectors();
     let lvm = snapshot.lvm.as_mut().unwrap();
     lvm.physical_volumes[0].size_bytes = 193_273_528_320;
@@ -140,9 +163,8 @@ fn tail_snapshot() -> HostSnapshot {
 }
 
 fn fixture_snapshot(vg_free: u64) -> HostSnapshot {
-    let storage = parse_lsblk_json(include_str!(
-        "../../../tests/fixtures/lsblk-lvm-ext4.json"
-    )).unwrap();
+    let storage =
+        parse_lsblk_json(include_str!("../../../tests/fixtures/lsblk-lvm-ext4.json")).unwrap();
     let pvs = format!(
         r#"{{"report":[{{"pv":[{{"pv_name":"/dev/sda2","pv_uuid":"PV-UUID","vg_name":"vg0","pv_size":"213674622976","pv_free":"{vg_free}"}}]}}]}}"#
     );
@@ -155,7 +177,9 @@ fn fixture_snapshot(vg_free: u64) -> HostSnapshot {
         partition_tables: Vec::new(),
         mounts: vec![MountEntry {
             source: Some("/dev/mapper/vg0-root".into()),
-            target: "/".into(), fs_type: Some("ext4".into()), options: vec!["rw".into()],
+            target: "/".into(),
+            fs_type: Some("ext4".into()),
+            options: vec!["rw".into()],
         }],
         fstab: Vec::new(),
         swaps: Vec::new(),

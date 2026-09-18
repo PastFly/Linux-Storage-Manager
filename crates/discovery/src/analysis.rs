@@ -6,8 +6,7 @@ use identity::{logical_volume_matches_device, unique, ResolutionFailure};
 use std::collections::BTreeSet;
 
 use lsm_core::{
-    BlockDevice, DiagnosticSeverity, ExtendAnalysis, ExtendabilityStatus, HostSnapshot,
-    NodeKind,
+    BlockDevice, DiagnosticSeverity, ExtendAnalysis, ExtendabilityStatus, HostSnapshot, NodeKind,
 };
 use thiserror::Error;
 
@@ -35,7 +34,11 @@ pub fn analyze_extendability(
                 immediate_growth_bytes: None,
                 potential_underlying_growth_bytes: None,
                 status: ExtendabilityStatus::Unknown,
-                reasons: vec![reason.to_owned(), "Advisory only; no device was selected and no operations are proposed.".to_owned()],
+                reasons: vec![
+                    reason.to_owned(),
+                    "Advisory only; no device was selected and no operations are proposed."
+                        .to_owned(),
+                ],
                 steps: Vec::new(),
             });
         }
@@ -99,7 +102,8 @@ pub fn analyze_extendability(
             None,
             None,
             vec![
-                "the target is not a directly supported LVM or partition growth topology".to_owned(),
+                "the target is not a directly supported LVM or partition growth topology"
+                    .to_owned(),
             ],
             vec![
                 "inspect the lower block-device layers before planning growth".to_owned(),
@@ -130,7 +134,11 @@ fn analyze_lvm_target(
         ));
     };
 
-    let Some(lv) = unique(lvm.logical_volumes.iter().filter(|lv| logical_volume_matches_device(lv, device))) else {
+    let Some(lv) = unique(
+        lvm.logical_volumes
+            .iter()
+            .filter(|lv| logical_volume_matches_device(lv, device)),
+    ) else {
         return Ok(base_analysis(
             target,
             device,
@@ -334,8 +342,8 @@ fn analyze_vg_underlying_capacity(snapshot: &HostSnapshot, vg_name: &str) -> Und
         .filter(|pv| pv.vg_name.as_deref() == Some(vg_name))
         .collect();
 
-    let expected_pvs = unique(lvm.volume_groups.iter().filter(|vg| vg.name == vg_name))
-        .map(|vg| vg.pv_count);
+    let expected_pvs =
+        unique(lvm.volume_groups.iter().filter(|vg| vg.name == vg_name)).map(|vg| vg.pv_count);
     if pvs.is_empty() || expected_pvs != u64::try_from(pvs.len()).ok() {
         return UnderlyingCapacity {
             bytes: 0,

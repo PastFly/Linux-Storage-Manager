@@ -9,7 +9,11 @@ use lsm_planner::{parse_growth_size, plan_extend, ExtendRequest, Growth, PlanSta
 use std::process::ExitCode;
 
 #[derive(Debug, Parser)]
-#[command(name = "storagemgr", version, about = "Safety-first Linux storage administration")]
+#[command(
+    name = "storagemgr",
+    version,
+    about = "Safety-first Linux storage administration"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -91,7 +95,10 @@ fn run() -> Result<ExitCode> {
         }
         Some(Command::PartitionTables) => {
             let graph = discover_storage()?;
-            println!("{}", serde_json::to_string_pretty(&discover_partition_tables(&graph)?)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&discover_partition_tables(&graph)?)?
+            );
         }
         Some(Command::Mounts) => {
             println!("{}", serde_json::to_string_pretty(&discover_mounts()?)?);
@@ -111,9 +118,20 @@ fn run() -> Result<ExitCode> {
         }
         Some(Command::Explain { target }) => {
             let snapshot = discover_snapshot()?;
-            println!("{}", serde_json::to_string_pretty(&analyze_extendability(&snapshot, &target)?)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&analyze_extendability(&snapshot, &target)?)?
+            );
         }
-        Some(Command::Plan { command: PlanCommand::Extend { target, by, max, json } }) => {
+        Some(Command::Plan {
+            command:
+                PlanCommand::Extend {
+                    target,
+                    by,
+                    max,
+                    json,
+                },
+        }) => {
             let growth = match (by, max) {
                 (Some(value), false) => Growth::ByBytes(parse_growth_size(&value)?),
                 (None, true) => Growth::MaxFree,
@@ -127,7 +145,11 @@ fn run() -> Result<ExitCode> {
             } else {
                 print!("{}", plan.render_text());
             }
-            return Ok(if plan.status() == PlanStatus::Blocked { ExitCode::from(2) } else { ExitCode::SUCCESS });
+            return Ok(if plan.status() == PlanStatus::Blocked {
+                ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
+            });
         }
         Some(Command::Tree) => {
             let graph = discover_storage()?;
@@ -146,7 +168,15 @@ fn run() -> Result<ExitCode> {
 
 fn print_capabilities() -> Result<()> {
     for tool in discover_capabilities().tools {
-        println!("{:<12} {}", tool.name, if tool.available { "available" } else { "missing" });
+        println!(
+            "{:<12} {}",
+            tool.name,
+            if tool.available {
+                "available"
+            } else {
+                "missing"
+            }
+        );
     }
     Ok(())
 }
@@ -154,9 +184,20 @@ fn print_capabilities() -> Result<()> {
 fn print_device(device: &BlockDevice, depth: usize) {
     let indent = "  ".repeat(depth);
     let path = device.path.as_deref().unwrap_or(&device.name);
-    let fs = device.filesystem.as_ref().map(|filesystem| filesystem.fs_type.as_str()).unwrap_or("-");
-    let mounts = if device.mountpoints.is_empty() { "-".to_owned() } else { device.mountpoints.join(",") };
-    println!("{indent}{path}  kind={:?} size={} fs={fs} mount={mounts}", device.kind, device.size_bytes);
+    let fs = device
+        .filesystem
+        .as_ref()
+        .map(|filesystem| filesystem.fs_type.as_str())
+        .unwrap_or("-");
+    let mounts = if device.mountpoints.is_empty() {
+        "-".to_owned()
+    } else {
+        device.mountpoints.join(",")
+    };
+    println!(
+        "{indent}{path}  kind={:?} size={} fs={fs} mount={mounts}",
+        device.kind, device.size_bytes
+    );
     for child in &device.children {
         print_device(child, depth + 1);
     }
@@ -169,9 +210,22 @@ mod tests {
     #[test]
     fn plan_requires_one_size_mode_and_rejects_apply() {
         assert!(Cli::try_parse_from(["storagemgr", "plan", "extend", "/", "--by", "8GiB"]).is_ok());
-        assert!(Cli::try_parse_from(["storagemgr", "plan", "extend", "/", "--max", "--json"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["storagemgr", "plan", "extend", "/", "--max", "--json"]).is_ok()
+        );
         assert!(Cli::try_parse_from(["storagemgr", "plan", "extend", "/"]).is_err());
-        assert!(Cli::try_parse_from(["storagemgr", "plan", "extend", "/", "--max", "--by", "8GiB"]).is_err());
-        assert!(Cli::try_parse_from(["storagemgr", "plan", "extend", "/", "--max", "--apply"]).is_err());
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "extend",
+            "/",
+            "--max",
+            "--by",
+            "8GiB"
+        ])
+        .is_err());
+        assert!(
+            Cli::try_parse_from(["storagemgr", "plan", "extend", "/", "--max", "--apply"]).is_err()
+        );
     }
 }

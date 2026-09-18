@@ -7,7 +7,10 @@ use lsm_core::{BlockDevice, CollectorState, HostSnapshot, NodeKind, PartitionTab
 
 pub(super) fn adjacent_capacity(snapshot: &HostSnapshot, target: &BlockDevice) -> Option<u64> {
     for component in ["lsblk", "partition_tables"] {
-        let status = one(snapshot.collectors.iter().filter(|s| s.component == component))?;
+        let status = one(snapshot
+            .collectors
+            .iter()
+            .filter(|s| s.component == component))?;
         if status.state != CollectorState::Complete {
             return None;
         }
@@ -20,7 +23,10 @@ pub(super) fn adjacent_capacity(snapshot: &HostSnapshot, target: &BlockDevice) -
     }
     let disk_path = disk.path.as_deref()?;
     let target_path = target.path.as_deref()?;
-    let table = one(snapshot.partition_tables.iter().filter(|t| t.device == disk_path))?;
+    let table = one(snapshot
+        .partition_tables
+        .iter()
+        .filter(|t| t.device == disk_path))?;
     let sector = table.sector_size_bytes?;
     if !matches!(sector, 512 | 4096)
         || disk.logical_sector_bytes != Some(sector)
@@ -44,7 +50,10 @@ pub(super) fn adjacent_capacity(snapshot: &HostSnapshot, target: &BlockDevice) -
         if !names.insert(record.node.as_str()) {
             return None;
         }
-        let child = one(disk.children.iter().filter(|d| d.path.as_deref() == Some(record.node.as_str())))?;
+        let child = one(disk
+            .children
+            .iter()
+            .filter(|d| d.path.as_deref() == Some(record.node.as_str())))?;
         let start = record.start_sector.checked_mul(sector)?;
         let size = record.size_sectors.checked_mul(sector)?;
         let end = record.start_sector.checked_add(record.size_sectors)?;
@@ -59,7 +68,11 @@ pub(super) fn adjacent_capacity(snapshot: &HostSnapshot, target: &BlockDevice) -
         {
             return None;
         }
-        match (table.label.as_deref(), record.uuid.as_deref(), child.partition_uuid.as_deref()) {
+        match (
+            table.label.as_deref(),
+            record.uuid.as_deref(),
+            child.partition_uuid.as_deref(),
+        ) {
             (Some("gpt"), Some(a), Some(b)) if !a.is_empty() && a.eq_ignore_ascii_case(b) => {
                 if !uuids.insert(a.to_ascii_lowercase()) {
                     return None;
@@ -125,7 +138,11 @@ fn collect_parents<'a>(
     parents: &mut Vec<&'a BlockDevice>,
 ) {
     for device in devices {
-        if device.children.iter().any(|child| child.path.is_some() && child.path == target.path) {
+        if device
+            .children
+            .iter()
+            .any(|child| child.path.is_some() && child.path == target.path)
+        {
             parents.push(device);
         }
         collect_parents(&device.children, target, parents);

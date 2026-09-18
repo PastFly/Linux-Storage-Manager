@@ -1,6 +1,4 @@
-use lsm_core::{
-    BlockDevice, DiagnosticSeverity, NodeKind, StorageDiagnostic, StorageGraph,
-};
+use lsm_core::{BlockDevice, DiagnosticSeverity, NodeKind, StorageDiagnostic, StorageGraph};
 
 pub fn diagnose_storage(graph: &StorageGraph) -> Vec<StorageDiagnostic> {
     let mut diagnostics = Vec::new();
@@ -15,17 +13,15 @@ fn inspect_device(
     parent: Option<&BlockDevice>,
     diagnostics: &mut Vec<StorageDiagnostic>,
 ) {
-    let device_name = device
-        .path
-        .clone()
-        .unwrap_or_else(|| device.name.clone());
+    let device_name = device.path.clone().unwrap_or_else(|| device.name.clone());
 
     if device.kind == NodeKind::Unknown {
         diagnostics.push(StorageDiagnostic {
             code: "unknown-node-kind".to_owned(),
             severity: DiagnosticSeverity::Warning,
-            message: "lsblk reported a device type that Linux Storage Manager does not yet classify"
-                .to_owned(),
+            message:
+                "lsblk reported a device type that Linux Storage Manager does not yet classify"
+                    .to_owned(),
             device: Some(device_name.clone()),
         });
     }

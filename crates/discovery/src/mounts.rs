@@ -16,7 +16,12 @@ pub enum MountDiscoveryError {
 
 pub fn discover_mounts() -> Result<Vec<MountEntry>, MountDiscoveryError> {
     let output = Command::new("findmnt")
-        .args(["--json", "--bytes", "--output", "SOURCE,TARGET,FSTYPE,OPTIONS"])
+        .args([
+            "--json",
+            "--bytes",
+            "--output",
+            "SOURCE,TARGET,FSTYPE,OPTIONS",
+        ])
         .output()?;
 
     if !output.status.success() {

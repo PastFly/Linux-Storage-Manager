@@ -13,7 +13,11 @@ pub enum LvmDiscoveryError {
         source: std::io::Error,
     },
     #[error("`{command}` failed with status {status}: {stderr}")]
-    CommandFailed { command: &'static str, status: String, stderr: String },
+    CommandFailed {
+        command: &'static str,
+        status: String,
+        stderr: String,
+    },
     #[error("invalid JSON from `{command}`: {source}")]
     InvalidJson {
         command: &'static str,
@@ -45,7 +49,15 @@ fn run_report(command: &'static str, columns: &str) -> Result<String, LvmDiscove
     // --readonly intentionally is not used: it omits device-mapper activation/use facts.
     let output = Command::new(command)
         .env("LC_ALL", "C")
-        .args(["--reportformat", "json", "--units", "b", "--nosuffix", "--options", columns])
+        .args([
+            "--reportformat",
+            "json",
+            "--units",
+            "b",
+            "--nosuffix",
+            "--options",
+            columns,
+        ])
         .output()
         .map_err(|source| LvmDiscoveryError::Io { command, source })?;
     if !output.status.success() {
@@ -61,58 +73,80 @@ fn run_report(command: &'static str, columns: &str) -> Result<String, LvmDiscove
 pub fn parse_pvs_json(input: &str) -> Result<Vec<LvmPhysicalVolume>, LvmDiscoveryError> {
     let output: PvsOutput = parse_json("pvs", input)?;
     require_report("pvs", output.report.len())?;
-    output.report.into_iter().flat_map(|report| report.pv).map(|row| {
-        Ok(LvmPhysicalVolume {
-            name: row.pv_name,
-            uuid: optional(row.pv_uuid),
-            vg_name: optional(row.vg_name),
-            size_bytes: parse_number("pv_size", &row.pv_size)?,
-            free_bytes: parse_number("pv_free", &row.pv_free)?,
+    output
+        .report
+        .into_iter()
+        .flat_map(|report| report.pv)
+        .map(|row| {
+            Ok(LvmPhysicalVolume {
+                name: row.pv_name,
+                uuid: optional(row.pv_uuid),
+                vg_name: optional(row.vg_name),
+                size_bytes: parse_number("pv_size", &row.pv_size)?,
+                free_bytes: parse_number("pv_free", &row.pv_free)?,
+            })
         })
-    }).collect()
+        .collect()
 }
 
 pub fn parse_vgs_json(input: &str) -> Result<Vec<LvmVolumeGroup>, LvmDiscoveryError> {
     let output: VgsOutput = parse_json("vgs", input)?;
     require_report("vgs", output.report.len())?;
-    output.report.into_iter().flat_map(|report| report.vg).map(|row| {
-        Ok(LvmVolumeGroup {
-            name: row.vg_name,
-            uuid: optional(row.vg_uuid),
-            size_bytes: parse_number("vg_size", &row.vg_size)?,
-            free_bytes: parse_number("vg_free", &row.vg_free)?,
-            pv_count: parse_number("pv_count", &row.pv_count)?,
-            lv_count: parse_number("lv_count", &row.lv_count)?,
-            extent_size_bytes: optional_number("vg_extent_size", row.vg_extent_size)?,
-            free_extent_count: optional_number("vg_free_count", row.vg_free_count)?,
-            missing_pv_count: optional_number("vg_missing_pv_count", row.vg_missing_pv_count)?,
-            attributes: optional(row.vg_attr),
+    output
+        .report
+        .into_iter()
+        .flat_map(|report| report.vg)
+        .map(|row| {
+            Ok(LvmVolumeGroup {
+                name: row.vg_name,
+                uuid: optional(row.vg_uuid),
+                size_bytes: parse_number("vg_size", &row.vg_size)?,
+                free_bytes: parse_number("vg_free", &row.vg_free)?,
+                pv_count: parse_number("pv_count", &row.pv_count)?,
+                lv_count: parse_number("lv_count", &row.lv_count)?,
+                extent_size_bytes: optional_number("vg_extent_size", row.vg_extent_size)?,
+                free_extent_count: optional_number("vg_free_count", row.vg_free_count)?,
+                missing_pv_count: optional_number("vg_missing_pv_count", row.vg_missing_pv_count)?,
+                attributes: optional(row.vg_attr),
+            })
         })
-    }).collect()
+        .collect()
 }
 
 pub fn parse_lvs_json(input: &str) -> Result<Vec<LvmLogicalVolume>, LvmDiscoveryError> {
     let output: LvsOutput = parse_json("lvs", input)?;
     require_report("lvs", output.report.len())?;
-    output.report.into_iter().flat_map(|report| report.lv).map(|row| {
-        Ok(LvmLogicalVolume {
-            name: row.lv_name,
-            path: optional(row.lv_path),
-            uuid: optional(row.lv_uuid),
-            vg_name: row.vg_name,
-            size_bytes: parse_number("lv_size", &row.lv_size)?,
-            attributes: optional(row.lv_attr),
-            layout: optional(row.lv_layout),
-            role: optional(row.lv_role),
+    output
+        .report
+        .into_iter()
+        .flat_map(|report| report.lv)
+        .map(|row| {
+            Ok(LvmLogicalVolume {
+                name: row.lv_name,
+                path: optional(row.lv_path),
+                uuid: optional(row.lv_uuid),
+                vg_name: row.vg_name,
+                size_bytes: parse_number("lv_size", &row.lv_size)?,
+                attributes: optional(row.lv_attr),
+                layout: optional(row.lv_layout),
+                role: optional(row.lv_role),
+            })
         })
-    }).collect()
+        .collect()
 }
 
 fn require_report(command: &'static str, count: usize) -> Result<(), LvmDiscoveryError> {
-    if count == 0 { Err(LvmDiscoveryError::MissingReport(command)) } else { Ok(()) }
+    if count == 0 {
+        Err(LvmDiscoveryError::MissingReport(command))
+    } else {
+        Ok(())
+    }
 }
 
-fn parse_json<'de, T: Deserialize<'de>>(command: &'static str, input: &'de str) -> Result<T, LvmDiscoveryError> {
+fn parse_json<'de, T: Deserialize<'de>>(
+    command: &'static str,
+    input: &'de str,
+) -> Result<T, LvmDiscoveryError> {
     serde_json::from_str(input).map_err(|source| LvmDiscoveryError::InvalidJson { command, source })
 }
 
@@ -121,13 +155,19 @@ fn optional(value: String) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
-fn optional_number(field: &'static str, value: Option<String>) -> Result<Option<u64>, LvmDiscoveryError> {
+fn optional_number(
+    field: &'static str,
+    value: Option<String>,
+) -> Result<Option<u64>, LvmDiscoveryError> {
     value.map(|value| parse_number(field, &value)).transpose()
 }
 
 // LVM byte reports may contain ".00". Accept exact integers only, never f64 rounding.
 fn parse_number(field: &'static str, value: &str) -> Result<u64, LvmDiscoveryError> {
-    let invalid = || LvmDiscoveryError::InvalidNumber { field, value: value.to_owned() };
+    let invalid = || LvmDiscoveryError::InvalidNumber {
+        field,
+        value: value.to_owned(),
+    };
     let trimmed = value.trim();
     let integer = if let Some((integer, fractional)) = trimmed.split_once('.') {
         if fractional.is_empty() || !fractional.bytes().all(|b| b == b'0') {
@@ -144,9 +184,13 @@ fn parse_number(field: &'static str, value: &str) -> Result<u64, LvmDiscoveryErr
 }
 
 #[derive(Debug, Deserialize)]
-struct PvsOutput { report: Vec<PvsReport> }
+struct PvsOutput {
+    report: Vec<PvsReport>,
+}
 #[derive(Debug, Deserialize)]
-struct PvsReport { pv: Vec<PvRow> }
+struct PvsReport {
+    pv: Vec<PvRow>,
+}
 #[derive(Debug, Deserialize)]
 struct PvRow {
     pv_name: String,
@@ -159,9 +203,13 @@ struct PvRow {
 }
 
 #[derive(Debug, Deserialize)]
-struct VgsOutput { report: Vec<VgsReport> }
+struct VgsOutput {
+    report: Vec<VgsReport>,
+}
 #[derive(Debug, Deserialize)]
-struct VgsReport { vg: Vec<VgRow> }
+struct VgsReport {
+    vg: Vec<VgRow>,
+}
 #[derive(Debug, Deserialize)]
 struct VgRow {
     vg_name: String,
@@ -182,9 +230,13 @@ struct VgRow {
 }
 
 #[derive(Debug, Deserialize)]
-struct LvsOutput { report: Vec<LvsReport> }
+struct LvsOutput {
+    report: Vec<LvsReport>,
+}
 #[derive(Debug, Deserialize)]
-struct LvsReport { lv: Vec<LvRow> }
+struct LvsReport {
+    lv: Vec<LvRow>,
+}
 #[derive(Debug, Deserialize)]
 struct LvRow {
     lv_name: String,

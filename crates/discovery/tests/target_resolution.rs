@@ -69,10 +69,18 @@ fn resolves_hyphenated_lvm_names_without_guessing_unescaped_mapper_paths() {
     node.name = "vg--data-root--vol".into();
     node.path = Some("/dev/mapper/vg--data-root--vol".into());
     snapshot.mounts[0].source = Some("/dev/vg-data/root-vol".into());
-    for target in ["/", "/dev/vg-data/root-vol", "/dev/mapper/vg--data-root--vol", "/dev/dm-0"] {
+    for target in [
+        "/",
+        "/dev/vg-data/root-vol",
+        "/dev/mapper/vg--data-root--vol",
+        "/dev/dm-0",
+    ] {
         let report = analyze_extendability(&snapshot, target).unwrap();
         assert_eq!(report.status, ExtendabilityStatus::Ready);
-        assert_eq!(report.device.as_deref(), Some("/dev/mapper/vg--data-root--vol"));
+        assert_eq!(
+            report.device.as_deref(),
+            Some("/dev/mapper/vg--data-root--vol")
+        );
     }
     assert!(analyze_extendability(&snapshot, "/dev/mapper/vg-data-root-vol").is_err());
 }
@@ -118,7 +126,12 @@ fn conflicting_lsblk_mount_claims_are_order_independent() {
 
 #[test]
 fn missing_or_conflicting_mount_source_does_not_fall_back_to_lsblk() {
-    for source in [None, Some("/dev/missing"), Some("/dev/sda1"), Some("/dev/root")] {
+    for source in [
+        None,
+        Some("/dev/missing"),
+        Some("/dev/sda1"),
+        Some("/dev/root"),
+    ] {
         let mut snapshot = fixture();
         snapshot.mounts[0].source = source.map(str::to_owned);
         refused(&snapshot, "/");
@@ -137,7 +150,9 @@ fn missing_mount_row_is_not_proof_of_a_live_mount() {
 #[test]
 fn missing_lsblk_mount_claim_is_not_silently_accepted() {
     let mut snapshot = fixture();
-    snapshot.storage.block_devices[0].children[1].children[0].mountpoints.clear();
+    snapshot.storage.block_devices[0].children[1].children[0]
+        .mountpoints
+        .clear();
     refused(&snapshot, "/");
     refused(&snapshot, "/dev/vg0/root");
 }
@@ -147,7 +162,12 @@ fn incomplete_or_duplicated_collectors_cannot_supply_target_evidence() {
     for component in ["lsblk", "mounts", "lvm"] {
         for state in [CollectorState::Failed, CollectorState::Unavailable] {
             let mut snapshot = fixture();
-            snapshot.collectors.iter_mut().find(|c| c.component == component).unwrap().state = state;
+            snapshot
+                .collectors
+                .iter_mut()
+                .find(|c| c.component == component)
+                .unwrap()
+                .state = state;
             refused(&snapshot, "/");
             refused(&snapshot, "/dev/vg0/root");
         }
@@ -155,7 +175,12 @@ fn incomplete_or_duplicated_collectors_cannot_supply_target_evidence() {
         snapshot.collectors.retain(|c| c.component != component);
         refused(&snapshot, "/");
         let mut snapshot = fixture();
-        let duplicate = snapshot.collectors.iter().find(|c| c.component == component).unwrap().clone();
+        let duplicate = snapshot
+            .collectors
+            .iter()
+            .find(|c| c.component == component)
+            .unwrap()
+            .clone();
         snapshot.collectors.push(duplicate);
         refused(&snapshot, "/");
     }
@@ -249,7 +274,10 @@ fn invalid_targets_have_no_capacity_and_do_not_echo_control_characters_in_reason
         assert_eq!(report.status, ExtendabilityStatus::Unknown);
         assert!(report.device.is_none());
         assert!(report.steps.is_empty());
-        assert!(report.reasons.iter().all(|r| !r.chars().any(char::is_control)));
+        assert!(report
+            .reasons
+            .iter()
+            .all(|r| !r.chars().any(char::is_control)));
     }
 }
 
@@ -268,6 +296,11 @@ fn unmounted_device_is_distinct_from_a_failed_mount_collector() {
     snapshot.mounts.clear();
     let report = analyze_extendability(&snapshot, "/dev/vg0/root").unwrap();
     assert_eq!(report.status, ExtendabilityStatus::RequiresMount);
-    snapshot.collectors.iter_mut().find(|c| c.component == "mounts").unwrap().state = CollectorState::Failed;
+    snapshot
+        .collectors
+        .iter_mut()
+        .find(|c| c.component == "mounts")
+        .unwrap()
+        .state = CollectorState::Failed;
     refused(&snapshot, "/dev/vg0/root");
 }

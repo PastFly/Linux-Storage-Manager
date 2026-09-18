@@ -66,11 +66,7 @@ pub fn parse_proc_swaps(input: &str) -> Result<Vec<SwapEntry>, SwapDiscoveryErro
     Ok(swaps)
 }
 
-fn parse_u64(
-    value: &str,
-    line: usize,
-    field: &'static str,
-) -> Result<u64, SwapDiscoveryError> {
+fn parse_u64(value: &str, line: usize, field: &'static str) -> Result<u64, SwapDiscoveryError> {
     value
         .parse::<u64>()
         .map_err(|_| SwapDiscoveryError::InvalidNumber {

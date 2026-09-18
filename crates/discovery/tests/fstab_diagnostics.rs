@@ -60,7 +60,8 @@ fn reports_partition_parent_mismatch() {
     let diagnostics = diagnose_storage(&graph);
     assert!(diagnostics
         .iter()
-        .any(|item| item.code == "partition-larger-than-disk" && item.severity == DiagnosticSeverity::Error));
+        .any(|item| item.code == "partition-larger-than-disk"
+            && item.severity == DiagnosticSeverity::Error));
     assert!(diagnostics
         .iter()
         .any(|item| item.code == "partition-parent-mismatch"));

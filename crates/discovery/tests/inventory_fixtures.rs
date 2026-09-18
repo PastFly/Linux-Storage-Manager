@@ -1,4 +1,6 @@
-use lsm_discovery::{parse_findmnt_json, parse_lvs_json, parse_proc_swaps, parse_pvs_json, parse_vgs_json};
+use lsm_discovery::{
+    parse_findmnt_json, parse_lvs_json, parse_proc_swaps, parse_pvs_json, parse_vgs_json,
+};
 
 #[test]
 fn normalizes_mount_tree() {

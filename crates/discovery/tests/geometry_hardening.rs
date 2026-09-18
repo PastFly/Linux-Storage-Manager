@@ -26,21 +26,30 @@ fn fixture(sector: u64) -> HostSnapshot {
         storage: parse_lsblk_json(&lsblk.to_string()).unwrap(),
         partition_tables: vec![parse_sfdisk_json(&table.to_string()).unwrap()],
         mounts: vec![MountEntry {
-            source: Some("/dev/vdb1".into()), target: "/data".into(),
-            fs_type: Some("ext4".into()), options: vec!["rw".into()],
+            source: Some("/dev/vdb1".into()),
+            target: "/data".into(),
+            fs_type: Some("ext4".into()),
+            options: vec!["rw".into()],
         }],
         fstab: Vec::new(),
         swaps: Vec::new(),
         lvm: None,
         diagnostics: Vec::new(),
-        collectors: ["lsblk", "partition_tables", "mounts"].into_iter().map(|component| CollectorStatus {
-            component: component.to_owned(), state: CollectorState::Complete, detail: None,
-        }).collect(),
+        collectors: ["lsblk", "partition_tables", "mounts"]
+            .into_iter()
+            .map(|component| CollectorStatus {
+                component: component.to_owned(),
+                state: CollectorState::Complete,
+                detail: None,
+            })
+            .collect(),
     }
 }
 
 fn capacity(snapshot: &HostSnapshot) -> Option<u64> {
-    analyze_extendability(snapshot, "/data").unwrap().potential_underlying_growth_bytes
+    analyze_extendability(snapshot, "/data")
+        .unwrap()
+        .potential_underlying_growth_bytes
 }
 
 fn unknown(snapshot: &HostSnapshot) {
@@ -153,7 +162,9 @@ fn requires_unique_complete_collectors() {
         unknown(&snapshot);
     }
     let mut snapshot = fixture(512);
-    snapshot.collectors.retain(|c| c.component != "partition_tables");
+    snapshot
+        .collectors
+        .retain(|c| c.component != "partition_tables");
     unknown(&snapshot);
     let mut snapshot = fixture(512);
     snapshot.collectors.push(snapshot.collectors[1].clone());
@@ -166,10 +177,15 @@ fn requires_one_partition_table_and_one_parent() {
     snapshot.partition_tables.clear();
     unknown(&snapshot);
     let mut snapshot = fixture(512);
-    snapshot.partition_tables.push(snapshot.partition_tables[0].clone());
+    snapshot
+        .partition_tables
+        .push(snapshot.partition_tables[0].clone());
     unknown(&snapshot);
     let mut snapshot = fixture(512);
-    snapshot.storage.block_devices.push(snapshot.storage.block_devices[0].clone());
+    snapshot
+        .storage
+        .block_devices
+        .push(snapshot.storage.block_devices[0].clone());
     // Duplicate parents now fail at target resolution, before geometry is assessed.
     let report = analyze_extendability(&snapshot, "/data").unwrap();
     assert_eq!(report.status, ExtendabilityStatus::Unknown);
@@ -210,8 +226,10 @@ fn rejects_duplicate_partition_identity() {
 fn preexisting_error_blocks_advisory_capacity() {
     let mut snapshot = fixture(512);
     snapshot.diagnostics.push(StorageDiagnostic {
-        code: "geometry-conflict".into(), severity: DiagnosticSeverity::Error,
-        message: "test conflict".into(), device: Some("/dev/vdb".into()),
+        code: "geometry-conflict".into(),
+        severity: DiagnosticSeverity::Error,
+        message: "test conflict".into(),
+        device: Some("/dev/vdb".into()),
     });
     let report = analyze_extendability(&snapshot, "/data").unwrap();
     assert_eq!(report.status, ExtendabilityStatus::Unknown);

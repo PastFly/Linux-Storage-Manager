@@ -43,10 +43,10 @@ jobs:
           components: rustfmt, clippy
       - name: Format
         run: cargo fmt --all -- --check
-      - name: Resolve dependencies
+      - name: Fetch pinned dependencies
         id: resolve
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
-        run: cargo generate-lockfile
+        run: cargo fetch --locked
       - name: Clippy
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
@@ -93,9 +93,29 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends lvm2 e2fsprogs xfsprogs util-linux fdisk
       - name: Build storagemgr
-        run: cargo build --workspace
+        run: cargo build --locked --release --workspace
       - name: Test planning on disposable ext4 and XFS fixtures
         run: >-
           sudo python3 -I tests/integration/loop_matrix.py
           --allow-disposable-loop-tests
-          "${GITHUB_WORKSPACE}/target/debug/storagemgr"
+          "${GITHUB_WORKSPACE}/target/release/storagemgr"
+
+      - name: Package tested read-only prototype
+        env:
+          SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          OUT="${RUNNER_TEMP}/storagemgr-linux-x86_64"
+          mkdir -p "${OUT}"
+          cp target/release/storagemgr "${OUT}/storagemgr"
+          printf 'Source head: %s\nTested checkout: %s\nPlatform: Linux x86_64, Ubuntu 24.04 runner\nMode: read-only M0/M1A prototype; no apply/executor\n' \
+            "${SOURCE_HEAD}" "$(git rev-parse HEAD)" > "${OUT}/BUILD_INFO.txt"
+          cp README.md "${OUT}/README.md"
+          (cd "${OUT}" && sha256sum storagemgr > SHA256SUMS)
+          tar -C "${OUT}" -czf "${RUNNER_TEMP}/storagemgr-linux-x86_64.tar.gz" storagemgr BUILD_INFO.txt README.md SHA256SUMS
+      - name: Upload tested prototype
+        uses: actions/upload-artifact@v4
+        with:
+          name: storagemgr-linux-x86_64-${{ github.run_id }}
+          path: ${{ runner.temp }}/storagemgr-linux-x86_64.tar.gz
+          retention-days: 7
+          if-no-files-found: error

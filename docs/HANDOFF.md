@@ -35,23 +35,28 @@ capacity-accounting review remains open; this is not full analyzer acceptance.
 
 ## Validation status
 
-CI now runs: run 35328857790 / #116 at e2cdc39 assigned real GitHub runners.
-Harness safety tests, Clippy and the Rust Test step PASSED for that base tree.
-Format FAILED, so real loop integration was skipped. Do not describe #116 as a
-billing failure. Historical runs through #115 failed before runner assignment.
-The account billing and repository visibility were not changed by this work.
+The owner made the repository public. CI #117 / 35330217493 at source
+8390a5ee0dbcb6d555e3e272bfee884c57586136 actually passed Clippy, all 74 Rust tests
+and 24 harness mock tests. Only Format failed; loop integration was skipped.
+Historical failures through #115 were pre-runner billing blocks, not test results.
 
-The #116 diagnostic ZIP digest was checked, and its source.tar reconstructs the
-exact tested tree 87e09aeebf0b81b7a5842295e04eaab3148310d6. It contains a real
-Cargo-generated lockfile and a rustfmt-generated patch; neither was fabricated.
-The new target-resolution tests are NOT covered by the earlier passing Test step.
-Their fresh CI result must be read after publishing this continuation.
+The #117 artifact digest and archived source tree
+54ca412436f4c8e3e56495272fe19db5b7f949cf were verified. Its actual Rust 1.88
+formatter patch and Cargo-generated lockfile reconstruct the reviewed tree
+60ac6554e529322959045c965f20e78d0205ee97. A one-shot exporter reproduced that
+exact tree and uploaded only matching Git blobs (run 35331188889); the temporary
+workflow is removed with this import. Normal CI retains contents: read.
+No formatter rules, tests or failed checks were disabled.
 
-Local source checks cover the baseline blob IDs, UTF-8, literal JSON fixtures,
-retained numeric expectations and source-level I/O boundary only. No local Rust
-compiler, rustfmt, Clippy or runtime test result is established: Cargo/rustc are
-absent. The new tests were written first, but a runtime RED/GREEN cycle was not
-observed. The real ext4/XFS/LVM matrix remains unvalidated until it actually runs.
+Cargo.lock is now committed; validation fetches and builds with --locked instead
+of re-resolving dependencies. CI builds the release binary and subjects that same
+binary to the opt-in disposable ext4/LVM/ext4/LVM/XFS matrix before packaging it.
+Read this commit's own CI result; the new integration result is not assumed here.
+The next successful artifact is a Linux x86_64 Ubuntu 24.04 prototype, not a claim
+of portability to every distribution or of production-ready storage writes.
+
+Local source-only validation reran all 24 harness mocks successfully. Local Rust
+is still unavailable; actual Rust test evidence comes from the GitHub runner.
 Read docs/VALIDATION.md before running any privileged harness.
 
 ## Resume
@@ -59,7 +64,7 @@ Read docs/VALIDATION.md before running any privileged harness.
 Read live PR heads and exact workflow results. Keep work on PR #2's existing
 feature branch; do not create throwaway branches or merge master. Obtain a real
 complete-tree build, fmt, Clippy and Rust test results; fix actual diagnostics.
-Generate Cargo.lock only with real dependency resolution, then run the opt-in
+Preserve the committed Cargo.lock with --locked; run the opt-in
 harness in a dedicated disposable Linux VM. Continue the remaining immediate-VG
 advisory audit. Storage mutation stays gated on acceptance and separate review.
 
