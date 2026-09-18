@@ -343,8 +343,7 @@ fn draw(
     render_section(frame, body[1], snapshot, capabilities, state);
 
     frame.render_widget(
-        Paragraph::new(toolbar_line(state.section()))
-            .block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(toolbar_line(state.section())).block(Block::default().borders(Borders::ALL)),
         outer[2],
     );
 }
@@ -399,7 +398,11 @@ fn render_devices(
         .split(area);
 
     let rows = visible_device_rows(&snapshot.storage, volumes_only);
-    let title = if volumes_only { " Volumes " } else { " Devices " };
+    let title = if volumes_only {
+        " Volumes "
+    } else {
+        " Devices "
+    };
     if rows.is_empty() {
         frame.render_widget(
             Paragraph::new("No matching devices discovered.")
@@ -497,8 +500,11 @@ fn render_mounts(
     let mounts = storage_mounts(snapshot);
     if mounts.is_empty() {
         frame.render_widget(
-            Paragraph::new("No storage mounts discovered.")
-                .block(Block::default().borders(Borders::ALL).title(" Storage mounts ")),
+            Paragraph::new("No storage mounts discovered.").block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Storage mounts "),
+            ),
             area,
         );
         return;
@@ -680,6 +686,7 @@ fn mount_table_cells(mount: &lsm_core::MountEntry) -> [String; 3] {
     ]
 }
 
+#[cfg(test)]
 fn toolbar_text(section: Section) -> String {
     if section == Section::Plans {
         "↑↓ Target   [ ] / - + Size   PgUp/PgDn Size   ←→/Tab Section   q/Esc Quit   Read-only"
