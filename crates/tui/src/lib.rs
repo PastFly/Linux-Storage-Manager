@@ -14,8 +14,8 @@ use lsm_core::{
 };
 use lsm_discovery::{analyze_extendability, discover_capabilities, discover_snapshot};
 use lsm_planner::{
-    plan_extend, ExtendRequest, Growth, LayoutAlternative, Operation, PlanStatus, PlanStep,
-    PreflightCheck, PreflightState, Reversibility,
+    analyze_layout_opportunity, plan_extend, ExtendRequest, Growth, LayoutAlternative, Operation,
+    PlanStatus, PlanStep, PreflightCheck, PreflightState, Reversibility,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -1533,7 +1533,22 @@ fn plan_growth_options(snapshot: &HostSnapshot, selected_device: usize) -> Vec<G
         })
         .filter(|bytes| *bytes > 0);
 
-    growth_presets_for_capacity(capacity)
+    let mut options = growth_presets_for_capacity(capacity);
+    if let Some(opportunity) = analyze_layout_opportunity(snapshot, &target) {
+        if let Some(growth) = preferred_layout_growth(opportunity.max_target_growth_bytes) {
+            if !options.contains(&growth) {
+                options.push(growth);
+            }
+        }
+    }
+    options
+}
+
+fn preferred_layout_growth(max_target_growth_bytes: u64) -> Option<Growth> {
+    layout_opportunity_probe_sizes()
+        .into_iter()
+        .find(|bytes| *bytes <= max_target_growth_bytes)
+        .map(Growth::ByBytes)
 }
 
 fn analysis_summary_lines(analysis: &ExtendAnalysis) -> Vec<Line<'static>> {
@@ -2817,6 +2832,20 @@ mod tests {
         );
         assert!(rescan_sysfs_path("../sda").is_none());
         assert!(rescan_sysfs_path("sda/../../x").is_none());
+    }
+
+
+    #[test]
+    fn preferred_layout_growth_selects_one_gib_for_live_tail_capacity() {
+        assert_eq!(
+            preferred_layout_growth(1_075_838_976),
+            Some(Growth::ByBytes(1024 * 1024 * 1024))
+        );
+        assert_eq!(
+            preferred_layout_growth(600 * 1024 * 1024),
+            Some(Growth::ByBytes(512 * 1024 * 1024))
+        );
+        assert_eq!(preferred_layout_growth(32 * 1024 * 1024), None);
     }
 
     #[test]
