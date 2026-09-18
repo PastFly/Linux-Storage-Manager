@@ -574,7 +574,6 @@ fn render_plan_hint(
     );
 }
 
-
 fn device_detail_lines(snapshot: &HostSnapshot, device: &BlockDevice) -> Vec<Line<'static>> {
     let path = device.path.as_deref().unwrap_or(&device.name);
     let fs = device
@@ -779,7 +778,9 @@ fn analysis_summary_lines(analysis: &ExtendAnalysis) -> Vec<Line<'static>> {
             }
         }
         ExtendabilityStatus::NeedsUnderlyingResize => {
-            lines.push(Line::from("Can grow        Yes, lower layer resize required"));
+            lines.push(Line::from(
+                "Can grow        Yes, lower layer resize required",
+            ));
             if let Some(bytes) = analysis.potential_underlying_growth_bytes {
                 lines.push(Line::from(format!(
                     "Adjacent free   {}",
@@ -1138,7 +1139,8 @@ mod tests {
             potential_underlying_growth_bytes: Some(1_047_552),
             status: lsm_core::ExtendabilityStatus::NeedsUnderlyingResize,
             reasons: vec![
-                "1047552 bytes of adjacent capacity were detected after the target partition".into(),
+                "1047552 bytes of adjacent capacity were detected after the target partition"
+                    .into(),
             ],
             steps: vec!["grow the partition into verified adjacent free space".into()],
         };
@@ -1154,7 +1156,6 @@ mod tests {
         assert!(text.contains("Adjacent free"));
         assert!(text.contains("grow the partition"));
     }
-
 
     #[test]
     fn default_mount_view_hides_binfmt_misc() {
@@ -1184,11 +1185,20 @@ mod tests {
         let mut state = AppState::new(&snapshot());
         state.section_index = 5;
 
-        assert_eq!(state.plan_growth(), lsm_planner::Growth::ByBytes(512 * 1024 * 1024));
+        assert_eq!(
+            state.plan_growth(),
+            lsm_planner::Growth::ByBytes(512 * 1024 * 1024)
+        );
         state.next_plan_growth();
-        assert_eq!(state.plan_growth(), lsm_planner::Growth::ByBytes(1024 * 1024 * 1024));
+        assert_eq!(
+            state.plan_growth(),
+            lsm_planner::Growth::ByBytes(1024 * 1024 * 1024)
+        );
         state.next_plan_growth();
-        assert_eq!(state.plan_growth(), lsm_planner::Growth::ByBytes(4 * 1024 * 1024 * 1024));
+        assert_eq!(
+            state.plan_growth(),
+            lsm_planner::Growth::ByBytes(4 * 1024 * 1024 * 1024)
+        );
         state.next_plan_growth();
         assert_eq!(state.plan_growth(), lsm_planner::Growth::MaxFree);
         state.next_plan_growth();
