@@ -9,4 +9,5 @@ publish.workspace = true
 anyhow.workspace = true
 crossterm.workspace = true
 lsm-core = { path = "../core" }
+lsm-discovery = { path = "../discovery" }
 ratatui.workspace = true
