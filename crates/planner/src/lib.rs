@@ -1525,7 +1525,7 @@ pub fn plan_create(
     plan.steps.push(
         "revalidate the complete storage snapshot and exact selected free-space source".to_owned(),
     );
-    match source.kind {
+    match source_adapter.kind {
         ProvisioningSpaceKind::LvmFreeExtents => {
             plan.steps
                 .push("create and verify LVM metadata backup".to_owned());
