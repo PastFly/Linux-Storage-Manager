@@ -1360,7 +1360,10 @@ mod tests {
             handle_key_event(&mut state, &snap, press),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(1024 * 1024 * 1024));
+        assert_eq!(
+            state.plan_growth_for_snapshot(&snap),
+            Growth::ByBytes(1024 * 1024 * 1024)
+        );
 
         let repeat = KeyEvent {
             kind: KeyEventKind::Repeat,
@@ -1370,7 +1373,10 @@ mod tests {
             handle_key_event(&mut state, &snap, repeat),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(1024 * 1024 * 1024));
+        assert_eq!(
+            state.plan_growth_for_snapshot(&snap),
+            Growth::ByBytes(1024 * 1024 * 1024)
+        );
 
         let release = KeyEvent {
             kind: KeyEventKind::Release,
@@ -1380,7 +1386,10 @@ mod tests {
             handle_key_event(&mut state, &snap, release),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(1024 * 1024 * 1024));
+        assert_eq!(
+            state.plan_growth_for_snapshot(&snap),
+            Growth::ByBytes(1024 * 1024 * 1024)
+        );
     }
 
     #[test]
@@ -1427,7 +1436,10 @@ mod tests {
             handle_key_event(&mut state, &snap, plain_minus),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(1024 * 1024 * 1024));
+        assert_eq!(
+            state.plan_growth_for_snapshot(&snap),
+            Growth::ByBytes(1024 * 1024 * 1024)
+        );
 
         let shifted_minus = KeyEvent {
             code: KeyCode::Char('_'),
@@ -1439,7 +1451,10 @@ mod tests {
             handle_key_event(&mut state, &snap, shifted_minus),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(512 * 1024 * 1024));
+        assert_eq!(
+            state.plan_growth_for_snapshot(&snap),
+            Growth::ByBytes(512 * 1024 * 1024)
+        );
 
         let page_down = KeyEvent {
             code: KeyCode::PageDown,
@@ -1451,7 +1466,10 @@ mod tests {
             handle_key_event(&mut state, &snap, page_down),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(1024 * 1024 * 1024));
+        assert_eq!(
+            state.plan_growth_for_snapshot(&snap),
+            Growth::ByBytes(1024 * 1024 * 1024)
+        );
 
         let page_up = KeyEvent {
             code: KeyCode::PageUp,
@@ -1463,7 +1481,10 @@ mod tests {
             handle_key_event(&mut state, &snap, page_up),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(512 * 1024 * 1024));
+        assert_eq!(
+            state.plan_growth_for_snapshot(&snap),
+            Growth::ByBytes(512 * 1024 * 1024)
+        );
     }
 
     #[test]
@@ -1485,7 +1506,10 @@ mod tests {
             handle_key_event(&mut state, &snap, equals),
             LoopControl::Continue
         );
-        assert_eq!(state.plan_growth_for_snapshot(&snap), Growth::ByBytes(1024 * 1024 * 1024));
+        assert_eq!(
+            state.plan_growth_for_snapshot(&snap),
+            Growth::ByBytes(1024 * 1024 * 1024)
+        );
     }
 
     #[test]
