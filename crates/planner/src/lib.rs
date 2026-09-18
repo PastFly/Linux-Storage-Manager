@@ -1187,16 +1187,18 @@ pub fn resolve_create_source_adapter(
                     "LVM inventory is unavailable for the selected source",
                 )
             })?;
-            let vg = unique(
-                lvm.volume_groups.iter().filter(|vg| vg.name == vg_name),
-                "create-vg-ambiguous",
-            )
-            .map_err(|_| {
+            let mut groups = lvm.volume_groups.iter().filter(|vg| vg.name == vg_name);
+            let vg = groups.next().ok_or_else(|| {
                 blocked(
-                    "create-vg-ambiguous",
-                    "the selected volume-group identity is ambiguous",
+                    "create-vg-not-found",
+                    "the selected volume group no longer exists",
                 )
             })?;
+            ensure(
+                groups.next().is_none(),
+                "create-vg-ambiguous",
+                "the selected volume-group identity is ambiguous",
+            )?;
             let extent = vg.extent_size_bytes.ok_or_else(|| {
                 blocked("create-extent-missing", "VG extent size is unavailable")
             })?;
@@ -1251,32 +1253,36 @@ pub fn resolve_create_source_adapter(
             )?;
 
             let nodes = flatten(&snapshot.storage.block_devices);
-            let disk = unique(
-                nodes.iter().copied().filter(|device| {
-                    matches!(device.kind, NodeKind::Disk | NodeKind::Loop)
-                        && device.path.as_deref() == Some(disk_path)
-                }),
+            let mut disks = nodes.iter().copied().filter(|device| {
+                matches!(device.kind, NodeKind::Disk | NodeKind::Loop)
+                    && device.path.as_deref() == Some(disk_path)
+            });
+            let disk = disks.next().ok_or_else(|| {
+                blocked(
+                    "create-disk-not-found",
+                    "selected free-space disk no longer exists",
+                )
+            })?;
+            ensure(
+                disks.next().is_none(),
                 "create-disk-ambiguous",
-            )
-            .map_err(|_| {
+                "selected free-space disk identity is ambiguous",
+            )?;
+            let mut tables = snapshot
+                .partition_tables
+                .iter()
+                .filter(|table| table.device == disk_path);
+            let table = tables.next().ok_or_else(|| {
                 blocked(
-                    "create-disk-ambiguous",
-                    "selected free-space disk identity is ambiguous",
+                    "create-partition-table-not-found",
+                    "selected disk partition table no longer exists",
                 )
             })?;
-            let table = unique(
-                snapshot
-                    .partition_tables
-                    .iter()
-                    .filter(|table| table.device == disk_path),
+            ensure(
+                tables.next().is_none(),
                 "create-partition-table-ambiguous",
-            )
-            .map_err(|_| {
-                blocked(
-                    "create-partition-table-ambiguous",
-                    "selected disk partition-table identity is ambiguous",
-                )
-            })?;
+                "selected disk partition-table identity is ambiguous",
+            )?;
             let free_space = partition_free_ranges(disk, table).ok_or_else(|| {
                 blocked(
                     "create-geometry-changed",
