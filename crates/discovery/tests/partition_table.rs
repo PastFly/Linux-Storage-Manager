@@ -81,3 +81,70 @@ fn reports_authoritative_geometry_and_uuid_mismatch() {
     assert!(codes.contains(&"partition-size-mismatch"));
     assert!(codes.contains(&"partition-uuid-mismatch"));
 }
+
+
+#[test]
+fn dos_extended_partition_container_does_not_trigger_false_size_mismatch() {
+    let storage = parse_lsblk_json(
+        r#"{
+          "blockdevices": [{
+            "name":"sda","kname":"sda","path":"/dev/sda","type":"disk",
+            "size":10737418240,"fstype":null,"fsver":null,"mountpoints":[null],
+            "pkname":null,"model":null,"serial":null,"uuid":null,"partuuid":null,
+            "pttype":"dos","start":null,"log-sec":512,
+            "children":[
+              {
+                "name":"sda1","kname":"sda1","path":"/dev/sda1","type":"part",
+                "size":9711910912,"fstype":"ext4","fsver":"1.0","mountpoints":["/"],
+                "pkname":"sda","model":null,"serial":null,"uuid":"root-fs",
+                "partuuid":"00000000-01","pttype":"dos","start":2048,"log-sec":512
+              },
+              {
+                "name":"sda2","kname":"sda2","path":"/dev/sda2","type":"part",
+                "size":1024,"fstype":null,"fsver":null,"mountpoints":[null],
+                "pkname":"sda","model":null,"serial":null,"uuid":null,
+                "partuuid":"00000000-02","pttype":"dos","start":18970624,"log-sec":512,
+                "children":[{
+                  "name":"sda5","kname":"sda5","path":"/dev/sda5","type":"part",
+                  "size":1022361600,"fstype":"swap","fsver":"1","mountpoints":["[SWAP]"],
+                  "pkname":"sda2","model":null,"serial":null,"uuid":"swap-id",
+                  "partuuid":"00000000-05","pttype":"dos","start":18972672,"log-sec":512
+                }]
+              }
+            ]
+          }]
+        }"#,
+    )
+    .expect("MBR lsblk fixture should parse");
+
+    let table = parse_sfdisk_json(
+        r#"{
+          "partitiontable":{
+            "label":"dos","id":"0x00000000","device":"/dev/sda","unit":"sectors",
+            "sectorsize":512,
+            "partitions":[
+              {"node":"/dev/sda1","start":2048,"size":18968576,"type":"83"},
+              {"node":"/dev/sda2","start":18970624,"size":1996802,"type":"5"},
+              {"node":"/dev/sda5","start":18972672,"size":1996800,"type":"82"}
+            ]
+          }
+        }"#,
+    )
+    .expect("MBR sfdisk fixture should parse");
+
+    let snapshot = HostSnapshot {
+        storage,
+        partition_tables: vec![table],
+        mounts: Vec::new(),
+        fstab: Vec::new(),
+        swaps: Vec::new(),
+        lvm: None,
+        diagnostics: Vec::new(),
+        collectors: Vec::new(),
+    };
+
+    let diagnostics = reconcile_snapshot(&snapshot);
+    assert!(!diagnostics.iter().any(|item| {
+        item.code == "partition-size-mismatch" && item.device.as_deref() == Some("/dev/sda2")
+    }));
+}
