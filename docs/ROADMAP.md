@@ -8,7 +8,7 @@ Goal: safely understand a host before changing anything.
 - [x] Define normalized block-device model.
 - [x] Parse structured `lsblk` JSON with explicit columns.
 - [x] Provide read-only CLI views.
-- [x] Provide initial read-only TUI.
+- [x] Provide read-only TUI dashboard.
 - [x] Add fixture-based discovery tests.
 - [x] Add dedicated `pvs` / `vgs` / `lvs` JSON/report collectors.
 - [x] Discover active swap files and swap partitions from `/proc/swaps`.
@@ -22,8 +22,10 @@ Goal: safely understand a host before changing anything.
 - [x] Extend `explain` to detect adjacent partition/PV growth capacity without writes.
 - [x] Add authoritative disk/partition-table discovery with `sfdisk --json`.
 - [x] Reconcile sfdisk label/sector/start/size/PARTUUID facts against lsblk.
-- [x] Add disposable loop-device integration harness for plain ext4 and LVM/ext4 topologies.
-- [ ] Execute and validate the loop-device matrix on GitHub Actions (blocked by account billing/spending limit).
+- [x] Handle DOS/MBR extended containers and logical-partition sibling representation conservatively.
+- [x] Add disposable loop-device integration harness for plain ext4, LVM/ext4 and LVM/XFS.
+- [x] Execute the loop-device matrix repeatedly on GitHub Actions with strict before/after facts and sentinel checks.
+- [x] Produce static musl x86_64 and aarch64 candidates and smoke-test the same binary across Debian, Ubuntu, Rocky and Alpine userlands.
 
 ## M1A — Experimental read-only previews (not release acceptance)
 
@@ -33,9 +35,14 @@ Goal: safely understand a host before changing anything.
 - [x] Reject incomplete collectors, ambiguous targets, unsupported layouts and contradictory capacities.
 - [x] Freeze requests to observed extents; include backup and verification requirements.
 - [x] Add SHA-256 preview/basis IDs and in-memory stale-basis checks.
-- [x] Add unit and CLI parser tests (implemented, not yet executed).
-- [ ] Compile and run fmt/clippy/unit tests on the exact feature head.
-- [ ] Validate M0 and M1A together in a disposable Linux VM.
+- [x] Add and execute unit/CLI/parser tests on the exact feature head.
+- [x] Validate M0 and M1A together in disposable Linux loop fixtures.
+- [x] Add strict read-only LVM/ext4 and LVM/XFS growth previews using existing VG free extents.
+- [x] Add strict read-only direct-partition ext4/XFS previews for verified adjacent free space on DOS/MBR or GPT.
+- [x] Expose advisory extendability and strict previews in the TUI without an executor.
+- [ ] Add broader fixture coverage for direct GPT/XFS and 4K-sector partition previews.
+- [ ] Add filesystem feature/health/version preflight before any future executor work.
+- [ ] Add concurrency/locking design and fresh runtime identity revalidation for M1B.
 
 M0 must still pass its acceptance gates. M1A has no executor, cannot perform a
 backup or resize, and does not authorize storage mutation. See M1A_PLANNER.md.
@@ -51,7 +58,8 @@ backup or resize, and does not authorize storage mutation. See M1A_PLANNER.md.
 - `lvextend`;
 - ext4 online/offline growth as supported;
 - XFS online growth;
-- post-operation re-discovery and verification.
+- post-operation re-discovery and verification;
+- no shrink support until separately designed and reviewed.
 
 ## M2 — Provisioning and swap
 
