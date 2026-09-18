@@ -277,9 +277,7 @@ fn handle_key_event(state: &mut AppState, snapshot: &HostSnapshot, key: KeyEvent
             state.next_plan_growth();
             LoopControl::Continue
         }
-        KeyCode::Char('=')
-            if state.section() == Section::Plans && key.modifiers.contains(KeyModifiers::SHIFT) =>
-        {
+        KeyCode::Char('=') if state.section() == Section::Plans => {
             state.next_plan_growth();
             LoopControl::Continue
         }
@@ -325,7 +323,7 @@ fn draw(
 
     frame.render_widget(
         Paragraph::new(if state.section() == Section::Plans {
-            " ↑↓ target   [ ] / - + / PgUp PgDn size   ←→/Tab section   q/Esc quit   preview only, no writes "
+            " ↑↓ target   [ ] / - _ / = + / PgUp PgDn size   ←→/Tab section   q/Esc quit   preview only, no writes "
         } else {
             " ↑↓/jk navigate   ←→/Tab section   1-6 jump   q/Esc quit   no writes are performed "
         })
@@ -1377,7 +1375,6 @@ mod tests {
         );
         assert_eq!(state.plan_growth(), Growth::ByBytes(512 * 1024 * 1024));
     }
-
 
     #[test]
     fn plain_equals_in_plans_is_treated_as_plus_key() {
