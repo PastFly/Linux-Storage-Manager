@@ -3,7 +3,8 @@ use lsm_core::{
     MountEntry, NodeKind, PartitionRecord, PartitionTable, StorageGraph, ToolCapability,
 };
 use lsm_planner::{
-    analyze_layout_opportunity, plan_extend, ExtendRequest, Growth, PlanStatus, PreflightState,
+    analyze_layout_opportunity, list_extend_targets, plan_extend, ExtendRequest,
+    ExtendTargetAvailability, ExtendTargetKind, Growth, PlanStatus, PreflightState,
 };
 
 fn device(
@@ -148,6 +149,59 @@ fn live_debian_snapshot() -> HostSnapshot {
     }
 }
 
+fn with_second_nvme_disk(mut snapshot: HostSnapshot) -> HostSnapshot {
+    const MIB: u64 = 1024 * 1024;
+    let sector = 512_u64;
+    let mut disk = device("nvme1n1", NodeKind::Disk, 64 * MIB, None, None);
+    disk.partition_table = Some("gpt".into());
+
+    let mut data = device(
+        "nvme1n1p1",
+        NodeKind::Partition,
+        32 * MIB,
+        Some(2_048),
+        Some("nvme1n1"),
+    );
+    data.partition_table = Some("gpt".into());
+    data.filesystem = Some(Filesystem {
+        fs_type: "ext4".into(),
+        version: Some("1.0".into()),
+    });
+    data.mountpoints = vec!["/data".into()];
+    data.uuid = Some("nvme-data-fs".into());
+    data.partition_uuid = Some("nvme-data-part".into());
+    disk.children = vec![data];
+
+    let disk_sectors = disk.size_bytes / sector;
+    snapshot.storage.block_devices.push(disk);
+    snapshot.partition_tables.push(PartitionTable {
+        device: "/dev/nvme1n1".into(),
+        label: Some("gpt".into()),
+        id: Some("nvme-multi-disk-gpt".into()),
+        unit: Some("sectors".into()),
+        first_lba: Some(34),
+        last_lba: Some(disk_sectors - 34),
+        sector_size_bytes: Some(sector),
+        partitions: vec![PartitionRecord {
+            node: "/dev/nvme1n1p1".into(),
+            start_sector: 2_048,
+            size_sectors: (32 * MIB) / sector,
+            partition_type: Some("0FC63DAF-8483-4772-8E79-3D69D8477DE4".into()),
+            uuid: Some("nvme-data-part".into()),
+            name: None,
+            attrs: None,
+            bootable: None,
+        }],
+    });
+    snapshot.mounts.push(MountEntry {
+        source: Some("/dev/nvme1n1p1".into()),
+        target: "/data".into(),
+        fs_type: Some("ext4".into()),
+        options: vec!["rw".into(), "relatime".into()],
+    });
+    snapshot
+}
+
 fn complete(component: &str) -> CollectorStatus {
     CollectorStatus {
         component: component.into(),
@@ -225,6 +279,102 @@ fn direct_partition_device_alias_matches_mountpoint_geometry() {
 
     assert_eq!(by_mount.status(), PlanStatus::Preview);
     assert_eq!(by_device.status(), PlanStatus::Preview);
+    assert_eq!(
+        by_mount.partition_size_change(),
+        by_device.partition_size_change()
+    );
+    assert_eq!(by_mount.steps(), by_device.steps());
+}
+
+#[test]
+fn multi_disk_catalog_keeps_sata_and_nvme_targets_isolated() {
+    let snapshot = with_second_nvme_disk(live_debian_snapshot());
+    let caps = capabilities();
+
+    let targets = list_extend_targets(&snapshot, &caps);
+
+    assert_eq!(targets.len(), 2);
+    assert!(targets.iter().any(|target| {
+        target.target == "/"
+            && target.device == "/dev/sda1"
+            && target.kind == ExtendTargetKind::DirectPartition
+            && target.availability == ExtendTargetAvailability::PreviewReady
+    }));
+    assert!(targets.iter().any(|target| {
+        target.target == "/data"
+            && target.device == "/dev/nvme1n1p1"
+            && target.kind == ExtendTargetKind::DirectPartition
+            && target.availability == ExtendTargetAvailability::PreviewReady
+    }));
+}
+
+#[test]
+fn unrelated_nvme_disk_does_not_change_selected_sata_growth_geometry() {
+    let baseline = live_debian_snapshot();
+    let multi_disk = with_second_nvme_disk(baseline.clone());
+    let caps = capabilities();
+
+    let before = plan_extend(
+        &baseline,
+        &caps,
+        ExtendRequest {
+            target: "/".into(),
+            growth: Growth::MaxFree,
+        },
+    )
+    .unwrap();
+    let after = plan_extend(
+        &multi_disk,
+        &caps,
+        ExtendRequest {
+            target: "/".into(),
+            growth: Growth::MaxFree,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(before.status(), PlanStatus::Preview);
+    assert_eq!(after.status(), PlanStatus::Preview);
+    assert_eq!(
+        before.partition_size_change(),
+        after.partition_size_change()
+    );
+    assert_eq!(before.steps(), after.steps());
+}
+
+#[test]
+fn nvme_target_resolves_identically_by_mountpoint_and_partition_path() {
+    let snapshot = with_second_nvme_disk(live_debian_snapshot());
+    let caps = capabilities();
+
+    let by_mount = plan_extend(
+        &snapshot,
+        &caps,
+        ExtendRequest {
+            target: "/data".into(),
+            growth: Growth::MaxFree,
+        },
+    )
+    .unwrap();
+    let by_device = plan_extend(
+        &snapshot,
+        &caps,
+        ExtendRequest {
+            target: "/dev/nvme1n1p1".into(),
+            growth: Growth::MaxFree,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(by_mount.status(), PlanStatus::Preview);
+    assert_eq!(by_device.status(), PlanStatus::Preview);
+    assert_eq!(
+        by_mount
+            .partition_size_change()
+            .expect("NVMe target must expose partition growth")
+            .device,
+        "/dev/nvme1n1p1"
+    );
     assert_eq!(
         by_mount.partition_size_change(),
         by_device.partition_size_change()
