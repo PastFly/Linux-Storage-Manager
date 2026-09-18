@@ -262,7 +262,6 @@ fn ambiguous_mount_target_fails_closed() {
     }));
 }
 
-
 #[test]
 fn multipath_layer_is_visible_and_requires_dedicated_adapter() {
     let snapshot: HostSnapshot = serde_json::from_value(json!({
@@ -292,7 +291,6 @@ fn multipath_layer_is_visible_and_requires_dedicated_adapter() {
         .iter()
         .any(|layer| layer.kind == RouteLayerKind::Multipath));
     assert!(route.issues.iter().any(|issue| {
-        issue.kind == RouteIssueKind::AdapterRequired
-            && issue.code == "multipath-adapter-required"
+        issue.kind == RouteIssueKind::AdapterRequired && issue.code == "multipath-adapter-required"
     }));
 }
