@@ -387,6 +387,7 @@ fn run() -> Result<ExitCode> {
                     purpose,
                     filesystem: fs,
                     mountpoint: mount,
+                    partition_table: None,
                 },
             )?;
             if json {
