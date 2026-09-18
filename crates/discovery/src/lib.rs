@@ -1,6 +1,7 @@
 mod analysis;
 mod diagnostics;
 mod fstab;
+mod filesystem_preflight;
 mod lvm;
 mod mounts;
 mod partition_table;
@@ -19,6 +20,7 @@ use thiserror::Error;
 pub use analysis::{analyze_extendability, ExtendAnalysisError};
 pub use diagnostics::diagnose_storage;
 pub use fstab::{discover_fstab, parse_fstab, FstabDiscoveryError};
+pub use filesystem_preflight::discover_filesystem_preflight;
 pub use lvm::{discover_lvm, parse_lvs_json, parse_pvs_json, parse_vgs_json, LvmDiscoveryError};
 pub use mounts::{discover_mounts, parse_findmnt_json, MountDiscoveryError};
 pub use partition_table::{
