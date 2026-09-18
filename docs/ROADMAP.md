@@ -87,24 +87,24 @@ The user selects the target and desired final growth. The resolver chooses the l
 verified route automatically; the user must not have to manually compose `sfdisk`,
 `pvresize`, `lvextend` and filesystem commands.
 
-- authoritative immutable operation plans with live identity and health checks;
-- explicit owner acceptance of M0 and M1A before executor rollout;
-- implement the already-designed host-exclusive advisory lock boundary in the future executor;
-- wire the existing target-manifest revalidation into the locked execution path;
-- persist the existing operation-journal model durably before the first mutating command;
-- partition-table metadata backup plus recovery drill;
-- LVM metadata backup plus recovery drill;
-- grow GPT/MBR partition where safe without moving a partition start;
-- resize an existing LVM PV after its containing partition/device grows;
-- extend VG/LV using existing or newly exposed extents;
-- ext4 online/offline growth as supported by the detected filesystem state;
-- XFS online growth;
-- automatically chain multi-layer growth: disk -> partition -> PV -> VG -> LV -> filesystem;
-- keep every discovered filesystem selectable when several partitions/LVs exist;
-- present blocked paths with the exact reason instead of silently omitting the target;
-- support safe disk-tail migration strategies such as swap-partition -> swapfile only after dedicated hibernation/resume checks;
-- post-operation re-discovery and verification at every destructive boundary;
-- no shrink support until separately designed and reviewed.
+- [x] Freeze the exact M1A plan, target identity manifest, filesystem decision and execution guard into a repeatable non-mutating M1B0 handoff.
+- [ ] Obtain explicit owner acceptance of the completed M0/M1A baseline before any mutation-capable executor rollout.
+- [ ] Implement the already-designed host-exclusive advisory lock boundary in the future executor.
+- [ ] Wire target-manifest revalidation into the locked execution path.
+- [ ] Persist the operation-journal model durably before the first mutating command.
+- [ ] Add partition-table metadata backup plus a recovery drill.
+- [ ] Add LVM metadata backup plus a recovery drill.
+- [ ] Grow GPT/MBR partitions where safe without moving a partition start.
+- [ ] Resize an existing LVM PV after its containing partition/device grows.
+- [ ] Extend VG/LV using existing or newly exposed extents.
+- [ ] Support ext4 online/offline growth as allowed by the detected filesystem state.
+- [ ] Support XFS online growth.
+- [ ] Automatically chain multi-layer growth: disk -> partition -> PV -> VG -> LV -> filesystem.
+- [ ] Keep every discovered filesystem selectable when several partitions/LVs exist.
+- [ ] Present blocked paths with the exact reason instead of silently omitting the target.
+- [ ] Support safe disk-tail migration strategies such as swap-partition -> swapfile only after dedicated hibernation/resume checks.
+- [ ] Re-discover and verify after every destructive boundary.
+- [ ] Keep shrink unsupported until it is separately designed and reviewed.
 
 ## M2 — Provisioning and swap
 
