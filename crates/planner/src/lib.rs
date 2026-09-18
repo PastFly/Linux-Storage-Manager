@@ -2,8 +2,8 @@
 //! A preview is NOT an executable plan or authorization to modify storage.
 
 use lsm_core::{
-    BlockDevice, CollectorState, DiagnosticSeverity, HostCapabilities, HostSnapshot,
-    LvmLogicalVolume, NodeKind, PartitionTable,
+    BlockDevice, CollectorState, DiagnosticSeverity, FilesystemProbeState, HostCapabilities,
+    HostSnapshot, LvmLogicalVolume, NodeKind, PartitionTable,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -1286,6 +1286,17 @@ pub fn plan_extend(
             plan.blockers.push(blocker);
         }
     }
+
+    if plan.status == PlanStatus::Preview {
+        if let Some(mountpoint) = plan.steps.iter().find_map(|step| match &step.operation {
+            Operation::GrowFilesystem { mountpoint, .. } => Some(mountpoint.as_str()),
+            _ => None,
+        }) {
+            plan.preflight_checks
+                .extend(filesystem_evidence_checks(snapshot, mountpoint));
+        }
+    }
+
     // Includes all preview content except the ID itself (empty at this point).
     plan.plan_id = fingerprint(&plan)?;
     Ok(plan)
@@ -1392,6 +1403,131 @@ fn lvm_preflight_checks() -> Vec<PreflightCheck> {
         ),
     ]);
     checks.extend(future_execution_gates());
+    checks
+}
+
+fn filesystem_evidence_checks(
+    snapshot: &HostSnapshot,
+    mountpoint: &str,
+) -> Vec<PreflightCheck> {
+    let matches: Vec<_> = snapshot
+        .filesystem_preflight
+        .iter()
+        .filter(|evidence| evidence.mountpoint.as_deref() == Some(mountpoint))
+        .collect();
+
+    if matches.len() != 1 {
+        return vec![
+            preflight_check(
+                "filesystem-metadata-probe",
+                PreflightState::Required,
+                if matches.is_empty() {
+                    "collect read-only filesystem metadata evidence for the exact target before execution"
+                } else {
+                    "filesystem metadata evidence is ambiguous; resolve the exact target before execution"
+                },
+            ),
+            preflight_check(
+                "filesystem-version-observed",
+                PreflightState::Required,
+                "record the target filesystem version/revision before execution",
+            ),
+            preflight_check(
+                "filesystem-features-observed",
+                PreflightState::Required,
+                "record target filesystem feature flags before execution",
+            ),
+        ];
+    }
+
+    let evidence = matches[0];
+    let metadata_verified = matches!(
+        evidence.state,
+        FilesystemProbeState::Verified | FilesystemProbeState::Partial
+    );
+
+    let mut checks = vec![
+        preflight_check(
+            "filesystem-metadata-probe",
+            if metadata_verified {
+                PreflightState::Verified
+            } else {
+                PreflightState::Required
+            },
+            if metadata_verified {
+                "read-only filesystem metadata probe returned target-specific evidence"
+            } else {
+                "filesystem metadata probe is unavailable or failed and must succeed before execution"
+            },
+        ),
+        {
+            let version = evidence
+                .fs_version
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .or_else(|| evidence.revision.as_deref().filter(|value| !value.is_empty()));
+            preflight_check(
+                "filesystem-version-observed",
+                if version.is_some() {
+                    PreflightState::Verified
+                } else {
+                    PreflightState::Required
+                },
+                &version
+                    .map(|value| format!("filesystem version/revision observed: {value}"))
+                    .unwrap_or_else(|| {
+                        "filesystem version/revision was not observed and must be resolved before execution"
+                            .to_owned()
+                    }),
+            )
+        },
+        preflight_check(
+            "filesystem-features-observed",
+            if evidence.features.is_empty() {
+                PreflightState::Required
+            } else {
+                PreflightState::Verified
+            },
+            if evidence.features.is_empty() {
+                "filesystem feature flags were not observed and must be resolved before execution"
+            } else {
+                "filesystem feature flags were collected by a read-only metadata probe"
+            },
+        ),
+    ];
+
+    if evidence.fs_type == "ext4" {
+        checks.push(preflight_check(
+            "ext4-superblock-state",
+            if evidence.filesystem_state.as_deref() == Some("clean") {
+                PreflightState::Verified
+            } else {
+                PreflightState::Required
+            },
+            if evidence.filesystem_state.as_deref() == Some("clean") {
+                "ext4 superblock reports filesystem state clean; this is not a substitute for a dedicated health check"
+            } else {
+                "ext4 superblock did not report a clean state; dedicated health validation is required before execution"
+            },
+        ));
+    }
+
+    if evidence.fs_type == "xfs" {
+        checks.push(preflight_check(
+            "xfs-grow-dry-run",
+            if evidence.grow_check_passed == Some(true) {
+                PreflightState::Verified
+            } else {
+                PreflightState::Required
+            },
+            if evidence.grow_check_passed == Some(true) {
+                "xfs_growfs -n completed successfully against the mounted target without modifying it"
+            } else {
+                "xfs_growfs -n must succeed against the exact mounted target before execution"
+            },
+        ));
+    }
+
     checks
 }
 
