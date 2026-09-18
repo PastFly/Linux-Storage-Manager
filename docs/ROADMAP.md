@@ -46,38 +46,63 @@ Goal: safely understand a host before changing anything.
 - [x] Detect DOS extended/swap layouts that hide usable disk-tail capacity and expose nonexecutable migration alternatives.
 - [x] Make TUI growth choices include proven layout-opportunity sizes in addition to directly adjacent capacity.
 - [x] Add responsive TUI tables for storage, diagnostics, preflight and plan steps.
+- [x] Add a read-only catalog of selectable filesystem growth targets, including blocked/unsupported targets instead of hiding them.
+- [x] Add a read-only provisioning-space catalog for free VG extents, blank disks and verified partition-table tail space.
+- [x] Add a dedicated TUI Create section and CLI catalog commands without adding a provisioning executor.
 - [ ] Add filesystem feature/health/version preflight before any future executor work.
 - [ ] Add concurrency/locking design and fresh runtime identity revalidation for M1B.
+- [ ] Generalize the route resolver so one intent can traverse disk -> partition -> PV -> VG -> LV -> filesystem -> mount when each layer is proven safe.
+- [ ] Add explicit route diagnostics for layered targets such as LUKS, mdraid, multipath, thin/cached LVM and Btrfs so unsupported paths are visible and fail closed.
 
 M0 must still pass its acceptance gates. M1A has no executor, cannot perform a
 backup or resize, and does not authorize storage mutation. See M1A_PLANNER.md.
 
 ## M1B — Future executor and safe grow workflows
 
+The user selects the target and desired final growth. The resolver chooses the lowest-risk
+verified route automatically; the user must not have to manually compose `sfdisk`,
+`pvresize`, `lvextend` and filesystem commands.
+
 - authoritative immutable operation plans with live identity and health checks;
 - explicit owner acceptance of M0 and M1A before executor rollout;
-- partition-table metadata backup;
-- LVM metadata backup;
-- grow GPT/MBR partition where safe;
-- `pvresize`;
-- `lvextend`;
-- ext4 online/offline growth as supported;
+- per-host exclusive operation lock and stale-plan rejection;
+- partition-table metadata backup plus recovery drill;
+- LVM metadata backup plus recovery drill;
+- grow GPT/MBR partition where safe without moving a partition start;
+- resize an existing LVM PV after its containing partition/device grows;
+- extend VG/LV using existing or newly exposed extents;
+- ext4 online/offline growth as supported by the detected filesystem state;
 - XFS online growth;
-- post-operation re-discovery and verification;
+- automatically chain multi-layer growth: disk -> partition -> PV -> VG -> LV -> filesystem;
+- keep every discovered filesystem selectable when several partitions/LVs exist;
+- present blocked paths with the exact reason instead of silently omitting the target;
+- support safe disk-tail migration strategies such as swap-partition -> swapfile only after dedicated hibernation/resume checks;
+- post-operation re-discovery and verification at every destructive boundary;
 - no shrink support until separately designed and reviewed.
 
 ## M2 — Provisioning and swap
 
-- create partitions;
-- create/extend VGs and LVs;
+The TUI has a separate Create workflow. It starts from discovered free-space sources and
+asks for the minimum necessary intent: destination, size, filesystem/use and optional
+mountpoint. Low-level layout steps are generated automatically.
+
+- create GPT/DOS partition tables on verified blank disks;
+- create partitions in verified usable free ranges, including disk tail and later internal gaps;
+- initialize LVM PVs and create/extend VGs;
+- create LVs from existing or newly added VG capacity;
 - format ext4/XFS;
 - mount/unmount and guarded fstab changes;
-- swap file/partition lifecycle.
+- create and manage swap files/partitions;
+- show an exact before/after topology preview before any write;
+- allow advanced users to inspect/override the automatically chosen route without requiring that knowledge for normal use.
 
 ## M3 — Advanced storage
 
-- LUKS;
-- Btrfs;
-- mdraid;
-- LVM thin/snapshots;
-- device replacement and advanced diagnostics.
+- LUKS growth/provisioning with explicit crypt-layer identity checks;
+- Btrfs single/multi-device growth and filesystem-aware allocation;
+- mdraid member/array growth;
+- LVM multi-PV, thin, cache, snapshots and RAID layouts;
+- multipath/device-mapper stacks;
+- ZFS discovery/planning where platform tooling is available;
+- device replacement and advanced diagnostics;
+- capability-based adapters so distro differences affect tooling discovery, not the storage model.
