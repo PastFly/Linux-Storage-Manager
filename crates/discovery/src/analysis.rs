@@ -1,16 +1,19 @@
 mod geometry;
+mod identity;
+
+use identity::{logical_volume_matches_device, unique, ResolutionFailure};
 
 use std::collections::BTreeSet;
 
 use lsm_core::{
     BlockDevice, DiagnosticSeverity, ExtendAnalysis, ExtendabilityStatus, HostSnapshot,
-    LvmLogicalVolume, NodeKind,
+    NodeKind,
 };
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ExtendAnalysisError {
-    #[error("storage target `{0}` was not found in the discovered topology")]
+    #[error("storage target {0:?} was not found in the discovered topology")]
     TargetNotFound(String),
 }
 
@@ -18,8 +21,25 @@ pub fn analyze_extendability(
     snapshot: &HostSnapshot,
     target: &str,
 ) -> Result<ExtendAnalysis, ExtendAnalysisError> {
-    let device = find_target_device(snapshot, target)
-        .ok_or_else(|| ExtendAnalysisError::TargetNotFound(target.to_owned()))?;
+    let device = match identity::resolve_target(snapshot, target) {
+        Ok(device) => device,
+        Err(ResolutionFailure::NotFound) => {
+            return Err(ExtendAnalysisError::TargetNotFound(target.to_owned()));
+        }
+        Err(ResolutionFailure::Refused(reason)) => {
+            return Ok(ExtendAnalysis {
+                target: target.to_owned(),
+                device: None,
+                filesystem: None,
+                current_size_bytes: None,
+                immediate_growth_bytes: None,
+                potential_underlying_growth_bytes: None,
+                status: ExtendabilityStatus::Unknown,
+                reasons: vec![reason.to_owned(), "Advisory only; no device was selected and no operations are proposed.".to_owned()],
+                steps: Vec::new(),
+            });
+        }
+    };
 
     let filesystem = device
         .filesystem
@@ -110,11 +130,7 @@ fn analyze_lvm_target(
         ));
     };
 
-    let Some(lv) = lvm
-        .logical_volumes
-        .iter()
-        .find(|lv| logical_volume_matches_device(lv, device))
-    else {
+    let Some(lv) = unique(lvm.logical_volumes.iter().filter(|lv| logical_volume_matches_device(lv, device))) else {
         return Ok(base_analysis(
             target,
             device,
@@ -122,14 +138,14 @@ fn analyze_lvm_target(
             None,
             None,
             vec![
-                "lsblk identifies the target as LVM, but no matching logical volume was found in the LVM inventory"
+                "lsblk identifies the target as LVM, but no unique matching logical volume was found in the LVM inventory"
                     .to_owned(),
             ],
             Vec::new(),
         ));
     };
 
-    let Some(vg) = lvm.volume_groups.iter().find(|vg| vg.name == lv.vg_name) else {
+    let Some(vg) = unique(lvm.volume_groups.iter().filter(|vg| vg.name == lv.vg_name)) else {
         return Ok(base_analysis(
             target,
             device,
@@ -137,7 +153,7 @@ fn analyze_lvm_target(
             None,
             None,
             vec![format!(
-                "logical volume `{}/{}` references volume group `{}`, but that VG is absent from the inventory",
+                "logical volume `{}/{}` references volume group `{}`, but that VG is absent or duplicated in the inventory",
                 lv.vg_name, lv.name, lv.vg_name
             )],
             Vec::new(),
@@ -318,10 +334,7 @@ fn analyze_vg_underlying_capacity(snapshot: &HostSnapshot, vg_name: &str) -> Und
         .filter(|pv| pv.vg_name.as_deref() == Some(vg_name))
         .collect();
 
-    let expected_pvs = lvm
-        .volume_groups
-        .iter()
-        .find(|vg| vg.name == vg_name)
+    let expected_pvs = unique(lvm.volume_groups.iter().filter(|vg| vg.name == vg_name))
         .map(|vg| vg.pv_count);
     if pvs.is_empty() || expected_pvs != u64::try_from(pvs.len()).ok() {
         return UnderlyingCapacity {
@@ -341,7 +354,7 @@ fn analyze_vg_underlying_capacity(snapshot: &HostSnapshot, vg_name: &str) -> Und
             complete = false;
             continue;
         }
-        let Some(device) = find_by_alias(&snapshot.storage.block_devices, &pv.name) else {
+        let Ok(device) = identity::resolve_source(snapshot, &pv.name) else {
             complete = false;
             continue;
         };
@@ -393,94 +406,4 @@ fn base_analysis(
         reasons,
         steps,
     }
-}
-
-fn find_target_device<'a>(snapshot: &'a HostSnapshot, target: &str) -> Option<&'a BlockDevice> {
-    if target.starts_with("/dev/") {
-        return find_by_alias(&snapshot.storage.block_devices, target);
-    }
-
-    if let Some(device) = find_by_mountpoint(&snapshot.storage.block_devices, target) {
-        return Some(device);
-    }
-
-    snapshot
-        .mounts
-        .iter()
-        .find(|mount| mount.target == target)
-        .and_then(|mount| mount.source.as_deref())
-        .and_then(|source| resolve_source(snapshot, source))
-}
-
-fn resolve_source<'a>(snapshot: &'a HostSnapshot, source: &str) -> Option<&'a BlockDevice> {
-    if let Some(device) = find_by_alias(&snapshot.storage.block_devices, source) {
-        return Some(device);
-    }
-
-    snapshot.lvm.as_ref().and_then(|lvm| {
-        lvm.logical_volumes
-            .iter()
-            .find(|lv| logical_volume_aliases(lv).iter().any(|alias| alias == source))
-            .and_then(|lv| {
-                logical_volume_aliases(lv)
-                    .iter()
-                    .find_map(|alias| find_by_alias(&snapshot.storage.block_devices, alias))
-            })
-    })
-}
-
-fn find_by_mountpoint<'a>(devices: &'a [BlockDevice], target: &str) -> Option<&'a BlockDevice> {
-    for device in devices {
-        if device.mountpoints.iter().any(|mountpoint| mountpoint == target) {
-            return Some(device);
-        }
-        if let Some(found) = find_by_mountpoint(&device.children, target) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn find_by_alias<'a>(devices: &'a [BlockDevice], alias: &str) -> Option<&'a BlockDevice> {
-    for device in devices {
-        let direct_match = device.path.as_deref() == Some(alias)
-            || device
-                .kernel_name
-                .as_deref()
-                .map(|name| format!("/dev/{name}") == alias)
-                .unwrap_or(false)
-            || format!("/dev/{}", device.name) == alias;
-
-        if direct_match {
-            return Some(device);
-        }
-        if let Some(found) = find_by_alias(&device.children, alias) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn logical_volume_matches_device(lv: &LvmLogicalVolume, device: &BlockDevice) -> bool {
-    logical_volume_aliases(lv).iter().any(|alias| {
-        device.path.as_deref() == Some(alias.as_str())
-            || format!("/dev/{}", device.name) == *alias
-    })
-}
-
-fn logical_volume_aliases(lv: &LvmLogicalVolume) -> Vec<String> {
-    let mut aliases = Vec::new();
-    if let Some(path) = &lv.path {
-        aliases.push(path.clone());
-    }
-    aliases.push(format!(
-        "/dev/mapper/{}-{}",
-        dm_escape(&lv.vg_name),
-        dm_escape(&lv.name)
-    ));
-    aliases
-}
-
-fn dm_escape(value: &str) -> String {
-    value.replace('-', "--")
 }

@@ -1,6 +1,6 @@
 use lsm_core::{
     CollectorState, CollectorStatus, DiagnosticSeverity, ExtendabilityStatus, HostSnapshot,
-    StorageDiagnostic,
+    MountEntry, StorageDiagnostic,
 };
 use lsm_discovery::{analyze_extendability, parse_lsblk_json, parse_sfdisk_json};
 use serde_json::json;
@@ -25,12 +25,15 @@ fn fixture(sector: u64) -> HostSnapshot {
     HostSnapshot {
         storage: parse_lsblk_json(&lsblk.to_string()).unwrap(),
         partition_tables: vec![parse_sfdisk_json(&table.to_string()).unwrap()],
-        mounts: Vec::new(),
+        mounts: vec![MountEntry {
+            source: Some("/dev/vdb1".into()), target: "/data".into(),
+            fs_type: Some("ext4".into()), options: vec!["rw".into()],
+        }],
         fstab: Vec::new(),
         swaps: Vec::new(),
         lvm: None,
         diagnostics: Vec::new(),
-        collectors: ["lsblk", "partition_tables"].into_iter().map(|component| CollectorStatus {
+        collectors: ["lsblk", "partition_tables", "mounts"].into_iter().map(|component| CollectorStatus {
             component: component.to_owned(), state: CollectorState::Complete, detail: None,
         }).collect(),
     }
@@ -150,7 +153,7 @@ fn requires_unique_complete_collectors() {
         unknown(&snapshot);
     }
     let mut snapshot = fixture(512);
-    snapshot.collectors.pop();
+    snapshot.collectors.retain(|c| c.component != "partition_tables");
     unknown(&snapshot);
     let mut snapshot = fixture(512);
     snapshot.collectors.push(snapshot.collectors[1].clone());
@@ -167,7 +170,12 @@ fn requires_one_partition_table_and_one_parent() {
     unknown(&snapshot);
     let mut snapshot = fixture(512);
     snapshot.storage.block_devices.push(snapshot.storage.block_devices[0].clone());
-    unknown(&snapshot);
+    // Duplicate parents now fail at target resolution, before geometry is assessed.
+    let report = analyze_extendability(&snapshot, "/data").unwrap();
+    assert_eq!(report.status, ExtendabilityStatus::Unknown);
+    assert!(report.device.is_none());
+    assert!(report.potential_underlying_growth_bytes.is_none());
+    assert!(report.steps.is_empty());
 }
 
 #[test]

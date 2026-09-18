@@ -1,6 +1,6 @@
 use lsm_core::{
     CollectorState, CollectorStatus, DiagnosticSeverity, ExtendabilityStatus, HostSnapshot,
-    LvmInventory, StorageDiagnostic,
+    LvmInventory, MountEntry, StorageDiagnostic,
 };
 use lsm_discovery::{
     analyze_extendability, parse_lsblk_json, parse_lvs_json, parse_pvs_json, parse_sfdisk_json,
@@ -55,6 +55,10 @@ fn lsblk_start_remains_512_byte_based_on_4k_logical_sector_disk() {
     snapshot.lvm = None;
     snapshot.partition_tables = vec![table];
     snapshot.collectors = geometry_collectors();
+    snapshot.mounts = vec![MountEntry {
+        source: Some("/dev/vdb1".into()), target: "/data".into(),
+        fs_type: Some("ext4".into()), options: vec!["rw".into()],
+    }];
     let analysis = analyze_extendability(&snapshot, "/data").unwrap();
     assert_eq!(analysis.status, ExtendabilityStatus::NeedsUnderlyingResize);
     assert_eq!(analysis.potential_underlying_growth_bytes, Some(5_367_640_064));
@@ -111,7 +115,7 @@ fn error_diagnostics_also_block_lvm_free_capacity_claims() {
 }
 
 fn geometry_collectors() -> Vec<CollectorStatus> {
-    ["lsblk", "partition_tables"].into_iter().map(|component| CollectorStatus {
+    ["lsblk", "partition_tables", "mounts", "lvm"].into_iter().map(|component| CollectorStatus {
         component: component.into(), state: CollectorState::Complete, detail: None,
     }).collect()
 }
@@ -149,7 +153,10 @@ fn fixture_snapshot(vg_free: u64) -> HostSnapshot {
     HostSnapshot {
         storage,
         partition_tables: Vec::new(),
-        mounts: Vec::new(),
+        mounts: vec![MountEntry {
+            source: Some("/dev/mapper/vg0-root".into()),
+            target: "/".into(), fs_type: Some("ext4".into()), options: vec!["rw".into()],
+        }],
         fstab: Vec::new(),
         swaps: Vec::new(),
         lvm: Some(LvmInventory {
@@ -158,6 +165,6 @@ fn fixture_snapshot(vg_free: u64) -> HostSnapshot {
             logical_volumes: parse_lvs_json(lvs).unwrap(),
         }),
         diagnostics: Vec::new(),
-        collectors: Vec::new(),
+        collectors: geometry_collectors(),
     }
 }
