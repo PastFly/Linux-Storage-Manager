@@ -15,9 +15,9 @@ use lsm_core::{
 use lsm_discovery::{analyze_extendability, discover_capabilities, discover_snapshot};
 use lsm_planner::{
     analyze_layout_opportunity, analyze_lvm_underlying_growth, list_provisioning_opportunities,
-    plan_extend, ExtendRequest, Growth, GrowthRouteAlternative, LayoutAlternative, Operation,
-    PlanStatus, PlanStep, PreflightCheck, PreflightState, ProvisioningOpportunity,
-    ProvisioningSpaceKind, Reversibility,
+    plan_create, plan_extend, CreatePlanPreview, CreatePurpose, CreateRequest, ExtendRequest,
+    Growth, GrowthRouteAlternative, LayoutAlternative, Operation, PlanStatus, PlanStep,
+    PreflightCheck, PreflightState, ProvisioningOpportunity, ProvisioningSpaceKind, Reversibility,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -81,6 +81,9 @@ struct AppState {
     selected_device: usize,
     content_scroll: u16,
     plan_growth_index: usize,
+    create_size_index: usize,
+    create_purpose: CreatePurpose,
+    create_filesystem_index: usize,
 }
 
 impl AppState {
@@ -91,6 +94,9 @@ impl AppState {
             selected_device,
             content_scroll: 0,
             plan_growth_index: 0,
+            create_size_index: 0,
+            create_purpose: CreatePurpose::Filesystem,
+            create_filesystem_index: 0,
         }
     }
 
@@ -168,12 +174,55 @@ impl AppState {
     fn select_next_create_candidate(&mut self, snapshot: &HostSnapshot) {
         let len = list_provisioning_opportunities(snapshot).len();
         if len > 0 {
-            self.selected_device = (self.selected_device + 1).min(len - 1);
+            let next = (self.selected_device + 1).min(len - 1);
+            if next != self.selected_device {
+                self.selected_device = next;
+                self.create_size_index = 0;
+            }
         }
     }
 
     fn select_previous_create_candidate(&mut self) {
-        self.selected_device = self.selected_device.saturating_sub(1);
+        let previous = self.selected_device.saturating_sub(1);
+        if previous != self.selected_device {
+            self.selected_device = previous;
+            self.create_size_index = 0;
+        }
+    }
+
+    fn create_size_for_snapshot(&self, snapshot: &HostSnapshot) -> Growth {
+        let options = create_size_options(snapshot, self.selected_device);
+        options
+            .get(self.create_size_index.min(options.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(Growth::MaxFree)
+    }
+
+    fn next_create_size_for_snapshot(&mut self, snapshot: &HostSnapshot) {
+        let len = create_size_options(snapshot, self.selected_device).len();
+        if len > 0 {
+            self.create_size_index = (self.create_size_index + 1).min(len - 1);
+        }
+    }
+
+    fn previous_create_size(&mut self) {
+        self.create_size_index = self.create_size_index.saturating_sub(1);
+    }
+
+    fn toggle_create_purpose(&mut self) {
+        self.create_purpose = match self.create_purpose {
+            CreatePurpose::Filesystem => CreatePurpose::Swap,
+            CreatePurpose::Swap => CreatePurpose::Filesystem,
+        };
+    }
+
+    fn next_create_filesystem(&mut self) {
+        self.create_filesystem_index =
+            (self.create_filesystem_index + 1) % CREATE_FILESYSTEMS.len();
+    }
+
+    fn create_filesystem(self) -> &'static str {
+        CREATE_FILESYSTEMS[self.create_filesystem_index % CREATE_FILESYSTEMS.len()]
     }
 
     fn plan_growth_for_snapshot(&self, snapshot: &HostSnapshot) -> Growth {
@@ -199,6 +248,8 @@ impl AppState {
         self.selected_device = self.selected_device.saturating_sub(1);
     }
 }
+
+const CREATE_FILESYSTEMS: [&str; 2] = ["ext4", "xfs"];
 
 const PLAN_GROWTH_PRESETS: [Growth; 4] = [
     Growth::ByBytes(512 * 1024 * 1024),
@@ -383,6 +434,32 @@ fn handle_key_event(state: &mut AppState, snapshot: &HostSnapshot, key: KeyEvent
         }
         KeyCode::Char('=') if state.section() == Section::Plans => {
             state.next_plan_growth_for_snapshot(snapshot);
+            LoopControl::Continue
+        }
+        KeyCode::Char('[') | KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::PageUp
+            if state.section() == Section::Create =>
+        {
+            state.previous_create_size();
+            LoopControl::Continue
+        }
+        KeyCode::Char(']') | KeyCode::Char('+') | KeyCode::PageDown
+            if state.section() == Section::Create =>
+        {
+            state.next_create_size_for_snapshot(snapshot);
+            LoopControl::Continue
+        }
+        KeyCode::Char('=') if state.section() == Section::Create => {
+            state.next_create_size_for_snapshot(snapshot);
+            LoopControl::Continue
+        }
+        KeyCode::Char('p') if state.section() == Section::Create => {
+            state.toggle_create_purpose();
+            LoopControl::Continue
+        }
+        KeyCode::Char('f') if state.section() == Section::Create => {
+            if state.create_purpose == CreatePurpose::Filesystem {
+                state.next_create_filesystem();
+            }
             LoopControl::Continue
         }
         _ => LoopControl::Continue,
@@ -888,16 +965,111 @@ fn render_create(
     frame.render_widget(table, panes[0]);
 
     let selected = state.selected_device.min(opportunities.len() - 1);
+    let opportunity = &opportunities[selected];
+    let size = state.create_size_for_snapshot(snapshot);
+    let filesystem = if state.create_purpose == CreatePurpose::Filesystem {
+        Some(state.create_filesystem().to_owned())
+    } else {
+        None
+    };
+    let preview = plan_create(
+        snapshot,
+        CreateRequest {
+            source_id: opportunity.id.clone(),
+            size,
+            purpose: state.create_purpose,
+            filesystem,
+            mountpoint: None,
+        },
+    );
+
+    let mut detail = provisioning_detail_lines(opportunity);
+    detail.push(Line::from(""));
+    detail.push(Line::from("Selected intent"));
+    detail.push(Line::from(format!(
+        "Size            {}",
+        growth_label(size)
+    )));
+    detail.push(Line::from(format!(
+        "Purpose         {}",
+        create_purpose_label(state.create_purpose)
+    )));
+    if state.create_purpose == CreatePurpose::Filesystem {
+        detail.push(Line::from(format!(
+            "Filesystem      {}",
+            state.create_filesystem()
+        )));
+        detail.push(Line::from("Mountpoint      not set (preview only)"));
+    }
+    detail.push(Line::from(""));
+    match preview {
+        Ok(plan) => detail.extend(create_plan_lines(&plan)),
+        Err(error) => {
+            detail.push(Line::from("Planner         Error"));
+            detail.push(Line::from(format!("Reason          {error}")));
+        }
+    }
+
     frame.render_widget(
-        Paragraph::new(provisioning_detail_lines(&opportunities[selected]))
+        Paragraph::new(detail)
             .wrap(Wrap { trim: false })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Planned use "),
+                    .title(" Create preview "),
             ),
         panes[1],
     );
+}
+
+fn create_purpose_label(purpose: CreatePurpose) -> &'static str {
+    match purpose {
+        CreatePurpose::Filesystem => "filesystem",
+        CreatePurpose::Swap => "swap",
+    }
+}
+
+fn create_plan_lines(plan: &CreatePlanPreview) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(format!(
+        "Planner         {}",
+        if plan.status() == PlanStatus::Preview {
+            "Preview ready"
+        } else {
+            "Blocked"
+        }
+    ))];
+    if let Some(allocation) = plan.allocation() {
+        lines.push(Line::from(format!(
+            "Allocated       {}",
+            human_bytes_precise(allocation.rounded_bytes)
+        )));
+        lines.push(Line::from(format!(
+            "Remaining       {}",
+            human_bytes_precise(allocation.remaining_bytes)
+        )));
+        lines.push(Line::from(format!(
+            "Allocation unit {}",
+            human_bytes(allocation.allocation_unit_bytes)
+        )));
+    }
+    if let Some(blocker) = plan.blockers().first() {
+        lines.push(Line::from(format!(
+            "Blocker         [{}] {}",
+            blocker.code, blocker.message
+        )));
+    }
+    if !plan.steps().is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from("Automatic route"));
+        for (index, step) in plan.steps().iter().enumerate() {
+            lines.push(Line::from(format!("{}. {}", index + 1, step)));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(
+        "Read-only preview: no storage mutation is executable in M1A.",
+    ));
+    lines
 }
 
 fn provisioning_kind_label(kind: ProvisioningSpaceKind) -> &'static str {
@@ -1397,34 +1569,46 @@ fn plan_preview_summary_lines(plan: &lsm_planner::PlanPreview) -> Vec<Line<'stat
 
 #[cfg(test)]
 fn toolbar_text(section: Section) -> String {
-    if section == Section::Plans {
-        "↑↓ Target   PgUp/PgDn Size   Tab Section   r Refresh   R Rescan   q Quit   Read-only"
-            .to_owned()
-    } else {
-        "↑↓ Navigate   Tab Section   1-7 Jump   r Refresh   R Rescan   q Quit   Read-only"
-            .to_owned()
+    match section {
+        Section::Plans => {
+            "↑↓ Target   PgUp/PgDn Size   Tab Section   r Refresh   R Rescan   q Quit   Read-only"
+                .to_owned()
+        }
+        Section::Create => {
+            "↑↓ Source   PgUp/PgDn Size   p Purpose   f FS   Tab Section   q Quit   Read-only"
+                .to_owned()
+        }
+        _ => "↑↓ Navigate   Tab Section   1-7 Jump   r Refresh   R Rescan   q Quit   Read-only"
+            .to_owned(),
     }
 }
 
 fn toolbar_line(section: Section, refresh_status: Option<&str>) -> Line<'static> {
-    let items: Vec<(&'static str, &'static str)> = if section == Section::Plans {
-        vec![
+    let items: Vec<(&'static str, &'static str)> = match section {
+        Section::Plans => vec![
             ("↑↓", "Target"),
             ("PgUp/PgDn", "Size"),
             ("Tab", "Section"),
             ("r", "Refresh"),
             ("R", "Rescan"),
             ("q", "Quit"),
-        ]
-    } else {
-        vec![
+        ],
+        Section::Create => vec![
+            ("↑↓", "Source"),
+            ("PgUp/PgDn", "Size"),
+            ("p", "Purpose"),
+            ("f", "FS"),
+            ("Tab", "Section"),
+            ("q", "Quit"),
+        ],
+        _ => vec![
             ("↑↓", "Navigate"),
             ("Tab", "Section"),
             ("1-7", "Jump"),
             ("r", "Refresh"),
             ("R", "Rescan"),
             ("q", "Quit"),
-        ]
+        ],
     };
 
     let mut spans = vec![Span::raw(" ")];
@@ -1683,6 +1867,15 @@ fn plan_candidate_rows(snapshot: &HostSnapshot) -> Vec<DeviceRow<'_>> {
                 && !is_extended_partition(snapshot, row.device)
         })
         .collect()
+}
+
+fn create_size_options(snapshot: &HostSnapshot, selected_source: usize) -> Vec<Growth> {
+    let opportunities = list_provisioning_opportunities(snapshot);
+    let capacity = opportunities
+        .get(selected_source)
+        .map(|opportunity| opportunity.available_bytes)
+        .filter(|bytes| *bytes > 0);
+    growth_presets_for_capacity(capacity)
 }
 
 fn growth_presets_for_capacity(capacity: Option<u64>) -> Vec<Growth> {
@@ -2794,8 +2987,10 @@ mod tests {
         assert!(!disks.contains("PgUp/PgDn"));
 
         let create = toolbar_text(Section::Create);
-        assert!(create.contains("1-7"));
-        assert!(create.contains("Navigate"));
+        assert!(create.contains("Source"));
+        assert!(create.contains("PgUp/PgDn"));
+        assert!(create.contains("Purpose"));
+        assert!(create.contains("FS"));
     }
 
     #[test]
