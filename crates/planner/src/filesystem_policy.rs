@@ -123,20 +123,8 @@ pub fn decide_filesystem_growth(
     });
 
     match filesystem.fs_type.as_str() {
-        "ext4" => decide_ext4(
-            snapshot,
-            capabilities,
-            device,
-            active_mount,
-            &mut decision,
-        ),
-        "xfs" => decide_xfs(
-            snapshot,
-            capabilities,
-            device,
-            active_mount,
-            &mut decision,
-        ),
+        "ext4" => decide_ext4(snapshot, capabilities, device, active_mount, &mut decision),
+        "xfs" => decide_xfs(snapshot, capabilities, device, active_mount, &mut decision),
         other => {
             decision.state = FilesystemDecisionState::AdapterRequired;
             decision.reasons.push(format!(
@@ -156,9 +144,9 @@ fn decide_ext4(
     decision: &mut FilesystemGrowthDecision,
 ) {
     if !tool_available(capabilities, "resize2fs") {
-        decision.reasons.push(
-            "resize2fs is unavailable or capability discovery is ambiguous".to_owned(),
-        );
+        decision
+            .reasons
+            .push("resize2fs is unavailable or capability discovery is ambiguous".to_owned());
         return;
     }
 
@@ -188,9 +176,9 @@ fn decide_ext4(
             decision.required_actions.push(
                 "resolve the ext4 metadata probe failure before planning execution".to_owned(),
             );
-            decision.reasons.push(
-                "tune2fs metadata evidence is unavailable, partial or failed".to_owned(),
-            );
+            decision
+                .reasons
+                .push("tune2fs metadata evidence is unavailable, partial or failed".to_owned());
             return;
         }
 
@@ -255,9 +243,9 @@ fn decide_ext4(
 
     decision.state = FilesystemDecisionState::OfflineHealthCheckRequired;
     decision.read_only_check = ext4_offline_check(device);
-    decision.reasons.push(
-        "unmounted ext4 requires a read-only e2fsck decision before resize".to_owned(),
-    );
+    decision
+        .reasons
+        .push("unmounted ext4 requires a read-only e2fsck decision before resize".to_owned());
 }
 
 fn decide_xfs(
@@ -268,17 +256,17 @@ fn decide_xfs(
     decision: &mut FilesystemGrowthDecision,
 ) {
     if !tool_available(capabilities, "xfs_growfs") {
-        decision.reasons.push(
-            "xfs_growfs is unavailable or capability discovery is ambiguous".to_owned(),
-        );
+        decision
+            .reasons
+            .push("xfs_growfs is unavailable or capability discovery is ambiguous".to_owned());
         return;
     }
 
     let Some(mount) = mount else {
         decision.state = FilesystemDecisionState::MountRequired;
-        decision.reasons.push(
-            "XFS must be mounted before it can be grown".to_owned(),
-        );
+        decision
+            .reasons
+            .push("XFS must be mounted before it can be grown".to_owned());
         decision.required_actions.push(
             "mount the exact XFS target in a validated read-write state before growth".to_owned(),
         );
@@ -305,9 +293,9 @@ fn decide_xfs(
     decision.metadata_state = Some(evidence.state);
 
     if evidence.grow_check_passed != Some(true) {
-        decision.reasons.push(
-            "xfs_growfs -n did not positively validate the target growth path".to_owned(),
-        );
+        decision
+            .reasons
+            .push("xfs_growfs -n did not positively validate the target growth path".to_owned());
         return;
     }
 
@@ -405,7 +393,7 @@ fn has_target_error_diagnostic(snapshot: &HostSnapshot, route: &crate::LayerRout
             && diagnostic
                 .device
                 .as_deref()
-                .map_or(true, |device| devices.contains(&device))
+                .is_none_or(|device| devices.contains(&device))
     })
 }
 
