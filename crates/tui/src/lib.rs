@@ -2229,6 +2229,66 @@ mod tests {
         assert_eq!(plan_layout_mode(109), PlanLayoutMode::Compact);
     }
 
+
+    #[test]
+    fn preflight_display_details_are_compact_but_structured_messages_stay_unchanged() {
+        let check = lsm_planner::PreflightCheck {
+            code: "runtime-identity-recheck".into(),
+            state: lsm_planner::PreflightState::Required,
+            message: "revalidate device, filesystem and plan basis immediately before mutation".into(),
+        };
+        assert_eq!(
+            preflight_display_detail(&check),
+            "Revalidate identities and plan basis"
+        );
+        assert_eq!(
+            check.message,
+            "revalidate device, filesystem and plan basis immediately before mutation"
+        );
+    }
+
+    #[test]
+    fn diagnostic_summary_separates_device_from_full_message() {
+        let item = lsm_core::StorageDiagnostic {
+            code: "fstab-device-not-in-lsblk".into(),
+            severity: DiagnosticSeverity::Warning,
+            message: "full diagnostic message".into(),
+            device: Some("/dev/sr0".into()),
+        };
+        assert_eq!(
+            diagnostic_summary_cells(&item),
+            [
+                "Warning".to_owned(),
+                "fstab-device-not-in-lsblk".to_owned(),
+                "/dev/sr0".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn analysis_reason_and_next_step_render_on_separate_indented_lines() {
+        let analysis = lsm_core::ExtendAnalysis {
+            target: "/".into(),
+            device: Some("/dev/sda1".into()),
+            filesystem: Some("ext4".into()),
+            current_size_bytes: Some(9_711_910_912),
+            immediate_growth_bytes: None,
+            potential_underlying_growth_bytes: Some(1_047_552),
+            status: lsm_core::ExtendabilityStatus::NeedsUnderlyingResize,
+            reasons: vec!["verified adjacent capacity detected".into()],
+            steps: vec!["grow the partition first".into()],
+        };
+
+        let text = analysis_summary_lines(&analysis)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("Why\n  verified adjacent capacity detected"));
+        assert!(text.contains("Next step\n  grow the partition first"));
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
