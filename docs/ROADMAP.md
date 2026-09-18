@@ -53,13 +53,19 @@ Goal: safely understand a host before changing anything.
 - [x] Add a read-only Create intent planner for filesystem/swap on verified VG free space and partition-table gap/tail sources.
 - [x] Add `plan create SOURCE_ID --by SIZE|--max --purpose filesystem|swap` plus TUI size/purpose/ext4-XFS controls.
 - [x] Keep blank-disk Create plans blocked until partition-table/alignment policy is explicitly resolved instead of guessing.
-- [ ] Add filesystem feature/health/version preflight before any future executor work.
-- [ ] Add concurrency/locking design and fresh runtime identity revalidation for M1B.
+- [x] Add read-only ext4/XFS filesystem metadata/version/features preflight evidence and expose it in strict previews.
+- [ ] Add executor-grade filesystem health decision policy, including required offline checks, before write support.
+- [x] Add target-scoped identity manifests and fresh-snapshot revalidation for disk/partition/PV/VG/LV/filesystem/mount chains.
+- [ ] Add concurrency/per-host exclusive locking design for M1B.
 - [x] Detect advisory whole-disk/backing-device LVM growth routes where the backing device is larger than the current PV.
 - [x] Detect advisory partition -> PV -> VG -> LV -> filesystem routes when authoritative adjacent capacity is proven.
-- [ ] Generalize the route resolver into a reusable layer graph so one intent can traverse any supported disk -> partition -> encryption/RAID -> PV -> VG -> LV -> filesystem -> mount chain.
-- [ ] Add explicit route diagnostics for layered targets such as LUKS, mdraid, multipath, thin/cached LVM and Btrfs so unsupported paths are visible and fail closed.
+- [x] Add a reusable semantic layer graph for disk -> partition -> encryption/RAID -> PV -> VG -> LV -> filesystem -> mount topology.
+- [x] Add explicit CLI/TUI route diagnostics for LUKS/crypt, RAID, multi-PV/nonstandard LVM, Btrfs/ZFS and unknown filesystems so unsupported paths remain visible and fail closed.
+- [x] Add `plan route TARGET [--json]` for scriptable read-only route inspection.
+- [ ] Refactor grow/create plan generation to consume the semantic layer graph for every supported chained adapter instead of maintaining topology-specific planner branches.
 - [x] Add initial scenario-matrix contract tests for multiple selectable targets, blocked unknown filesystems, free ranges and chained LVM routes.
+- [x] Add semantic route-graph tests for direct, LVM, LUKS/crypt, multi-PV and unknown-filesystem paths.
+- [x] Add target identity revalidation tests, including target geometry/LVM changes and unrelated-disk non-invalidation.
 - [ ] Continue expanding scenario-matrix fixtures until every supported/blocked topology in docs/SCENARIO_MATRIX.md has a stable regression case.
 
 M0 must still pass its acceptance gates. M1A has no executor, cannot perform a
