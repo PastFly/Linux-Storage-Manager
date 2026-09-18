@@ -21,20 +21,20 @@ appropriate approval. Read AGENTS.md and docs/SAFETY.md before writing.
 ## Current validated evidence
 
 Exact validated source before this documentation refresh:
-cbcf838afa8d6f1432832c7313a0ca7c0a1329a6
+ef1a34c729bd591898852ed281386500467be295
 
-CI #175 / run 35352595585:
+CI #181 / run 35353628277:
 - harness safety tests PASS;
 - rustfmt PASS;
 - Clippy with -D warnings PASS;
 - Rust workspace tests PASS;
 - loop integration PASS;
-- matrix executes three repetitions and includes plain ext4 direct-partition preview,
+- matrix executes three repetitions and includes plain ext4 and plain XFS direct-partition previews,
   LVM/ext4 and LVM/XFS;
 - strict before/after owned storage facts and sentinel checks remain enabled;
 - cleanup completed.
 
-Portable Linux #54 / run 35352595536:
+Portable Linux #60 / run 35353628233:
 - static musl x86_64 PASS;
 - static musl aarch64 PASS;
 - same binaries smoke-tested in Debian 12, Ubuntu 22.04, Ubuntu 24.04,
@@ -42,8 +42,8 @@ Portable Linux #54 / run 35352595536:
 - Debian 12 collector probe PASS.
 
 Artifacts for that exact head:
-- x86_64: storagemgr-linux-x86_64-musl-35352595536
-- aarch64: storagemgr-linux-aarch64-musl-35352595536
+- x86_64: storagemgr-linux-x86_64-musl-35353628233
+- aarch64: storagemgr-linux-aarch64-musl-35353628233
 
 The user's live Debian 12 host srv-phpIPAM also validated the real DOS layout:
 sda1 ext4 root + sda2 extended container + sda5 swap logical sibling.
@@ -107,7 +107,6 @@ Plans key compatibility:
 
 ## Remaining gates before any executor work
 
-- broader direct-partition fixtures: GPT/XFS and 4K logical sectors;
 - filesystem feature/health/version preflight;
 - concurrency and locking model;
 - fresh runtime device identity immediately before mutation;
