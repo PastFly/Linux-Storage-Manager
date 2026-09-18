@@ -120,6 +120,18 @@ pub struct PartitionSizeChange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LayoutOpportunity {
+    pub code: String,
+    pub disk: String,
+    pub target: String,
+    pub sector_size_bytes: u64,
+    pub max_target_growth_bytes: u64,
+    pub disk_tail_free_bytes: u64,
+    pub swap_bytes: u64,
+    pub blocking_devices: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LayoutAlternative {
     pub code: String,
     pub summary: String,
@@ -774,33 +786,14 @@ fn try_build_partition_candidate(
     Ok(Some((size, steps)))
 }
 
-fn detect_layout_alternatives(
+pub fn analyze_layout_opportunity(
     snapshot: &HostSnapshot,
-    request: &ExtendRequest,
-) -> Vec<LayoutAlternative> {
-    detect_tail_swap_migration(snapshot, request)
-        .into_iter()
-        .collect()
-}
-
-fn detect_tail_swap_migration(
-    snapshot: &HostSnapshot,
-    request: &ExtendRequest,
-) -> Option<LayoutAlternative> {
-    let Growth::ByBytes(requested_growth_bytes) = request.growth else {
-        return None;
-    };
-    if requested_growth_bytes == 0 {
-        return None;
-    }
-
-    let source = if request.target.starts_with("/dev/") {
-        request.target.as_str()
+    target: &str,
+) -> Option<LayoutOpportunity> {
+    let source = if target.starts_with("/dev/") {
+        target
     } else {
-        let mut mounts = snapshot
-            .mounts
-            .iter()
-            .filter(|mount| mount.target == request.target);
+        let mut mounts = snapshot.mounts.iter().filter(|mount| mount.target == target);
         let mount = mounts.next()?;
         if mounts.next().is_some() {
             return None;
@@ -842,11 +835,13 @@ fn detect_tail_swap_migration(
         return None;
     }
 
-    let target = table
+    let target_record = table
         .partitions
         .iter()
         .find(|record| record.node == target_path)?;
-    let target_end = target.start_sector.checked_add(target.size_sectors)?;
+    let target_end = target_record
+        .start_sector
+        .checked_add(target_record.size_sectors)?;
     let disk_sectors = disk.size_bytes / sector;
 
     let mut extended_records = table.partitions.iter().filter(|record| {
@@ -864,8 +859,6 @@ fn detect_tail_swap_migration(
         return None;
     }
 
-    // The supported advisory case is intentionally narrow: exactly one Linux swap
-    // logical partition inside the sole extended container, with no other payload.
     let logicals: Vec<_> = table
         .partitions
         .iter()
@@ -873,10 +866,10 @@ fn detect_tail_swap_migration(
             if record.node == extended.node {
                 return false;
             }
-            let Some(end) = record.start_sector.checked_add(record.size_sectors) else {
+            let Some(record_end) = record.start_sector.checked_add(record.size_sectors) else {
                 return false;
             };
-            record.start_sector >= extended.start_sector && end <= extended_end
+            record.start_sector >= extended.start_sector && record_end <= extended_end
         })
         .collect();
     if logicals.len() != 1 {
@@ -895,10 +888,8 @@ fn detect_tail_swap_migration(
         return None;
     }
 
-    // Refuse any other primary payload after the target. The extended container may
-    // be removed in the advisory migration, but unrelated partitions may not.
     if table.partitions.iter().any(|record| {
-        if record.node == target.node
+        if record.node == target_record.node
             || record.node == extended.node
             || record.node == swap_record.node
         {
@@ -916,48 +907,91 @@ fn detect_tail_swap_migration(
     }
 
     let reclaimable_span_bytes = disk_sectors.checked_sub(target_end)?.checked_mul(sector)?;
-    let requested_sectors =
-        requested_growth_bytes / sector + u64::from(requested_growth_bytes % sector != 0);
-    let rounded_requested_bytes = requested_sectors.checked_mul(sector)?;
-    let required_partition_growth_bytes = rounded_requested_bytes.checked_add(swap_bytes)?;
-    if required_partition_growth_bytes > reclaimable_span_bytes {
+    let max_target_growth_bytes = reclaimable_span_bytes.checked_sub(swap_bytes)?;
+    if max_target_growth_bytes == 0 {
         return None;
     }
-    let remaining_raw_tail_bytes =
-        reclaimable_span_bytes.checked_sub(required_partition_growth_bytes)?;
 
-    Some(LayoutAlternative {
+    Some(LayoutOpportunity {
         code: "migrate-tail-swap".to_owned(),
-        summary: format!(
-            "{disk_tail_free_bytes} bytes of disk-tail capacity are separated from {target_path} by DOS extended/swap layout; preserving equivalent swap as a swapfile can make the requested filesystem growth possible"
-        ),
         disk: disk_path.to_owned(),
         target: target_path.to_owned(),
-        requested_growth_bytes,
+        sector_size_bytes: sector,
+        max_target_growth_bytes,
         disk_tail_free_bytes,
         swap_bytes,
+        blocking_devices: vec![extended.node.clone(), swap_record.node.clone()],
+    })
+}
+
+fn detect_layout_alternatives(
+    snapshot: &HostSnapshot,
+    request: &ExtendRequest,
+) -> Vec<LayoutAlternative> {
+    detect_tail_swap_migration(snapshot, request)
+        .into_iter()
+        .collect()
+}
+
+fn detect_tail_swap_migration(
+    snapshot: &HostSnapshot,
+    request: &ExtendRequest,
+) -> Option<LayoutAlternative> {
+    let Growth::ByBytes(requested_growth_bytes) = request.growth else {
+        return None;
+    };
+    if requested_growth_bytes == 0 {
+        return None;
+    }
+
+    let opportunity = analyze_layout_opportunity(snapshot, &request.target)?;
+    let requested_sectors = requested_growth_bytes / opportunity.sector_size_bytes
+        + u64::from(requested_growth_bytes % opportunity.sector_size_bytes != 0);
+    let rounded_requested_bytes =
+        requested_sectors.checked_mul(opportunity.sector_size_bytes)?;
+    if rounded_requested_bytes > opportunity.max_target_growth_bytes {
+        return None;
+    }
+
+    let required_partition_growth_bytes =
+        rounded_requested_bytes.checked_add(opportunity.swap_bytes)?;
+    let remaining_raw_tail_bytes = opportunity
+        .max_target_growth_bytes
+        .checked_sub(rounded_requested_bytes)?;
+    let extended = opportunity.blocking_devices.first()?;
+    let swap = opportunity.blocking_devices.get(1)?;
+
+    Some(LayoutAlternative {
+        code: opportunity.code.clone(),
+        summary: format!(
+            "{} bytes of disk-tail capacity are separated from {} by DOS extended/swap layout; preserving equivalent swap as a swapfile can make the requested filesystem growth possible",
+            opportunity.disk_tail_free_bytes, opportunity.target
+        ),
+        disk: opportunity.disk.clone(),
+        target: opportunity.target.clone(),
+        requested_growth_bytes,
+        disk_tail_free_bytes: opportunity.disk_tail_free_bytes,
+        swap_bytes: opportunity.swap_bytes,
         required_partition_growth_bytes,
         remaining_raw_tail_bytes,
-        blocking_devices: vec![extended.node.clone(), swap_record.node.clone()],
+        blocking_devices: opportunity.blocking_devices.clone(),
         steps: vec![
             format!(
-                "verify that {} is not used for hibernation/resume and that swap can be safely deactivated",
-                swap_record.node
+                "verify that {swap} is not used for hibernation/resume and that swap can be safely deactivated"
             ),
             "create and verify partition-table, fstab and resume-configuration backups".to_owned(),
-            format!("deactivate swap on {}", swap_record.node),
+            format!("deactivate swap on {swap}"),
             format!(
-                "remove logical swap {} and its extended container {} only after swap migration is prepared",
-                swap_record.node, extended.node
+                "remove logical swap {swap} and its extended container {extended} only after swap migration is prepared"
             ),
             format!(
                 "extend {} by {} bytes so the filesystem gains the requested capacity plus room for an equivalent swapfile",
-                target_path, required_partition_growth_bytes
+                opportunity.target, required_partition_growth_bytes
             ),
             "grow the filesystem and verify its new size".to_owned(),
             format!(
                 "create and activate a swapfile of {} bytes, update persistent swap configuration, and verify swap",
-                swap_bytes
+                opportunity.swap_bytes
             ),
             "rediscover the complete storage layout and verify no unexpected raw tail or identity changes".to_owned(),
         ],
