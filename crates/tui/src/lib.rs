@@ -2698,6 +2698,44 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn lowercase_refresh_and_uppercase_rescan_are_distinct_actions() {
+        use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let snap = snapshot();
+        let mut state = AppState::new(&snap);
+        let key = |code| KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+
+        assert_eq!(
+            handle_key_event(&mut state, &snap, key(KeyCode::Char('r'))),
+            LoopControl::Refresh
+        );
+        assert_eq!(
+            handle_key_event(&mut state, &snap, key(KeyCode::Char('R'))),
+            LoopControl::KernelRescan
+        );
+    }
+
+    #[test]
+    fn rescan_sysfs_path_rejects_path_traversal_and_accepts_kernel_names() {
+        assert_eq!(
+            rescan_sysfs_path("sda").unwrap(),
+            std::path::PathBuf::from("/sys/class/block/sda/device/rescan")
+        );
+        assert_eq!(
+            rescan_sysfs_path("nvme0n1").unwrap(),
+            std::path::PathBuf::from("/sys/class/block/nvme0n1/device/rescan")
+        );
+        assert!(rescan_sysfs_path("../sda").is_none());
+        assert!(rescan_sysfs_path("sda/../../x").is_none());
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
