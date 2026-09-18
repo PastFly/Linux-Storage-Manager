@@ -12,6 +12,7 @@ use lsm_core::{
     HostSnapshot, NodeKind, StorageGraph,
 };
 use lsm_discovery::analyze_extendability;
+use lsm_planner::{plan_extend, ExtendRequest, Growth, PlanStatus};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
@@ -56,6 +57,7 @@ struct AppState {
     section_index: usize,
     selected_device: usize,
     content_scroll: u16,
+    plan_growth_index: usize,
 }
 
 impl AppState {
@@ -65,6 +67,7 @@ impl AppState {
             section_index: 0,
             selected_device,
             content_scroll: 0,
+            plan_growth_index: 0,
         }
     }
 
@@ -126,10 +129,29 @@ impl AppState {
         }
     }
 
+    fn plan_growth(&self) -> Growth {
+        PLAN_GROWTH_PRESETS[self.plan_growth_index]
+    }
+
+    fn next_plan_growth(&mut self) {
+        self.plan_growth_index = (self.plan_growth_index + 1).min(PLAN_GROWTH_PRESETS.len() - 1);
+    }
+
+    fn previous_plan_growth(&mut self) {
+        self.plan_growth_index = self.plan_growth_index.saturating_sub(1);
+    }
+
     fn select_previous_device(&mut self) {
         self.selected_device = self.selected_device.saturating_sub(1);
     }
 }
+
+const PLAN_GROWTH_PRESETS: [Growth; 4] = [
+    Growth::ByBytes(512 * 1024 * 1024),
+    Growth::ByBytes(1024 * 1024 * 1024),
+    Growth::ByBytes(4 * 1024 * 1024 * 1024),
+    Growth::MaxFree,
+];
 
 #[derive(Clone, Copy)]
 struct DeviceRow<'a> {
@@ -204,6 +226,16 @@ fn event_loop(
                         state.set_section(5);
                         state.clamp_device_selection(snapshot);
                     }
+                    KeyCode::Char('[') | KeyCode::Char('-')
+                        if state.section() == Section::Plans =>
+                    {
+                        state.previous_plan_growth();
+                    }
+                    KeyCode::Char(']') | KeyCode::Char('+')
+                        if state.section() == Section::Plans =>
+                    {
+                        state.next_plan_growth();
+                    }
                     _ => {}
                 }
             }
@@ -248,9 +280,11 @@ fn draw(
     render_section(frame, body[1], snapshot, capabilities, state);
 
     frame.render_widget(
-        Paragraph::new(
-            " ↑↓/jk navigate   ←→/Tab section   1-6 jump   q/Esc quit   no writes are performed ",
-        )
+        Paragraph::new(if state.section() == Section::Plans {
+            " ↑↓ target   [ ] / - + size   ←→/Tab section   q/Esc quit   preview only, no writes "
+        } else {
+            " ↑↓/jk navigate   ←→/Tab section   1-6 jump   q/Esc quit   no writes are performed "
+        })
         .block(Block::default().borders(Borders::ALL)),
         outer[2],
     );
@@ -289,7 +323,7 @@ fn render_section(
         Section::Swap => render_swap(frame, area, snapshot, state),
         Section::Mounts => render_mounts(frame, area, snapshot, state),
         Section::Diagnostics => render_diagnostics(frame, area, snapshot, capabilities, state),
-        Section::Plans => render_plan_hint(frame, area, snapshot, state),
+        Section::Plans => render_plan_hint(frame, area, snapshot, capabilities, state),
     }
 }
 
@@ -466,6 +500,7 @@ fn render_plan_hint(
     frame: &mut ratatui::Frame<'_>,
     area: ratatui::layout::Rect,
     snapshot: &HostSnapshot,
+    capabilities: &HostCapabilities,
     state: AppState,
 ) {
     let rows = plan_candidate_rows(snapshot);
@@ -495,6 +530,19 @@ fn render_plan_hint(
                     Line::from(""),
                 ];
                 lines.extend(analysis_summary_lines(&analysis));
+                lines.push(Line::from(""));
+                lines.push(Line::from("Strict plan preview"));
+                lines.push(Line::from(format!(
+                    "Requested       {}",
+                    growth_label(state.plan_growth())
+                )));
+                lines.extend(strict_plan_lines(
+                    snapshot,
+                    capabilities,
+                    row.device,
+                    &target,
+                    state.plan_growth(),
+                ));
                 lines.push(Line::from(""));
                 lines.push(Line::from("No changes will be made."));
                 lines
@@ -682,6 +730,7 @@ fn storage_mounts(snapshot: &HostSnapshot) -> Vec<&lsm_core::MountEntry> {
         "mqueue",
         "ramfs",
         "autofs",
+        "binfmt_misc",
     ];
 
     snapshot
@@ -767,6 +816,70 @@ fn analysis_summary_lines(analysis: &ExtendAnalysis) -> Vec<Line<'static>> {
     }
 
     lines
+}
+
+fn growth_label(growth: Growth) -> String {
+    match growth {
+        Growth::ByBytes(bytes) => format!("+{}", human_bytes(bytes)),
+        Growth::MaxFree => "Max free".to_owned(),
+    }
+}
+
+fn strict_plan_lines(
+    snapshot: &HostSnapshot,
+    capabilities: &HostCapabilities,
+    device: &BlockDevice,
+    target: &str,
+    growth: Growth,
+) -> Vec<Line<'static>> {
+    if device.kind != NodeKind::Lvm {
+        return vec![
+            Line::from("Planner         Not available for direct partition resize in M1A"),
+            Line::from("Safety          Advisory analysis only; executor is absent"),
+        ];
+    }
+
+    match plan_extend(
+        snapshot,
+        capabilities,
+        ExtendRequest {
+            target: target.to_owned(),
+            growth,
+        },
+    ) {
+        Ok(plan) if plan.status() == PlanStatus::Preview => {
+            let mut lines = vec![Line::from("Planner         Preview ready")];
+            if let Some(change) = plan.size_change() {
+                lines.push(Line::from(format!(
+                    "Growth          {}",
+                    human_bytes(change.rounded_growth_bytes)
+                )));
+                lines.push(Line::from(format!(
+                    "Expected size   {}",
+                    human_bytes(change.expected_lv_size_bytes)
+                )));
+                lines.push(Line::from(format!(
+                    "VG free after   {}",
+                    human_bytes(change.remaining_vg_free_bytes)
+                )));
+            }
+            lines
+        }
+        Ok(plan) => {
+            let mut lines = vec![Line::from("Planner         Blocked")];
+            if let Some(blocker) = plan.blockers().first() {
+                lines.push(Line::from(format!(
+                    "Blocker         [{}] {}",
+                    blocker.code, blocker.message
+                )));
+            }
+            lines
+        }
+        Err(error) => vec![
+            Line::from("Planner         Error"),
+            Line::from(format!("Reason          {error}")),
+        ],
+    }
 }
 
 fn plan_target(device: &BlockDevice) -> String {
