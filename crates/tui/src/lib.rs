@@ -1845,6 +1845,80 @@ mod tests {
         assert!(!disks.contains("PgUp/PgDn"));
     }
 
+
+    #[test]
+    fn diagnostic_cells_keep_severity_code_and_message_separate() {
+        let item = lsm_core::StorageDiagnostic {
+            code: "geometry-warning".into(),
+            severity: DiagnosticSeverity::Warning,
+            message: "geometry requires attention".into(),
+            device: Some("/dev/sda1".into()),
+        };
+        assert_eq!(
+            diagnostic_table_cells(&item),
+            [
+                "Warning".to_owned(),
+                "geometry-warning".to_owned(),
+                "geometry requires attention".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn detail_rows_are_structured_key_value_pairs() {
+        let snap = snapshot();
+        let device = &snap.storage.block_devices[0].children[0];
+        let rows = device_detail_rows(&snap, device);
+        assert!(rows.contains(&["Device".to_owned(), "/dev/sda1".to_owned()]));
+        assert!(rows.contains(&["Filesystem".to_owned(), "ext4".to_owned()]));
+        assert!(rows.contains(&["Mounted at".to_owned(), "/".to_owned()]));
+    }
+
+    #[test]
+    fn preflight_and_plan_step_cells_are_table_ready() {
+        let check = lsm_planner::PreflightCheck {
+            code: "filesystem-health".into(),
+            state: lsm_planner::PreflightState::Required,
+            message: "verify filesystem health".into(),
+        };
+        assert_eq!(
+            preflight_table_cells(&check),
+            [
+                "[REQ]".to_owned(),
+                "filesystem-health".to_owned(),
+                "verify filesystem health".to_owned(),
+            ]
+        );
+
+        let step = lsm_planner::PlanStep {
+            id: 3,
+            depends_on: vec![2],
+            operation: lsm_planner::Operation::ExtendPartition {
+                partition: "/dev/sda1".into(),
+                start_sector: 2048,
+                old_size_sectors: 100,
+                new_size_sectors: 200,
+                sector_size_bytes: 512,
+            },
+            reversibility: lsm_planner::Reversibility::Irreversible,
+        };
+        assert_eq!(
+            plan_step_table_cells(&step),
+            [
+                "3".to_owned(),
+                "Extend partition /dev/sda1".to_owned(),
+                "irreversible".to_owned(),
+                "2".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn plans_use_wide_layout_only_when_terminal_has_room() {
+        assert_eq!(plan_layout_mode(140), PlanLayoutMode::Wide);
+        assert_eq!(plan_layout_mode(109), PlanLayoutMode::Compact);
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
