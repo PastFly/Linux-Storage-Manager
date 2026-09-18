@@ -2521,6 +2521,53 @@ mod tests {
         assert!(toolbar_text(Section::Plans).contains("Refresh"));
     }
 
+
+    #[test]
+    fn layout_alternative_lines_explain_swap_migration_without_claiming_execution() {
+        let alternative = lsm_planner::LayoutAlternative {
+            code: "migrate-tail-swap".into(),
+            summary: "tail is blocked by swap".into(),
+            disk: "/dev/sda".into(),
+            target: "/dev/sda1".into(),
+            requested_growth_bytes: 1024 * 1024 * 1024,
+            disk_tail_free_bytes: 1025 * 1024 * 1024,
+            swap_bytes: 975 * 1024 * 1024,
+            required_partition_growth_bytes: 1999 * 1024 * 1024,
+            remaining_raw_tail_bytes: 2 * 1024 * 1024,
+            blocking_devices: vec!["/dev/sda2".into(), "/dev/sda5".into()],
+            steps: vec![
+                "verify hibernation and swapoff safety".into(),
+                "migrate swap to a swapfile".into(),
+            ],
+        };
+
+        let text = layout_alternative_lines(&alternative)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("Layout alternative"));
+        assert!(text.contains("+1.0 GiB"));
+        assert!(text.contains("/dev/sda2, /dev/sda5"));
+        assert!(text.contains("swapfile"));
+        assert!(text.contains("Advisory only"));
+    }
+
+    #[test]
+    fn opportunity_probe_sizes_include_one_gib_before_smaller_fallbacks() {
+        assert_eq!(
+            layout_opportunity_probe_sizes(),
+            [
+                4 * 1024 * 1024 * 1024,
+                2 * 1024 * 1024 * 1024,
+                1024 * 1024 * 1024,
+                512 * 1024 * 1024,
+                64 * 1024 * 1024,
+            ]
+        );
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
