@@ -1001,10 +1001,12 @@ fn blank_disk_geometry(
         "authoritative partition-table discovery must complete before blank-disk planning",
     )?;
 
-    let disk_path = source
-        .disk
-        .as_deref()
-        .ok_or_else(|| blocked("blank-disk-identity-missing", "blank-disk source has no device path"))?;
+    let disk_path = source.disk.as_deref().ok_or_else(|| {
+        blocked(
+            "blank-disk-identity-missing",
+            "blank-disk source has no device path",
+        )
+    })?;
     let nodes = flatten(&snapshot.storage.block_devices);
     let disk = unique(
         nodes
@@ -1050,9 +1052,12 @@ fn blank_disk_geometry(
         "an error-level diagnostic affects the selected blank disk",
     )?;
 
-    let sector = disk
-        .logical_sector_bytes
-        .ok_or_else(|| blocked("create-sector-size-missing", "blank-disk logical sector size is unknown"))?;
+    let sector = disk.logical_sector_bytes.ok_or_else(|| {
+        blocked(
+            "create-sector-size-missing",
+            "blank-disk logical sector size is unknown",
+        )
+    })?;
     ensure(
         sector >= 512
             && sector.is_power_of_two()
@@ -1066,7 +1071,12 @@ fn blank_disk_geometry(
 
     let disk_sectors = disk.size_bytes / sector;
     let alignment_sectors = ceil_div(CREATE_PARTITION_ALIGNMENT_BYTES, sector)
-        .ok_or_else(|| blocked("create-alignment-invalid", "could not derive partition alignment"))?
+        .ok_or_else(|| {
+            blocked(
+                "create-alignment-invalid",
+                "could not derive partition alignment",
+            )
+        })?
         .max(1);
 
     let (raw_first_usable, usable_end_exclusive) = match policy {
@@ -1074,8 +1084,12 @@ fn blank_disk_geometry(
             let entry_bytes = GPT_PARTITION_ENTRY_COUNT
                 .checked_mul(GPT_PARTITION_ENTRY_SIZE_BYTES)
                 .ok_or_else(|| blocked("size-overflow", "GPT entry-table size exceeds u64"))?;
-            let entry_sectors = ceil_div(entry_bytes, sector)
-                .ok_or_else(|| blocked("create-gpt-geometry-invalid", "could not derive GPT entry-table sectors"))?;
+            let entry_sectors = ceil_div(entry_bytes, sector).ok_or_else(|| {
+                blocked(
+                    "create-gpt-geometry-invalid",
+                    "could not derive GPT entry-table sectors",
+                )
+            })?;
             let first = 2_u64
                 .checked_add(entry_sectors)
                 .ok_or_else(|| blocked("size-overflow", "GPT first usable sector exceeds u64"))?;
@@ -1103,9 +1117,12 @@ fn blank_disk_geometry(
         "blank-disk-too-small",
         "disk has no usable 1 MiB-aligned partition range after table metadata",
     )?;
-    let available_sector_count = usable_end_exclusive
-        .checked_sub(start)
-        .ok_or_else(|| blocked("size-overflow", "blank-disk usable sector range underflowed"))?;
+    let available_sector_count = usable_end_exclusive.checked_sub(start).ok_or_else(|| {
+        blocked(
+            "size-overflow",
+            "blank-disk usable sector range underflowed",
+        )
+    })?;
     let available_bytes = available_sector_count
         .checked_mul(sector)
         .ok_or_else(|| blocked("size-overflow", "blank-disk usable capacity exceeds u64"))?;
