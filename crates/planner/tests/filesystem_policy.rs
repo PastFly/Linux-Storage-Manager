@@ -77,6 +77,9 @@ fn ext4_evidence(state: &str) -> FilesystemPreflightEvidence {
             "64bit".into(),
             "metadata_csum".into(),
         ],
+        block_size_bytes: None,
+        block_count: None,
+        size_bytes: None,
         grow_check_passed: None,
         detail: None,
     }
