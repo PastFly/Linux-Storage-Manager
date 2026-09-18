@@ -2,6 +2,7 @@
 //! A preview is NOT an executable plan or authorization to modify storage.
 
 mod execution_guard;
+mod filesystem_policy;
 mod identity_guard;
 mod route_graph;
 
@@ -21,6 +22,11 @@ pub use execution_guard::{
     GuardPlanStatus, JournalError, JournalEvent, JournalPhase, JournalTransition, LockScope,
     OperationJournal, OperationLockPlan, ResumeDisposition, HOST_STORAGE_LOCK_PATH,
     JOURNAL_DIRECTORY,
+};
+
+pub use filesystem_policy::{
+    decide_filesystem_growth, FilesystemCheckKind, FilesystemDecisionState,
+    FilesystemGrowthDecision, ReadOnlyFilesystemCheck,
 };
 
 use lsm_core::{
