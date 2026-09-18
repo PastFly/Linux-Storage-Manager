@@ -167,6 +167,7 @@ fn normalize_kind(kind: &str) -> NodeKind {
         "part" => NodeKind::Partition,
         "lvm" => NodeKind::Lvm,
         "crypt" => NodeKind::Crypt,
+        "mpath" => NodeKind::Multipath,
         "loop" => NodeKind::Loop,
         "rom" => NodeKind::Rom,
         "zram" => NodeKind::Zram,
