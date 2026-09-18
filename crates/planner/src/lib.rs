@@ -1308,22 +1308,26 @@ pub fn select_extend_planner_profile(
     target: &str,
 ) -> ExtendPlannerProfile {
     let route = analyze_layer_route(snapshot, target);
-    let last_block_layer = route.layers.iter().rev().find_map(|layer| match layer.kind {
-        RouteLayerKind::Disk
-        | RouteLayerKind::Partition
-        | RouteLayerKind::LoopDevice
-        | RouteLayerKind::Encryption
-        | RouteLayerKind::Raid
-        | RouteLayerKind::Multipath
-        | RouteLayerKind::LvmLogicalVolume
-        | RouteLayerKind::Zram
-        | RouteLayerKind::Rom
-        | RouteLayerKind::Unknown => Some(layer.kind),
-        RouteLayerKind::LvmPhysicalVolume
-        | RouteLayerKind::LvmVolumeGroup
-        | RouteLayerKind::Filesystem
-        | RouteLayerKind::Mount => None,
-    });
+    let last_block_layer = route
+        .layers
+        .iter()
+        .rev()
+        .find_map(|layer| match layer.kind {
+            RouteLayerKind::Disk
+            | RouteLayerKind::Partition
+            | RouteLayerKind::LoopDevice
+            | RouteLayerKind::Encryption
+            | RouteLayerKind::Raid
+            | RouteLayerKind::Multipath
+            | RouteLayerKind::LvmLogicalVolume
+            | RouteLayerKind::Zram
+            | RouteLayerKind::Rom
+            | RouteLayerKind::Unknown => Some(layer.kind),
+            RouteLayerKind::LvmPhysicalVolume
+            | RouteLayerKind::LvmVolumeGroup
+            | RouteLayerKind::Filesystem
+            | RouteLayerKind::Mount => None,
+        });
 
     match last_block_layer {
         Some(RouteLayerKind::Partition) => ExtendPlannerProfile::DirectPartition,
@@ -1451,10 +1455,12 @@ fn build_whole_filesystem_candidate(
         "filesystem UUID is required for whole-device preview",
     )?;
 
-    let mountpoint = route
-        .mountpoint
-        .as_deref()
-        .ok_or_else(|| blocked("mount-not-unique", "target filesystem is not uniquely mounted"))?;
+    let mountpoint = route.mountpoint.as_deref().ok_or_else(|| {
+        blocked(
+            "mount-not-unique",
+            "target filesystem is not uniquely mounted",
+        )
+    })?;
     let mount = unique(
         snapshot
             .mounts
