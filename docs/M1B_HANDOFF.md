@@ -3,7 +3,7 @@
 Status: pre-executor foundation, non-mutating.
 
 M1B0 bridges the completed M1A planner into future executor work without enabling any
-storage mutation. The handoff is an immutable, non-deserializable Rust data structure.
+storage mutation. The handoff is an immutable, non-deserializable Rust data structure with private fields and read-only accessors; external callers cannot construct or flip its safety flags.
 It performs no process execution, filesystem writes, lock acquisition, journal writes,
 backup commands, resize commands or mount changes.
 
