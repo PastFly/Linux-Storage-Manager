@@ -875,13 +875,6 @@ fn strict_plan_lines(
     target: &str,
     growth: Growth,
 ) -> Vec<Line<'static>> {
-    if device.kind != NodeKind::Lvm {
-        return vec![
-            Line::from("Planner         Not available for direct partition resize in M1A"),
-            Line::from("Safety          Advisory analysis only; executor is absent"),
-        ];
-    }
-
     match plan_extend(
         snapshot,
         capabilities,
@@ -893,6 +886,7 @@ fn strict_plan_lines(
         Ok(plan) if plan.status() == PlanStatus::Preview => {
             let mut lines = vec![Line::from("Planner         Preview ready")];
             if let Some(change) = plan.size_change() {
+                lines.push(Line::from("Layout          LVM"));
                 lines.push(Line::from(format!(
                     "Growth          {}",
                     human_bytes(change.rounded_growth_bytes)
@@ -904,6 +898,22 @@ fn strict_plan_lines(
                 lines.push(Line::from(format!(
                     "VG free after   {}",
                     human_bytes(change.remaining_vg_free_bytes)
+                )));
+            }
+            if let Some(change) = plan.partition_size_change() {
+                lines.push(Line::from("Layout          Direct partition"));
+                lines.push(Line::from(format!("Disk            {}", change.disk)));
+                lines.push(Line::from(format!(
+                    "Growth          {}",
+                    human_bytes(change.rounded_growth_bytes)
+                )));
+                lines.push(Line::from(format!(
+                    "Expected size   {}",
+                    human_bytes(change.expected_partition_size_bytes)
+                )));
+                lines.push(Line::from(format!(
+                    "Adjacent after  {}",
+                    human_bytes(change.remaining_adjacent_free_bytes)
                 )));
             }
             lines
