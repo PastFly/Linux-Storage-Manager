@@ -327,6 +327,18 @@ pub struct CreatePlanPreview {
     notices: Vec<String>,
 }
 
+const CREATE_PARTITION_ALIGNMENT_BYTES: u64 = 1024 * 1024;
+const GPT_PARTITION_ENTRY_COUNT: u64 = 128;
+const GPT_PARTITION_ENTRY_SIZE_BYTES: u64 = 128;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlankDiskGeometry {
+    sector_size_bytes: u64,
+    start_sector: u64,
+    available_sector_count: u64,
+    available_bytes: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PartitionFreeRange {
     start_sector: u64,
@@ -940,6 +952,165 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
     opportunities
 }
 
+fn ceil_div(value: u64, divisor: u64) -> Option<u64> {
+    if divisor == 0 {
+        return None;
+    }
+    Some(value / divisor + u64::from(value % divisor != 0))
+}
+
+fn align_up(value: u64, alignment: u64) -> Option<u64> {
+    if alignment == 0 {
+        return None;
+    }
+    let remainder = value % alignment;
+    if remainder == 0 {
+        Some(value)
+    } else {
+        value.checked_add(alignment.checked_sub(remainder)?)
+    }
+}
+
+fn blank_disk_geometry(
+    snapshot: &HostSnapshot,
+    source: &ProvisioningOpportunity,
+    policy: CreatePartitionTablePolicy,
+) -> Result<BlankDiskGeometry, Blocker> {
+    let collector = unique(
+        snapshot
+            .collectors
+            .iter()
+            .filter(|status| status.component == "partition_tables"),
+        "collector-incomplete",
+    )?;
+    ensure(
+        collector.state == CollectorState::Complete,
+        "collector-incomplete",
+        "authoritative partition-table discovery must complete before blank-disk planning",
+    )?;
+
+    let disk_path = source
+        .disk
+        .as_deref()
+        .ok_or_else(|| blocked("blank-disk-identity-missing", "blank-disk source has no device path"))?;
+    let nodes = flatten(&snapshot.storage.block_devices);
+    let disk = unique(
+        nodes
+            .iter()
+            .copied()
+            .filter(|device| device.path.as_deref() == Some(disk_path)),
+        "blank-disk-not-resolved",
+    )?;
+    ensure(
+        matches!(disk.kind, NodeKind::Disk | NodeKind::Loop)
+            && disk.children.is_empty()
+            && disk.filesystem.is_none()
+            && disk.partition_table.is_none()
+            && disk.mountpoints.is_empty(),
+        "blank-disk-state-changed",
+        "selected source is no longer a plain unpartitioned, unmounted disk/loop device",
+    )?;
+    ensure(
+        snapshot
+            .partition_tables
+            .iter()
+            .all(|table| table.device != disk_path),
+        "blank-disk-table-present",
+        "authoritative discovery now reports a partition table on the selected blank disk",
+    )?;
+    ensure(
+        !snapshot
+            .swaps
+            .iter()
+            .any(|swap| node_alias(disk, &swap.name)),
+        "blank-disk-active-swap",
+        "selected blank disk is reported as active swap",
+    )?;
+    ensure(
+        !snapshot.diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == DiagnosticSeverity::Error
+                && diagnostic
+                    .device
+                    .as_deref()
+                    .is_none_or(|device| device == disk_path || node_alias(disk, device))
+        }),
+        "diagnostic-error",
+        "an error-level diagnostic affects the selected blank disk",
+    )?;
+
+    let sector = disk
+        .logical_sector_bytes
+        .ok_or_else(|| blocked("create-sector-size-missing", "blank-disk logical sector size is unknown"))?;
+    ensure(
+        sector >= 512
+            && sector.is_power_of_two()
+            && disk.size_bytes > 0
+            && disk.size_bytes % sector == 0
+            && source.sector_size_bytes == Some(sector)
+            && source.available_bytes == disk.size_bytes,
+        "blank-disk-geometry-mismatch",
+        "blank-disk source and current block-device geometry do not agree",
+    )?;
+
+    let disk_sectors = disk.size_bytes / sector;
+    let alignment_sectors = ceil_div(CREATE_PARTITION_ALIGNMENT_BYTES, sector)
+        .ok_or_else(|| blocked("create-alignment-invalid", "could not derive partition alignment"))?
+        .max(1);
+
+    let (raw_first_usable, usable_end_exclusive) = match policy {
+        CreatePartitionTablePolicy::Gpt => {
+            let entry_bytes = GPT_PARTITION_ENTRY_COUNT
+                .checked_mul(GPT_PARTITION_ENTRY_SIZE_BYTES)
+                .ok_or_else(|| blocked("size-overflow", "GPT entry-table size exceeds u64"))?;
+            let entry_sectors = ceil_div(entry_bytes, sector)
+                .ok_or_else(|| blocked("create-gpt-geometry-invalid", "could not derive GPT entry-table sectors"))?;
+            let first = 2_u64
+                .checked_add(entry_sectors)
+                .ok_or_else(|| blocked("size-overflow", "GPT first usable sector exceeds u64"))?;
+            let trailing = entry_sectors
+                .checked_add(1)
+                .ok_or_else(|| blocked("size-overflow", "GPT trailing metadata exceeds u64"))?;
+            let end = disk_sectors.checked_sub(trailing).ok_or_else(|| {
+                blocked(
+                    "blank-disk-too-small",
+                    "disk is too small for GPT primary/backup metadata",
+                )
+            })?;
+            (first, end)
+        }
+        CreatePartitionTablePolicy::Dos => {
+            let end = disk_sectors.min(u64::from(u32::MAX) + 1);
+            (1, end)
+        }
+    };
+
+    let start = align_up(raw_first_usable, alignment_sectors)
+        .ok_or_else(|| blocked("size-overflow", "aligned partition start exceeds u64"))?;
+    ensure(
+        start < usable_end_exclusive,
+        "blank-disk-too-small",
+        "disk has no usable 1 MiB-aligned partition range after table metadata",
+    )?;
+    let available_sector_count = usable_end_exclusive
+        .checked_sub(start)
+        .ok_or_else(|| blocked("size-overflow", "blank-disk usable sector range underflowed"))?;
+    let available_bytes = available_sector_count
+        .checked_mul(sector)
+        .ok_or_else(|| blocked("size-overflow", "blank-disk usable capacity exceeds u64"))?;
+    ensure(
+        available_bytes > 0,
+        "blank-disk-too-small",
+        "blank disk has no usable capacity after metadata and alignment",
+    )?;
+
+    Ok(BlankDiskGeometry {
+        sector_size_bytes: sector,
+        start_sector: start,
+        available_sector_count,
+        available_bytes,
+    })
+}
+
 pub fn plan_create(
     snapshot: &HostSnapshot,
     request: CreateRequest,
@@ -985,15 +1156,17 @@ pub fn plan_create(
     }
     plan.source = Some(source.clone());
 
-    if source.kind == ProvisioningSpaceKind::BlankDisk {
+    if source.kind != ProvisioningSpaceKind::BlankDisk && plan.request.partition_table.is_some() {
         plan.blockers.push(blocked(
-            "blank-disk-policy-required",
-            "blank-disk creation needs an explicit partition-table/alignment policy before an exact allocation can be frozen",
+            "create-partition-table-unexpected",
+            "partition-table policy is valid only when the selected Create source is a blank disk",
         ));
         plan.plan_id = fingerprint(&plan)?;
         return Ok(plan);
     }
 
+    let mut allocation_start_sector = source.start_sector;
+    let mut allocation_partition_table = None;
     let (allocation_unit_bytes, available_bytes) = match source.kind {
         ProvisioningSpaceKind::LvmFreeExtents => {
             let Some(vg_name) = source.volume_group.as_deref() else {
@@ -1071,7 +1244,27 @@ pub fn plan_create(
             }
             (sector, source.available_bytes)
         }
-        ProvisioningSpaceKind::BlankDisk => unreachable!(),
+        ProvisioningSpaceKind::BlankDisk => {
+            let Some(policy) = plan.request.partition_table else {
+                plan.blockers.push(blocked(
+                    "blank-disk-policy-required",
+                    "blank-disk creation requires an explicit GPT or DOS/MBR partition-table policy",
+                ));
+                plan.plan_id = fingerprint(&plan)?;
+                return Ok(plan);
+            };
+            let geometry = match blank_disk_geometry(snapshot, &source, policy) {
+                Ok(geometry) => geometry,
+                Err(blocker) => {
+                    plan.blockers.push(blocker);
+                    plan.plan_id = fingerprint(&plan)?;
+                    return Ok(plan);
+                }
+            };
+            allocation_start_sector = Some(geometry.start_sector);
+            allocation_partition_table = Some(policy);
+            (geometry.sector_size_bytes, geometry.available_bytes)
+        }
     };
 
     let requested_bytes = match plan.request.size {
@@ -1158,7 +1351,9 @@ pub fn plan_create(
 
     let allocated_sectors = if matches!(
         source.kind,
-        ProvisioningSpaceKind::DiskGap | ProvisioningSpaceKind::DiskTail
+        ProvisioningSpaceKind::BlankDisk
+            | ProvisioningSpaceKind::DiskGap
+            | ProvisioningSpaceKind::DiskTail
     ) {
         Some(rounded_bytes / allocation_unit_bytes)
     } else {
@@ -1171,10 +1366,10 @@ pub fn plan_create(
         available_bytes,
         remaining_bytes: available_bytes - rounded_bytes,
         allocation_unit_bytes,
-        start_sector: source.start_sector,
+        start_sector: allocation_start_sector,
         sector_count: allocated_sectors,
         volume_group: source.volume_group.clone(),
-        partition_table: plan.request.partition_table,
+        partition_table: allocation_partition_table,
     });
 
     plan.steps.push(
@@ -1200,7 +1395,26 @@ pub fn plan_create(
                 rounded_bytes
             ));
         }
-        ProvisioningSpaceKind::BlankDisk => unreachable!(),
+        ProvisioningSpaceKind::BlankDisk => {
+            let policy = allocation_partition_table.unwrap_or(CreatePartitionTablePolicy::Gpt);
+            let label = match policy {
+                CreatePartitionTablePolicy::Gpt => "GPT",
+                CreatePartitionTablePolicy::Dos => "DOS/MBR",
+            };
+            plan.steps.push(format!(
+                "verify {} is still blank and record its pre-mutation identity baseline",
+                source.disk.as_deref().unwrap_or("-")
+            ));
+            plan.steps.push(format!(
+                "initialize a {label} partition table with 1 MiB-aligned usable geometry"
+            ));
+            plan.steps.push(format!(
+                "create one primary partition at sector {} using {} sectors ({} bytes)",
+                allocation_start_sector.unwrap_or(0),
+                allocated_sectors.unwrap_or(0),
+                rounded_bytes
+            ));
+        }
     }
     match plan.request.purpose {
         CreatePurpose::Filesystem => {
