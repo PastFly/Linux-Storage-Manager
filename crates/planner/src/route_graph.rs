@@ -9,6 +9,7 @@ pub enum RouteLayerKind {
     LoopDevice,
     Encryption,
     Raid,
+    Multipath,
     LvmPhysicalVolume,
     LvmVolumeGroup,
     LvmLogicalVolume,
@@ -290,6 +291,16 @@ fn append_block_layer(snapshot: &HostSnapshot, device: &BlockDevice, route: &mut
             route.issues.push(adapter(
                 "raid-adapter-required",
                 "RAID capacity propagation requires an explicit array/member adapter",
+                Some(path.clone()),
+            ));
+        }
+        NodeKind::Multipath => {
+            route
+                .layers
+                .push(block_layer(RouteLayerKind::Multipath, device));
+            route.issues.push(adapter(
+                "multipath-adapter-required",
+                "multipath identity, path health and capacity propagation require a dedicated adapter",
                 Some(path.clone()),
             ));
         }
