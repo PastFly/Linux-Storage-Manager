@@ -576,10 +576,7 @@ fn create_catalog_exposes_empty_gpt_usable_range_without_calling_it_blank() {
     assert_eq!(spaces.len(), 1);
     assert_eq!(spaces[0].kind, ProvisioningSpaceKind::DiskGap);
     assert_eq!(spaces[0].start_sector, Some(34));
-    assert_eq!(
-        spaces[0].sector_count,
-        Some((disk_sectors - 33) - 34)
-    );
+    assert_eq!(spaces[0].sector_count, Some((disk_sectors - 33) - 34));
 }
 
 #[test]
