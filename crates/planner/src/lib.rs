@@ -640,9 +640,8 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
             if range.sector_count == 0 {
                 continue;
             }
-            let Some(available_bytes) = range
-                .sector_count
-                .checked_mul(free_space.sector_size_bytes)
+            let Some(available_bytes) =
+                range.sector_count.checked_mul(free_space.sector_size_bytes)
             else {
                 continue;
             };
@@ -707,10 +706,7 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
     opportunities
 }
 
-fn partition_free_ranges(
-    disk: &BlockDevice,
-    table: &PartitionTable,
-) -> Option<PartitionFreeSpace> {
+fn partition_free_ranges(disk: &BlockDevice, table: &PartitionTable) -> Option<PartitionFreeSpace> {
     let sector = table.sector_size_bytes?;
     if sector < 512 || !sector.is_power_of_two() || disk.size_bytes % sector != 0 {
         return None;
