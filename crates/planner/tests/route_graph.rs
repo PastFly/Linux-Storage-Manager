@@ -195,6 +195,81 @@ fn encryption_layer_is_visible_and_requires_adapter() {
 }
 
 #[test]
+fn luks_backed_lvm_route_keeps_crypt_and_lvm_layers_visible() {
+    let snapshot: HostSnapshot = serde_json::from_value(json!({
+        "storage": {"block_devices": [{
+            "name":"vdb","kernel_name":"vdb","path":"/dev/vdb","kind":"disk",
+            "size_bytes":30_000_000_000u64,"mountpoints":[],"children":[{
+                "name":"vdb1","kernel_name":"vdb1","path":"/dev/vdb1","kind":"partition",
+                "size_bytes":28_000_000_000u64,"start_512_sector":2048,
+                "logical_sector_bytes":512,"mountpoints":[],"parent_kernel_name":"vdb",
+                "children":[{
+                    "name":"cryptpv","kernel_name":"dm-1","path":"/dev/mapper/cryptpv",
+                    "kind":"crypt","size_bytes":27_900_000_000u64,"uuid":"pv-crypt",
+                    "filesystem":{"fs_type":"LVM2_member","version":"LVM2 001"},
+                    "mountpoints":[],"parent_kernel_name":"vdb1","children":[{
+                        "name":"vgsecure-data","kernel_name":"dm-2",
+                        "path":"/dev/mapper/vgsecure-data","kind":"lvm",
+                        "size_bytes":16_000_000_000u64,"uuid":"fs-secure",
+                        "filesystem":{"fs_type":"ext4","version":"1.0"},
+                        "mountpoints":["/secure-lvm"],"parent_kernel_name":"dm-1","children":[]
+                    }]
+                }]
+            }]
+        }]},
+        "partition_tables":[],
+        "mounts":[
+            {"source":"/dev/vgsecure/data","target":"/secure-lvm","fs_type":"ext4","options":["rw"]}
+        ],
+        "fstab":[],
+        "swaps":[],
+        "lvm":{
+            "physical_volumes":[{
+                "name":"/dev/mapper/cryptpv","uuid":"pv-crypt","vg_name":"vgsecure",
+                "size_bytes":27_900_000_000u64,"free_bytes":11_900_000_000u64
+            }],
+            "volume_groups":[{
+                "name":"vgsecure","uuid":"vg-secure","size_bytes":27_900_000_000u64,
+                "free_bytes":11_900_000_000u64,"pv_count":1,"lv_count":1,
+                "extent_size_bytes":4_194_304u64,"free_extent_count":2837,
+                "missing_pv_count":0,"attributes":"wz--n-"
+            }],
+            "logical_volumes":[{
+                "name":"data","path":"/dev/vgsecure/data","uuid":"lv-secure",
+                "vg_name":"vgsecure","size_bytes":16_000_000_000u64,
+                "attributes":"-wi-ao----","layout":"linear","role":"public"
+            }]
+        },
+        "diagnostics":[],
+        "collectors":[]
+    }))
+    .unwrap();
+
+    let route = analyze_layer_route(&snapshot, "/secure-lvm");
+    let adapter = resolve_extend_route_adapter(&snapshot, "/secure-lvm");
+
+    assert_eq!(route.status, LayerRouteStatus::AdapterRequired);
+    assert_eq!(
+        route.layers.iter().map(|layer| layer.kind).collect::<Vec<_>>(),
+        vec![
+            RouteLayerKind::Disk,
+            RouteLayerKind::Partition,
+            RouteLayerKind::Encryption,
+            RouteLayerKind::LvmPhysicalVolume,
+            RouteLayerKind::LvmVolumeGroup,
+            RouteLayerKind::LvmLogicalVolume,
+            RouteLayerKind::Filesystem,
+            RouteLayerKind::Mount,
+        ]
+    );
+    assert!(route.issues.iter().any(|issue| {
+        issue.kind == RouteIssueKind::AdapterRequired && issue.code == "luks-adapter-required"
+    }));
+    assert_eq!(adapter.profile, ExtendPlannerProfile::Lvm);
+    assert_eq!(adapter.status, LayerRouteStatus::AdapterRequired);
+}
+
+#[test]
 fn multi_pv_lvm_route_is_visible_but_not_claimed_as_supported_profile() {
     let mut snapshot = lvm_snapshot();
     snapshot.lvm.as_mut().unwrap().volume_groups[0].pv_count = 2;
@@ -219,6 +294,23 @@ fn inactive_linear_lv_is_visible_but_requires_adapter() {
     assert!(route.issues.iter().any(|issue| {
         issue.kind == RouteIssueKind::AdapterRequired && issue.code == "lvm-layout-adapter-required"
     }));
+}
+
+#[test]
+fn snapshot_lv_role_is_visible_but_requires_dedicated_lvm_adapter() {
+    let mut snapshot = lvm_snapshot();
+    snapshot.lvm.as_mut().unwrap().logical_volumes[0].role = Some("snapshot".into());
+
+    let route = analyze_layer_route(&snapshot, "/");
+    let adapter = resolve_extend_route_adapter(&snapshot, "/");
+
+    assert_eq!(route.status, LayerRouteStatus::AdapterRequired);
+    assert!(route.issues.iter().any(|issue| {
+        issue.kind == RouteIssueKind::AdapterRequired
+            && issue.code == "lvm-layout-adapter-required"
+    }));
+    assert_eq!(adapter.profile, ExtendPlannerProfile::Lvm);
+    assert_eq!(adapter.status, LayerRouteStatus::AdapterRequired);
 }
 
 #[test]
@@ -452,6 +544,46 @@ fn multipath_layer_is_visible_and_requires_dedicated_adapter() {
     assert!(route.issues.iter().any(|issue| {
         issue.kind == RouteIssueKind::AdapterRequired && issue.code == "multipath-adapter-required"
     }));
+}
+
+#[test]
+fn unknown_nested_device_mapper_layer_is_visible_and_blocks_generic_growth() {
+    let snapshot: HostSnapshot = serde_json::from_value(json!({
+        "storage": {"block_devices": [{
+            "name":"sdc","kernel_name":"sdc","path":"/dev/sdc","kind":"disk",
+            "size_bytes":20_000_000_000u64,"mountpoints":[],"children":[{
+                "name":"dm-9","kernel_name":"dm-9","path":"/dev/dm-9","kind":"unknown",
+                "size_bytes":19_000_000_000u64,"uuid":"mystery-fs",
+                "filesystem":{"fs_type":"ext4","version":"1.0"},
+                "mountpoints":["/mystery"],"parent_kernel_name":"sdc","children":[]
+            }]
+        }]},
+        "partition_tables":[],
+        "mounts":[
+            {"source":"/dev/dm-9","target":"/mystery","fs_type":"ext4","options":["rw"]}
+        ],
+        "fstab":[],
+        "swaps":[],
+        "lvm":null,
+        "diagnostics":[],
+        "collectors":[]
+    }))
+    .unwrap();
+
+    let route = analyze_layer_route(&snapshot, "/mystery");
+    let adapter = resolve_extend_route_adapter(&snapshot, "/mystery");
+
+    assert_eq!(route.status, LayerRouteStatus::Blocked);
+    assert!(route
+        .layers
+        .iter()
+        .any(|layer| layer.kind == RouteLayerKind::Unknown));
+    assert!(route.issues.iter().any(|issue| {
+        issue.kind == RouteIssueKind::Blocker && issue.code == "unknown-layer"
+    }));
+    assert_eq!(adapter.profile, ExtendPlannerProfile::LegacyFailClosed);
+    assert_eq!(adapter.status, LayerRouteStatus::Blocked);
+    assert!(adapter.issue_codes.iter().any(|code| code == "unknown-layer"));
 }
 
 #[test]
