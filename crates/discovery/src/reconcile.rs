@@ -432,7 +432,6 @@ fn collect_ids<'a>(
     }
 }
 
-
 fn is_dos_extended_partition(table: &PartitionTable, partition_type: Option<&str>) -> bool {
     if !table
         .label
