@@ -440,3 +440,46 @@ fn layered_targets_use_semantic_blocker_instead_of_unrelated_builder_error() {
         .iter()
         .any(|blocker| blocker.code == "lvm-missing"));
 }
+
+#[test]
+fn whole_disk_filesystem_gets_explicit_capacity_evidence_blocker() {
+    let snapshot: HostSnapshot = serde_json::from_value(json!({
+        "storage": {"block_devices": [{
+            "name":"vdb","kernel_name":"vdb","path":"/dev/vdb","kind":"disk",
+            "size_bytes":40_000_000_000u64,"uuid":"whole-fs",
+            "filesystem":{"fs_type":"ext4","version":"1.0"},
+            "mountpoints":["/archive"],"children":[]
+        }]},
+        "partition_tables":[],
+        "mounts":[
+            {"source":"/dev/vdb","target":"/archive","fs_type":"ext4","options":["rw"]}
+        ],
+        "fstab":[],
+        "swaps":[],
+        "lvm":null,
+        "diagnostics":[],
+        "collectors":[]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        select_extend_planner_profile(&snapshot, "/archive"),
+        ExtendPlannerProfile::WholeBlockFilesystem
+    );
+
+    let plan = plan_extend(
+        &snapshot,
+        &HostCapabilities { tools: vec![] },
+        ExtendRequest {
+            target: "/archive".into(),
+            growth: Growth::MaxFree,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert_eq!(
+        plan.blockers()[0].code,
+        "whole-device-filesystem-capacity-unmodeled"
+    );
+}
