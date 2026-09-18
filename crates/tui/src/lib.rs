@@ -1378,6 +1378,29 @@ mod tests {
         assert_eq!(state.plan_growth(), Growth::ByBytes(512 * 1024 * 1024));
     }
 
+
+    #[test]
+    fn plain_equals_in_plans_is_treated_as_plus_key() {
+        use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let snap = snapshot();
+        let mut state = AppState::new(&snap);
+        state.section_index = 5;
+
+        let equals = KeyEvent {
+            code: KeyCode::Char('='),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+
+        assert_eq!(
+            handle_key_event(&mut state, &snap, equals),
+            LoopControl::Continue
+        );
+        assert_eq!(state.plan_growth(), Growth::ByBytes(1024 * 1024 * 1024));
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
