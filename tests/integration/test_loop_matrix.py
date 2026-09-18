@@ -287,8 +287,27 @@ class ExerciseTests(unittest.TestCase):
             target = Path(tmp)
             (target / "readonly-sentinel").write_bytes(b"original")
             before = {"partition_tables": [{"device": "/dev/loop987654", "partitions": []}],
-                      "storage": {"block_devices": [{"path": "/dev/loop987654", "size_bytes": 100}]},
-                      "lvm": {"physical_volumes": [], "volume_groups": [], "logical_volumes": []},
+                      "storage": {"block_devices": [{
+                          "path": "/dev/loop987654", "kind": "loop", "size_bytes": 100,
+                          "children": [{
+                              "path": "/dev/loop987654p1", "kind": "partition",
+                              "uuid": "pv-uuid", "children": [{
+                                  "path": "/dev/mapper/lsmtestabc-data", "kind": "lvm",
+                                  "uuid": "fs-uuid", "children": []
+                              }]
+                          }]
+                      }]},
+                      "lvm": {
+                          "physical_volumes": [{
+                              "name": "/dev/loop987654p1", "uuid": "pv-uuid",
+                              "vg_name": "lsmtestabc"
+                          }],
+                          "volume_groups": [{"name": "lsmtestabc", "uuid": "vg-uuid"}],
+                          "logical_volumes": [{
+                              "name": "data", "path": "/dev/lsmtestabc/data",
+                              "uuid": "lv-uuid", "vg_name": "lsmtestabc"
+                          }]
+                      },
                       "diagnostics": []}
             after = copy.deepcopy(before)
             if drift:
@@ -311,7 +330,7 @@ class ExerciseTests(unittest.TestCase):
                         return after
                     if readiness_drift and self.sample_count == 1:
                         early = copy.deepcopy(before)
-                        early["storage"]["block_devices"][0]["uuid"] = None
+                        early["storage"]["block_devices"][0]["children"][0]["children"][0]["uuid"] = None
                         return early
                     return before
                 def run(self, name, *args, allowed=(0,)):
