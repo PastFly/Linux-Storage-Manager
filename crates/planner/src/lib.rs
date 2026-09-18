@@ -1604,10 +1604,7 @@ fn extend_profile_from_route(route: &LayerRoute) -> ExtendPlannerProfile {
     }
 }
 
-pub fn resolve_extend_route_adapter(
-    snapshot: &HostSnapshot,
-    target: &str,
-) -> ExtendRouteAdapter {
+pub fn resolve_extend_route_adapter(snapshot: &HostSnapshot, target: &str) -> ExtendRouteAdapter {
     let route = analyze_layer_route(snapshot, target);
     ExtendRouteAdapter {
         profile: extend_profile_from_route(&route),
