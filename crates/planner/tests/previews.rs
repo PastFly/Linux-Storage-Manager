@@ -661,6 +661,7 @@ fn dos_extended_container_hides_its_internal_logical_space_from_generic_create()
                 .iter()
                 .any(|blocker| blocker.contains("DOS/MBR"))
         }));
+}
 
 #[test]
 fn scenario_contract_keeps_multiple_filesystem_targets_selectable() {
@@ -895,4 +896,3 @@ fn create_plan_blocks_conflicting_mountpoint_and_invalid_swap_options() {
         .any(|blocker| blocker.code == "create-swap-options-invalid"));
 }
 
-}
