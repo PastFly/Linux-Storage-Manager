@@ -302,8 +302,6 @@ mod tests {
         assert!(Cli::try_parse_from(["storagemgr", "plan", "targets"]).is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "targets", "--json"]).is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "create-spaces"]).is_ok());
-        assert!(
-            Cli::try_parse_from(["storagemgr", "plan", "create-spaces", "--json"]).is_ok()
-        );
+        assert!(Cli::try_parse_from(["storagemgr", "plan", "create-spaces", "--json"]).is_ok());
     }
 }
