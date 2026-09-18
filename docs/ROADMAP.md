@@ -53,6 +53,7 @@ Goal: safely understand a host before changing anything.
 - [x] Add a read-only Create intent planner for filesystem/swap on verified VG free space and partition-table gap/tail sources.
 - [x] Add `plan create SOURCE_ID --by SIZE|--max --purpose filesystem|swap` plus TUI size/purpose/ext4-XFS controls.
 - [x] Keep blank-disk Create plans blocked until partition-table/alignment policy is explicitly resolved instead of guessing.
+- [x] Add exact blank-disk Create previews for explicit GPT or DOS/MBR policy with sector-aware metadata reservation, 1 MiB alignment and 512B/4Kn regression coverage.
 - [x] Add read-only ext4/XFS filesystem metadata/version/features preflight evidence and expose it in strict previews.
 - [x] Add filesystem block-size/block-count/total-size evidence from ext4 superblock and XFS data geometry.
 - [x] Add executor-grade read-only filesystem decision policy: ext4 online/offline gating, XFS mounted grow dry-run plus explicit no-modify scrub requirement, and no automatic repair.
