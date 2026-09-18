@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harness:
+    name: Harness safety tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test harness without root or storage tools
+        run: bash tools/validate.sh --source-only
+
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-24.04
+    needs: harness
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Rust 1.88
+        id: toolchain
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Fetch pinned dependencies
+        id: resolve
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo fetch --locked
+      - name: Clippy
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Test
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo test --locked --workspace
+      # Preserve generated formatting and dependency evidence for review.
+      # This runs AFTER checks and cannot turn failed checks into success.
+      - name: Collect source and formatting diagnostics
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/ci-diagnostics"
+          git rev-parse HEAD > "${RUNNER_TEMP}/ci-diagnostics/checkout-sha.txt"
+          git rev-parse HEAD^{tree} > "${RUNNER_TEMP}/ci-diagnostics/checkout-tree.txt"
+          git archive --format=tar HEAD > "${RUNNER_TEMP}/ci-diagnostics/source.tar"
+          cargo fmt --all
+          git diff --binary -- crates > "${RUNNER_TEMP}/ci-diagnostics/rustfmt.patch"
+          if test -f Cargo.lock; then
+            cp Cargo.lock "${RUNNER_TEMP}/ci-diagnostics/Cargo.lock"
+          fi
+      - name: Upload build diagnostics
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-diagnostics/
+          retention-days: 1
+          if-no-files-found: error
+
+  loop-integration:
+    name: Loop integration
+    runs-on: ubuntu-24.04
+    needs: rust
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@1.88.0
+      - name: Install storage test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lvm2 e2fsprogs xfsprogs util-linux fdisk
+      - name: Build storagemgr
+        run: cargo build --locked --release --workspace
+      - name: Test planning on disposable ext4 and XFS fixtures
+        run: |
+          for attempt in 1 2 3; do
+            echo "Integration repetition ${attempt}/3"
+            sudo python3 -I tests/integration/loop_matrix.py \
+              --allow-disposable-loop-tests \
+              "${GITHUB_WORKSPACE}/target/release/storagemgr"
+          done
+
+      - name: Package tested read-only prototype
+        env:
+          SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          OUT="${RUNNER_TEMP}/storagemgr-linux-x86_64"
+          mkdir -p "${OUT}"
+          cp target/release/storagemgr "${OUT}/storagemgr"
+          printf 'Source head: %s\nTested checkout: %s\nPlatform: Linux x86_64, Ubuntu 24.04 runner\nMode: read-only M0/M1A prototype; no apply/executor\n' \
+            "${SOURCE_HEAD}" "$(git rev-parse HEAD)" > "${OUT}/BUILD_INFO.txt"
+          cp README.md "${OUT}/README.md"
+          (cd "${OUT}" && sha256sum storagemgr > SHA256SUMS)
+          tar -C "${OUT}" -czf "${RUNNER_TEMP}/storagemgr-linux-x86_64.tar.gz" storagemgr BUILD_INFO.txt README.md SHA256SUMS
+      - name: Upload tested prototype
+        uses: actions/upload-artifact@v4
+        with:
+          name: storagemgr-linux-x86_64-${{ github.run_id }}
+          path: ${{ runner.temp }}/storagemgr-linux-x86_64.tar.gz
+          retention-days: 7
+          if-no-files-found: error
