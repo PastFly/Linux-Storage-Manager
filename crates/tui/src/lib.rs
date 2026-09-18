@@ -1131,6 +1131,7 @@ fn provisioning_kind_label(kind: ProvisioningSpaceKind) -> &'static str {
         ProvisioningSpaceKind::DiskGap => "Disk gap",
         ProvisioningSpaceKind::DiskTail => "Disk tail",
         ProvisioningSpaceKind::LvmFreeExtents => "VG free",
+        ProvisioningSpaceKind::BlockedDisk => "Blocked disk",
     }
 }
 
@@ -1970,6 +1971,12 @@ fn plan_candidate_rows(snapshot: &HostSnapshot) -> Vec<DeviceRow<'_>> {
 
 fn create_size_options(snapshot: &HostSnapshot, selected_source: usize) -> Vec<Growth> {
     let opportunities = list_provisioning_opportunities(snapshot);
+    if opportunities
+        .get(selected_source)
+        .is_some_and(|opportunity| opportunity.kind == ProvisioningSpaceKind::BlockedDisk)
+    {
+        return vec![Growth::MaxFree];
+    }
     let capacity = opportunities
         .get(selected_source)
         .map(|opportunity| opportunity.available_bytes)

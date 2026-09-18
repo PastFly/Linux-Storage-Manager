@@ -97,6 +97,15 @@ A blank disk is never treated as "all bytes are freely writable" in a Create pla
 - the TUI shows GPT as the visible default and allows switching to DOS/MBR with `t`;
 - all of this remains preview-only until a separately approved write-capable executor exists.
 
+## Unusable partition-table evidence
+
+A disk is not free space merely because usable ranges cannot be calculated.
+
+- a disk that still reports a partition-table marker is never reclassified as blank solely because authoritative table geometry is absent;
+- an authoritative table with an unsupported label, incomplete bounds or internally inconsistent ranges is exposed as a blocked disk with zero allocatable capacity;
+- blocked disks cannot enter a Create allocation route and must direct the operator toward recovery/reconciliation;
+- direct Grow keeps returning explicit partition-table/geometry blockers instead of guessing adjacent capacity.
+
 ## Protected boot partition roles
 
 Generic partition growth must not treat boot metadata as ordinary data capacity.

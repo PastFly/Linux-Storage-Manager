@@ -265,6 +265,7 @@ pub enum ProvisioningSpaceKind {
     DiskGap,
     DiskTail,
     LvmFreeExtents,
+    BlockedDisk,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -798,6 +799,39 @@ fn provisioning_opportunity_id(
     format!("space-{:x}", Sha256::digest(material.as_bytes()))
 }
 
+fn blocked_disk_opportunity(
+    disk: &BlockDevice,
+    disk_path: &str,
+    code: &str,
+    reason: &str,
+) -> ProvisioningOpportunity {
+    ProvisioningOpportunity {
+        id: provisioning_opportunity_id(
+            ProvisioningSpaceKind::BlockedDisk,
+            disk_path,
+            Some(disk_path),
+            None,
+            None,
+            None,
+        ),
+        code: code.to_owned(),
+        kind: ProvisioningSpaceKind::BlockedDisk,
+        source: disk_path.to_owned(),
+        disk: Some(disk_path.to_owned()),
+        volume_group: None,
+        available_bytes: 0,
+        sector_size_bytes: disk.logical_sector_bytes,
+        start_sector: None,
+        sector_count: None,
+        advisory_only: true,
+        future_actions: vec![
+            "inspect and reconcile the partition table with recovery-capable tooling".to_owned(),
+            "rediscover storage and require authoritative geometry before provisioning".to_owned(),
+        ],
+        blockers: vec![reason.to_owned()],
+    }
+}
+
 pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<ProvisioningOpportunity> {
     let mut opportunities = Vec::new();
 
@@ -859,7 +893,11 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
             .filter(|table| table.device == *disk_path)
             .collect();
 
-        if matching_tables.is_empty() && disk.children.is_empty() && disk.filesystem.is_none() {
+        if matching_tables.is_empty()
+            && disk.children.is_empty()
+            && disk.filesystem.is_none()
+            && disk.partition_table.is_none()
+        {
             let mut blockers =
                 vec!["storage-mutating Create executor is not implemented in M1A".to_owned()];
             if !partition_tables_complete {
@@ -897,11 +935,40 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
             continue;
         }
 
-        if matching_tables.len() != 1 || !partition_tables_complete {
+        if !partition_tables_complete {
+            if !matching_tables.is_empty() {
+                opportunities.push(blocked_disk_opportunity(
+                    disk,
+                    disk_path,
+                    "partition-table-discovery-incomplete",
+                    "authoritative partition-table discovery is incomplete; provisioning geometry is not trusted",
+                ));
+            }
             continue;
         }
+
+        if matching_tables.is_empty() {
+            continue;
+        }
+
+        if matching_tables.len() != 1 {
+            opportunities.push(blocked_disk_opportunity(
+                disk,
+                disk_path,
+                "partition-table-evidence-ambiguous",
+                "multiple authoritative partition-table records refer to the same disk",
+            ));
+            continue;
+        }
+
         let table = matching_tables[0];
         let Some(free_space) = partition_free_ranges(disk, table) else {
+            opportunities.push(blocked_disk_opportunity(
+                disk,
+                disk_path,
+                "partition-table-geometry-unusable",
+                "partition-table label or geometry is unsupported, incomplete or internally inconsistent; recovery/reconciliation is required before provisioning",
+            ));
             continue;
         };
 
@@ -1174,6 +1241,14 @@ pub fn resolve_create_source_adapter(
     }
 
     match source.kind {
+        ProvisioningSpaceKind::BlockedDisk => Err(blocked(
+            "create-source-unusable",
+            source
+                .blockers
+                .first()
+                .map(String::as_str)
+                .unwrap_or("selected disk is blocked from provisioning until partition-table evidence is repaired"),
+        )),
         ProvisioningSpaceKind::LvmFreeExtents => {
             let vg_name = source.volume_group.as_deref().ok_or_else(|| {
                 blocked(
@@ -1523,6 +1598,16 @@ pub fn plan_create(
         "revalidate the complete storage snapshot and exact selected free-space source".to_owned(),
     );
     match source_adapter.kind {
+        ProvisioningSpaceKind::BlockedDisk => {
+            plan.blockers.push(blocked(
+                "create-source-unusable",
+                "blocked disk cannot enter a Create route",
+            ));
+            plan.allocation = None;
+            plan.steps.clear();
+            plan.plan_id = fingerprint(&plan)?;
+            return Ok(plan);
+        }
         ProvisioningSpaceKind::LvmFreeExtents => {
             plan.steps
                 .push("create and verify LVM metadata backup".to_owned());
