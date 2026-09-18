@@ -1406,10 +1406,7 @@ fn lvm_preflight_checks() -> Vec<PreflightCheck> {
     checks
 }
 
-fn filesystem_evidence_checks(
-    snapshot: &HostSnapshot,
-    mountpoint: &str,
-) -> Vec<PreflightCheck> {
+fn filesystem_evidence_checks(snapshot: &HostSnapshot, mountpoint: &str) -> Vec<PreflightCheck> {
     let matches: Vec<_> = snapshot
         .filesystem_preflight
         .iter()
@@ -1465,7 +1462,12 @@ fn filesystem_evidence_checks(
                 .fs_version
                 .as_deref()
                 .filter(|value| !value.is_empty())
-                .or_else(|| evidence.revision.as_deref().filter(|value| !value.is_empty()));
+                .or_else(|| {
+                    evidence
+                        .revision
+                        .as_deref()
+                        .filter(|value| !value.is_empty())
+                });
             preflight_check(
                 "filesystem-version-observed",
                 if version.is_some() {
