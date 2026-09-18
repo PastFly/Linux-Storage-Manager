@@ -120,6 +120,8 @@ fn fresh_preview_builds_repeatable_non_mutating_handoff() {
     assert!(first.owner_acceptance_required);
     assert_eq!(first.plan.plan_id(), plan.plan_id());
     assert_eq!(first.plan.target(), "/data");
+    assert_eq!(first.plan_basis_digest, plan.basis_digest());
+    assert!(!first.capabilities_digest.is_empty());
     assert_eq!(first.target_identity.target, "/data");
     assert_eq!(
         first.guard.baseline_manifest_digest,
