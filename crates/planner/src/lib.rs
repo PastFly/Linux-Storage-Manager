@@ -420,9 +420,22 @@ impl CreatePlanPreview {
         }
         if let Some(allocation) = &self.allocation {
             text.push_str(&format!(
-                "Requested: {} bytes\nAllocated: {} bytes\nRemaining: {} bytes\n",
-                allocation.requested_bytes, allocation.rounded_bytes, allocation.remaining_bytes
+                "Requested: {} bytes\nAllocated: {} bytes\nAvailable under selected policy: {} bytes\nRemaining: {} bytes\nAllocation unit: {} bytes\n",
+                allocation.requested_bytes,
+                allocation.rounded_bytes,
+                allocation.available_bytes,
+                allocation.remaining_bytes,
+                allocation.allocation_unit_bytes
             ));
+            if let Some(policy) = allocation.partition_table {
+                text.push_str(&format!("Partition table: {policy:?}\n"));
+            }
+            if let Some(start_sector) = allocation.start_sector {
+                text.push_str(&format!("Start sector: {start_sector}\n"));
+            }
+            if let Some(sector_count) = allocation.sector_count {
+                text.push_str(&format!("Sector count: {sector_count}\n"));
+            }
         }
         for blocker in &self.blockers {
             text.push_str(&format!(
@@ -1394,7 +1407,15 @@ pub fn plan_create(
             ));
         }
         ProvisioningSpaceKind::BlankDisk => {
-            let policy = allocation_partition_table.unwrap_or(CreatePartitionTablePolicy::Gpt);
+            let Some(policy) = allocation_partition_table else {
+                plan.blockers.push(blocked(
+                    "blank-disk-policy-required",
+                    "blank-disk partition-table policy disappeared before route construction",
+                ));
+                plan.allocation = None;
+                plan.plan_id = fingerprint(&plan)?;
+                return Ok(plan);
+            };
             let label = match policy {
                 CreatePartitionTablePolicy::Gpt => "GPT",
                 CreatePartitionTablePolicy::Dos => "DOS/MBR",
