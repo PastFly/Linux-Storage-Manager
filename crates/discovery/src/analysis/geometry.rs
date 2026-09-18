@@ -182,11 +182,11 @@ fn adjacent_capacity_dos_primary(
         }
 
         let is_extended = matches!(partition_type, 0x05 | 0x0f | 0x85);
-        let inside_extended = extended_ranges.iter().any(|(ext_start, ext_end, ext_node)| {
-            child_path != *ext_node
-                && record.start_sector >= *ext_start
-                && end <= *ext_end
-        });
+        let inside_extended = extended_ranges
+            .iter()
+            .any(|(ext_start, ext_end, ext_node)| {
+                child_path != *ext_node && record.start_sector >= *ext_start && end <= *ext_end
+            });
 
         if !is_extended {
             let size_bytes = record.size_sectors.checked_mul(sector)?;
