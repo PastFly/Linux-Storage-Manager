@@ -193,7 +193,6 @@ fn fixture_snapshot(vg_free: u64) -> HostSnapshot {
     }
 }
 
-
 #[test]
 fn dos_primary_before_extended_container_has_known_zero_adjacent_capacity() {
     let storage = parse_lsblk_json(
@@ -255,6 +254,9 @@ fn dos_primary_before_extended_container_has_known_zero_adjacent_capacity() {
     };
 
     let analysis = analyze_extendability(&snapshot, "/").unwrap();
-    assert_eq!(analysis.status, ExtendabilityStatus::NeedsUnderlyingCapacity);
+    assert_eq!(
+        analysis.status,
+        ExtendabilityStatus::NeedsUnderlyingCapacity
+    );
     assert_eq!(analysis.potential_underlying_growth_bytes, Some(0));
 }
