@@ -45,6 +45,30 @@ pub struct Filesystem {
     pub version: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilesystemProbeState {
+    Verified,
+    Partial,
+    Unavailable,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilesystemPreflightEvidence {
+    pub device: String,
+    pub mountpoint: Option<String>,
+    pub fs_type: String,
+    pub fs_version: Option<String>,
+    pub state: FilesystemProbeState,
+    pub filesystem_state: Option<String>,
+    pub revision: Option<String>,
+    #[serde(default)]
+    pub features: Vec<String>,
+    pub grow_check_passed: Option<bool>,
+    pub detail: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostCapabilities {
     pub tools: Vec<ToolCapability>,
@@ -194,6 +218,8 @@ pub struct HostSnapshot {
     pub fstab: Vec<FstabEntry>,
     pub swaps: Vec<SwapEntry>,
     pub lvm: Option<LvmInventory>,
+    #[serde(default)]
+    pub filesystem_preflight: Vec<FilesystemPreflightEvidence>,
     pub diagnostics: Vec<StorageDiagnostic>,
     pub collectors: Vec<CollectorStatus>,
 }
