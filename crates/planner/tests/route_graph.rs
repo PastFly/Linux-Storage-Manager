@@ -261,3 +261,38 @@ fn ambiguous_mount_target_fails_closed() {
         issue.kind == RouteIssueKind::Blocker && issue.code == "route-target-ambiguous"
     }));
 }
+
+
+#[test]
+fn multipath_layer_is_visible_and_requires_dedicated_adapter() {
+    let snapshot: HostSnapshot = serde_json::from_value(json!({
+        "storage": {"block_devices": [{
+            "name":"mpatha","kernel_name":"dm-0","path":"/dev/mapper/mpatha",
+            "kind":"multipath","size_bytes":40_000_000_000u64,"uuid":"fs-san",
+            "filesystem":{"fs_type":"xfs","version":"5"},
+            "mountpoints":["/san"],"children":[]
+        }]},
+        "partition_tables":[],
+        "mounts":[
+            {"source":"/dev/mapper/mpatha","target":"/san","fs_type":"xfs","options":["rw"]}
+        ],
+        "fstab":[],
+        "swaps":[],
+        "lvm":null,
+        "diagnostics":[],
+        "collectors":[]
+    }))
+    .unwrap();
+
+    let route = analyze_layer_route(&snapshot, "/san");
+
+    assert_eq!(route.status, LayerRouteStatus::AdapterRequired);
+    assert!(route
+        .layers
+        .iter()
+        .any(|layer| layer.kind == RouteLayerKind::Multipath));
+    assert!(route.issues.iter().any(|issue| {
+        issue.kind == RouteIssueKind::AdapterRequired
+            && issue.code == "multipath-adapter-required"
+    }));
+}
