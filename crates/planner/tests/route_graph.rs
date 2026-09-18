@@ -529,3 +529,135 @@ fn whole_disk_filesystem_uses_verified_filesystem_geometry_for_max_growth() {
     assert_eq!(targets[0].kind, ExtendTargetKind::WholeBlockFilesystem);
     assert_eq!(targets[0].verified_growth_bytes, Some(8589934592));
 }
+
+
+#[test]
+fn whole_disk_xfs_uses_verified_geometry_for_filesystem_only_growth() {
+    let snapshot: HostSnapshot = serde_json::from_value(json!({
+        "storage": {"block_devices": [{
+            "name":"vdc","kernel_name":"vdc","path":"/dev/vdc","kind":"disk",
+            "size_bytes":42949672960u64,"uuid":"whole-xfs",
+            "filesystem":{"fs_type":"xfs","version":"5"},
+            "mountpoints":["/xfs-archive"],"children":[]
+        }]},
+        "partition_tables":[],
+        "mounts":[
+            {"source":"/dev/vdc","target":"/xfs-archive","fs_type":"xfs","options":["rw"]}
+        ],
+        "fstab":[],
+        "swaps":[],
+        "lvm":null,
+        "filesystem_preflight":[{
+            "device":"/dev/vdc",
+            "mountpoint":"/xfs-archive",
+            "fs_type":"xfs",
+            "fs_version":"5",
+            "state":"verified",
+            "filesystem_state":null,
+            "revision":null,
+            "features":["crc=1","reflink=1","bigtime=1"],
+            "block_size_bytes":4096,
+            "block_count":8388608,
+            "size_bytes":34359738368u64,
+            "grow_check_passed":true,
+            "detail":null
+        }],
+        "diagnostics":[],
+        "collectors":[
+            {"component":"lsblk","state":"complete"},
+            {"component":"mounts","state":"complete"},
+            {"component":"fstab","state":"complete"},
+            {"component":"swap","state":"complete"}
+        ]
+    }))
+    .unwrap();
+
+    let plan = plan_extend(
+        &snapshot,
+        &HostCapabilities {
+            tools: vec![lsm_core::ToolCapability {
+                name: "xfs_growfs".into(),
+                available: true,
+            }],
+        },
+        ExtendRequest {
+            target: "/xfs-archive".into(),
+            growth: Growth::MaxFree,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Preview);
+    let change = plan.filesystem_size_change().unwrap();
+    assert_eq!(change.fs_type, "xfs");
+    assert_eq!(change.rounded_growth_bytes, 8589934592);
+    assert_eq!(change.expected_filesystem_size_bytes, 42949672960);
+    assert_eq!(plan.steps().len(), 3);
+}
+
+#[test]
+fn whole_disk_filesystem_by_size_rounds_up_to_filesystem_block_size() {
+    let snapshot: HostSnapshot = serde_json::from_value(json!({
+        "storage": {"block_devices": [{
+            "name":"vdd","kernel_name":"vdd","path":"/dev/vdd","kind":"disk",
+            "size_bytes":42949672960u64,"uuid":"whole-ext4-rounding",
+            "filesystem":{"fs_type":"ext4","version":"1.0"},
+            "mountpoints":["/rounding"],"children":[]
+        }]},
+        "partition_tables":[],
+        "mounts":[
+            {"source":"/dev/vdd","target":"/rounding","fs_type":"ext4","options":["rw"]}
+        ],
+        "fstab":[],
+        "swaps":[],
+        "lvm":null,
+        "filesystem_preflight":[{
+            "device":"/dev/vdd",
+            "mountpoint":"/rounding",
+            "fs_type":"ext4",
+            "fs_version":"1.0",
+            "state":"verified",
+            "filesystem_state":"clean",
+            "revision":"1 (dynamic)",
+            "features":["has_journal","extent","64bit","metadata_csum"],
+            "block_size_bytes":4096,
+            "block_count":8388608,
+            "size_bytes":34359738368u64,
+            "grow_check_passed":null,
+            "detail":null
+        }],
+        "diagnostics":[],
+        "collectors":[
+            {"component":"lsblk","state":"complete"},
+            {"component":"mounts","state":"complete"},
+            {"component":"fstab","state":"complete"},
+            {"component":"swap","state":"complete"}
+        ]
+    }))
+    .unwrap();
+
+    let plan = plan_extend(
+        &snapshot,
+        &HostCapabilities {
+            tools: vec![lsm_core::ToolCapability {
+                name: "resize2fs".into(),
+                available: true,
+            }],
+        },
+        ExtendRequest {
+            target: "/rounding".into(),
+            growth: Growth::ByBytes(1_048_577),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Preview);
+    let change = plan.filesystem_size_change().unwrap();
+    assert_eq!(change.requested_growth_bytes, 1_048_577);
+    assert_eq!(change.rounded_growth_bytes, 1_052_672);
+    assert_eq!(change.filesystem_block_size_bytes, 4096);
+    assert_eq!(
+        change.expected_filesystem_size_bytes,
+        34_360_791_040
+    );
+}
