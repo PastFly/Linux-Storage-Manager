@@ -323,29 +323,6 @@ fn try_build_partition_candidate(
     capabilities: &HostCapabilities,
     request: &ExtendRequest,
 ) -> Result<Option<(PartitionSizeChange, Vec<PlanStep>)>, Blocker> {
-    for component in ["lsblk", "partition_tables", "mounts", "fstab", "swap"] {
-        let status = unique(
-            snapshot
-                .collectors
-                .iter()
-                .filter(|status| status.component == component),
-            "collector-incomplete",
-        )?;
-        ensure(
-            status.state == CollectorState::Complete,
-            "collector-incomplete",
-            "all direct-partition preview collectors must complete",
-        )?;
-    }
-
-    ensure(
-        !snapshot
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error),
-        "diagnostic-error",
-        "the snapshot contains error-level diagnostics",
-    )?;
     ensure(
         !request.target.is_empty() && !request.target.chars().any(char::is_control),
         "invalid-target",
@@ -375,6 +352,29 @@ fn try_build_partition_candidate(
     if device.kind != NodeKind::Partition {
         return Ok(None);
     }
+
+    for component in ["lsblk", "partition_tables", "mounts", "fstab", "swap"] {
+        let status = unique(
+            snapshot
+                .collectors
+                .iter()
+                .filter(|status| status.component == component),
+            "collector-incomplete",
+        )?;
+        ensure(
+            status.state == CollectorState::Complete,
+            "collector-incomplete",
+            "all direct-partition preview collectors must complete",
+        )?;
+    }
+    ensure(
+        !snapshot
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error),
+        "diagnostic-error",
+        "the snapshot contains error-level diagnostics",
+    )?;
 
     ensure(
         device.children.is_empty(),
