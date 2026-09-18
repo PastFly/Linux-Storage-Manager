@@ -51,8 +51,11 @@ Goal: safely understand a host before changing anything.
 - [x] Add a dedicated TUI Create section and CLI catalog commands without adding a provisioning executor.
 - [ ] Add filesystem feature/health/version preflight before any future executor work.
 - [ ] Add concurrency/locking design and fresh runtime identity revalidation for M1B.
-- [ ] Generalize the route resolver so one intent can traverse disk -> partition -> PV -> VG -> LV -> filesystem -> mount when each layer is proven safe.
+- [x] Detect advisory whole-disk/backing-device LVM growth routes where the backing device is larger than the current PV.
+- [x] Detect advisory partition -> PV -> VG -> LV -> filesystem routes when authoritative adjacent capacity is proven.
+- [ ] Generalize the route resolver into a reusable layer graph so one intent can traverse any supported disk -> partition -> encryption/RAID -> PV -> VG -> LV -> filesystem -> mount chain.
 - [ ] Add explicit route diagnostics for layered targets such as LUKS, mdraid, multipath, thin/cached LVM and Btrfs so unsupported paths are visible and fail closed.
+- [ ] Add a scenario-matrix test suite derived from docs/SCENARIO_MATRIX.md so each supported/blocked topology has a stable fixture.
 
 M0 must still pass its acceptance gates. M1A has no executor, cannot perform a
 backup or resize, and does not authorize storage mutation. See M1A_PLANNER.md.
