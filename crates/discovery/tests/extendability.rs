@@ -260,3 +260,73 @@ fn dos_primary_before_extended_container_has_known_zero_adjacent_capacity() {
     );
     assert_eq!(analysis.potential_underlying_growth_bytes, Some(0));
 }
+
+
+#[test]
+fn debian12_dos_logical_sibling_reports_real_gap_before_extended_container() {
+    let storage = parse_lsblk_json(
+        r#"{
+          "blockdevices": [{
+            "name":"sda","kname":"sda","path":"/dev/sda","type":"disk",
+            "size":10737418240,"start":null,"log-sec":512,"fstype":null,"fsver":null,
+            "mountpoints":[null],"pkname":null,"model":null,"serial":null,"uuid":null,
+            "partuuid":null,"pttype":"dos","children":[
+              {
+                "name":"sda1","kname":"sda1","path":"/dev/sda1","type":"part",
+                "size":9711910912,"start":2048,"log-sec":512,"fstype":"ext4","fsver":"1.0",
+                "mountpoints":["/"],"pkname":"sda","model":null,"serial":null,
+                "uuid":"042edc87-45f0-4634-ad09-7c228a600fbf","partuuid":"f5b1b569-01","pttype":"dos"
+              },
+              {
+                "name":"sda2","kname":"sda2","path":"/dev/sda2","type":"part",
+                "size":1024,"start":18972670,"log-sec":512,"fstype":null,"fsver":null,
+                "mountpoints":[null],"pkname":"sda","model":null,"serial":null,
+                "uuid":null,"partuuid":"f5b1b569-02","pttype":"dos"
+              },
+              {
+                "name":"sda5","kname":"sda5","path":"/dev/sda5","type":"part",
+                "size":1022361600,"start":18972672,"log-sec":512,"fstype":"swap","fsver":"1",
+                "mountpoints":["[SWAP]"],"pkname":"sda","model":null,"serial":null,
+                "uuid":"a2f7942e-9329-4367-a8cc-33b8a928aed0","partuuid":"f5b1b569-05","pttype":"dos"
+              }
+            ]
+          }]
+        }"#,
+    )
+    .unwrap();
+
+    let table = parse_sfdisk_json(
+        r#"{"partitiontable":{
+          "label":"dos","id":"0xf5b1b569","device":"/dev/sda","unit":"sectors","sectorsize":512,
+          "partitions":[
+            {"node":"/dev/sda1","start":2048,"size":18968576,"type":"83","bootable":true},
+            {"node":"/dev/sda2","start":18972670,"size":1996802,"type":"5"},
+            {"node":"/dev/sda5","start":18972672,"size":1996800,"type":"82"}
+          ]
+        }}"#,
+    )
+    .unwrap();
+
+    let snapshot = HostSnapshot {
+        storage,
+        partition_tables: vec![table],
+        mounts: vec![MountEntry {
+            source: Some("/dev/sda1".into()),
+            target: "/".into(),
+            fs_type: Some("ext4".into()),
+            options: vec!["rw".into()],
+        }],
+        fstab: Vec::new(),
+        swaps: Vec::new(),
+        lvm: None,
+        diagnostics: Vec::new(),
+        collectors: geometry_collectors(),
+    };
+
+    let analysis = analyze_extendability(&snapshot, "/").unwrap();
+    assert_eq!(analysis.status, ExtendabilityStatus::NeedsUnderlyingResize);
+    assert_eq!(
+        analysis.potential_underlying_growth_bytes,
+        Some(1_047_552)
+    );
+}
