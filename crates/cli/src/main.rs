@@ -160,7 +160,7 @@ fn run() -> Result<ExitCode> {
         Some(Command::Tui) | None => {
             let snapshot = discover_snapshot()?;
             let capabilities = discover_capabilities();
-            lsm_tui::run(&snapshot, &capabilities)?;
+            lsm_tui::run(snapshot, capabilities)?;
         }
     }
     Ok(ExitCode::SUCCESS)
