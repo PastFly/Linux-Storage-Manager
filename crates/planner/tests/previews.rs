@@ -634,8 +634,13 @@ fn dos_extended_container_hides_its_internal_logical_space_from_generic_create()
     }];
 
     let extended_end = extended_start + extended_size;
+    let primary_end = primary_start + primary_size;
     let spaces = list_provisioning_opportunities(&snapshot);
 
+    assert!(!spaces.iter().any(|space| {
+        space.kind == ProvisioningSpaceKind::DiskGap
+            && space.start_sector.is_some_and(|start| start < primary_end)
+    }));
     assert!(!spaces.iter().any(|space| {
         space.kind == ProvisioningSpaceKind::DiskGap
             && space
