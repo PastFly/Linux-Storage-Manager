@@ -1,7 +1,5 @@
 use lsm_core::HostSnapshot;
-use lsm_planner::{
-    analyze_layer_route, LayerRouteStatus, RouteIssueKind, RouteLayerKind,
-};
+use lsm_planner::{analyze_layer_route, LayerRouteStatus, RouteIssueKind, RouteLayerKind};
 use serde_json::json;
 
 fn direct_snapshot() -> HostSnapshot {
@@ -86,7 +84,11 @@ fn direct_partition_route_is_semantically_ordered_and_supported() {
     assert_eq!(route.mountpoint.as_deref(), Some("/data"));
     assert!(route.issues.is_empty());
     assert_eq!(
-        route.layers.iter().map(|layer| layer.kind).collect::<Vec<_>>(),
+        route
+            .layers
+            .iter()
+            .map(|layer| layer.kind)
+            .collect::<Vec<_>>(),
         vec![
             RouteLayerKind::Disk,
             RouteLayerKind::Partition,
@@ -103,9 +105,16 @@ fn lvm_route_inserts_pv_vg_and_lv_semantic_layers() {
     let route = analyze_layer_route(&snapshot, "/");
 
     assert_eq!(route.status, LayerRouteStatus::SupportedProfile);
-    assert_eq!(route.resolved_device.as_deref(), Some("/dev/mapper/vg0-root"));
     assert_eq!(
-        route.layers.iter().map(|layer| layer.kind).collect::<Vec<_>>(),
+        route.resolved_device.as_deref(),
+        Some("/dev/mapper/vg0-root")
+    );
+    assert_eq!(
+        route
+            .layers
+            .iter()
+            .map(|layer| layer.kind)
+            .collect::<Vec<_>>(),
         vec![
             RouteLayerKind::Disk,
             RouteLayerKind::Partition,
@@ -119,7 +128,11 @@ fn lvm_route_inserts_pv_vg_and_lv_semantic_layers() {
     assert!(route
         .layers
         .iter()
-        .any(|layer| layer.kind == RouteLayerKind::LvmVolumeGroup && layer.detail.as_deref().is_some_and(|detail| detail.contains("vg0"))));
+        .any(|layer| layer.kind == RouteLayerKind::LvmVolumeGroup
+            && layer
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("vg0"))));
 }
 
 #[test]
@@ -129,7 +142,10 @@ fn lvm_alias_target_resolves_same_route_as_mountpoint() {
     for target in ["/dev/vg0/root", "/dev/mapper/vg0-root", "/dev/dm-0"] {
         let route = analyze_layer_route(&snapshot, target);
         assert_eq!(route.status, LayerRouteStatus::SupportedProfile, "{target}");
-        assert_eq!(route.resolved_device.as_deref(), Some("/dev/mapper/vg0-root"));
+        assert_eq!(
+            route.resolved_device.as_deref(),
+            Some("/dev/mapper/vg0-root")
+        );
     }
 }
 
@@ -165,7 +181,10 @@ fn encryption_layer_is_visible_and_requires_adapter() {
     let route = analyze_layer_route(&snapshot, "/secure");
 
     assert_eq!(route.status, LayerRouteStatus::AdapterRequired);
-    assert!(route.layers.iter().any(|layer| layer.kind == RouteLayerKind::Encryption));
+    assert!(route
+        .layers
+        .iter()
+        .any(|layer| layer.kind == RouteLayerKind::Encryption));
     assert!(route.issues.iter().any(|issue| {
         issue.kind == RouteIssueKind::AdapterRequired && issue.code == "luks-adapter-required"
     }));
@@ -186,6 +205,34 @@ fn multi_pv_lvm_route_is_visible_but_not_claimed_as_supported_profile() {
 }
 
 #[test]
+fn inactive_linear_lv_is_visible_but_requires_adapter() {
+    let mut snapshot = lvm_snapshot();
+    snapshot.lvm.as_mut().unwrap().logical_volumes[0].attributes = Some("-wi-------".into());
+
+    let route = analyze_layer_route(&snapshot, "/");
+
+    assert_eq!(route.status, LayerRouteStatus::AdapterRequired);
+    assert!(route.issues.iter().any(|issue| {
+        issue.kind == RouteIssueKind::AdapterRequired
+            && issue.code == "lvm-layout-adapter-required"
+    }));
+}
+
+#[test]
+fn nonstandard_vg_profile_is_visible_but_requires_adapter() {
+    let mut snapshot = lvm_snapshot();
+    snapshot.lvm.as_mut().unwrap().volume_groups[0].attributes = Some("rz--n-".into());
+
+    let route = analyze_layer_route(&snapshot, "/");
+
+    assert_eq!(route.status, LayerRouteStatus::AdapterRequired);
+    assert!(route.issues.iter().any(|issue| {
+        issue.kind == RouteIssueKind::AdapterRequired
+            && issue.code == "lvm-vg-profile-adapter-required"
+    }));
+}
+
+#[test]
 fn unknown_filesystem_stays_visible_as_adapter_required() {
     let mut snapshot = direct_snapshot();
     snapshot.storage.block_devices[0].children[0]
@@ -199,8 +246,7 @@ fn unknown_filesystem_stays_visible_as_adapter_required() {
 
     assert_eq!(route.status, LayerRouteStatus::AdapterRequired);
     assert!(route.issues.iter().any(|issue| {
-        issue.kind == RouteIssueKind::AdapterRequired
-            && issue.code == "filesystem-adapter-required"
+        issue.kind == RouteIssueKind::AdapterRequired && issue.code == "filesystem-adapter-required"
     }));
 }
 
