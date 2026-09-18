@@ -274,10 +274,7 @@ fn run() -> Result<ExitCode> {
                     }
                 }
                 for issue in &route.issues {
-                    println!(
-                        "{:?} [{}]: {}",
-                        issue.kind, issue.code, issue.message
-                    );
+                    println!("{:?} [{}]: {}", issue.kind, issue.code, issue.message);
                 }
             }
             return Ok(if route.status == lsm_planner::LayerRouteStatus::Blocked {
