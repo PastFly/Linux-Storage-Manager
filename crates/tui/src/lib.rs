@@ -13,8 +13,8 @@ use lsm_core::{
 };
 use lsm_discovery::{analyze_extendability, discover_capabilities, discover_snapshot};
 use lsm_planner::{
-    plan_extend, ExtendRequest, Growth, Operation, PlanStatus, PlanStep, PreflightCheck,
-    PreflightState, Reversibility,
+    plan_extend, ExtendRequest, Growth, LayoutAlternative, Operation, PlanStatus, PlanStep,
+    PreflightCheck, PreflightState, Reversibility,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -777,6 +777,15 @@ fn render_plan_compact(
     let mut lines = plan_summary_lines(target, growth, analysis);
     lines.push(Line::from(""));
     lines.extend(strict_plan_lines(snapshot, capabilities, target, growth));
+    if let Some((opportunity_growth, alternative)) =
+        probe_layout_opportunity(snapshot, capabilities, target)
+    {
+        lines.push(Line::from(""));
+        lines.extend(layout_opportunity_summary_lines(
+            opportunity_growth,
+            &alternative,
+        ));
+    }
     lines.push(Line::from(""));
     lines.push(Line::from("No changes will be made."));
 
@@ -837,6 +846,15 @@ fn render_plan_wide(
             summary.push(Line::from("Planner         Error"));
             summary.push(Line::from(format!("Reason          {error}")));
         }
+    }
+    if let Some((opportunity_growth, alternative)) =
+        probe_layout_opportunity(snapshot, capabilities, target)
+    {
+        summary.push(Line::from(""));
+        summary.extend(layout_opportunity_summary_lines(
+            opportunity_growth,
+            &alternative,
+        ));
     }
     summary.push(Line::from(""));
     summary.push(Line::from("No changes will be made."));
@@ -900,17 +918,30 @@ fn render_plan_wide(
             frame.render_widget(steps, right[1]);
         }
         Ok(plan) => {
-            let message = plan
-                .blockers()
-                .first()
-                .map(|blocker| format!("[{}] {}", blocker.code, blocker.message))
-                .unwrap_or_else(|| "No blocker details available.".to_owned());
-            frame.render_widget(
-                Paragraph::new(message)
-                    .wrap(Wrap { trim: false })
-                    .block(Block::default().borders(Borders::ALL).title(" Preflight ")),
-                columns[1],
-            );
+            if let Some(alternative) = plan.layout_alternatives().first() {
+                frame.render_widget(
+                    Paragraph::new(layout_alternative_lines(alternative))
+                        .wrap(Wrap { trim: false })
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title(" Layout alternative "),
+                        ),
+                    columns[1],
+                );
+            } else {
+                let message = plan
+                    .blockers()
+                    .first()
+                    .map(|blocker| format!("[{}] {}", blocker.code, blocker.message))
+                    .unwrap_or_else(|| "No blocker details available.".to_owned());
+                frame.render_widget(
+                    Paragraph::new(message)
+                        .wrap(Wrap { trim: false })
+                        .block(Block::default().borders(Borders::ALL).title(" Preflight ")),
+                    columns[1],
+                );
+            }
         }
         Err(error) => {
             frame.render_widget(
@@ -1547,6 +1578,102 @@ fn preflight_lines(checks: &[PreflightCheck]) -> Vec<Line<'static>> {
         .collect()
 }
 
+fn layout_opportunity_probe_sizes() -> [u64; 5] {
+    [
+        4 * 1024 * 1024 * 1024,
+        2 * 1024 * 1024 * 1024,
+        1024 * 1024 * 1024,
+        512 * 1024 * 1024,
+        64 * 1024 * 1024,
+    ]
+}
+
+fn probe_layout_opportunity(
+    snapshot: &HostSnapshot,
+    capabilities: &HostCapabilities,
+    target: &str,
+) -> Option<(Growth, LayoutAlternative)> {
+    for bytes in layout_opportunity_probe_sizes() {
+        let growth = Growth::ByBytes(bytes);
+        let plan = plan_extend(
+            snapshot,
+            capabilities,
+            ExtendRequest {
+                target: target.to_owned(),
+                growth,
+            },
+        )
+        .ok()?;
+        if let Some(alternative) = plan.layout_alternatives().first() {
+            return Some((growth, alternative.clone()));
+        }
+    }
+    None
+}
+
+fn layout_opportunity_summary_lines(
+    growth: Growth,
+    alternative: &LayoutAlternative,
+) -> Vec<Line<'static>> {
+    vec![
+        Line::from("Tail opportunity"),
+        Line::from(format!("Potential       {}", growth_label(growth))),
+        Line::from(format!(
+            "Disk tail       {}",
+            human_bytes(alternative.disk_tail_free_bytes)
+        )),
+        Line::from(format!(
+            "Swap migration  {}",
+            human_bytes(alternative.swap_bytes)
+        )),
+        Line::from(format!(
+            "Blocking        {}",
+            alternative.blocking_devices.join(", ")
+        )),
+        Line::from("Strategy        swap partition -> swapfile"),
+    ]
+}
+
+fn layout_alternative_lines(alternative: &LayoutAlternative) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from("Layout alternative"),
+        Line::from(format!(
+            "Target growth   +{}",
+            human_bytes(alternative.requested_growth_bytes)
+        )),
+        Line::from(format!(
+            "Disk tail       {}",
+            human_bytes(alternative.disk_tail_free_bytes)
+        )),
+        Line::from(format!(
+            "Swap migrate    {}",
+            human_bytes(alternative.swap_bytes)
+        )),
+        Line::from(format!(
+            "Root raw grow   {}",
+            human_bytes(alternative.required_partition_growth_bytes)
+        )),
+        Line::from(format!(
+            "Raw tail after  {}",
+            human_bytes(alternative.remaining_raw_tail_bytes)
+        )),
+        Line::from(format!(
+            "Blocking        {}",
+            alternative.blocking_devices.join(", ")
+        )),
+        Line::from(""),
+        Line::from("Alternative steps"),
+    ];
+    for (index, step) in alternative.steps.iter().enumerate() {
+        lines.push(Line::from(format!("{}. {}", index + 1, step)));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(
+        "Advisory only: this layout migration is not executable in M1A.",
+    ));
+    lines
+}
+
 fn growth_label(growth: Growth) -> String {
     match growth {
         Growth::ByBytes(bytes) => format!("+{}", human_bytes(bytes)),
@@ -1616,6 +1743,10 @@ fn strict_plan_lines(
                     "Blocker         [{}] {}",
                     blocker.code, blocker.message
                 )));
+            }
+            if let Some(alternative) = plan.layout_alternatives().first() {
+                lines.push(Line::from(""));
+                lines.extend(layout_alternative_lines(alternative));
             }
             lines
         }
@@ -2520,7 +2651,6 @@ mod tests {
         assert!(toolbar_text(Section::Disks).contains("Refresh"));
         assert!(toolbar_text(Section::Plans).contains("Refresh"));
     }
-
 
     #[test]
     fn layout_alternative_lines_explain_swap_migration_without_claiming_execution() {
