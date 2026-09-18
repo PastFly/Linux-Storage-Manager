@@ -372,3 +372,79 @@ fn blocked_direct_partition_plan_has_no_success_preflight() {
     assert_eq!(plan.status(), PlanStatus::Blocked);
     assert!(plan.preflight_checks().is_empty());
 }
+
+
+fn grown_live_debian_snapshot() -> HostSnapshot {
+    let mut snapshot = live_debian_snapshot();
+    snapshot.storage.block_devices[0].size_bytes = 11 * 1024 * 1024 * 1024;
+    snapshot.swaps = vec![lsm_core::SwapEntry {
+        name: "/dev/sda5".into(),
+        kind: "partition".into(),
+        size_bytes: 1_022_361_600,
+        used_bytes: 0,
+        priority: -2,
+    }];
+    snapshot
+}
+
+#[test]
+fn one_gib_request_reports_tail_swap_layout_alternative() {
+    let plan = plan_extend(
+        &grown_live_debian_snapshot(),
+        &capabilities(),
+        ExtendRequest {
+            target: "/".into(),
+            growth: Growth::ByBytes(1024 * 1024 * 1024),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert!(plan
+        .blockers()
+        .iter()
+        .any(|blocker| blocker.code == "insufficient-adjacent-capacity"));
+
+    let alternatives = plan.layout_alternatives();
+    assert_eq!(alternatives.len(), 1);
+    let alternative = &alternatives[0];
+    assert_eq!(alternative.code, "migrate-tail-swap");
+    assert_eq!(alternative.disk, "/dev/sda");
+    assert_eq!(alternative.target, "/dev/sda1");
+    assert_eq!(alternative.requested_growth_bytes, 1_073_741_824);
+    assert_eq!(alternative.disk_tail_free_bytes, 1_074_790_400);
+    assert_eq!(alternative.swap_bytes, 1_022_361_600);
+    assert_eq!(alternative.required_partition_growth_bytes, 2_096_103_424);
+    assert_eq!(alternative.remaining_raw_tail_bytes, 2_097_152);
+    assert_eq!(
+        alternative.blocking_devices,
+        vec!["/dev/sda2".to_owned(), "/dev/sda5".to_owned()]
+    );
+    assert!(alternative
+        .steps
+        .iter()
+        .any(|step| step.contains("swapfile")));
+    assert!(alternative
+        .steps
+        .iter()
+        .any(|step| step.contains("hibernation")));
+}
+
+#[test]
+fn layout_alternative_is_not_emitted_when_tail_cannot_preserve_swap_and_growth() {
+    let mut snapshot = grown_live_debian_snapshot();
+    snapshot.storage.block_devices[0].size_bytes = 10_500_000_000;
+
+    let plan = plan_extend(
+        &snapshot,
+        &capabilities(),
+        ExtendRequest {
+            target: "/".into(),
+            growth: Growth::ByBytes(1024 * 1024 * 1024),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert!(plan.layout_alternatives().is_empty());
+}
