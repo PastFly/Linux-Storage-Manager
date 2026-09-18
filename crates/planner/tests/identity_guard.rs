@@ -203,7 +203,6 @@ fn disappearing_target_fails_revalidation_closed() {
         .any(|change| change.code == "fresh-target-unresolved"));
 }
 
-
 #[test]
 fn observed_filesystem_size_change_invalidates_target_manifest() {
     let mut snapshot = direct_snapshot();
