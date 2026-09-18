@@ -76,7 +76,7 @@ Goal: safely understand a host before changing anything.
 - [x] Add target identity revalidation tests, including target geometry/LVM changes, filesystem-size changes and unrelated-disk non-invalidation.
 - [x] Add whole-device ext4/XFS filesystem-only growth tests, including max-safe and filesystem-block-aligned partial growth.
 - [x] Add lock/journal regression tests for stale identity, exact approval, pre-mutation abort and post-mutation recovery-required states.
-- [ ] Continue expanding scenario-matrix fixtures until every supported/blocked topology in docs/SCENARIO_MATRIX.md has a stable regression case.
+- [x] Expand scenario-matrix fixtures so every currently supported/blocked M1A topology in docs/SCENARIO_MATRIX.md has a stable regression contract.
 
 M0 must still pass its acceptance gates. M1A has no executor, cannot perform a
 backup or resize, and does not authorize storage mutation. See M1A_PLANNER.md.

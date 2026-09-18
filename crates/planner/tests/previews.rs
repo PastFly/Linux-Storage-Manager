@@ -498,6 +498,30 @@ fn with_gpt_tail(mut snapshot: HostSnapshot) -> HostSnapshot {
 }
 
 #[test]
+fn no_verified_underlying_capacity_never_fabricates_a_growth_route() {
+    let (mut snapshot, caps) = input();
+
+    let pv_device_size = snapshot.storage.block_devices[0].children[0].size_bytes;
+    let lvm = snapshot.lvm.as_mut().unwrap();
+    lvm.physical_volumes[0].size_bytes = pv_device_size;
+    lvm.physical_volumes[0].free_bytes = 0;
+    lvm.volume_groups[0].free_bytes = 0;
+    lvm.volume_groups[0].free_extent_count = Some(0);
+
+    let request = request("/", Growth::MaxFree);
+    assert!(analyze_lvm_underlying_growth(&snapshot, &request).is_none());
+
+    let plan = plan_extend(&snapshot, &caps, request).unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert!(plan
+        .blockers()
+        .iter()
+        .any(|blocker| blocker.code == "no-growth"));
+    assert!(plan.growth_route_alternatives().is_empty());
+}
+
+#[test]
 fn chained_lvm_route_uses_partition_tail_when_vg_free_is_insufficient() {
     let (snapshot, caps) = input();
     let snapshot = with_gpt_tail(snapshot);
