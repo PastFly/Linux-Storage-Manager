@@ -704,9 +704,7 @@ fn scenario_contract_keeps_multiple_filesystem_targets_selectable() {
                 node: "/dev/vda1".into(),
                 start_sector: first_start,
                 size_sectors: first_size_sectors,
-                partition_type: Some(
-                    "E6D6D379-F507-44C2-A23C-238F2A3DF928".into(),
-                ),
+                partition_type: Some("E6D6D379-F507-44C2-A23C-238F2A3DF928".into()),
                 uuid: Some("pv-part".into()),
                 name: None,
                 attrs: None,
@@ -716,9 +714,7 @@ fn scenario_contract_keeps_multiple_filesystem_targets_selectable() {
                 node: "/dev/vda2".into(),
                 start_sector: second_start,
                 size_sectors: second_size_sectors,
-                partition_type: Some(
-                    "0FC63DAF-8483-4772-8E79-3D69D8477DE4".into(),
-                ),
+                partition_type: Some("0FC63DAF-8483-4772-8E79-3D69D8477DE4".into()),
                 uuid: Some("var-part".into()),
                 name: None,
                 attrs: None,
@@ -764,7 +760,6 @@ fn scenario_contract_keeps_unknown_filesystem_visible_but_blocked() {
     assert_eq!(targets[0].availability, ExtendTargetAvailability::Blocked);
     assert!(targets[0].reason.contains("filesystem"));
 }
-
 
 #[test]
 fn create_plan_accepts_unique_source_id_prefix() {
@@ -817,7 +812,10 @@ fn create_plan_builds_extent_aligned_filesystem_volume_from_vg_free_space() {
     assert_eq!(allocation.rounded_bytes, GIB);
     assert_eq!(allocation.allocation_unit_bytes, EXTENT);
     assert_eq!(allocation.volume_group.as_deref(), Some("vg0"));
-    assert!(plan.steps().iter().any(|step| step.contains("logical volume")));
+    assert!(plan
+        .steps()
+        .iter()
+        .any(|step| step.contains("logical volume")));
     assert!(plan.steps().iter().any(|step| step.contains("ext4")));
     assert!(plan.steps().iter().any(|step| step.contains("/data")));
 }
@@ -849,7 +847,10 @@ fn create_plan_builds_sector_aligned_partition_filesystem_from_gpt_tail() {
     assert_eq!(allocation.rounded_bytes, GIB + 512);
     assert!(allocation.start_sector.is_some());
     assert!(allocation.sector_count.is_some());
-    assert!(plan.steps().iter().any(|step| step.contains("new partition")));
+    assert!(plan
+        .steps()
+        .iter()
+        .any(|step| step.contains("new partition")));
     assert!(plan.steps().iter().any(|step| step.contains("xfs")));
 }
 
@@ -895,4 +896,3 @@ fn create_plan_blocks_conflicting_mountpoint_and_invalid_swap_options() {
         .iter()
         .any(|blocker| blocker.code == "create-swap-options-invalid"));
 }
-
