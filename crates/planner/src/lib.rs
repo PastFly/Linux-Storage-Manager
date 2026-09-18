@@ -146,6 +146,26 @@ pub struct LayoutAlternative {
     pub steps: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GrowthRouteAlternative {
+    pub code: String,
+    pub summary: String,
+    pub target: String,
+    pub disk: String,
+    pub partition: String,
+    pub physical_volume: String,
+    pub volume_group: String,
+    pub logical_volume: String,
+    pub extent_size_bytes: u64,
+    pub sector_size_bytes: u64,
+    pub existing_vg_free_bytes: u64,
+    pub adjacent_partition_free_bytes: u64,
+    pub max_growth_bytes: u64,
+    pub requested_growth_bytes: u64,
+    pub required_partition_growth_bytes: u64,
+    pub steps: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtendTargetKind {
@@ -211,6 +231,7 @@ pub struct PlanPreview {
     size_change: Option<SizeChange>,
     partition_size_change: Option<PartitionSizeChange>,
     layout_alternatives: Vec<LayoutAlternative>,
+    growth_route_alternatives: Vec<GrowthRouteAlternative>,
     blockers: Vec<Blocker>,
     preflight_checks: Vec<PreflightCheck>,
     steps: Vec<PlanStep>,
@@ -254,6 +275,10 @@ impl PlanPreview {
 
     pub fn layout_alternatives(&self) -> &[LayoutAlternative] {
         &self.layout_alternatives
+    }
+
+    pub fn growth_route_alternatives(&self) -> &[GrowthRouteAlternative] {
+        &self.growth_route_alternatives
     }
 
     pub fn plan_id(&self) -> &str {
@@ -309,6 +334,18 @@ impl PlanPreview {
             ));
             for step in &alternative.steps {
                 text.push_str(&format!("  Alternative step: {step}\n"));
+            }
+        }
+        for route in &self.growth_route_alternatives {
+            text.push_str(&format!(
+                "Growth route [{}]: {}\nMax growth: {} bytes\nUnderlying partition growth: {} bytes\n",
+                route.code,
+                route.summary,
+                route.max_growth_bytes,
+                route.required_partition_growth_bytes
+            ));
+            for step in &route.steps {
+                text.push_str(&format!("  Route step: {step}\n"));
             }
         }
         for blocker in &self.blockers {
@@ -411,10 +448,21 @@ pub fn list_extend_targets(
                         .map(|change| change.rounded_growth_bytes)
                 })
         });
-        let layout_growth_bytes =
-            analyze_layout_opportunity(snapshot, &target).map(|opportunity| {
-                opportunity.max_target_growth_bytes
-            });
+        let layout_growth_bytes = [
+            analyze_layout_opportunity(snapshot, &target)
+                .map(|opportunity| opportunity.max_target_growth_bytes),
+            analyze_lvm_underlying_growth(
+                snapshot,
+                &ExtendRequest {
+                    target: target.clone(),
+                    growth: Growth::MaxFree,
+                },
+            )
+            .map(|route| route.max_growth_bytes),
+        ]
+        .into_iter()
+        .flatten()
+        .max();
 
         let (availability, reason) = match &preview {
             Ok(plan) if plan.status() == PlanStatus::Preview => {
@@ -663,6 +711,7 @@ pub fn plan_extend(
         size_change: None,
         partition_size_change: None,
         layout_alternatives: Vec::new(),
+        growth_route_alternatives: Vec::new(),
         blockers: Vec::new(),
         preflight_checks: Vec::new(),
         steps: Vec::new(),
@@ -687,7 +736,16 @@ pub fn plan_extend(
                 plan.preflight_checks = lvm_preflight_checks();
                 plan.steps = steps;
             }
-            Err(blocker) => plan.blockers.push(blocker),
+            Err(blocker) => {
+                if matches!(blocker.code.as_str(), "insufficient-capacity" | "no-growth") {
+                    if let Some(route) =
+                        analyze_lvm_underlying_growth(snapshot, &plan.request)
+                    {
+                        plan.growth_route_alternatives.push(route);
+                    }
+                }
+                plan.blockers.push(blocker);
+            }
         },
         Err(blocker) => {
             if blocker.code == "insufficient-adjacent-capacity" {
