@@ -227,6 +227,15 @@ pub enum ExtendPlannerProfile {
     LegacyFailClosed,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExtendRouteAdapter {
+    pub profile: ExtendPlannerProfile,
+    pub resolved_device: Option<String>,
+    pub mountpoint: Option<String>,
+    pub status: LayerRouteStatus,
+    pub issue_codes: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtendTargetAvailability {
@@ -725,11 +734,11 @@ pub fn list_extend_targets(
             ),
         };
 
-        let kind = match device.kind {
-            NodeKind::Partition => ExtendTargetKind::DirectPartition,
-            NodeKind::Lvm => ExtendTargetKind::LvmLogicalVolume,
-            NodeKind::Disk | NodeKind::Loop => ExtendTargetKind::WholeBlockFilesystem,
-            _ => ExtendTargetKind::LayeredOrOther,
+        let kind = match resolve_extend_route_adapter(snapshot, &target).profile {
+            ExtendPlannerProfile::DirectPartition => ExtendTargetKind::DirectPartition,
+            ExtendPlannerProfile::Lvm => ExtendTargetKind::LvmLogicalVolume,
+            ExtendPlannerProfile::WholeBlockFilesystem => ExtendTargetKind::WholeBlockFilesystem,
+            ExtendPlannerProfile::LegacyFailClosed => ExtendTargetKind::LayeredOrOther,
         };
 
         targets.push(ExtendTarget {
@@ -1563,11 +1572,7 @@ fn partition_free_ranges(disk: &BlockDevice, table: &PartitionTable) -> Option<P
     })
 }
 
-pub fn select_extend_planner_profile(
-    snapshot: &HostSnapshot,
-    target: &str,
-) -> ExtendPlannerProfile {
-    let route = analyze_layer_route(snapshot, target);
+fn extend_profile_from_route(route: &LayerRoute) -> ExtendPlannerProfile {
     let last_block_layer = route
         .layers
         .iter()
@@ -1597,6 +1602,31 @@ pub fn select_extend_planner_profile(
         }
         _ => ExtendPlannerProfile::LegacyFailClosed,
     }
+}
+
+pub fn resolve_extend_route_adapter(
+    snapshot: &HostSnapshot,
+    target: &str,
+) -> ExtendRouteAdapter {
+    let route = analyze_layer_route(snapshot, target);
+    ExtendRouteAdapter {
+        profile: extend_profile_from_route(&route),
+        resolved_device: route.resolved_device.clone(),
+        mountpoint: route.mountpoint.clone(),
+        status: route.status,
+        issue_codes: route
+            .issues
+            .iter()
+            .map(|issue| issue.code.clone())
+            .collect(),
+    }
+}
+
+pub fn select_extend_planner_profile(
+    snapshot: &HostSnapshot,
+    target: &str,
+) -> ExtendPlannerProfile {
+    resolve_extend_route_adapter(snapshot, target).profile
 }
 
 fn apply_partition_outcome(
@@ -1674,13 +1704,18 @@ fn build_whole_filesystem_candidate(
         "the snapshot contains error-level diagnostics",
     )?;
 
-    let route = analyze_layer_route(snapshot, &request.target);
+    let route = resolve_extend_route_adapter(snapshot, &request.target);
     ensure(
-        route.resolved_device.is_some(),
-        "route-device-not-found",
-        "whole-device filesystem target did not resolve to one device",
+        route.profile == ExtendPlannerProfile::WholeBlockFilesystem,
+        "route-profile-mismatch",
+        "whole-device filesystem builder received a non-whole-device semantic route",
     )?;
-    let device_path = route.resolved_device.as_deref().unwrap_or_default();
+    let device_path = route.resolved_device.as_deref().ok_or_else(|| {
+        blocked(
+            "route-device-not-found",
+            "whole-device filesystem target did not resolve to one device",
+        )
+    })?;
     let nodes = flatten(&snapshot.storage.block_devices);
     let device = unique(
         nodes
