@@ -946,14 +946,6 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
         }
 
         if matching_tables.is_empty() {
-            if disk.partition_table.is_some() || !disk.children.is_empty() {
-                opportunities.push(blocked_disk_opportunity(
-                    disk,
-                    disk_path,
-                    "partition-table-evidence-missing",
-                    "block topology reports partition-table state, but authoritative partition-table evidence is absent",
-                ));
-            }
             continue;
         }
 
