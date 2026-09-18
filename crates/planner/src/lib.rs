@@ -2422,6 +2422,63 @@ fn unique<T>(mut items: impl Iterator<Item = T>, code: &str) -> Result<T, Blocke
     Ok(first)
 }
 
+fn normalize_gpt_partition_type(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.len() != 36 {
+        return None;
+    }
+    for (index, byte) in value.bytes().enumerate() {
+        let hyphen = matches!(index, 8 | 13 | 18 | 23);
+        if (hyphen && byte != b'-') || (!hyphen && !byte.is_ascii_hexdigit()) {
+            return None;
+        }
+    }
+    Some(value.to_ascii_lowercase())
+}
+
+fn ensure_partition_role_is_growable(
+    table: &PartitionTable,
+    record: &lsm_core::PartitionRecord,
+) -> Result<(), Blocker> {
+    let raw_type = record.partition_type.as_deref().ok_or_else(|| {
+        blocked(
+            "partition-type-missing",
+            "partition type is required before a partition can be considered for growth",
+        )
+    })?;
+
+    match table.label.as_deref() {
+        Some("gpt") => {
+            let partition_type = normalize_gpt_partition_type(raw_type).ok_or_else(|| {
+                blocked(
+                    "invalid-partition-type",
+                    "GPT partition type GUID is malformed",
+                )
+            })?;
+            let protected = matches!(
+                partition_type.as_str(),
+                "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+                    | "21686148-6449-6e6f-744e-656564454649"
+                    | "bc13c2ff-59e6-4262-a352-b275fd6f7172"
+            );
+            ensure(
+                !protected,
+                "protected-partition-role",
+                "EFI System, BIOS Boot and Extended Boot Loader partitions require a dedicated proven route",
+            )
+        }
+        Some("dos") => {
+            let partition_type = parse_dos_type(raw_type)?;
+            ensure(
+                !matches!(partition_type, 0xea | 0xef),
+                "protected-partition-role",
+                "MBR boot-loader and EFI System partitions require a dedicated proven route",
+            )
+        }
+        _ => Ok(()),
+    }
+}
+
 fn try_build_partition_candidate(
     snapshot: &HostSnapshot,
     capabilities: &HostCapabilities,
@@ -2596,6 +2653,7 @@ fn try_build_partition_candidate(
             .filter(|record| record.node == device_path),
         "partition-record-not-unique",
     )?;
+    ensure_partition_role_is_growable(table, record)?;
     let start_bytes = record
         .start_sector
         .checked_mul(sector)

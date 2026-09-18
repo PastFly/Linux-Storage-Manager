@@ -202,6 +202,74 @@ fn with_second_nvme_disk(mut snapshot: HostSnapshot) -> HostSnapshot {
     snapshot
 }
 
+fn gpt_ext4_snapshot(partition_type: Option<&str>) -> HostSnapshot {
+    const MIB: u64 = 1024 * 1024;
+    let sector = 512_u64;
+    let mut disk = device("vdb", NodeKind::Disk, 64 * MIB, None, None);
+    disk.partition_table = Some("gpt".into());
+
+    let mut boot = device(
+        "vdb1",
+        NodeKind::Partition,
+        32 * MIB,
+        Some(2_048),
+        Some("vdb"),
+    );
+    boot.partition_table = Some("gpt".into());
+    boot.filesystem = Some(Filesystem {
+        fs_type: "ext4".into(),
+        version: Some("1.0".into()),
+    });
+    boot.mountpoints = vec!["/boot-test".into()];
+    boot.uuid = Some("boot-test-fs".into());
+    boot.partition_uuid = Some("boot-test-part".into());
+    disk.children = vec![boot];
+
+    let disk_sectors = disk.size_bytes / sector;
+    HostSnapshot {
+        storage: StorageGraph {
+            block_devices: vec![disk],
+        },
+        partition_tables: vec![PartitionTable {
+            device: "/dev/vdb".into(),
+            label: Some("gpt".into()),
+            id: Some("boot-role-gpt".into()),
+            unit: Some("sectors".into()),
+            first_lba: Some(34),
+            last_lba: Some(disk_sectors - 34),
+            sector_size_bytes: Some(sector),
+            partitions: vec![PartitionRecord {
+                node: "/dev/vdb1".into(),
+                start_sector: 2_048,
+                size_sectors: (32 * MIB) / sector,
+                partition_type: partition_type.map(str::to_owned),
+                uuid: Some("boot-test-part".into()),
+                name: None,
+                attrs: None,
+                bootable: None,
+            }],
+        }],
+        mounts: vec![MountEntry {
+            source: Some("/dev/vdb1".into()),
+            target: "/boot-test".into(),
+            fs_type: Some("ext4".into()),
+            options: vec!["rw".into(), "relatime".into()],
+        }],
+        fstab: Vec::new(),
+        swaps: Vec::new(),
+        lvm: None,
+        filesystem_preflight: Vec::new(),
+        diagnostics: Vec::new(),
+        collectors: vec![
+            complete("lsblk"),
+            complete("partition_tables"),
+            complete("mounts"),
+            complete("fstab"),
+            complete("swap"),
+        ],
+    }
+}
+
 fn complete(component: &str) -> CollectorStatus {
     CollectorStatus {
         component: component.into(),
@@ -380,6 +448,102 @@ fn nvme_target_resolves_identically_by_mountpoint_and_partition_path() {
         by_device.partition_size_change()
     );
     assert_eq!(by_mount.steps(), by_device.steps());
+}
+
+#[test]
+fn protected_gpt_boot_partition_types_never_enter_generic_growth() {
+    for partition_type in [
+        "C12A7328-F81F-11D2-BA4B-00A0C93EC93B",
+        "21686148-6449-6E6F-744E-656564454649",
+        "BC13C2FF-59E6-4262-A352-B275FD6F7172",
+    ] {
+        let plan = plan_extend(
+            &gpt_ext4_snapshot(Some(partition_type)),
+            &capabilities(),
+            ExtendRequest {
+                target: "/boot-test".into(),
+                growth: Growth::MaxFree,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.status(), PlanStatus::Blocked);
+        assert!(plan
+            .blockers()
+            .iter()
+            .any(|blocker| blocker.code == "protected-partition-role"));
+        assert!(plan.partition_size_change().is_none());
+    }
+}
+
+#[test]
+fn protected_mbr_boot_partition_types_never_enter_generic_growth() {
+    for partition_type in ["ea", "ef"] {
+        let mut snapshot = live_debian_snapshot();
+        snapshot.partition_tables[0].partitions[0].partition_type = Some(partition_type.to_owned());
+
+        let plan = plan_extend(
+            &snapshot,
+            &capabilities(),
+            ExtendRequest {
+                target: "/".into(),
+                growth: Growth::MaxFree,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.status(), PlanStatus::Blocked);
+        assert!(plan
+            .blockers()
+            .iter()
+            .any(|blocker| blocker.code == "protected-partition-role"));
+        assert!(plan.partition_size_change().is_none());
+    }
+}
+
+#[test]
+fn gpt_partition_type_must_be_present_and_well_formed_before_growth() {
+    for partition_type in [None, Some("not-a-guid")] {
+        let plan = plan_extend(
+            &gpt_ext4_snapshot(partition_type),
+            &capabilities(),
+            ExtendRequest {
+                target: "/boot-test".into(),
+                growth: Growth::MaxFree,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.status(), PlanStatus::Blocked);
+        assert!(plan.blockers().iter().any(|blocker| {
+            matches!(
+                blocker.code.as_str(),
+                "partition-type-missing" | "invalid-partition-type"
+            )
+        }));
+        assert!(plan.partition_size_change().is_none());
+    }
+}
+
+#[test]
+fn ordinary_linux_gpt_partition_remains_growable_after_role_guard() {
+    let plan = plan_extend(
+        &gpt_ext4_snapshot(Some("0FC63DAF-8483-4772-8E79-3D69D8477DE4")),
+        &capabilities(),
+        ExtendRequest {
+            target: "/boot-test".into(),
+            growth: Growth::MaxFree,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Preview);
+    assert_eq!(
+        plan.partition_size_change()
+            .expect("ordinary Linux GPT partition must remain growable")
+            .device,
+        "/dev/vdb1"
+    );
 }
 
 #[test]
