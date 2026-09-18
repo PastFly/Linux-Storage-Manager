@@ -73,7 +73,9 @@ fn blank_gpt_512_max_reserves_metadata_and_one_mib_alignment() {
     .unwrap();
 
     assert_eq!(plan.status(), PlanStatus::Preview);
-    let allocation = plan.allocation().expect("blank-disk allocation must be frozen");
+    let allocation = plan
+        .allocation()
+        .expect("blank-disk allocation must be frozen");
 
     let disk_sectors = (10 * GIB) / 512;
     let gpt_entry_sectors = (128_u64 * 128).div_ceil(512);
@@ -82,18 +84,21 @@ fn blank_gpt_512_max_reserves_metadata_and_one_mib_alignment() {
     let expected_sector_count = expected_end_exclusive - expected_start;
     let expected_bytes = expected_sector_count * 512;
 
-    assert_eq!(allocation.partition_table, Some(CreatePartitionTablePolicy::Gpt));
+    assert_eq!(
+        allocation.partition_table,
+        Some(CreatePartitionTablePolicy::Gpt)
+    );
     assert_eq!(allocation.allocation_unit_bytes, 512);
     assert_eq!(allocation.start_sector, Some(expected_start));
     assert_eq!(allocation.sector_count, Some(expected_sector_count));
     assert_eq!(allocation.available_bytes, expected_bytes);
     assert_eq!(allocation.rounded_bytes, expected_bytes);
     assert_eq!(allocation.remaining_bytes, 0);
-    assert!(plan.steps().iter().any(|step| step.contains("GPT partition table")));
     assert!(plan
         .steps()
         .iter()
-        .any(|step| step.contains("sector 2048")));
+        .any(|step| step.contains("GPT partition table")));
+    assert!(plan.steps().iter().any(|step| step.contains("sector 2048")));
     assert!(plan.steps().iter().any(|step| step.contains("ext4")));
 }
 
@@ -150,7 +155,10 @@ fn blank_dos_caps_usable_range_at_mbr_lba_limit() {
     let expected_end_exclusive = u64::from(u32::MAX) + 1;
     let expected_sector_count = expected_end_exclusive - expected_start;
 
-    assert_eq!(allocation.partition_table, Some(CreatePartitionTablePolicy::Dos));
+    assert_eq!(
+        allocation.partition_table,
+        Some(CreatePartitionTablePolicy::Dos)
+    );
     assert_eq!(allocation.start_sector, Some(expected_start));
     assert_eq!(allocation.sector_count, Some(expected_sector_count));
     assert_eq!(allocation.available_bytes, expected_sector_count * 512);
