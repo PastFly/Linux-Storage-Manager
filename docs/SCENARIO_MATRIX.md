@@ -54,7 +54,7 @@ Advanced details remain inspectable but are not mandatory for routine use.
 | DOS/MBR primary with adjacent free sectors | Preview now | Guarded partition-end growth after slot/boundary validation |
 | DOS extended/logical partition chain | Preview now | Model container/siblings conservatively; dedicated write route required |
 | Raw free tail after last partition | Preview now | Offer as Create source and as input to proven growth routes |
-| Free internal gap between partitions | Later adapter | Offer only after exact range, alignment and partition-slot validation |
+| Free internal gap between partitions | Preview now | Expose exact verified sector range; future write still revalidates alignment and partition-slot policy |
 | Multiple filesystem partitions/LVs | Preview now | Show each leaf target explicitly so the user chooses the one to extend |
 | EFI System Partition / BIOS boot / bootloader metadata areas | Preview now as topology | Protect by role/type; never resize/reformat automatically without a dedicated proven route |
 | Partition start would need to move | Never automatic | Block; first write releases only move partition ends |
@@ -123,10 +123,10 @@ online/offline constraints and the correct rediscovery point between layers.
 
 | Source / action | Current | Target behavior |
 | --- | --- | --- |
-| Existing VG free extents | Preview now | Create LV -> filesystem -> mount/fstab |
-| Verified raw disk tail | Preview now | Create partition; optionally PV/VG/LV; filesystem/mount |
-| Verified blank disk | Preview now | Select GPT/DOS policy -> create partition or whole-disk PV |
-| Internal verified free range | Later adapter | Create aligned partition after slot/range validation |
+| Existing VG free extents | Preview now + Create intent preview | Create LV -> filesystem/swap -> optional mount/fstab |
+| Verified raw disk tail | Preview now + Create intent preview | Create partition -> filesystem/swap; later optional PV/VG/LV route |
+| Verified blank disk | Preview now as source, exact Create plan blocked | Resolve GPT/DOS/alignment policy, then create partition or whole-disk PV |
+| Internal verified free range | Preview now | Read-only Create plan from exact range; future executor revalidates alignment/slot policy before partition creation |
 | New filesystem on partition/LV | Capability inventory | Planned write for ext4/XFS first |
 | New swap file | Capability inventory | Planned write |
 | New swap partition | Capability inventory | Planned write |
@@ -192,8 +192,13 @@ The normal TUI should make a common VM expansion require approximately:
 A common provisioning flow should require approximately:
 - select **Create**;
 - select free-space source;
-- choose size/use and optional filesystem/mountpoint;
+- choose size and filesystem/swap purpose;
+- choose ext4/XFS when filesystem is selected;
+- optionally set a mountpoint in the future wizard;
 - review/confirm.
+
+Current M1A TUI already supports source, size, filesystem/swap purpose and ext4/XFS
+selection as a read-only preview. Mountpoint entry and all execution remain future work.
 
 The details panel should explain the resolved route in human terms while retaining exact
 device IDs, sizes and low-level operations for advanced inspection.
