@@ -322,7 +322,6 @@ fn direct_gpt_xfs_4k_partition_rounds_growth_to_logical_sector() {
     assert_eq!(change.remaining_adjacent_free_bytes, 31_481_856);
 }
 
-
 #[test]
 fn direct_partition_preview_exposes_verified_and_required_preflight() {
     let plan = plan_extend(
@@ -337,12 +336,10 @@ fn direct_partition_preview_exposes_verified_and_required_preflight() {
 
     let checks = plan.preflight_checks();
     assert!(checks.iter().any(|check| {
-        check.code == "partition-geometry-consistent"
-            && check.state == PreflightState::Verified
+        check.code == "partition-geometry-consistent" && check.state == PreflightState::Verified
     }));
     assert!(checks.iter().any(|check| {
-        check.code == "adjacent-capacity-verified"
-            && check.state == PreflightState::Verified
+        check.code == "adjacent-capacity-verified" && check.state == PreflightState::Verified
     }));
     for code in [
         "runtime-identity-recheck",
@@ -351,9 +348,12 @@ fn direct_partition_preview_exposes_verified_and_required_preflight() {
         "metadata-backup",
         "execution-approval",
     ] {
-        assert!(checks.iter().any(|check| {
-            check.code == code && check.state == PreflightState::Required
-        }), "missing required preflight check: {code}");
+        assert!(
+            checks
+                .iter()
+                .any(|check| { check.code == code && check.state == PreflightState::Required }),
+            "missing required preflight check: {code}"
+        );
     }
 }
 
