@@ -83,6 +83,20 @@ Rules:
 - therefore any interruption from `Executing` or `Verifying` becomes `RecoveryRequired`;
 - `RecoveryRequired` is terminal for automatic execution. The system must rediscover and reconcile reality before a new plan is produced.
 
+## Blank-disk provisioning policy
+
+A blank disk is never treated as "all bytes are freely writable" in a Create plan.
+
+- authoritative partition-table discovery must complete and still report no table;
+- the selected disk/loop must still have no children, filesystem, mount or active swap use;
+- logical-sector size and raw capacity must match the discovered Create source;
+- the planner requires a concrete GPT or DOS/MBR policy before freezing geometry;
+- GPT reserves primary and backup header/entry-array sectors; DOS/MBR respects the 32-bit LBA range;
+- the first partition is aligned to a 1 MiB boundary using the actual logical-sector size;
+- CLI callers choose the policy with `--partition-table gpt|dos`;
+- the TUI shows GPT as the visible default and allows switching to DOS/MBR with `t`;
+- all of this remains preview-only until a separately approved write-capable executor exists.
+
 ## Future operation classes
 
 Every planned step carries a reversibility classification:

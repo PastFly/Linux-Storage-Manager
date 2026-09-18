@@ -125,7 +125,7 @@ online/offline constraints and the correct rediscovery point between layers.
 | --- | --- | --- |
 | Existing VG free extents | Preview now + Create intent preview | Create LV -> filesystem/swap -> optional mount/fstab |
 | Verified raw disk tail | Preview now + Create intent preview | Create partition -> filesystem/swap; later optional PV/VG/LV route |
-| Verified blank disk | Preview now as source, exact Create plan blocked | Resolve GPT/DOS/alignment policy, then create partition or whole-disk PV |
+| Verified blank disk | Preview now + exact Create intent preview with concrete GPT/DOS policy | Future guarded table init -> aligned primary partition -> filesystem/swap; GPT is visible TUI default, DOS/MBR is selectable |
 | Internal verified free range | Preview now | Read-only Create plan from exact range; future executor revalidates alignment/slot policy before partition creation |
 | New filesystem on partition/LV | Capability inventory | Planned write for ext4/XFS first |
 | New swap file | Capability inventory | Planned write |

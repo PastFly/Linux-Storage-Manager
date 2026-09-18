@@ -16,10 +16,10 @@ use lsm_discovery::{analyze_extendability, discover_capabilities, discover_snaps
 use lsm_planner::{
     analyze_layer_route, analyze_layout_opportunity, analyze_lvm_underlying_growth,
     decide_filesystem_growth, list_provisioning_opportunities, plan_create, plan_extend,
-    CreatePlanPreview, CreatePurpose, CreateRequest, ExtendRequest, FilesystemDecisionState,
-    FilesystemGrowthDecision, Growth, GrowthRouteAlternative, LayerRoute, LayerRouteStatus,
-    LayoutAlternative, Operation, PlanStatus, PlanStep, PreflightCheck, PreflightState,
-    ProvisioningOpportunity, ProvisioningSpaceKind, Reversibility, RouteLayerKind,
+    CreatePartitionTablePolicy, CreatePlanPreview, CreatePurpose, CreateRequest, ExtendRequest,
+    FilesystemDecisionState, FilesystemGrowthDecision, Growth, GrowthRouteAlternative, LayerRoute,
+    LayerRouteStatus, LayoutAlternative, Operation, PlanStatus, PlanStep, PreflightCheck,
+    PreflightState, ProvisioningOpportunity, ProvisioningSpaceKind, Reversibility, RouteLayerKind,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -86,6 +86,7 @@ struct AppState {
     create_size_index: usize,
     create_purpose: CreatePurpose,
     create_filesystem_index: usize,
+    create_partition_table_index: usize,
 }
 
 impl AppState {
@@ -99,6 +100,7 @@ impl AppState {
             create_size_index: 0,
             create_purpose: CreatePurpose::Filesystem,
             create_filesystem_index: 0,
+            create_partition_table_index: 0,
         }
     }
 
@@ -227,6 +229,15 @@ impl AppState {
         CREATE_FILESYSTEMS[self.create_filesystem_index % CREATE_FILESYSTEMS.len()]
     }
 
+    fn next_create_partition_table(&mut self) {
+        self.create_partition_table_index =
+            (self.create_partition_table_index + 1) % CREATE_PARTITION_TABLES.len();
+    }
+
+    fn create_partition_table(self) -> CreatePartitionTablePolicy {
+        CREATE_PARTITION_TABLES[self.create_partition_table_index % CREATE_PARTITION_TABLES.len()]
+    }
+
     fn plan_growth_for_snapshot(&self, snapshot: &HostSnapshot) -> Growth {
         let options = plan_growth_options(snapshot, self.selected_device);
         options
@@ -252,6 +263,10 @@ impl AppState {
 }
 
 const CREATE_FILESYSTEMS: [&str; 2] = ["ext4", "xfs"];
+const CREATE_PARTITION_TABLES: [CreatePartitionTablePolicy; 2] = [
+    CreatePartitionTablePolicy::Gpt,
+    CreatePartitionTablePolicy::Dos,
+];
 
 const PLAN_GROWTH_PRESETS: [Growth; 4] = [
     Growth::ByBytes(512 * 1024 * 1024),
@@ -461,6 +476,16 @@ fn handle_key_event(state: &mut AppState, snapshot: &HostSnapshot, key: KeyEvent
         KeyCode::Char('f') if state.section() == Section::Create => {
             if state.create_purpose == CreatePurpose::Filesystem {
                 state.next_create_filesystem();
+            }
+            LoopControl::Continue
+        }
+        KeyCode::Char('t') if state.section() == Section::Create => {
+            let opportunities = list_provisioning_opportunities(snapshot);
+            if opportunities
+                .get(state.selected_device)
+                .is_some_and(|opportunity| opportunity.kind == ProvisioningSpaceKind::BlankDisk)
+            {
+                state.next_create_partition_table();
             }
             LoopControl::Continue
         }
@@ -974,6 +999,8 @@ fn render_create(
     } else {
         None
     };
+    let partition_table = (opportunity.kind == ProvisioningSpaceKind::BlankDisk)
+        .then(|| state.create_partition_table());
     let preview = plan_create(
         snapshot,
         CreateRequest {
@@ -982,7 +1009,7 @@ fn render_create(
             purpose: state.create_purpose,
             filesystem,
             mountpoint: None,
-            partition_table: None,
+            partition_table,
         },
     );
 
@@ -997,6 +1024,12 @@ fn render_create(
         "Purpose         {}",
         create_purpose_label(state.create_purpose)
     )));
+    if opportunity.kind == ProvisioningSpaceKind::BlankDisk {
+        detail.push(Line::from(format!(
+            "Partition table {}",
+            create_partition_table_label(state.create_partition_table())
+        )));
+    }
     if state.create_purpose == CreatePurpose::Filesystem {
         detail.push(Line::from(format!(
             "Filesystem      {}",
@@ -1030,6 +1063,13 @@ fn create_purpose_label(purpose: CreatePurpose) -> &'static str {
     }
 }
 
+fn create_partition_table_label(policy: CreatePartitionTablePolicy) -> &'static str {
+    match policy {
+        CreatePartitionTablePolicy::Gpt => "GPT",
+        CreatePartitionTablePolicy::Dos => "DOS/MBR",
+    }
+}
+
 fn create_plan_lines(plan: &CreatePlanPreview) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(format!(
         "Planner         {}",
@@ -1052,6 +1092,18 @@ fn create_plan_lines(plan: &CreatePlanPreview) -> Vec<Line<'static>> {
             "Allocation unit {}",
             human_bytes(allocation.allocation_unit_bytes)
         )));
+        if let Some(policy) = allocation.partition_table {
+            lines.push(Line::from(format!(
+                "Table           {}",
+                create_partition_table_label(policy)
+            )));
+        }
+        if let Some(start_sector) = allocation.start_sector {
+            lines.push(Line::from(format!("Start sector    {start_sector}")));
+        }
+        if let Some(sector_count) = allocation.sector_count {
+            lines.push(Line::from(format!("Sector count    {sector_count}")));
+        }
     }
     if let Some(blocker) = plan.blockers().first() {
         lines.push(Line::from(format!(
@@ -1620,7 +1672,7 @@ fn toolbar_text(section: Section) -> String {
                 .to_owned()
         }
         Section::Create => {
-            "↑↓ Source   PgUp/PgDn Size   p Purpose   f FS   Tab Section   q Quit   Read-only"
+            "↑↓ Source   PgUp/PgDn Size   p Purpose   f FS   t Table   Tab Section   q Quit   Read-only"
                 .to_owned()
         }
         _ => "↑↓ Navigate   Tab Section   1-7 Jump   r Refresh   R Rescan   q Quit   Read-only"
@@ -1643,6 +1695,7 @@ fn toolbar_line(section: Section, refresh_status: Option<&str>) -> Line<'static>
             ("PgUp/PgDn", "Size"),
             ("p", "Purpose"),
             ("f", "FS"),
+            ("t", "Table"),
             ("Tab", "Section"),
             ("q", "Quit"),
         ],
@@ -3142,6 +3195,21 @@ mod tests {
         assert_eq!(state.create_filesystem(), "xfs");
         state.next_create_filesystem();
         assert_eq!(state.create_filesystem(), "ext4");
+
+        assert_eq!(
+            state.create_partition_table(),
+            CreatePartitionTablePolicy::Gpt
+        );
+        state.next_create_partition_table();
+        assert_eq!(
+            state.create_partition_table(),
+            CreatePartitionTablePolicy::Dos
+        );
+        state.next_create_partition_table();
+        assert_eq!(
+            state.create_partition_table(),
+            CreatePartitionTablePolicy::Gpt
+        );
     }
 
     #[test]
@@ -3161,6 +3229,7 @@ mod tests {
         assert!(create.contains("PgUp/PgDn"));
         assert!(create.contains("Purpose"));
         assert!(create.contains("FS"));
+        assert!(create.contains("Table"));
     }
 
     #[test]
