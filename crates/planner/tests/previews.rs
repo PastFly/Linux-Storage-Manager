@@ -3,8 +3,9 @@ use lsm_core::{
 };
 use lsm_planner::{
     analyze_lvm_underlying_growth, list_extend_targets, list_provisioning_opportunities,
-    parse_growth_size, plan_extend, ExtendRequest, ExtendTargetAvailability, ExtendTargetKind,
-    Growth, Operation, PlanStatus, PreflightState, ProvisioningSpaceKind,
+    parse_growth_size, plan_create, plan_extend, CreatePurpose, CreateRequest, ExtendRequest,
+    ExtendTargetAvailability, ExtendTargetKind, Growth, Operation, PlanStatus, PreflightState,
+    ProvisioningSpaceKind,
 };
 use serde_json::json;
 
@@ -761,6 +762,112 @@ fn scenario_contract_keeps_unknown_filesystem_visible_but_blocked() {
     assert_eq!(targets[0].filesystem, "mysteryfs");
     assert_eq!(targets[0].availability, ExtendTargetAvailability::Blocked);
     assert!(targets[0].reason.contains("filesystem"));
+}
+
+
+#[test]
+fn create_plan_builds_extent_aligned_filesystem_volume_from_vg_free_space() {
+    let (snapshot, _caps) = input();
+    let source = list_provisioning_opportunities(&snapshot)
+        .into_iter()
+        .find(|space| space.kind == ProvisioningSpaceKind::LvmFreeExtents)
+        .expect("expected VG free source");
+
+    let plan = plan_create(
+        &snapshot,
+        CreateRequest {
+            source_id: source.id,
+            size: Growth::ByBytes(GIB),
+            purpose: CreatePurpose::Filesystem,
+            filesystem: Some("ext4".into()),
+            mountpoint: Some("/data".into()),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Preview);
+    let allocation = plan.allocation().expect("allocation must be frozen");
+    assert_eq!(allocation.requested_bytes, GIB);
+    assert_eq!(allocation.rounded_bytes, GIB);
+    assert_eq!(allocation.allocation_unit_bytes, EXTENT);
+    assert_eq!(allocation.volume_group.as_deref(), Some("vg0"));
+    assert!(plan.steps().iter().any(|step| step.contains("logical volume")));
+    assert!(plan.steps().iter().any(|step| step.contains("ext4")));
+    assert!(plan.steps().iter().any(|step| step.contains("/data")));
+}
+
+#[test]
+fn create_plan_builds_sector_aligned_partition_filesystem_from_gpt_tail() {
+    let (snapshot, _caps) = input();
+    let snapshot = with_gpt_tail(snapshot);
+    let source = list_provisioning_opportunities(&snapshot)
+        .into_iter()
+        .find(|space| space.kind == ProvisioningSpaceKind::DiskTail)
+        .expect("expected GPT tail source");
+
+    let plan = plan_create(
+        &snapshot,
+        CreateRequest {
+            source_id: source.id,
+            size: Growth::ByBytes(GIB + 1),
+            purpose: CreatePurpose::Filesystem,
+            filesystem: Some("xfs".into()),
+            mountpoint: Some("/srv/data".into()),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Preview);
+    let allocation = plan.allocation().unwrap();
+    assert_eq!(allocation.allocation_unit_bytes, 512);
+    assert_eq!(allocation.rounded_bytes, GIB + 512);
+    assert!(allocation.start_sector.is_some());
+    assert!(allocation.sector_count.is_some());
+    assert!(plan.steps().iter().any(|step| step.contains("new partition")));
+    assert!(plan.steps().iter().any(|step| step.contains("xfs")));
+}
+
+#[test]
+fn create_plan_blocks_conflicting_mountpoint_and_invalid_swap_options() {
+    let (snapshot, _caps) = input();
+    let source = list_provisioning_opportunities(&snapshot)
+        .into_iter()
+        .find(|space| space.kind == ProvisioningSpaceKind::LvmFreeExtents)
+        .unwrap();
+
+    let conflict = plan_create(
+        &snapshot,
+        CreateRequest {
+            source_id: source.id.clone(),
+            size: Growth::ByBytes(GIB),
+            purpose: CreatePurpose::Filesystem,
+            filesystem: Some("ext4".into()),
+            mountpoint: Some("/".into()),
+        },
+    )
+    .unwrap();
+    assert_eq!(conflict.status(), PlanStatus::Blocked);
+    assert!(conflict
+        .blockers()
+        .iter()
+        .any(|blocker| blocker.code == "create-mountpoint-invalid"));
+
+    let swap = plan_create(
+        &snapshot,
+        CreateRequest {
+            source_id: source.id,
+            size: Growth::ByBytes(512 * 1024 * 1024),
+            purpose: CreatePurpose::Swap,
+            filesystem: Some("ext4".into()),
+            mountpoint: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(swap.status(), PlanStatus::Blocked);
+    assert!(swap
+        .blockers()
+        .iter()
+        .any(|blocker| blocker.code == "create-swap-options-invalid"));
 }
 
 }
