@@ -15,7 +15,8 @@ matches the supplied inputs.
 
 From that same basis it derives and binds:
 
-- the exact M1A plan and plan ID;
+- the exact M1A plan, plan ID and serialized discovery/capability basis digest;
+- a separate capability-inventory digest for future live tool-capability revalidation;
 - the target-scoped identity manifest and manifest digest;
 - the filesystem growth/preflight decision;
 - the existing execution-guard plan, including host-exclusive lock and durable-journal
