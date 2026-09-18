@@ -97,6 +97,16 @@ A blank disk is never treated as "all bytes are freely writable" in a Create pla
 - the TUI shows GPT as the visible default and allows switching to DOS/MBR with `t`;
 - all of this remains preview-only until a separately approved write-capable executor exists.
 
+## Protected boot partition roles
+
+Generic partition growth must not treat boot metadata as ordinary data capacity.
+
+- known GPT EFI System, BIOS Boot and Extended Boot Loader partition types are blocked from the generic direct-partition Grow route;
+- known MBR boot-loader/EFI partition types are blocked the same way;
+- the authoritative partition type must be present and well-formed before a GPT partition can enter the generic Grow route;
+- a protected partition requires a separately designed and proven workflow even if a supported filesystem is unexpectedly detected on it;
+- DOS/MBR sectors before the first partition remain unavailable to generic Create planning because they may contain bootloader embedding data.
+
 ## Future operation classes
 
 Every planned step carries a reversibility classification:
