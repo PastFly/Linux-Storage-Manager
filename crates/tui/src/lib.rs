@@ -2278,7 +2278,7 @@ mod tests {
             [
                 "[REQ]".to_owned(),
                 "filesystem-health".to_owned(),
-                "verify filesystem health".to_owned(),
+                "Check health/features/grow support".to_owned(),
             ]
         );
 
