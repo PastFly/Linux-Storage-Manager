@@ -14,10 +14,11 @@ use lsm_core::{
 };
 use lsm_discovery::{analyze_extendability, discover_capabilities, discover_snapshot};
 use lsm_planner::{
-    analyze_layout_opportunity, analyze_lvm_underlying_growth, list_provisioning_opportunities,
-    plan_create, plan_extend, CreatePlanPreview, CreatePurpose, CreateRequest, ExtendRequest,
-    Growth, GrowthRouteAlternative, LayoutAlternative, Operation, PlanStatus, PlanStep,
-    PreflightCheck, PreflightState, ProvisioningOpportunity, ProvisioningSpaceKind, Reversibility,
+    analyze_layer_route, analyze_layout_opportunity, analyze_lvm_underlying_growth,
+    list_provisioning_opportunities, plan_create, plan_extend, CreatePlanPreview, CreatePurpose,
+    CreateRequest, ExtendRequest, Growth, GrowthRouteAlternative, LayerRoute, LayerRouteStatus,
+    LayoutAlternative, Operation, PlanStatus, PlanStep, PreflightCheck, PreflightState,
+    ProvisioningOpportunity, ProvisioningSpaceKind, Reversibility, RouteLayerKind,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -1153,6 +1154,8 @@ fn render_plan_compact(
 ) {
     let mut lines = plan_summary_lines(target, growth, analysis);
     lines.push(Line::from(""));
+    lines.extend(layer_route_summary_lines(&analyze_layer_route(snapshot, target)));
+    lines.push(Line::from(""));
     lines.extend(strict_plan_lines(snapshot, capabilities, target, growth));
     if let Some((opportunity_growth, alternative)) =
         probe_layout_opportunity(snapshot, capabilities, target)
@@ -1202,6 +1205,8 @@ fn render_plan_wide(
     );
 
     let mut summary = plan_summary_lines(target, growth, analysis);
+    summary.push(Line::from(""));
+    summary.extend(layer_route_summary_lines(&analyze_layer_route(snapshot, target)));
     match &plan {
         Ok(plan) if plan.status() == PlanStatus::Preview => {
             summary.extend(plan_preview_summary_lines(plan));
@@ -2002,6 +2007,58 @@ fn analysis_summary_lines(analysis: &ExtendAnalysis) -> Vec<Line<'static>> {
     }
 
     lines
+}
+
+fn layer_route_summary_lines(route: &LayerRoute) -> Vec<Line<'static>> {
+    let topology = route
+        .layers
+        .iter()
+        .map(|layer| route_layer_label(layer.kind))
+        .collect::<Vec<_>>()
+        .join(" -> ");
+    let status = match route.status {
+        LayerRouteStatus::SupportedProfile => "Supported profile",
+        LayerRouteStatus::AdapterRequired => "Adapter required",
+        LayerRouteStatus::Blocked => "Blocked",
+    };
+
+    let mut lines = vec![
+        Line::from("Storage route"),
+        Line::from(format!(
+            "Topology        {}",
+            if topology.is_empty() {
+                "unresolved".to_owned()
+            } else {
+                topology
+            }
+        )),
+        Line::from(format!("Route status    {status}")),
+    ];
+    if let Some(issue) = route.issues.first() {
+        lines.push(Line::from(format!(
+            "Route note      [{}] {}",
+            issue.code, issue.message
+        )));
+    }
+    lines
+}
+
+fn route_layer_label(kind: RouteLayerKind) -> &'static str {
+    match kind {
+        RouteLayerKind::Disk => "Disk",
+        RouteLayerKind::Partition => "Partition",
+        RouteLayerKind::LoopDevice => "Loop",
+        RouteLayerKind::Encryption => "LUKS/crypt",
+        RouteLayerKind::Raid => "RAID",
+        RouteLayerKind::LvmPhysicalVolume => "PV",
+        RouteLayerKind::LvmVolumeGroup => "VG",
+        RouteLayerKind::LvmLogicalVolume => "LV",
+        RouteLayerKind::Filesystem => "Filesystem",
+        RouteLayerKind::Mount => "Mount",
+        RouteLayerKind::Zram => "zram",
+        RouteLayerKind::Rom => "ROM",
+        RouteLayerKind::Unknown => "Unknown",
+    }
 }
 
 fn operation_summary(operation: &Operation) -> String {
