@@ -1,7 +1,8 @@
 use lsm_core::HostSnapshot;
 use lsm_planner::{
-    list_provisioning_opportunities, plan_create, CreatePartitionTablePolicy, CreatePurpose,
-    CreateRequest, Growth, PlanStatus, ProvisioningSpaceKind,
+    list_provisioning_opportunities, plan_create, resolve_create_source_adapter,
+    CreatePartitionTablePolicy, CreatePurpose, CreateRequest, Growth, PlanStatus,
+    ProvisioningSpaceKind,
 };
 use serde_json::json;
 
@@ -55,6 +56,32 @@ fn request(
         mountpoint: Some("/data".into()),
         partition_table: policy,
     }
+}
+
+#[test]
+fn blank_disk_source_adapter_freezes_policy_specific_geometry() {
+    let snapshot = blank_snapshot(10 * GIB, 512);
+    let source = list_provisioning_opportunities(&snapshot)
+        .into_iter()
+        .find(|source| source.kind == ProvisioningSpaceKind::BlankDisk)
+        .expect("blank disk must be exposed as a Create source");
+
+    let adapter = resolve_create_source_adapter(
+        &snapshot,
+        &source,
+        Some(CreatePartitionTablePolicy::Gpt),
+    )
+    .unwrap();
+
+    assert_eq!(adapter.kind, ProvisioningSpaceKind::BlankDisk);
+    assert_eq!(adapter.disk.as_deref(), Some("/dev/vdb"));
+    assert_eq!(adapter.partition_table, Some(CreatePartitionTablePolicy::Gpt));
+    assert_eq!(adapter.allocation_unit_bytes, 512);
+    assert_eq!(adapter.start_sector, Some(2048));
+    assert_eq!(
+        adapter.sector_count,
+        Some(adapter.available_bytes / adapter.allocation_unit_bytes)
+    );
 }
 
 #[test]
