@@ -141,10 +141,9 @@ identifiers will be created.
 Support is capability-based, not a hard-coded distribution whitelist.
 
 Portable artifacts are currently tested across Debian 12, Ubuntu 22.04, Ubuntu 24.04,
-Rocky Linux 9 and Alpine 3.22.
+Rocky Linux 9, AlmaLinux 9, Fedora 44 and Alpine 3.22.
 
-Additional validation targets include RHEL/AlmaLinux/Fedora, Arch, SUSE/openSUSE and
-other Linux systems. Equivalent storage capabilities should map into the same normalized
+Additional validation targets include RHEL, Arch, SUSE/openSUSE and other Linux systems. Equivalent storage capabilities should map into the same normalized
 model.
 
 Distro differences that may require adapters:
