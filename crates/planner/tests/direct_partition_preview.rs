@@ -131,6 +131,7 @@ fn live_debian_snapshot() -> HostSnapshot {
         fstab: Vec::new(),
         swaps: Vec::new(),
         lvm: None,
+        filesystem_preflight: Vec::new(),
         diagnostics: Vec::new(),
         collectors: vec![
             complete("lsblk"),
@@ -274,6 +275,7 @@ fn direct_gpt_xfs_4k_partition_rounds_growth_to_logical_sector() {
         fstab: Vec::new(),
         swaps: Vec::new(),
         lvm: None,
+        filesystem_preflight: Vec::new(),
         diagnostics: Vec::new(),
         collectors: vec![
             complete("lsblk"),
