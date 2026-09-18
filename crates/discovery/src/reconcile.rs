@@ -131,26 +131,28 @@ fn reconcile_sfdisk_partitions(
             _ => {}
         }
 
-        match partition.size_sectors.checked_mul(sector_size) {
-            Some(sfdisk_size) if sfdisk_size != lsblk_partition.size_bytes => {
-                diagnostics.push(StorageDiagnostic {
-                    code: "partition-size-mismatch".to_owned(),
+        if !is_dos_extended_partition(table, partition.partition_type.as_deref()) {
+            match partition.size_sectors.checked_mul(sector_size) {
+                Some(sfdisk_size) if sfdisk_size != lsblk_partition.size_bytes => {
+                    diagnostics.push(StorageDiagnostic {
+                        code: "partition-size-mismatch".to_owned(),
+                        severity: DiagnosticSeverity::Error,
+                        message: format!(
+                            "lsblk reports partition size {} bytes, but sfdisk reports {sfdisk_size} bytes",
+                            lsblk_partition.size_bytes
+                        ),
+                        device: Some(partition.node.clone()),
+                    });
+                }
+                None => diagnostics.push(StorageDiagnostic {
+                    code: "partition-size-overflow".to_owned(),
                     severity: DiagnosticSeverity::Error,
-                    message: format!(
-                        "lsblk reports partition size {} bytes, but sfdisk reports {sfdisk_size} bytes",
-                        lsblk_partition.size_bytes
-                    ),
+                    message: "partition size from sfdisk could not be represented safely in bytes"
+                        .to_owned(),
                     device: Some(partition.node.clone()),
-                });
+                }),
+                _ => {}
             }
-            None => diagnostics.push(StorageDiagnostic {
-                code: "partition-size-overflow".to_owned(),
-                severity: DiagnosticSeverity::Error,
-                message: "partition size from sfdisk could not be represented safely in bytes"
-                    .to_owned(),
-                device: Some(partition.node.clone()),
-            }),
-            _ => {}
         }
 
         if let (Some(lsblk_uuid), Some(sfdisk_uuid)) = (
@@ -428,4 +430,29 @@ fn collect_ids<'a>(
         }
         collect_ids(&device.children, uuids, partuuids);
     }
+}
+
+
+fn is_dos_extended_partition(table: &PartitionTable, partition_type: Option<&str>) -> bool {
+    if !table
+        .label
+        .as_deref()
+        .map(|label| label.eq_ignore_ascii_case("dos"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    let Some(raw_type) = partition_type else {
+        return false;
+    };
+    let normalized = raw_type
+        .trim()
+        .strip_prefix("0x")
+        .or_else(|| raw_type.trim().strip_prefix("0X"))
+        .unwrap_or(raw_type.trim());
+
+    u8::from_str_radix(normalized, 16)
+        .map(|value| matches!(value, 0x05 | 0x0f | 0x85))
+        .unwrap_or(false)
 }
