@@ -323,14 +323,17 @@ def storage_facts(snapshot: dict[str, Any], loop: str, vg: str | None) -> Any:
     return tables, inventory, devices
 
 
-def fixture_identity_ready(snapshot: dict[str, Any], loop: str, vg: str | None) -> bool:
+def fixture_identity_gaps(snapshot: dict[str, Any], loop: str, vg: str | None) -> list[str]:
     if vg is None:
-        return True
+        return []
 
+    gaps: list[str] = []
     lvm = snapshot.get("lvm")
     storage = snapshot.get("storage")
-    if not isinstance(lvm, dict) or not isinstance(storage, dict):
-        return False
+    if not isinstance(lvm, dict):
+        return ["lvm-inventory-missing"]
+    if not isinstance(storage, dict):
+        return ["storage-graph-missing"]
 
     pvs = [row for row in lvm.get("physical_volumes", [])
            if isinstance(row, dict) and row.get("vg_name") == vg]
@@ -338,15 +341,24 @@ def fixture_identity_ready(snapshot: dict[str, Any], loop: str, vg: str | None) 
            if isinstance(row, dict) and row.get("name") == vg]
     lvs = [row for row in lvm.get("logical_volumes", [])
            if isinstance(row, dict) and row.get("vg_name") == vg]
-    if len(pvs) != 1 or len(vgs) != 1 or len(lvs) != 1:
-        return False
-    if not all(isinstance(row.get("uuid"), str) and row["uuid"] for row in (pvs[0], vgs[0], lvs[0])):
-        return False
+    if len(pvs) != 1:
+        gaps.append(f"pv-count={len(pvs)}")
+    if len(vgs) != 1:
+        gaps.append(f"vg-count={len(vgs)}")
+    if len(lvs) != 1:
+        gaps.append(f"lv-count={len(lvs)}")
+    if gaps:
+        return gaps
+
+    for label, row in (("pv", pvs[0]), ("vg", vgs[0]), ("lv", lvs[0])):
+        if not isinstance(row.get("uuid"), str) or not row["uuid"]:
+            gaps.append(f"{label}-uuid-missing")
 
     roots = [node for node in storage.get("block_devices", [])
              if isinstance(node, dict) and node.get("path") == loop]
     if len(roots) != 1:
-        return False
+        gaps.append(f"loop-root-count={len(roots)}")
+        return gaps
 
     nodes: list[dict[str, Any]] = []
     def visit(node: dict[str, Any]) -> None:
@@ -357,14 +369,24 @@ def fixture_identity_ready(snapshot: dict[str, Any], loop: str, vg: str | None) 
     visit(roots[0])
 
     pv_nodes = [node for node in nodes if node.get("path") == pvs[0].get("name")]
+    if len(pv_nodes) != 1:
+        gaps.append(f"pv-node-count={len(pv_nodes)}")
+    elif pv_nodes[0].get("uuid") != pvs[0].get("uuid"):
+        gaps.append(
+            f"pv-node-uuid={pv_nodes[0].get('uuid')!r} expected={pvs[0].get('uuid')!r}"
+        )
+
     lvm_nodes = [node for node in nodes if node.get("kind") == "lvm"]
-    return (
-        len(pv_nodes) == 1
-        and pv_nodes[0].get("uuid") == pvs[0]["uuid"]
-        and len(lvm_nodes) == 1
-        and isinstance(lvm_nodes[0].get("uuid"), str)
-        and bool(lvm_nodes[0]["uuid"])
-    )
+    if len(lvm_nodes) != 1:
+        gaps.append(f"lvm-node-count={len(lvm_nodes)}")
+    elif not isinstance(lvm_nodes[0].get("uuid"), str) or not lvm_nodes[0]["uuid"]:
+        gaps.append("filesystem-uuid-missing")
+
+    return gaps
+
+
+def fixture_identity_ready(snapshot: dict[str, Any], loop: str, vg: str | None) -> bool:
+    return not fixture_identity_gaps(snapshot, loop, vg)
 
 
 def ready_snapshot(binary: Runner, loop: str, vg: str | None) -> dict[str, Any]:
@@ -383,7 +405,11 @@ def ready_snapshot(binary: Runner, loop: str, vg: str | None) -> dict[str, Any]:
         previous = facts
         if attempt < 19:
             time.sleep(0.1)
-    raise SafetyError("fixture metadata did not stabilize before read-only tests")
+    gaps = fixture_identity_gaps(snapshot, loop, vg) if 'snapshot' in locals() else ["no-snapshot"]
+    raise SafetyError(
+        "fixture metadata did not stabilize before read-only tests; identity gaps="
+        + ",".join(gaps)
+    )
 
 
 def exercise(resources: Resources, binary: Runner, loop: Loop, target: Path, vg: str | None) -> None:
