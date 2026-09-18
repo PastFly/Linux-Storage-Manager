@@ -2371,6 +2371,85 @@ mod tests {
         assert!(text.contains("Next step\n  grow the partition first"));
     }
 
+
+    #[test]
+    fn refresh_key_requests_fresh_discovery_without_mutating_storage() {
+        use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let snap = snapshot();
+        let mut state = AppState::new(&snap);
+        let refresh = KeyEvent {
+            code: KeyCode::Char('r'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+
+        assert_eq!(
+            handle_key_event(&mut state, &snap, refresh),
+            LoopControl::Refresh
+        );
+    }
+
+    #[test]
+    fn dos_disk_tail_free_uses_current_disk_size_after_last_partition() {
+        let mut snap = snapshot();
+        snap.storage.block_devices[0].size_bytes = 11 * 1024 * 1024;
+        snap.partition_tables = vec![lsm_core::PartitionTable {
+            device: "/dev/sda".into(),
+            label: Some("dos".into()),
+            id: Some("0x12345678".into()),
+            unit: Some("sectors".into()),
+            first_lba: None,
+            last_lba: None,
+            sector_size_bytes: Some(512),
+            partitions: vec![
+                lsm_core::PartitionRecord {
+                    node: "/dev/sda1".into(),
+                    start_sector: 2_048,
+                    size_sectors: 8_192,
+                    partition_type: Some("83".into()),
+                    uuid: None,
+                    name: None,
+                    attrs: None,
+                    bootable: None,
+                },
+                lsm_core::PartitionRecord {
+                    node: "/dev/sda2".into(),
+                    start_sector: 12_288,
+                    size_sectors: 8_192,
+                    partition_type: Some("5".into()),
+                    uuid: None,
+                    name: None,
+                    attrs: None,
+                    bootable: None,
+                },
+                lsm_core::PartitionRecord {
+                    node: "/dev/sda5".into(),
+                    start_sector: 12_290,
+                    size_sectors: 8_188,
+                    partition_type: Some("82".into()),
+                    uuid: None,
+                    name: None,
+                    attrs: None,
+                    bootable: None,
+                },
+            ],
+        }];
+
+        let disk = &snap.storage.block_devices[0];
+        assert_eq!(disk_tail_free_bytes(&snap, disk), Some(1024 * 1024));
+
+        let rows = device_detail_rows(&snap, disk);
+        assert!(rows.contains(&["Tail free".to_owned(), "1.0 MiB".to_owned()]));
+    }
+
+    #[test]
+    fn toolbar_exposes_refresh_in_all_sections() {
+        assert!(toolbar_text(Section::Disks).contains("Refresh"));
+        assert!(toolbar_text(Section::Plans).contains("Refresh"));
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
