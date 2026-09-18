@@ -2834,7 +2834,6 @@ mod tests {
         assert!(rescan_sysfs_path("sda/../../x").is_none());
     }
 
-
     #[test]
     fn preferred_layout_growth_selects_one_gib_for_live_tail_capacity() {
         assert_eq!(
