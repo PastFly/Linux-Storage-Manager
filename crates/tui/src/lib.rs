@@ -445,12 +445,9 @@ fn render_devices(
         let details = device_detail_rows(snapshot, row.device)
             .into_iter()
             .map(Row::new);
-        let table = Table::new(
-            details,
-            [Constraint::Length(14), Constraint::Min(10)],
-        )
-        .column_spacing(1)
-        .block(Block::default().borders(Borders::ALL).title(" Details "));
+        let table = Table::new(details, [Constraint::Length(14), Constraint::Min(10)])
+            .column_spacing(1)
+            .block(Block::default().borders(Borders::ALL).title(" Details "));
         frame.render_widget(table, panes[1]);
     } else {
         frame.render_widget(
@@ -564,8 +561,11 @@ fn render_diagnostics(
 
     if snapshot.diagnostics.is_empty() {
         frame.render_widget(
-            Paragraph::new("No diagnostics reported.")
-                .block(Block::default().borders(Borders::ALL).title(" Diagnostics ")),
+            Paragraph::new("No diagnostics reported.").block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Diagnostics "),
+            ),
             sections[0],
         );
     } else {
@@ -586,7 +586,11 @@ fn render_diagnostics(
         )
         .header(header)
         .column_spacing(1)
-        .block(Block::default().borders(Borders::ALL).title(" Diagnostics "));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Diagnostics "),
+        );
         frame.render_widget(table, sections[0]);
     }
 
@@ -615,7 +619,11 @@ fn render_diagnostics(
     frame.render_widget(
         Paragraph::new(capability_lines)
             .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title(" Capabilities ")),
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Capabilities "),
+            ),
         sections[1],
     );
 }
@@ -666,12 +674,24 @@ fn render_plan_hint(
     let growth = state.plan_growth_for_snapshot(snapshot);
 
     match plan_layout_mode(area.width) {
-        PlanLayoutMode::Wide => {
-            render_plan_wide(frame, area, snapshot, capabilities, &target, growth, &analysis)
-        }
-        PlanLayoutMode::Compact => {
-            render_plan_compact(frame, area, snapshot, capabilities, &target, growth, &analysis)
-        }
+        PlanLayoutMode::Wide => render_plan_wide(
+            frame,
+            area,
+            snapshot,
+            capabilities,
+            &target,
+            growth,
+            &analysis,
+        ),
+        PlanLayoutMode::Compact => render_plan_compact(
+            frame,
+            area,
+            snapshot,
+            capabilities,
+            &target,
+            growth,
+            &analysis,
+        ),
     }
 }
 
@@ -875,11 +895,7 @@ fn diagnostic_table_cells(item: &lsm_core::StorageDiagnostic) -> [String; 3] {
         DiagnosticSeverity::Warning => "Warning",
         DiagnosticSeverity::Error => "Error",
     };
-    [
-        severity.to_owned(),
-        item.code.clone(),
-        item.message.clone(),
-    ]
+    [severity.to_owned(), item.code.clone(), item.message.clone()]
 }
 
 fn device_detail_rows(snapshot: &HostSnapshot, device: &BlockDevice) -> Vec<[String; 2]> {
@@ -897,10 +913,7 @@ fn device_detail_rows(snapshot: &HostSnapshot, device: &BlockDevice) -> Vec<[Str
     vec![
         ["Device".to_owned(), path.to_owned()],
         ["Type".to_owned(), device_role(snapshot, device).to_owned()],
-        [
-            "Size".to_owned(),
-            device_size_for_display(snapshot, device),
-        ],
+        ["Size".to_owned(), device_size_for_display(snapshot, device)],
         ["Filesystem".to_owned(), filesystem.to_owned()],
         ["Mounted at".to_owned(), mounts],
         [
@@ -919,11 +932,7 @@ fn preflight_table_cells(check: &PreflightCheck) -> [String; 3] {
         PreflightState::Verified => "[OK]",
         PreflightState::Required => "[REQ]",
     };
-    [
-        state.to_owned(),
-        check.code.clone(),
-        check.message.clone(),
-    ]
+    [state.to_owned(), check.code.clone(), check.message.clone()]
 }
 
 fn plan_step_table_cells(step: &PlanStep) -> [String; 4] {
@@ -951,7 +960,11 @@ fn plan_layout_mode(width: u16) -> PlanLayoutMode {
     }
 }
 
-fn plan_summary_lines(target: &str, growth: Growth, analysis: &ExtendAnalysis) -> Vec<Line<'static>> {
+fn plan_summary_lines(
+    target: &str,
+    growth: Growth,
+    analysis: &ExtendAnalysis,
+) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from("Growth analysis"),
         Line::from(""),
@@ -1056,7 +1069,6 @@ fn toolbar_line(section: Section) -> Line<'static> {
     spans.push(Span::raw("Read-only"));
     Line::from(spans)
 }
-
 
 fn device_rows(graph: &StorageGraph) -> Vec<DeviceRow<'_>> {
     let mut rows = Vec::new();
