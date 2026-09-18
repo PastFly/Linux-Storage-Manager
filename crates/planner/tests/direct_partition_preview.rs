@@ -480,8 +480,7 @@ fn protected_gpt_boot_partition_types_never_enter_generic_growth() {
 fn protected_mbr_boot_partition_types_never_enter_generic_growth() {
     for partition_type in ["ea", "ef"] {
         let mut snapshot = live_debian_snapshot();
-        snapshot.partition_tables[0].partitions[0].partition_type =
-            Some(partition_type.to_owned());
+        snapshot.partition_tables[0].partitions[0].partition_type = Some(partition_type.to_owned());
 
         let plan = plan_extend(
             &snapshot,
