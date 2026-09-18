@@ -339,14 +339,14 @@ pub fn plan_extend(
                 plan.preflight_checks = lvm_preflight_checks();
                 plan.steps = steps;
             }
-            Err(blocker) => {
+            Err(blocker) => plan.blockers.push(blocker),
+        },
+        Err(blocker) => {
             if blocker.code == "insufficient-adjacent-capacity" {
                 plan.layout_alternatives = detect_layout_alternatives(snapshot, &plan.request);
             }
             plan.blockers.push(blocker);
-        },
-        },
-        Err(blocker) => plan.blockers.push(blocker),
+        }
     }
     // Includes all preview content except the ID itself (empty at this point).
     plan.plan_id = fingerprint(&plan)?;
@@ -820,8 +820,7 @@ fn detect_tail_swap_migration(
 
     let parent_name = target_device.parent_kernel_name.as_deref()?;
     let mut disks = nodes.iter().copied().filter(|candidate| {
-        candidate.kind == NodeKind::Disk
-            && candidate.kernel_name.as_deref() == Some(parent_name)
+        candidate.kind == NodeKind::Disk && candidate.kernel_name.as_deref() == Some(parent_name)
     });
     let disk = disks.next()?;
     if disks.next().is_some() {
@@ -887,7 +886,10 @@ fn detect_tail_swap_migration(
     if parse_dos_type(swap_record.partition_type.as_deref()?).ok()? != 0x82 {
         return None;
     }
-    let active_swap = snapshot.swaps.iter().find(|swap| swap.name == swap_record.node)?;
+    let active_swap = snapshot
+        .swaps
+        .iter()
+        .find(|swap| swap.name == swap_record.node)?;
     let swap_bytes = swap_record.size_sectors.checked_mul(sector)?;
     if active_swap.size_bytes != swap_bytes {
         return None;
@@ -896,7 +898,9 @@ fn detect_tail_swap_migration(
     // Refuse any other primary payload after the target. The extended container may
     // be removed in the advisory migration, but unrelated partitions may not.
     if table.partitions.iter().any(|record| {
-        if record.node == target.node || record.node == extended.node || record.node == swap_record.node
+        if record.node == target.node
+            || record.node == extended.node
+            || record.node == swap_record.node
         {
             return false;
         }
@@ -911,9 +915,7 @@ fn detect_tail_swap_migration(
         return None;
     }
 
-    let reclaimable_span_bytes = disk_sectors
-        .checked_sub(target_end)?
-        .checked_mul(sector)?;
+    let reclaimable_span_bytes = disk_sectors.checked_sub(target_end)?.checked_mul(sector)?;
     let requested_sectors =
         requested_growth_bytes / sector + u64::from(requested_growth_bytes % sector != 0);
     let rounded_requested_bytes = requested_sectors.checked_mul(sector)?;
