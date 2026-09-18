@@ -47,15 +47,20 @@ Goal: safely understand a host before changing anything.
 - [x] Make TUI growth choices include proven layout-opportunity sizes in addition to directly adjacent capacity.
 - [x] Add responsive TUI tables for storage, diagnostics, preflight and plan steps.
 - [x] Add a read-only catalog of selectable filesystem growth targets, including blocked/unsupported targets instead of hiding them.
-- [x] Add a read-only provisioning-space catalog for free VG extents, blank disks and verified partition-table tail space.
+- [x] Add a read-only provisioning-space catalog for free VG extents, blank disks and verified partition-table free ranges (internal gaps and tail).
+- [x] Add stable free-space source IDs for intent planning.
 - [x] Add a dedicated TUI Create section and CLI catalog commands without adding a provisioning executor.
+- [x] Add a read-only Create intent planner for filesystem/swap on verified VG free space and partition-table gap/tail sources.
+- [x] Add `plan create SOURCE_ID --by SIZE|--max --purpose filesystem|swap` plus TUI size/purpose/ext4-XFS controls.
+- [x] Keep blank-disk Create plans blocked until partition-table/alignment policy is explicitly resolved instead of guessing.
 - [ ] Add filesystem feature/health/version preflight before any future executor work.
 - [ ] Add concurrency/locking design and fresh runtime identity revalidation for M1B.
 - [x] Detect advisory whole-disk/backing-device LVM growth routes where the backing device is larger than the current PV.
 - [x] Detect advisory partition -> PV -> VG -> LV -> filesystem routes when authoritative adjacent capacity is proven.
 - [ ] Generalize the route resolver into a reusable layer graph so one intent can traverse any supported disk -> partition -> encryption/RAID -> PV -> VG -> LV -> filesystem -> mount chain.
 - [ ] Add explicit route diagnostics for layered targets such as LUKS, mdraid, multipath, thin/cached LVM and Btrfs so unsupported paths are visible and fail closed.
-- [ ] Add a scenario-matrix test suite derived from docs/SCENARIO_MATRIX.md so each supported/blocked topology has a stable fixture.
+- [x] Add initial scenario-matrix contract tests for multiple selectable targets, blocked unknown filesystems, free ranges and chained LVM routes.
+- [ ] Continue expanding scenario-matrix fixtures until every supported/blocked topology in docs/SCENARIO_MATRIX.md has a stable regression case.
 
 M0 must still pass its acceptance gates. M1A has no executor, cannot perform a
 backup or resize, and does not authorize storage mutation. See M1A_PLANNER.md.
