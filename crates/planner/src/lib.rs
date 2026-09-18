@@ -929,8 +929,7 @@ fn detect_tail_swap_migration(
     Some(LayoutAlternative {
         code: "migrate-tail-swap".to_owned(),
         summary: format!(
-            "{} bytes of disk-tail capacity are separated from {} by DOS extended/swap layout; preserving equivalent swap as a swapfile can make the requested filesystem growth possible",
-            disk_tail_free_bytes, target_path
+            "{disk_tail_free_bytes} bytes of disk-tail capacity are separated from {target_path} by DOS extended/swap layout; preserving equivalent swap as a swapfile can make the requested filesystem growth possible"
         ),
         disk: disk_path.to_owned(),
         target: target_path.to_owned(),
