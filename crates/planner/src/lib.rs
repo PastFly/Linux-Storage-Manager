@@ -201,6 +201,7 @@ pub struct ExtendTarget {
 #[serde(rename_all = "snake_case")]
 pub enum ProvisioningSpaceKind {
     BlankDisk,
+    DiskGap,
     DiskTail,
     LvmFreeExtents,
 }
@@ -214,6 +215,8 @@ pub struct ProvisioningOpportunity {
     pub volume_group: Option<String>,
     pub available_bytes: u64,
     pub sector_size_bytes: Option<u64>,
+    pub start_sector: Option<u64>,
+    pub sector_count: Option<u64>,
     pub advisory_only: bool,
     pub future_actions: Vec<String>,
     pub blockers: Vec<String>,
@@ -545,6 +548,8 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
                 volume_group: Some(vg.name.clone()),
                 available_bytes: vg.free_bytes,
                 sector_size_bytes: None,
+                start_sector: None,
+                sector_count: None,
                 advisory_only: true,
                 future_actions: vec![
                     "create a new logical volume".to_owned(),
@@ -597,6 +602,8 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
                 volume_group: None,
                 available_bytes: disk.size_bytes,
                 sector_size_bytes: disk.logical_sector_bytes,
+                start_sector: None,
+                sector_count: None,
                 advisory_only: true,
                 future_actions: vec![
                     "choose GPT or DOS/MBR according to host and boot constraints".to_owned(),
@@ -612,38 +619,66 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
             continue;
         }
         let table = matching_tables[0];
-        let Some((tail_bytes, sector_size_bytes)) = partition_tail_free_bytes(disk, table) else {
+        let Some((free_ranges, sector_size_bytes)) = partition_free_ranges(disk, table) else {
             continue;
         };
-        if tail_bytes == 0 {
-            continue;
-        }
 
-        let mut blockers =
-            vec!["M2 provisioning planner/executor is not implemented yet".to_owned()];
-        if table.label.as_deref() == Some("dos") {
+        for (start_sector, sector_count, is_tail) in free_ranges {
+            if sector_count == 0 {
+                continue;
+            }
+            let available_bytes = sector_count.checked_mul(sector_size_bytes).unwrap_or(0);
+            if available_bytes == 0 {
+                continue;
+            }
+            let end_sector = start_sector.saturating_add(sector_count);
+            let mut blockers =
+                vec!["M2 provisioning planner/executor is not implemented yet".to_owned()];
             blockers.push(
-                "DOS/MBR primary-slot and extended/logical constraints must be revalidated before partition creation"
+                "partition alignment, partition-number allocation and boot constraints must be revalidated before creation"
                     .to_owned(),
             );
-        }
+            if table.label.as_deref() == Some("dos") {
+                blockers.push(
+                    "DOS/MBR primary-slot and extended/logical constraints must be revalidated before partition creation"
+                        .to_owned(),
+                );
+            }
 
-        opportunities.push(ProvisioningOpportunity {
-            code: "disk-tail".to_owned(),
-            kind: ProvisioningSpaceKind::DiskTail,
-            source: format!("{disk_path} tail"),
-            disk: Some(disk_path.clone()),
-            volume_group: None,
-            available_bytes: tail_bytes,
-            sector_size_bytes: Some(sector_size_bytes),
-            advisory_only: true,
-            future_actions: vec![
-                "create a new partition in verified raw tail space".to_owned(),
-                "optionally initialize it as an LVM PV and attach/create a VG".to_owned(),
-                "create a filesystem, mount it and optionally persist the mount".to_owned(),
-            ],
-            blockers,
-        });
+            opportunities.push(ProvisioningOpportunity {
+                code: if is_tail {
+                    "disk-tail".to_owned()
+                } else {
+                    "disk-gap".to_owned()
+                },
+                kind: if is_tail {
+                    ProvisioningSpaceKind::DiskTail
+                } else {
+                    ProvisioningSpaceKind::DiskGap
+                },
+                source: if is_tail {
+                    format!("{disk_path} tail")
+                } else {
+                    format!(
+                        "{disk_path} free sectors {start_sector}..{}",
+                        end_sector.saturating_sub(1)
+                    )
+                },
+                disk: Some(disk_path.clone()),
+                volume_group: None,
+                available_bytes,
+                sector_size_bytes: Some(sector_size_bytes),
+                start_sector: Some(start_sector),
+                sector_count: Some(sector_count),
+                advisory_only: true,
+                future_actions: vec![
+                    "create a new partition inside this verified free range".to_owned(),
+                    "optionally initialize it as an LVM PV and attach/create a VG".to_owned(),
+                    "create a filesystem, mount it and optionally persist the mount".to_owned(),
+                ],
+                blockers,
+            });
+        }
     }
 
     opportunities.sort_by(|left, right| {
@@ -654,36 +689,70 @@ pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<Provision
     opportunities
 }
 
-fn partition_tail_free_bytes(disk: &BlockDevice, table: &PartitionTable) -> Option<(u64, u64)> {
+fn partition_free_ranges(
+    disk: &BlockDevice,
+    table: &PartitionTable,
+) -> Option<(Vec<(u64, u64, bool)>, u64)> {
     let sector = table.sector_size_bytes?;
     if sector < 512 || !sector.is_power_of_two() || disk.size_bytes % sector != 0 {
         return None;
     }
 
     let disk_sectors = disk.size_bytes / sector;
-    let limit = match table.label.as_deref()? {
-        "gpt" => table.last_lba?.checked_add(1)?.min(disk_sectors),
-        "dos" => disk_sectors,
+    let (first_usable, limit) = match table.label.as_deref()? {
+        "gpt" => (
+            table.first_lba?,
+            table.last_lba?.checked_add(1)?.min(disk_sectors),
+        ),
+        "dos" => (1, disk_sectors),
         _ => return None,
     };
-
-    if table.partitions.is_empty() {
+    if first_usable >= limit {
         return None;
     }
 
-    let mut highest_end = 0_u64;
+    let mut intervals = Vec::with_capacity(table.partitions.len());
     for record in &table.partitions {
-        let end = record.start_sector.checked_add(record.size_sectors)?;
-        if end > limit {
+        if record.size_sectors == 0 {
             return None;
         }
-        highest_end = highest_end.max(end);
+        let end = record.start_sector.checked_add(record.size_sectors)?;
+        if record.start_sector < first_usable || end > limit {
+            return None;
+        }
+        intervals.push((record.start_sector, end));
     }
-    if highest_end >= limit {
-        return None;
+    intervals.sort_unstable_by_key(|(start, _)| *start);
+
+    let mut merged: Vec<(u64, u64)> = Vec::with_capacity(intervals.len());
+    for (start, end) in intervals {
+        if let Some((_, previous_end)) = merged.last_mut() {
+            if start <= *previous_end {
+                *previous_end = (*previous_end).max(end);
+                continue;
+            }
+        }
+        merged.push((start, end));
     }
 
-    Some((limit.checked_sub(highest_end)?.checked_mul(sector)?, sector))
+    let has_partitions = !merged.is_empty();
+    let mut cursor = first_usable;
+    let mut free_ranges = Vec::new();
+    for (start, end) in merged {
+        if start > cursor {
+            free_ranges.push((cursor, start.checked_sub(cursor)?, false));
+        }
+        cursor = cursor.max(end);
+    }
+    if cursor < limit {
+        free_ranges.push((
+            cursor,
+            limit.checked_sub(cursor)?,
+            has_partitions,
+        ));
+    }
+
+    Some((free_ranges, sector))
 }
 
 pub fn plan_extend(
