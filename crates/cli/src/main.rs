@@ -6,8 +6,8 @@ use lsm_discovery::{
     discover_partition_tables, discover_snapshot, discover_storage, discover_swaps,
 };
 use lsm_planner::{
-    list_extend_targets, list_provisioning_opportunities, parse_growth_size, plan_create,
-    plan_extend, CreatePurpose, CreateRequest, ExtendRequest, Growth, PlanStatus,
+    analyze_layer_route, list_extend_targets, list_provisioning_opportunities, parse_growth_size,
+    plan_create, plan_extend, CreatePurpose, CreateRequest, ExtendRequest, Growth, PlanStatus,
 };
 use std::process::ExitCode;
 
@@ -76,6 +76,14 @@ enum PlanCommand {
     },
     /// List filesystem targets that can be selected for growth planning.
     Targets {
+        /// Emit structured JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Explain the discovered storage-layer route for a selected target.
+    Route {
+        /// Exact mountpoint or block-device/LV path.
+        target: String,
         /// Emit structured JSON.
         #[arg(long)]
         json: bool,
@@ -236,6 +244,49 @@ fn run() -> Result<ExitCode> {
             }
         }
         Some(Command::Plan {
+            command: PlanCommand::Route { target, json },
+        }) => {
+            let snapshot = discover_snapshot()?;
+            let route = analyze_layer_route(&snapshot, &target);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&route)?);
+            } else {
+                println!("Target: {}", route.target);
+                println!(
+                    "Resolved device: {}",
+                    route.resolved_device.as_deref().unwrap_or("-")
+                );
+                println!("Status: {:?}", route.status);
+                if !route.layers.is_empty() {
+                    println!("Layers:");
+                    for (index, layer) in route.layers.iter().enumerate() {
+                        println!(
+                            "  {}. {:?}  identity={}  device={}  size={}",
+                            index + 1,
+                            layer.kind,
+                            layer.identity,
+                            layer.device.as_deref().unwrap_or("-"),
+                            layer
+                                .size_bytes
+                                .map(|bytes| bytes.to_string())
+                                .unwrap_or_else(|| "-".to_owned())
+                        );
+                    }
+                }
+                for issue in &route.issues {
+                    println!(
+                        "{:?} [{}]: {}",
+                        issue.kind, issue.code, issue.message
+                    );
+                }
+            }
+            return Ok(if route.status == lsm_planner::LayerRouteStatus::Blocked {
+                ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
+            });
+        }
+        Some(Command::Plan {
             command: PlanCommand::CreateSpaces { json },
         }) => {
             let snapshot = discover_snapshot()?;
@@ -386,6 +437,15 @@ mod tests {
         );
         assert!(Cli::try_parse_from(["storagemgr", "plan", "targets"]).is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "targets", "--json"]).is_ok());
+        assert!(Cli::try_parse_from(["storagemgr", "plan", "route", "/"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "route",
+            "/dev/mapper/vg0-root",
+            "--json"
+        ])
+        .is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "create-spaces"]).is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "create-spaces", "--json"]).is_ok());
         assert!(Cli::try_parse_from([
