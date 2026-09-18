@@ -27,7 +27,7 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       TARGET: ${{ matrix.target }}
       ARCH: ${{ matrix.arch }}
@@ -58,10 +58,10 @@ jobs:
           cp "target/$TARGET/release/storagemgr" "$RUNNER_TEMP/portable-probe/storagemgr"
           bash tests/portability/check-elf.sh "$RUNNER_TEMP/portable-probe/storagemgr" "$ARCH" \
             | tee "$RUNNER_TEMP/portable-probe/PORTABILITY.txt"
-      - name: Test same binary in five Linux userlands
+      - name: Test same binary in seven Linux userlands
         run: |
           set -euo pipefail
-          for image in debian:12-slim ubuntu:22.04 ubuntu:24.04 rockylinux:9 alpine:3.22; do
+          for image in debian:12-slim ubuntu:22.04 ubuntu:24.04 rockylinux:9 almalinux:9 fedora:44 alpine:3.22; do
             docker pull "$image"
             docker image inspect --format '{{json .RepoDigests}}' "$image" \
               | tee -a "$RUNNER_TEMP/portable-probe/PORTABILITY.txt"
