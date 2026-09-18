@@ -2,7 +2,9 @@ use lsm_core::{
     BlockDevice, CollectorState, CollectorStatus, Filesystem, HostCapabilities, HostSnapshot,
     MountEntry, NodeKind, PartitionRecord, PartitionTable, StorageGraph, ToolCapability,
 };
-use lsm_planner::{plan_extend, ExtendRequest, Growth, PlanStatus, PreflightState};
+use lsm_planner::{
+    analyze_layout_opportunity, plan_extend, ExtendRequest, Growth, PlanStatus, PreflightState,
+};
 
 fn device(
     name: &str,
@@ -446,4 +448,21 @@ fn layout_alternative_is_not_emitted_when_tail_cannot_preserve_swap_and_growth()
 
     assert_eq!(plan.status(), PlanStatus::Blocked);
     assert!(plan.layout_alternatives().is_empty());
+}
+
+
+#[test]
+fn layout_opportunity_exposes_max_target_growth_for_selector() {
+    let snapshot = grown_live_debian_snapshot();
+    let opportunity = analyze_layout_opportunity(&snapshot, "/")
+        .expect("grown DOS/swap layout should expose a safe advisory opportunity");
+
+    assert_eq!(opportunity.code, "migrate-tail-swap");
+    assert_eq!(opportunity.disk, "/dev/sda");
+    assert_eq!(opportunity.target, "/dev/sda1");
+    assert_eq!(opportunity.sector_size_bytes, 512);
+    assert_eq!(opportunity.disk_tail_free_bytes, 1_074_790_400);
+    assert_eq!(opportunity.swap_bytes, 1_022_361_600);
+    assert!(opportunity.max_target_growth_bytes >= 1024 * 1024 * 1024);
+    assert!(opportunity.max_target_growth_bytes < 2 * 1024 * 1024 * 1024);
 }
