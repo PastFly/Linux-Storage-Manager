@@ -571,11 +571,9 @@ fn unknown_partition_table_label_blocks_direct_growth_with_explicit_reason() {
 
 #[test]
 fn free_space_before_partition_is_never_used_when_growth_would_move_start() {
-    let mut snapshot =
-        gpt_ext4_snapshot(Some("0FC63DAF-8483-4772-8E79-3D69D8477DE4"));
+    let mut snapshot = gpt_ext4_snapshot(Some("0FC63DAF-8483-4772-8E79-3D69D8477DE4"));
     let record = &snapshot.partition_tables[0].partitions[0];
-    snapshot.partition_tables[0].last_lba =
-        Some(record.start_sector + record.size_sectors - 1);
+    snapshot.partition_tables[0].last_lba = Some(record.start_sector + record.size_sectors - 1);
 
     let plan = plan_extend(
         &snapshot,
@@ -865,16 +863,18 @@ fn mixed_payload_inside_extended_container_blocks_swap_migration_advisory() {
     snapshot.swaps[0].size_bytes = 1_000_000 * 512;
     snapshot.storage.block_devices[0].children[2].size_bytes = 1_000_000 * 512;
 
-    snapshot.partition_tables[0].partitions.push(PartitionRecord {
-        node: "/dev/sda6".into(),
-        start_sector: 19_972_672,
-        size_sectors: 500_000,
-        partition_type: Some("83".into()),
-        uuid: None,
-        name: Some("payload".into()),
-        attrs: None,
-        bootable: None,
-    });
+    snapshot.partition_tables[0]
+        .partitions
+        .push(PartitionRecord {
+            node: "/dev/sda6".into(),
+            start_sector: 19_972_672,
+            size_sectors: 500_000,
+            partition_type: Some("83".into()),
+            uuid: None,
+            name: Some("payload".into()),
+            attrs: None,
+            bootable: None,
+        });
 
     assert!(analyze_layout_opportunity(&snapshot, "/").is_none());
 
