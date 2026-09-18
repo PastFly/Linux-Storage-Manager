@@ -989,6 +989,7 @@ fn create_plan_blocks_conflicting_mountpoint_and_invalid_swap_options() {
             purpose: CreatePurpose::Swap,
             filesystem: Some("ext4".into()),
             mountpoint: None,
+            partition_table: None,
         },
     )
     .unwrap();
