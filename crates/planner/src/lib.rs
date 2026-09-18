@@ -401,7 +401,6 @@ pub fn parse_growth_size(input: &str) -> Result<u64, PlannerError> {
     Ok(bytes)
 }
 
-
 pub fn list_extend_targets(
     snapshot: &HostSnapshot,
     capabilities: &HostCapabilities,
@@ -428,9 +427,7 @@ pub fn list_extend_targets(
             .iter()
             .find(|mount| mount.as_str() != "[SWAP]")
             .cloned();
-        let target = mountpoint
-            .clone()
-            .unwrap_or_else(|| device_path.clone());
+        let target = mountpoint.clone().unwrap_or_else(|| device_path.clone());
 
         let preview = plan_extend(
             snapshot,
@@ -470,7 +467,7 @@ pub fn list_extend_targets(
                 let reason = if layout_growth_bytes
                     .is_some_and(|bytes| bytes > verified_growth_bytes.unwrap_or(0))
                 {
-                    "verified growth is available; an additional layout migration opportunity was also detected"
+                    "verified growth is available; additional underlying capacity was also detected"
                         .to_owned()
                 } else {
                     "verified read-only growth preview is available".to_owned()
@@ -483,12 +480,12 @@ pub fn list_extend_targets(
                     .first()
                     .map(|blocker| {
                         format!(
-                            "{}; a non-executable layout migration opportunity is available",
+                            "{}; a non-executable underlying-capacity route is available",
                             blocker.message
                         )
                     })
                     .unwrap_or_else(|| {
-                        "a non-executable layout migration opportunity is available".to_owned()
+                        "a non-executable underlying-capacity route is available".to_owned()
                     }),
             ),
             Ok(plan) => (
@@ -532,9 +529,7 @@ pub fn list_extend_targets(
     targets
 }
 
-pub fn list_provisioning_opportunities(
-    snapshot: &HostSnapshot,
-) -> Vec<ProvisioningOpportunity> {
+pub fn list_provisioning_opportunities(snapshot: &HostSnapshot) -> Vec<ProvisioningOpportunity> {
     let mut opportunities = Vec::new();
 
     if let Some(lvm) = snapshot.lvm.as_ref() {
@@ -586,9 +581,8 @@ pub fn list_provisioning_opportunities(
             .collect();
 
         if matching_tables.is_empty() && disk.children.is_empty() && disk.filesystem.is_none() {
-            let mut blockers = vec![
-                "M2 provisioning planner/executor is not implemented yet".to_owned(),
-            ];
+            let mut blockers =
+                vec!["M2 provisioning planner/executor is not implemented yet".to_owned()];
             if !partition_tables_complete {
                 blockers.push(
                     "authoritative partition-table discovery must complete before creation"
@@ -625,9 +619,8 @@ pub fn list_provisioning_opportunities(
             continue;
         }
 
-        let mut blockers = vec![
-            "M2 provisioning planner/executor is not implemented yet".to_owned(),
-        ];
+        let mut blockers =
+            vec!["M2 provisioning planner/executor is not implemented yet".to_owned()];
         if table.label.as_deref() == Some("dos") {
             blockers.push(
                 "DOS/MBR primary-slot and extended/logical constraints must be revalidated before partition creation"
@@ -661,10 +654,7 @@ pub fn list_provisioning_opportunities(
     opportunities
 }
 
-fn partition_tail_free_bytes(
-    disk: &BlockDevice,
-    table: &PartitionTable,
-) -> Option<(u64, u64)> {
+fn partition_tail_free_bytes(disk: &BlockDevice, table: &PartitionTable) -> Option<(u64, u64)> {
     let sector = table.sector_size_bytes?;
     if sector < 512 || !sector.is_power_of_two() || disk.size_bytes % sector != 0 {
         return None;
@@ -739,9 +729,7 @@ pub fn plan_extend(
             }
             Err(blocker) => {
                 if matches!(blocker.code.as_str(), "insufficient-capacity" | "no-growth") {
-                    if let Some(route) =
-                        analyze_lvm_underlying_growth(snapshot, &plan.request)
-                    {
+                    if let Some(route) = analyze_lvm_underlying_growth(snapshot, &plan.request) {
                         plan.growth_route_alternatives.push(route);
                     }
                 }
@@ -1527,7 +1515,10 @@ pub fn analyze_lvm_underlying_growth(
     )
     .ok()?;
     let pv_device = unique(
-        nodes.iter().copied().filter(|device| node_alias(device, &pv.name)),
+        nodes
+            .iter()
+            .copied()
+            .filter(|device| node_alias(device, &pv.name)),
         "pv-not-resolved",
     )
     .ok()?;
@@ -1638,8 +1629,7 @@ pub fn analyze_lvm_underlying_growth(
 
     let required_new_extents = requested_extents.checked_sub(free_extents)?;
     let required_pv_growth_bytes = required_new_extents.checked_mul(extent)?;
-    let raw_partition_growth_bytes =
-        required_pv_growth_bytes.saturating_sub(pv_device_slack_bytes);
+    let raw_partition_growth_bytes = required_pv_growth_bytes.saturating_sub(pv_device_slack_bytes);
     let required_partition_growth_bytes = if raw_partition_growth_bytes == 0 {
         0
     } else {
