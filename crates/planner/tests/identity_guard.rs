@@ -1,4 +1,4 @@
-use lsm_core::HostSnapshot;
+use lsm_core::{FilesystemPreflightEvidence, FilesystemProbeState, HostSnapshot};
 use lsm_planner::{capture_target_identity, revalidate_target_identity};
 use serde_json::json;
 
@@ -201,4 +201,53 @@ fn disappearing_target_fails_revalidation_closed() {
         .changes
         .iter()
         .any(|change| change.code == "fresh-target-unresolved"));
+}
+
+
+#[test]
+fn observed_filesystem_size_change_invalidates_target_manifest() {
+    let mut snapshot = direct_snapshot();
+    snapshot
+        .filesystem_preflight
+        .push(FilesystemPreflightEvidence {
+            device: "/dev/sda1".into(),
+            mountpoint: Some("/data".into()),
+            fs_type: "ext4".into(),
+            fs_version: Some("1.0".into()),
+            state: FilesystemProbeState::Verified,
+            filesystem_state: Some("clean".into()),
+            revision: Some("1 (dynamic)".into()),
+            features: vec![
+                "has_journal".into(),
+                "extent".into(),
+                "64bit".into(),
+                "metadata_csum".into(),
+            ],
+            block_size_bytes: Some(4096),
+            block_count: Some(2_000_000),
+            size_bytes: Some(8_192_000_000),
+            grow_check_passed: None,
+            detail: None,
+        });
+
+    let manifest = capture_target_identity(&snapshot, "/data").unwrap();
+    assert_eq!(
+        manifest
+            .filesystem
+            .as_ref()
+            .and_then(|filesystem| filesystem.observed_filesystem_size_bytes),
+        Some(8_192_000_000)
+    );
+
+    let mut fresh = snapshot.clone();
+    fresh.filesystem_preflight[0].block_count = Some(2_100_000);
+    fresh.filesystem_preflight[0].size_bytes = Some(8_601_600_000);
+
+    let result = revalidate_target_identity(&manifest, &fresh);
+
+    assert!(!result.matches);
+    assert!(result
+        .changes
+        .iter()
+        .any(|change| change.code == "filesystem-identity-changed"));
 }
