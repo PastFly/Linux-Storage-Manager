@@ -14,7 +14,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Terminal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +53,7 @@ impl Section {
 struct AppState {
     section_index: usize,
     selected_device: usize,
+    content_scroll: u16,
 }
 
 impl AppState {
@@ -61,6 +62,7 @@ impl AppState {
         Self {
             section_index: 0,
             selected_device,
+            content_scroll: 0,
         }
     }
 
@@ -69,11 +71,34 @@ impl AppState {
     }
 
     fn next_section(&mut self) {
-        self.section_index = (self.section_index + 1).min(Section::ALL.len() - 1);
+        let next = (self.section_index + 1).min(Section::ALL.len() - 1);
+        if next != self.section_index {
+            self.section_index = next;
+            self.content_scroll = 0;
+        }
     }
 
     fn previous_section(&mut self) {
-        self.section_index = self.section_index.saturating_sub(1);
+        let previous = self.section_index.saturating_sub(1);
+        if previous != self.section_index {
+            self.section_index = previous;
+            self.content_scroll = 0;
+        }
+    }
+
+    fn scroll_down(&mut self) {
+        self.content_scroll = self.content_scroll.saturating_add(1);
+    }
+
+    fn scroll_up(&mut self) {
+        self.content_scroll = self.content_scroll.saturating_sub(1);
+    }
+
+    fn set_section(&mut self, index: usize) {
+        if self.section_index != index {
+            self.section_index = index;
+            self.content_scroll = 0;
+        }
     }
 
     fn select_next_device(&mut self, snapshot: &HostSnapshot, volumes_only: bool) {
@@ -134,14 +159,14 @@ fn event_loop(
                         Section::Disks | Section::Volumes | Section::Plans => {
                             state.select_previous_device()
                         }
-                        _ => state.previous_section(),
+                        _ => state.scroll_up(),
                     },
                     KeyCode::Down | KeyCode::Char('j') => match state.section() {
                         Section::Disks | Section::Volumes | Section::Plans => {
                             let volumes_only = state.section() == Section::Volumes;
                             state.select_next_device(snapshot, volumes_only)
                         }
-                        _ => state.next_section(),
+                        _ => state.scroll_down(),
                     },
                     KeyCode::Left | KeyCode::BackTab => {
                         state.previous_section();
@@ -152,18 +177,18 @@ fn event_loop(
                         state.clamp_device_selection(snapshot);
                     }
                     KeyCode::Char('1') => {
-                        state.section_index = 0;
+                        state.set_section(0);
                         state.clamp_device_selection(snapshot);
                     }
                     KeyCode::Char('2') => {
-                        state.section_index = 1;
+                        state.set_section(1);
                         state.clamp_device_selection(snapshot);
                     }
-                    KeyCode::Char('3') => state.section_index = 2,
-                    KeyCode::Char('4') => state.section_index = 3,
-                    KeyCode::Char('5') => state.section_index = 4,
+                    KeyCode::Char('3') => state.set_section(2),
+                    KeyCode::Char('4') => state.set_section(3),
+                    KeyCode::Char('5') => state.set_section(4),
                     KeyCode::Char('6') => {
-                        state.section_index = 5;
+                        state.set_section(5);
                         state.clamp_device_selection(snapshot);
                     }
                     _ => {}
@@ -188,26 +213,7 @@ fn draw(
         ])
         .split(frame.area());
 
-    let available = capabilities
-        .tools
-        .iter()
-        .filter(|tool| tool.available)
-        .count();
-    let errors = snapshot
-        .diagnostics
-        .iter()
-        .filter(|item| item.severity == DiagnosticSeverity::Error)
-        .count();
-    let warnings = snapshot
-        .diagnostics
-        .iter()
-        .filter(|item| item.severity == DiagnosticSeverity::Warning)
-        .count();
-
-    let header = format!(
-        " Linux Storage Manager   READ-ONLY   tools {available}/{}   diagnostics {errors}E/{warnings}W ",
-        capabilities.tools.len()
-    );
+    let header = header_text(snapshot);
     frame.render_widget(
         Paragraph::new(header)
             .style(Style::default().add_modifier(Modifier::BOLD))
@@ -226,7 +232,7 @@ fn draw(
         body[0],
     );
 
-    render_section(frame, body[1], snapshot, state);
+    render_section(frame, body[1], snapshot, capabilities, state);
 
     frame.render_widget(
         Paragraph::new(
@@ -261,14 +267,15 @@ fn render_section(
     frame: &mut ratatui::Frame<'_>,
     area: ratatui::layout::Rect,
     snapshot: &HostSnapshot,
+    capabilities: &HostCapabilities,
     state: AppState,
 ) {
     match state.section() {
         Section::Disks => render_devices(frame, area, snapshot, state, false),
         Section::Volumes => render_devices(frame, area, snapshot, state, true),
-        Section::Swap => render_swap(frame, area, snapshot),
-        Section::Mounts => render_mounts(frame, area, snapshot),
-        Section::Diagnostics => render_diagnostics(frame, area, snapshot),
+        Section::Swap => render_swap(frame, area, snapshot, state),
+        Section::Mounts => render_mounts(frame, area, snapshot, state),
+        Section::Diagnostics => render_diagnostics(frame, area, snapshot, capabilities, state),
         Section::Plans => render_plan_hint(frame, area, snapshot, state),
     }
 }
@@ -299,11 +306,13 @@ fn render_devices(
             .as_ref()
             .map(|item| item.fs_type.as_str())
             .unwrap_or("-");
+        let role = device_role(snapshot, row.device);
+        let descriptor = if role == "Extended container" { role } else { fs };
         let path = row.device.path.as_deref().unwrap_or(&row.device.name);
         let indent = "  ".repeat(row.depth);
         let line = Line::from(format!(
-            "{marker} {indent}{path:<16} {:>9}  {fs}",
-            human_bytes(row.device.size_bytes)
+            "{marker} {indent}{path:<16} {:>9}  {descriptor}",
+            device_size_for_display(snapshot, row.device)
         ));
         lines.push(if index == state.selected_device {
             line.style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
@@ -328,7 +337,7 @@ fn render_devices(
 
     let detail = rows
         .get(state.selected_device)
-        .map(|row| device_detail_lines(row.device))
+        .map(|row| device_detail_lines(snapshot, row.device))
         .unwrap_or_else(|| vec![Line::from("No device selected.")]);
     frame.render_widget(
         Paragraph::new(detail).block(Block::default().borders(Borders::ALL).title(" Details ")),
@@ -340,6 +349,7 @@ fn render_swap(
     frame: &mut ratatui::Frame<'_>,
     area: ratatui::layout::Rect,
     snapshot: &HostSnapshot,
+    state: AppState,
 ) {
     let mut lines = vec![Line::from(format!(
         "Active swap areas: {}",
@@ -359,7 +369,9 @@ fn render_swap(
         lines.push(Line::from("No active swap areas discovered."));
     }
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Swap ")),
+        Paragraph::new(lines)
+            .scroll((state.content_scroll, 0))
+            .block(Block::default().borders(Borders::ALL).title(" Swap ")),
         area,
     );
 }
@@ -368,6 +380,7 @@ fn render_mounts(
     frame: &mut ratatui::Frame<'_>,
     area: ratatui::layout::Rect,
     snapshot: &HostSnapshot,
+    state: AppState,
 ) {
     let mut lines = Vec::new();
     for mount in storage_mounts(snapshot) {
@@ -382,7 +395,9 @@ fn render_mounts(
         lines.push(Line::from("No mount entries discovered."));
     }
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Mounts ")),
+        Paragraph::new(lines)
+            .scroll((state.content_scroll, 0))
+            .block(Block::default().borders(Borders::ALL).title(" Storage mounts ")),
         area,
     );
 }
@@ -391,23 +406,37 @@ fn render_diagnostics(
     frame: &mut ratatui::Frame<'_>,
     area: ratatui::layout::Rect,
     snapshot: &HostSnapshot,
+    capabilities: &HostCapabilities,
+    state: AppState,
 ) {
     let mut lines = Vec::new();
     for item in &snapshot.diagnostics {
-        lines.push(Line::from(format!(
-            "{:?}  {}  {}",
-            item.severity, item.code, item.message
-        )));
+        lines.push(Line::from(format!("{:?}  {}", item.severity, item.code)));
+        lines.push(Line::from(format!("  {}", item.message)));
+        lines.push(Line::from(""));
     }
     if lines.is_empty() {
         lines.push(Line::from("No diagnostics reported."));
+        lines.push(Line::from(""));
     }
+    let available = capabilities
+        .tools
+        .iter()
+        .filter(|tool| tool.available)
+        .count();
+    lines.push(Line::from(format!(
+        "Capabilities: {available}/{} tools available",
+        capabilities.tools.len()
+    )));
     frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Diagnostics "),
-        ),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((state.content_scroll, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Diagnostics "),
+            ),
         area,
     );
 }
@@ -421,16 +450,33 @@ fn render_plan_hint(
     let rows = device_rows(&snapshot.storage);
     let lines = if let Some(row) = rows.get(state.selected_device) {
         let target = plan_target(row.device);
+        let filesystem = row
+            .device
+            .filesystem
+            .as_ref()
+            .map(|fs| fs.fs_type.as_str())
+            .unwrap_or("-");
+        let mount = row
+            .device
+            .mountpoints
+            .iter()
+            .find(|mount| mount.as_str() != "[SWAP]")
+            .map(String::as_str)
+            .unwrap_or("-");
         vec![
-            Line::from("Plan preview is CLI-backed and remains non-executable."),
+            Line::from("Growth preview"),
             Line::from(""),
-            Line::from(format!("Selected target: {target}")),
+            Line::from(format!("Target        {target}")),
+            Line::from(format!("Type          {}", device_role(snapshot, row.device))),
+            Line::from(format!("Filesystem    {filesystem}")),
+            Line::from(format!("Mounted at    {mount}")),
             Line::from(format!(
-                "Preview: storagemgr plan extend {target} --by 1GiB"
+                "Current size  {}",
+                device_size_for_display(snapshot, row.device)
             )),
-            Line::from(format!("Explain: storagemgr explain {target}")),
             Line::from(""),
-            Line::from("No apply/executor exists in this build."),
+            Line::from("Status        Read-only preview only"),
+            Line::from("Apply         Not available in this build"),
         ]
     } else {
         vec![Line::from("No device selected.")]
@@ -442,7 +488,7 @@ fn render_plan_hint(
     );
 }
 
-fn device_detail_lines(device: &BlockDevice) -> Vec<Line<'static>> {
+fn device_detail_lines(snapshot: &HostSnapshot, device: &BlockDevice) -> Vec<Line<'static>> {
     let path = device.path.as_deref().unwrap_or(&device.name);
     let fs = device
         .filesystem
@@ -457,8 +503,11 @@ fn device_detail_lines(device: &BlockDevice) -> Vec<Line<'static>> {
 
     vec![
         Line::from(format!("Device       {path}")),
-        Line::from(format!("Type         {:?}", device.kind)),
-        Line::from(format!("Size         {}", human_bytes(device.size_bytes))),
+        Line::from(format!("Type         {}", device_role(snapshot, device))),
+        Line::from(format!(
+            "Size         {}",
+            device_size_for_display(snapshot, device)
+        )),
         Line::from(format!("Filesystem   {fs}")),
         Line::from(format!("Mounted at   {mounts}")),
         Line::from(format!(
@@ -485,6 +534,80 @@ fn append_device_rows<'a>(device: &'a BlockDevice, depth: usize, rows: &mut Vec<
     for child in &device.children {
         append_device_rows(child, depth + 1, rows);
     }
+}
+
+fn header_text(snapshot: &HostSnapshot) -> String {
+    let errors = snapshot
+        .diagnostics
+        .iter()
+        .filter(|item| item.severity == DiagnosticSeverity::Error)
+        .count();
+    let warnings = snapshot
+        .diagnostics
+        .iter()
+        .filter(|item| item.severity == DiagnosticSeverity::Warning)
+        .count();
+
+    let diagnostic_text = match (errors, warnings) {
+        (0, 0) => "No warnings".to_owned(),
+        (0, 1) => "1 warning".to_owned(),
+        (0, count) => format!("{count} warnings"),
+        (1, 0) => "1 error".to_owned(),
+        (count, 0) => format!("{count} errors"),
+        (errors, warnings) => format!("{errors} errors, {warnings} warnings"),
+    };
+
+    format!(" Linux Storage Manager   Read-only   {diagnostic_text} ")
+}
+
+fn device_role(snapshot: &HostSnapshot, device: &BlockDevice) -> &'static str {
+    if is_extended_partition(snapshot, device) {
+        return "Extended container";
+    }
+    match device.kind {
+        NodeKind::Disk => "Disk",
+        NodeKind::Partition => "Partition",
+        NodeKind::Lvm => "LVM volume",
+        NodeKind::Crypt => "Encrypted volume",
+        NodeKind::Raid => "RAID",
+        NodeKind::Loop => "Loop device",
+        NodeKind::Rom => "Optical device",
+        NodeKind::Zram => "ZRAM",
+        NodeKind::Unknown => "Unknown",
+    }
+}
+
+fn device_size_for_display(snapshot: &HostSnapshot, device: &BlockDevice) -> String {
+    if is_extended_partition(snapshot, device) {
+        "container".to_owned()
+    } else {
+        human_bytes(device.size_bytes)
+    }
+}
+
+fn is_extended_partition(snapshot: &HostSnapshot, device: &BlockDevice) -> bool {
+    let Some(path) = device.path.as_deref() else {
+        return false;
+    };
+    snapshot.partition_tables.iter().any(|table| {
+        table.label.as_deref() == Some("dos")
+            && table.partitions.iter().any(|record| {
+                if record.node != path {
+                    return false;
+                }
+                let Some(raw) = record.partition_type.as_deref() else {
+                    return false;
+                };
+                let trimmed = raw.trim();
+                let normalized = trimmed
+                    .strip_prefix("0x")
+                    .or_else(|| trimmed.strip_prefix("0X"))
+                    .unwrap_or(trimmed);
+                u8::from_str_radix(normalized, 16)
+                    .map(|kind| matches!(kind, 0x05 | 0x0f | 0x85))
+                    .unwrap_or(false)
+            })
+    })
 }
 
 fn visible_device_rows(graph: &StorageGraph, volumes_only: bool) -> Vec<DeviceRow<'_>> {
@@ -687,7 +810,6 @@ mod tests {
         assert_eq!(mounts[0].target, "/");
         assert_eq!(mounts[1].target, "/mnt/share");
     }
-
 
     #[test]
     fn dos_extended_partition_is_presented_as_container_not_one_kib_volume() {
