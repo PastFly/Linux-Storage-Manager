@@ -766,6 +766,31 @@ fn scenario_contract_keeps_unknown_filesystem_visible_but_blocked() {
 
 
 #[test]
+fn create_plan_accepts_unique_source_id_prefix() {
+    let (snapshot, _caps) = input();
+    let source = list_provisioning_opportunities(&snapshot)
+        .into_iter()
+        .find(|space| space.kind == ProvisioningSpaceKind::LvmFreeExtents)
+        .unwrap();
+    let prefix = source.id[..16].to_owned();
+
+    let plan = plan_create(
+        &snapshot,
+        CreateRequest {
+            source_id: prefix,
+            size: Growth::ByBytes(GIB),
+            purpose: CreatePurpose::Filesystem,
+            filesystem: Some("ext4".into()),
+            mountpoint: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Preview);
+    assert_eq!(plan.source().unwrap().id, source.id);
+}
+
+#[test]
 fn create_plan_builds_extent_aligned_filesystem_volume_from_vg_free_space() {
     let (snapshot, _caps) = input();
     let source = list_provisioning_opportunities(&snapshot)
