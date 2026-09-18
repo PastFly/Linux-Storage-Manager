@@ -32,6 +32,7 @@ fn matching_sfdisk_and_lsblk_geometry_has_no_partition_table_errors() {
         fstab: Vec::new(),
         swaps: Vec::new(),
         lvm: None,
+        filesystem_preflight: Vec::new(),
         diagnostics: Vec::new(),
         collectors: Vec::new(),
     };
@@ -71,6 +72,7 @@ fn reports_authoritative_geometry_and_uuid_mismatch() {
         fstab: Vec::new(),
         swaps: Vec::new(),
         lvm: None,
+        filesystem_preflight: Vec::new(),
         diagnostics: Vec::new(),
         collectors: Vec::new(),
     };
@@ -138,6 +140,7 @@ fn dos_extended_partition_container_does_not_trigger_false_size_mismatch() {
         fstab: Vec::new(),
         swaps: Vec::new(),
         lvm: None,
+        filesystem_preflight: Vec::new(),
         diagnostics: Vec::new(),
         collectors: Vec::new(),
     };
