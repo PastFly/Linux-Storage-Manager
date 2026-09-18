@@ -548,8 +548,7 @@ fn ordinary_linux_gpt_partition_remains_growable_after_role_guard() {
 
 #[test]
 fn unknown_partition_table_label_blocks_direct_growth_with_explicit_reason() {
-    let mut snapshot =
-        gpt_ext4_snapshot(Some("0FC63DAF-8483-4772-8E79-3D69D8477DE4"));
+    let mut snapshot = gpt_ext4_snapshot(Some("0FC63DAF-8483-4772-8E79-3D69D8477DE4"));
     snapshot.partition_tables[0].label = Some("sun".into());
 
     let plan = plan_extend(
