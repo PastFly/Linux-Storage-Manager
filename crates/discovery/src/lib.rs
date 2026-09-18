@@ -93,6 +93,7 @@ pub fn discover_capabilities() -> HostCapabilities {
         "tune2fs",
         "xfs_growfs",
         "xfs_info",
+        "xfs_scrub",
         "xfs_repair",
         "mkfs.ext4",
         "mkfs.xfs",
