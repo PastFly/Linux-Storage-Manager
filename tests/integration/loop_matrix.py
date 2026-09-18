@@ -462,10 +462,21 @@ def main(argv: list[str] | None = None) -> int:
     resources = Resources(root, runner)
     failed = False
     try:
-        for label, filesystem, lvm in (("plain", "ext4", False), ("lvm-ext4", "ext4", True), ("lvm-xfs", "xfs", True)):
+        for label, filesystem, lvm in (
+            ("plain", "ext4", False),
+            ("plain-xfs", "xfs", False),
+            ("lvm-ext4", "ext4", True),
+            ("lvm-xfs", "xfs", True),
+        ):
             print(f"==> {label}", flush=True)
-            loop = resources.create_loop(label, 1024 * 1024 * 1024 if lvm else 256 * 1024 * 1024)
-            partition = resources.create_partition(loop, 896 if lvm else 128, lvm)
+            if lvm:
+                loop_mib, partition_mib = 1024, 896
+            elif filesystem == "xfs":
+                loop_mib, partition_mib = 512, 384
+            else:
+                loop_mib, partition_mib = 256, 128
+            loop = resources.create_loop(label, loop_mib * 1024 * 1024)
+            partition = resources.create_partition(loop, partition_mib, lvm)
             vg = "lsmtest" + os.urandom(12).hex() if lvm else None
             source = resources.create_vg(loop, partition, vg) if vg else partition
             runner.run("mkfs." + filesystem, "-f" if filesystem == "xfs" else "-F", source)
@@ -481,7 +492,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,lvm-ext4,lvm-xfs cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs cleanup=complete")
     return int(failed)
 
 
