@@ -14,9 +14,10 @@ use lsm_core::{
 };
 use lsm_discovery::{analyze_extendability, discover_capabilities, discover_snapshot};
 use lsm_planner::{
-    analyze_layout_opportunity, list_provisioning_opportunities, plan_extend, ExtendRequest, Growth,
-    LayoutAlternative, Operation, PlanStatus, PlanStep, PreflightCheck, PreflightState,
-    ProvisioningOpportunity, ProvisioningSpaceKind, Reversibility,
+    analyze_layout_opportunity, analyze_lvm_underlying_growth, list_provisioning_opportunities,
+    plan_extend, ExtendRequest, Growth, GrowthRouteAlternative, LayoutAlternative, Operation,
+    PlanStatus, PlanStep, PreflightCheck, PreflightState, ProvisioningOpportunity,
+    ProvisioningSpaceKind, Reversibility,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -1102,7 +1103,18 @@ fn render_plan_wide(
             frame.render_widget(steps, right[1]);
         }
         Ok(plan) => {
-            if let Some(alternative) = plan.layout_alternatives().first() {
+            if let Some(route) = plan.growth_route_alternatives().first() {
+                frame.render_widget(
+                    Paragraph::new(growth_route_lines(route))
+                        .wrap(Wrap { trim: false })
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title(" Automatic growth route "),
+                        ),
+                    columns[1],
+                );
+            } else if let Some(alternative) = plan.layout_alternatives().first() {
                 frame.render_widget(
                     Paragraph::new(layout_alternative_lines(alternative))
                         .wrap(Wrap { trim: false })
@@ -1681,7 +1693,7 @@ fn plan_growth_options(snapshot: &HostSnapshot, selected_device: usize) -> Vec<G
         return vec![Growth::MaxFree];
     };
     let target = plan_target(row.device);
-    let capacity = analyze_extendability(snapshot, &target)
+    let analyzed_capacity = analyze_extendability(snapshot, &target)
         .ok()
         .and_then(|analysis| {
             analysis
@@ -1689,10 +1701,26 @@ fn plan_growth_options(snapshot: &HostSnapshot, selected_device: usize) -> Vec<G
                 .or(analysis.potential_underlying_growth_bytes)
         })
         .filter(|bytes| *bytes > 0);
+    let layout_capacity =
+        analyze_layout_opportunity(snapshot, &target).map(|opportunity| {
+            opportunity.max_target_growth_bytes
+        });
+    let lvm_route_capacity = analyze_lvm_underlying_growth(
+        snapshot,
+        &ExtendRequest {
+            target: target.clone(),
+            growth: Growth::MaxFree,
+        },
+    )
+    .map(|route| route.max_growth_bytes);
+    let capacity = [analyzed_capacity, layout_capacity, lvm_route_capacity]
+        .into_iter()
+        .flatten()
+        .max();
 
     let mut options = growth_presets_for_capacity(capacity);
-    if let Some(opportunity) = analyze_layout_opportunity(snapshot, &target) {
-        if let Some(growth) = preferred_layout_growth(opportunity.max_target_growth_bytes) {
+    if let Some(capacity) = capacity {
+        if let Some(growth) = preferred_layout_growth(capacity) {
             if !options.contains(&growth) {
                 options.push(growth);
             }
@@ -1890,6 +1918,51 @@ fn layout_opportunity_summary_lines(
     ]
 }
 
+fn growth_route_lines(route: &GrowthRouteAlternative) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from("Automatic growth route"),
+        Line::from(format!("Target          {}", route.target)),
+        Line::from(format!("Disk            {}", route.disk)),
+        Line::from(format!(
+            "Partition       {}",
+            route.partition.as_deref().unwrap_or("-")
+        )),
+        Line::from(format!("PV              {}", route.physical_volume)),
+        Line::from(format!("VG              {}", route.volume_group)),
+        Line::from(format!("LV              {}", route.logical_volume)),
+        Line::from(format!(
+            "VG free now     {}",
+            human_bytes(route.existing_vg_free_bytes)
+        )),
+        Line::from(format!(
+            "PV slack        {}",
+            human_bytes(route.pv_device_slack_bytes)
+        )),
+        Line::from(format!(
+            "Adjacent raw    {}",
+            human_bytes(route.adjacent_partition_free_bytes)
+        )),
+        Line::from(format!(
+            "Potential       {}",
+            human_bytes(route.max_growth_bytes)
+        )),
+        Line::from(format!(
+            "Partition grow  {}",
+            human_bytes(route.required_partition_growth_bytes)
+        )),
+        Line::from(""),
+        Line::from("Planned route"),
+    ];
+    for (index, step) in route.steps.iter().enumerate() {
+        lines.push(Line::from(format!("{}. {}", index + 1, step)));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(
+        "Advisory only: M1A does not execute this chained route.",
+    ));
+    lines
+}
+
 fn layout_alternative_lines(alternative: &LayoutAlternative) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from("Layout alternative"),
@@ -2000,7 +2073,10 @@ fn strict_plan_lines(
                     blocker.code, blocker.message
                 )));
             }
-            if let Some(alternative) = plan.layout_alternatives().first() {
+            if let Some(route) = plan.growth_route_alternatives().first() {
+                lines.push(Line::from(""));
+                lines.extend(growth_route_lines(route));
+            } else if let Some(alternative) = plan.layout_alternatives().first() {
                 lines.push(Line::from(""));
                 lines.extend(layout_alternative_lines(alternative));
             }
