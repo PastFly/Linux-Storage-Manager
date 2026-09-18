@@ -2974,6 +2974,51 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn create_controls_cycle_intent_without_execution() {
+        let mut snap = snapshot();
+        snap.lvm = Some(lsm_core::LvmInventory {
+            physical_volumes: Vec::new(),
+            volume_groups: vec![lsm_core::LvmVolumeGroup {
+                name: "vg0".into(),
+                uuid: Some("vg-1".into()),
+                size_bytes: 8 * 1024 * 1024 * 1024,
+                free_bytes: 4 * 1024 * 1024 * 1024,
+                pv_count: 1,
+                lv_count: 0,
+                extent_size_bytes: Some(4 * 1024 * 1024),
+                free_extent_count: Some(1024),
+                missing_pv_count: Some(0),
+                attributes: Some("wz--n-".into()),
+            }],
+            logical_volumes: Vec::new(),
+        });
+
+        let mut state = AppState::new(&snap);
+        state.section_index = 6;
+
+        let options = create_size_options(&snap, 0);
+        assert!(options.len() > 1);
+        assert_eq!(state.create_size_for_snapshot(&snap), options[0]);
+        state.next_create_size_for_snapshot(&snap);
+        assert_eq!(state.create_size_for_snapshot(&snap), options[1]);
+        state.previous_create_size();
+        assert_eq!(state.create_size_for_snapshot(&snap), options[0]);
+
+        assert_eq!(state.create_purpose, CreatePurpose::Filesystem);
+        state.toggle_create_purpose();
+        assert_eq!(state.create_purpose, CreatePurpose::Swap);
+        state.toggle_create_purpose();
+        assert_eq!(state.create_purpose, CreatePurpose::Filesystem);
+
+        assert_eq!(state.create_filesystem(), "ext4");
+        state.next_create_filesystem();
+        assert_eq!(state.create_filesystem(), "xfs");
+        state.next_create_filesystem();
+        assert_eq!(state.create_filesystem(), "ext4");
+    }
+
     #[test]
     fn toolbar_is_contextual_for_plans_and_regular_sections() {
         let plans = toolbar_text(Section::Plans);
