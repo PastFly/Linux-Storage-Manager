@@ -554,9 +554,18 @@ fn render_diagnostics(
     capabilities: &HostCapabilities,
     state: AppState,
 ) {
+    let table_height = if snapshot.diagnostics.is_empty() {
+        4
+    } else {
+        (snapshot.diagnostics.len() as u16 + 3).min(12)
+    };
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(6), Constraint::Length(5)])
+        .constraints([
+            Constraint::Length(table_height),
+            Constraint::Min(5),
+            Constraint::Length(5),
+        ])
         .split(area);
 
     if snapshot.diagnostics.is_empty() {
@@ -568,23 +577,40 @@ fn render_diagnostics(
             ),
             sections[0],
         );
+        frame.render_widget(
+            Paragraph::new("No diagnostic selected.")
+                .block(Block::default().borders(Borders::ALL).title(" Details ")),
+            sections[1],
+        );
     } else {
+        let selected = (state.content_scroll as usize).min(snapshot.diagnostics.len() - 1);
+        let start = selected.saturating_sub(4);
         let rows = snapshot
             .diagnostics
             .iter()
-            .skip(state.content_scroll as usize)
-            .map(|item| Row::new(diagnostic_table_cells(item)));
-        let header = Row::new(["Severity", "Code", "Message"])
-            .style(Style::default().add_modifier(Modifier::BOLD));
+            .enumerate()
+            .skip(start)
+            .take(10)
+            .map(|(index, item)| {
+                let row = Row::new(diagnostic_summary_cells(item));
+                if index == selected {
+                    row.style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
+                } else {
+                    row
+                }
+            });
         let table = Table::new(
             rows,
             [
                 Constraint::Length(9),
-                Constraint::Length(34),
-                Constraint::Min(30),
+                Constraint::Min(34),
+                Constraint::Length(18),
             ],
         )
-        .header(header)
+        .header(
+            Row::new(["Severity", "Code", "Device"])
+                .style(Style::default().add_modifier(Modifier::BOLD)),
+        )
         .column_spacing(1)
         .block(
             Block::default()
@@ -592,6 +618,23 @@ fn render_diagnostics(
                 .title(" Diagnostics "),
         );
         frame.render_widget(table, sections[0]);
+
+        let item = &snapshot.diagnostics[selected];
+        let detail_lines = vec![
+            Line::from(format!("Code      {}", item.code)),
+            Line::from(format!(
+                "Device    {}",
+                item.device.as_deref().unwrap_or("-")
+            )),
+            Line::from(""),
+            Line::from(item.message.clone()),
+        ];
+        frame.render_widget(
+            Paragraph::new(detail_lines)
+                .wrap(Wrap { trim: false })
+                .block(Block::default().borders(Borders::ALL).title(" Details ")),
+            sections[1],
+        );
     }
 
     let available = capabilities
@@ -624,7 +667,7 @@ fn render_diagnostics(
                     .borders(Borders::ALL)
                     .title(" Capabilities "),
             ),
-        sections[1],
+        sections[2],
     );
 }
 
@@ -898,6 +941,19 @@ fn diagnostic_table_cells(item: &lsm_core::StorageDiagnostic) -> [String; 3] {
     [severity.to_owned(), item.code.clone(), item.message.clone()]
 }
 
+fn diagnostic_summary_cells(item: &lsm_core::StorageDiagnostic) -> [String; 3] {
+    let severity = match item.severity {
+        DiagnosticSeverity::Info => "Info",
+        DiagnosticSeverity::Warning => "Warning",
+        DiagnosticSeverity::Error => "Error",
+    };
+    [
+        severity.to_owned(),
+        item.code.clone(),
+        item.device.clone().unwrap_or_else(|| "-".to_owned()),
+    ]
+}
+
 fn device_detail_rows(snapshot: &HostSnapshot, device: &BlockDevice) -> Vec<[String; 2]> {
     let path = device.path.as_deref().unwrap_or(&device.name);
     let filesystem = device
@@ -927,12 +983,36 @@ fn device_detail_rows(snapshot: &HostSnapshot, device: &BlockDevice) -> Vec<[Str
     ]
 }
 
+fn preflight_display_detail(check: &PreflightCheck) -> &'static str {
+    match check.code.as_str() {
+        "collectors-complete" => "Discovery inputs complete",
+        "diagnostics-clean" => "No blocking diagnostics",
+        "mount-rw" => "Single matching RW mount",
+        "tooling-available" => "Required tools available",
+        "partition-geometry-consistent" => "lsblk/sfdisk geometry consistent",
+        "adjacent-capacity-verified" => "Growth fits verified adjacent space",
+        "lvm-identity-consistent" => "PV/VG/LV identities consistent",
+        "lvm-layout-supported" => "Supported linear LVM layout",
+        "capacity-verified" => "Growth fits verified VG free space",
+        "runtime-identity-recheck" => "Revalidate identities and plan basis",
+        "filesystem-health" => "Check health/features/grow support",
+        "exclusive-lock" => "Acquire exclusive operation lock",
+        "metadata-backup" => "Create and verify metadata backup",
+        "execution-approval" => "Approve exact fresh plan",
+        _ => "See structured plan details",
+    }
+}
+
 fn preflight_table_cells(check: &PreflightCheck) -> [String; 3] {
     let state = match check.state {
         PreflightState::Verified => "[OK]",
         PreflightState::Required => "[REQ]",
     };
-    [state.to_owned(), check.code.clone(), check.message.clone()]
+    [
+        state.to_owned(),
+        check.code.clone(),
+        preflight_display_detail(check).to_owned(),
+    ]
 }
 
 fn plan_step_table_cells(step: &PlanStep) -> [String; 4] {
@@ -1315,10 +1395,12 @@ fn analysis_summary_lines(analysis: &ExtendAnalysis) -> Vec<Line<'static>> {
 
     if let Some(reason) = analysis.reasons.first() {
         lines.push(Line::from(""));
-        lines.push(Line::from(format!("Why             {reason}")));
+        lines.push(Line::from("Why"));
+        lines.push(Line::from(format!("  {reason}")));
     }
     if let Some(step) = analysis.steps.first() {
-        lines.push(Line::from(format!("Next step       {step}")));
+        lines.push(Line::from("Next step"));
+        lines.push(Line::from(format!("  {step}")));
     }
 
     lines
@@ -2229,13 +2311,13 @@ mod tests {
         assert_eq!(plan_layout_mode(109), PlanLayoutMode::Compact);
     }
 
-
     #[test]
     fn preflight_display_details_are_compact_but_structured_messages_stay_unchanged() {
         let check = lsm_planner::PreflightCheck {
             code: "runtime-identity-recheck".into(),
             state: lsm_planner::PreflightState::Required,
-            message: "revalidate device, filesystem and plan basis immediately before mutation".into(),
+            message: "revalidate device, filesystem and plan basis immediately before mutation"
+                .into(),
         };
         assert_eq!(
             preflight_display_detail(&check),
