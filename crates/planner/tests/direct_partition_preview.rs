@@ -215,3 +215,112 @@ fn direct_partition_request_larger_than_verified_gap_is_blocked() {
         .any(|blocker| blocker.code == "insufficient-adjacent-capacity"));
     assert!(plan.partition_size_change().is_none());
 }
+
+
+#[test]
+fn direct_gpt_xfs_4k_partition_rounds_growth_to_logical_sector() {
+    let mut disk = device("nvme0n1", NodeKind::Disk, 64 * 1024 * 1024, None, None);
+    disk.logical_sector_bytes = Some(4096);
+    disk.partition_table = Some("gpt".into());
+
+    let mut data = device(
+        "nvme0n1p1",
+        NodeKind::Partition,
+        32 * 1024 * 1024,
+        Some(2_048),
+        Some("nvme0n1"),
+    );
+    data.logical_sector_bytes = Some(4096);
+    data.partition_table = Some("gpt".into());
+    data.filesystem = Some(Filesystem {
+        fs_type: "xfs".into(),
+        version: Some("5".into()),
+    });
+    data.mountpoints = vec!["/data".into()];
+    data.uuid = Some("xfs-fs-uuid".into());
+    data.partition_uuid = Some("gpt-part-uuid".into());
+    disk.children = vec![data];
+
+    let snapshot = HostSnapshot {
+        storage: StorageGraph {
+            block_devices: vec![disk],
+        },
+        partition_tables: vec![PartitionTable {
+            device: "/dev/nvme0n1".into(),
+            label: Some("gpt".into()),
+            id: Some("gpt-disk-id".into()),
+            unit: Some("sectors".into()),
+            first_lba: Some(6),
+            last_lba: Some(16_378),
+            sector_size_bytes: Some(4096),
+            partitions: vec![PartitionRecord {
+                node: "/dev/nvme0n1p1".into(),
+                start_sector: 256,
+                size_sectors: 8_192,
+                partition_type: Some(
+                    "0FC63DAF-8483-4772-8E79-3D69D8477DE4".into(),
+                ),
+                uuid: Some("gpt-part-uuid".into()),
+                name: None,
+                attrs: None,
+                bootable: None,
+            }],
+        }],
+        mounts: vec![MountEntry {
+            source: Some("/dev/nvme0n1p1".into()),
+            target: "/data".into(),
+            fs_type: Some("xfs".into()),
+            options: vec!["rw".into()],
+        }],
+        fstab: Vec::new(),
+        swaps: Vec::new(),
+        lvm: None,
+        diagnostics: Vec::new(),
+        collectors: vec![
+            complete("lsblk"),
+            complete("partition_tables"),
+            complete("mounts"),
+            complete("fstab"),
+            complete("swap"),
+            CollectorStatus {
+                component: "lvm".into(),
+                state: CollectorState::Unavailable,
+                detail: None,
+            },
+        ],
+    };
+    let caps = HostCapabilities {
+        tools: vec![
+            ToolCapability {
+                name: "sfdisk".into(),
+                available: true,
+            },
+            ToolCapability {
+                name: "resize2fs".into(),
+                available: false,
+            },
+            ToolCapability {
+                name: "xfs_growfs".into(),
+                available: true,
+            },
+        ],
+    };
+
+    let plan = plan_extend(
+        &snapshot,
+        &caps,
+        ExtendRequest {
+            target: "/data".into(),
+            growth: Growth::ByBytes(1_000_000),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Preview);
+    let change = plan.partition_size_change().unwrap();
+    assert_eq!(change.sector_size_bytes, 4096);
+    assert_eq!(change.requested_growth_bytes, 1_000_000);
+    assert_eq!(change.rounded_growth_bytes, 1_003_520);
+    assert_eq!(change.expected_partition_size_bytes, 34_557_952);
+    assert_eq!(change.remaining_adjacent_free_bytes, 31_481_856);
+}
