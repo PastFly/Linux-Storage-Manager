@@ -1,7 +1,7 @@
-use lsm_core::HostSnapshot;
+use lsm_core::{HostCapabilities, HostSnapshot};
 use lsm_planner::{
-    analyze_layer_route, select_extend_planner_profile, ExtendPlannerProfile, LayerRouteStatus,
-    RouteIssueKind, RouteLayerKind,
+    analyze_layer_route, plan_extend, select_extend_planner_profile, ExtendPlannerProfile,
+    ExtendRequest, Growth, LayerRouteStatus, PlanStatus, RouteIssueKind, RouteLayerKind,
 };
 use serde_json::json;
 
@@ -392,4 +392,51 @@ fn encryption_and_multipath_targets_stay_on_legacy_fail_closed_path() {
         select_extend_planner_profile(&multipath, "/san"),
         ExtendPlannerProfile::LegacyFailClosed
     );
+}
+
+#[test]
+fn layered_targets_use_semantic_blocker_instead_of_unrelated_builder_error() {
+    let crypt: HostSnapshot = serde_json::from_value(json!({
+        "storage": {"block_devices": [{
+            "name":"sda","kernel_name":"sda","path":"/dev/sda","kind":"disk",
+            "size_bytes":20_000_000_000u64,"mountpoints":[],"children":[{
+                "name":"sda2","kernel_name":"sda2","path":"/dev/sda2","kind":"partition",
+                "size_bytes":12_000_000_000u64,"start_512_sector":2048,
+                "logical_sector_bytes":512,"mountpoints":[],"parent_kernel_name":"sda",
+                "children":[{
+                    "name":"cryptdata","kernel_name":"dm-0","path":"/dev/mapper/cryptdata",
+                    "kind":"crypt","size_bytes":11_900_000_000u64,"uuid":"crypt-fs",
+                    "filesystem":{"fs_type":"ext4","version":"1.0"},
+                    "mountpoints":["/secure"],"parent_kernel_name":"sda2","children":[]
+                }]
+            }]
+        }]},
+        "partition_tables":[],
+        "mounts":[
+            {"source":"/dev/mapper/cryptdata","target":"/secure","fs_type":"ext4","options":["rw"]}
+        ],
+        "fstab":[],
+        "swaps":[],
+        "lvm":null,
+        "diagnostics":[],
+        "collectors":[]
+    }))
+    .unwrap();
+
+    let plan = plan_extend(
+        &crypt,
+        &HostCapabilities { tools: vec![] },
+        ExtendRequest {
+            target: "/secure".into(),
+            growth: Growth::ByBytes(1024 * 1024),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert_eq!(plan.blockers()[0].code, "luks-adapter-required");
+    assert!(!plan
+        .blockers()
+        .iter()
+        .any(|blocker| blocker.code == "lvm-missing"));
 }
