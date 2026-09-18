@@ -395,6 +395,30 @@ class IdentityReadinessTests(unittest.TestCase):
         self.assertTrue(M.fixture_identity_ready(snapshot, "/dev/loop987654", None))
 
 
+class UdevRefreshTests(unittest.TestCase):
+    def test_refresh_targets_only_created_block_sysname_and_settles(self):
+        runner = Mock()
+        M.refresh_fixture_udev(runner, "dm-7")
+        self.assertEqual(
+            runner.run.call_args_list,
+            [
+                unittest.mock.call(
+                    "udevadm",
+                    "trigger",
+                    "--action=change",
+                    "--sysname-match=dm-7",
+                ),
+                unittest.mock.call("udevadm", "settle", "--timeout=30"),
+            ],
+        )
+
+    def test_refresh_rejects_non_sysname_input(self):
+        runner = Mock()
+        with self.assertRaises(M.SafetyError):
+            M.refresh_fixture_udev(runner, "../sda")
+        runner.run.assert_not_called()
+
+
 class ReadinessTests(unittest.TestCase):
     def test_settle_failure_prevents_baseline_collection(self):
         runner = Mock()
