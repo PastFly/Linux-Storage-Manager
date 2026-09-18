@@ -37,6 +37,10 @@ pub(super) fn adjacent_capacity(snapshot: &HostSnapshot, target: &BlockDevice) -
     {
         return None;
     }
+    if table.label.as_deref() == Some("dos") {
+        return adjacent_capacity_dos_primary(disk, table, target, sector);
+    }
+
     let (first, limit) = usable_bounds(table, disk.size_bytes / sector)?;
     if disk.children.len() != table.partitions.len() || table.partitions.is_empty() {
         return None;
@@ -108,23 +112,108 @@ fn usable_bounds(table: &PartitionTable, disk_sectors: u64) -> Option<(u64, u64)
             Some((first, limit))
         }
         "dos" => {
-            // No extended/logical partitions or protective/hybrid MBR interpretation.
-            if table.partitions.len() > 4 {
-                return None;
-            }
-            for record in &table.partitions {
-                let raw = record.partition_type.as_deref()?;
-                let kind = u8::from_str_radix(raw.strip_prefix("0x").unwrap_or(raw), 16).ok()?;
-                if matches!(kind, 0x00 | 0x05 | 0x0f | 0x85 | 0xee) {
-                    return None;
-                }
-            }
-            // Conservatively stay within the primary MBR 32-bit address range.
             let limit = disk_sectors.min(u64::from(u32::MAX) + 1);
             (limit > 1).then_some((1, limit))
         }
         _ => None,
     }
+}
+
+fn adjacent_capacity_dos_primary(
+    disk: &BlockDevice,
+    table: &PartitionTable,
+    target: &BlockDevice,
+    sector: u64,
+) -> Option<u64> {
+    let disk_name = disk.kernel_name.as_deref()?;
+    if target.parent_kernel_name.as_deref() != Some(disk_name) {
+        return None;
+    }
+
+    let disk_sectors = disk.size_bytes / sector;
+    let limit = disk_sectors.min(u64::from(u32::MAX) + 1);
+    if limit <= 1 {
+        return None;
+    }
+
+    let mut primary_ranges = Vec::new();
+    for child in disk
+        .children
+        .iter()
+        .filter(|child| child.kind == NodeKind::Partition)
+    {
+        let child_path = child.path.as_deref()?;
+        let record = one(
+            table
+                .partitions
+                .iter()
+                .filter(|record| record.node == child_path),
+        )?;
+        let partition_type = parse_dos_type(record.partition_type.as_deref()?)?;
+        if partition_type == 0x00 || partition_type == 0xee {
+            return None;
+        }
+
+        let start_bytes = record.start_sector.checked_mul(sector)?;
+        if child.logical_sector_bytes != Some(sector)
+            || child.start_512_sector?.checked_mul(512)? != start_bytes
+            || record.size_sectors == 0
+        {
+            return None;
+        }
+
+        let end = record.start_sector.checked_add(record.size_sectors)?;
+        if record.start_sector < 1 || end > limit {
+            return None;
+        }
+
+        if !matches!(partition_type, 0x05 | 0x0f | 0x85) {
+            let size_bytes = record.size_sectors.checked_mul(sector)?;
+            if child.size_bytes != size_bytes {
+                return None;
+            }
+        }
+
+        primary_ranges.push((record.start_sector, end, child_path));
+    }
+
+    if primary_ranges.is_empty() {
+        return None;
+    }
+    primary_ranges.sort_unstable();
+    if primary_ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+        return None;
+    }
+
+    let target_path = target.path.as_deref()?;
+    let index = primary_ranges
+        .iter()
+        .position(|range| range.2 == target_path)?;
+    let target_record = one(
+        table
+            .partitions
+            .iter()
+            .filter(|record| record.node == target_path),
+    )?;
+    if matches!(
+        parse_dos_type(target_record.partition_type.as_deref()?)?,
+        0x05 | 0x0f | 0x85
+    ) {
+        return None;
+    }
+
+    let end = primary_ranges[index].1;
+    let next = primary_ranges.get(index + 1).map_or(limit, |range| range.0);
+    next.checked_sub(end)?.checked_mul(sector)
+}
+
+fn parse_dos_type(raw: &str) -> Option<u8> {
+    let trimmed = raw.trim();
+    let normalized = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    u8::from_str_radix(normalized, 16).ok()
 }
 
 fn one<T>(mut items: impl Iterator<Item = T>) -> Option<T> {
