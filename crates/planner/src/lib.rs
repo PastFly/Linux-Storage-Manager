@@ -437,7 +437,10 @@ fn try_build_partition_candidate(
         },
     ] {
         let capability = unique(
-            capabilities.tools.iter().filter(|capability| capability.name == tool),
+            capabilities
+                .tools
+                .iter()
+                .filter(|capability| capability.name == tool),
             "tool-unavailable",
         )?;
         ensure(
@@ -477,9 +480,7 @@ fn try_build_partition_candidate(
         .sector_size_bytes
         .ok_or_else(|| blocked("sector-size-missing", "partition sector size is unknown"))?;
     ensure(
-        sector >= 512
-            && sector.is_power_of_two()
-            && device.logical_sector_bytes == Some(sector),
+        sector >= 512 && sector.is_power_of_two() && device.logical_sector_bytes == Some(sector),
         "sector-size-mismatch",
         "partition-table and block-device logical sector sizes disagree",
     )?;
@@ -543,10 +544,12 @@ fn try_build_partition_candidate(
         .checked_mul(sector)
         .ok_or_else(|| blocked("size-overflow", "new partition size exceeds u64"))?;
 
-    let label = table
-        .label
-        .clone()
-        .ok_or_else(|| blocked("partition-label-missing", "partition table label is unknown"))?;
+    let label = table.label.clone().ok_or_else(|| {
+        blocked(
+            "partition-label-missing",
+            "partition table label is unknown",
+        )
+    })?;
     let size = PartitionSizeChange {
         device: device_path.to_owned(),
         disk: disk_path.to_owned(),
@@ -610,10 +613,12 @@ fn adjacent_free_sectors(
         .sector_size_bytes
         .ok_or_else(|| blocked("sector-size-missing", "partition sector size is unknown"))?;
     let disk_sectors = disk.size_bytes / sector;
-    let label = table
-        .label
-        .as_deref()
-        .ok_or_else(|| blocked("partition-label-missing", "partition table label is unknown"))?;
+    let label = table.label.as_deref().ok_or_else(|| {
+        blocked(
+            "partition-label-missing",
+            "partition table label is unknown",
+        )
+    })?;
 
     match label {
         "dos" => adjacent_free_dos(table, target, disk_sectors),
@@ -669,9 +674,10 @@ fn adjacent_free_dos(
     let limit = disk_sectors.min(u64::from(u32::MAX) + 1);
     let mut extended = Vec::new();
     for record in &table.partitions {
-        let kind = parse_dos_type(record.partition_type.as_deref().ok_or_else(|| {
-            blocked("partition-type-missing", "DOS partition type is unknown")
-        })?)?;
+        let kind =
+            parse_dos_type(record.partition_type.as_deref().ok_or_else(|| {
+                blocked("partition-type-missing", "DOS partition type is unknown")
+            })?)?;
         if matches!(kind, 0x05 | 0x0f | 0x85) {
             let end = record
                 .start_sector
@@ -686,9 +692,12 @@ fn adjacent_free_dos(
         "multiple extended partition containers are not supported",
     )?;
 
-    let target_kind = parse_dos_type(target.partition_type.as_deref().ok_or_else(|| {
-        blocked("partition-type-missing", "DOS partition type is unknown")
-    })?)?;
+    let target_kind = parse_dos_type(
+        target
+            .partition_type
+            .as_deref()
+            .ok_or_else(|| blocked("partition-type-missing", "DOS partition type is unknown"))?,
+    )?;
     ensure(
         !matches!(target_kind, 0x05 | 0x0f | 0x85),
         "unsupported-dos-layout",
@@ -717,9 +726,10 @@ fn adjacent_free_dos(
             "invalid-partition-range",
             "DOS partition lies outside the addressable range",
         )?;
-        let kind = parse_dos_type(record.partition_type.as_deref().ok_or_else(|| {
-            blocked("partition-type-missing", "DOS partition type is unknown")
-        })?)?;
+        let kind =
+            parse_dos_type(record.partition_type.as_deref().ok_or_else(|| {
+                blocked("partition-type-missing", "DOS partition type is unknown")
+            })?)?;
         ensure(
             kind != 0x00 && kind != 0xee,
             "unsupported-dos-layout",
@@ -750,11 +760,20 @@ fn adjacent_from_ranges(
     let index = ranges
         .iter()
         .position(|range| range.2 == target.node)
-        .ok_or_else(|| blocked("target-not-primary", "target partition is not a supported boundary"))?;
+        .ok_or_else(|| {
+            blocked(
+                "target-not-primary",
+                "target partition is not a supported boundary",
+            )
+        })?;
     let end = ranges[index].1;
     let next = ranges.get(index + 1).map_or(limit, |range| range.0);
-    next.checked_sub(end)
-        .ok_or_else(|| blocked("overlapping-partitions", "next partition overlaps the target"))
+    next.checked_sub(end).ok_or_else(|| {
+        blocked(
+            "overlapping-partitions",
+            "next partition overlaps the target",
+        )
+    })
 }
 
 fn parse_dos_type(raw: &str) -> Result<u8, Blocker> {
