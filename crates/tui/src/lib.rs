@@ -1,7 +1,8 @@
 use std::io;
+use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -27,6 +28,7 @@ use ratatui::Terminal;
 enum LoopControl {
     Continue,
     Refresh,
+    KernelRescan,
     Quit,
 }
 
@@ -246,6 +248,32 @@ fn event_loop(
                             refresh_status = Some(format!("Refresh failed: {error}"));
                         }
                     },
+                    LoopControl::KernelRescan => {
+                        match kernel_rescan_selected_disk(&snapshot, state) {
+                            Ok(kernel_name) => {
+                                std::thread::sleep(Duration::from_millis(250));
+                                match discover_snapshot() {
+                                    Ok(fresh) => {
+                                        snapshot = fresh;
+                                        capabilities = discover_capabilities();
+                                        state.content_scroll = 0;
+                                        state.plan_growth_index = 0;
+                                        state.clamp_device_selection(&snapshot);
+                                        refresh_status =
+                                            Some(format!("Rescanned {kernel_name}"));
+                                    }
+                                    Err(error) => {
+                                        refresh_status = Some(format!(
+                                            "Rescan succeeded, refresh failed: {error}"
+                                        ));
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                refresh_status = Some(format!("Rescan failed: {error}"));
+                            }
+                        }
+                    }
                     LoopControl::Continue => {}
                 }
             }
@@ -260,7 +288,8 @@ fn handle_key_event(state: &mut AppState, snapshot: &HostSnapshot, key: KeyEvent
 
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => LoopControl::Quit,
-        KeyCode::Char('r') | KeyCode::Char('R') => LoopControl::Refresh,
+        KeyCode::Char('r') => LoopControl::Refresh,
+        KeyCode::Char('R') => LoopControl::KernelRescan,
         KeyCode::Up | KeyCode::Char('k') => {
             match state.section() {
                 Section::Disks | Section::Volumes => state.select_previous_device(),
@@ -1180,9 +1209,11 @@ fn plan_preview_summary_lines(plan: &lsm_planner::PlanPreview) -> Vec<Line<'stat
 #[cfg(test)]
 fn toolbar_text(section: Section) -> String {
     if section == Section::Plans {
-        "↑↓ Target   PgUp/PgDn Size   Tab Section   R Refresh   q Quit   Read-only".to_owned()
+        "↑↓ Target   PgUp/PgDn Size   Tab Section   r Refresh   R Rescan   q Quit   Read-only"
+            .to_owned()
     } else {
-        "↑↓ Navigate   Tab Section   1-6 Jump   R Refresh   q Quit   Read-only".to_owned()
+        "↑↓ Navigate   Tab Section   1-6 Jump   r Refresh   R Rescan   q Quit   Read-only"
+            .to_owned()
     }
 }
 
@@ -1192,7 +1223,8 @@ fn toolbar_line(section: Section, refresh_status: Option<&str>) -> Line<'static>
             ("↑↓", "Target"),
             ("PgUp/PgDn", "Size"),
             ("Tab", "Section"),
-            ("R", "Refresh"),
+            ("r", "Refresh"),
+            ("R", "Rescan"),
             ("q", "Quit"),
         ]
     } else {
@@ -1200,7 +1232,8 @@ fn toolbar_line(section: Section, refresh_status: Option<&str>) -> Line<'static>
             ("↑↓", "Navigate"),
             ("Tab", "Section"),
             ("1-6", "Jump"),
-            ("R", "Refresh"),
+            ("r", "Refresh"),
+            ("R", "Rescan"),
             ("q", "Quit"),
         ]
     };
@@ -1233,6 +1266,60 @@ fn append_device_rows<'a>(device: &'a BlockDevice, depth: usize, rows: &mut Vec<
     for child in &device.children {
         append_device_rows(child, depth + 1, rows);
     }
+}
+
+fn rescan_sysfs_path(kernel_name: &str) -> Option<PathBuf> {
+    if kernel_name.is_empty()
+        || !kernel_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return None;
+    }
+    Some(
+        PathBuf::from("/sys/class/block")
+            .join(kernel_name)
+            .join("device/rescan"),
+    )
+}
+
+fn selected_disk_kernel_name(snapshot: &HostSnapshot, state: AppState) -> Option<String> {
+    if state.section() != Section::Disks {
+        return None;
+    }
+    let rows = visible_device_rows(&snapshot.storage, false);
+    let selected = rows.get(state.selected_device)?.device;
+    match selected.kind {
+        NodeKind::Disk => selected.kernel_name.clone(),
+        NodeKind::Partition => {
+            let parent = selected.parent_kernel_name.as_deref()?;
+            snapshot
+                .storage
+                .block_devices
+                .iter()
+                .find(|device| {
+                    device.kind == NodeKind::Disk
+                        && device.kernel_name.as_deref() == Some(parent)
+                })
+                .and_then(|device| device.kernel_name.clone())
+        }
+        _ => None,
+    }
+}
+
+fn kernel_rescan_selected_disk(snapshot: &HostSnapshot, state: AppState) -> Result<String> {
+    let kernel_name = selected_disk_kernel_name(snapshot, state)
+        .ok_or_else(|| anyhow!("select a disk or its partition in the Disks section"))?;
+    let path = rescan_sysfs_path(&kernel_name)
+        .ok_or_else(|| anyhow!("invalid kernel block-device name"))?;
+    if !path.is_file() {
+        return Err(anyhow!(
+            "kernel rescan control is unavailable for /dev/{kernel_name}"
+        ));
+    }
+    std::fs::write(&path, b"1\n")
+        .with_context(|| format!("write {}", path.display()))?;
+    Ok(kernel_name)
 }
 
 fn header_text(snapshot: &HostSnapshot) -> String {
@@ -2697,7 +2784,6 @@ mod tests {
             ]
         );
     }
-
 
     #[test]
     fn lowercase_refresh_and_uppercase_rescan_are_distinct_actions() {
