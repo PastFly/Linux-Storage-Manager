@@ -116,3 +116,99 @@ fn human_bytes(bytes: u64) -> String {
         format!("{value:.1} {}", UNITS[unit])
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lsm_core::{CollectorStatus, HostSnapshot, NodeKind};
+
+    fn device(name: &str, kind: NodeKind, children: Vec<BlockDevice>) -> BlockDevice {
+        BlockDevice {
+            name: name.to_string(),
+            kernel_name: Some(name.to_string()),
+            path: Some(format!("/dev/{name}")),
+            kind,
+            size_bytes: 1024,
+            start_512_sector: None,
+            logical_sector_bytes: Some(512),
+            filesystem: None,
+            mountpoints: Vec::new(),
+            parent_kernel_name: None,
+            model: None,
+            serial: None,
+            uuid: None,
+            partition_uuid: None,
+            partition_table: None,
+            children,
+        }
+    }
+
+    fn snapshot() -> HostSnapshot {
+        let mut root = device("sda", NodeKind::Disk, vec![device("sda1", NodeKind::Partition, vec![])]);
+        root.children[0].filesystem = Some(lsm_core::Filesystem {
+            fs_type: "ext4".into(),
+            version: Some("1.0".into()),
+        });
+        root.children[0].mountpoints = vec!["/".into()];
+
+        HostSnapshot {
+            storage: StorageGraph {
+                block_devices: vec![root],
+            },
+            partition_tables: Vec::new(),
+            mounts: Vec::new(),
+            fstab: Vec::new(),
+            swaps: Vec::new(),
+            lvm: None,
+            diagnostics: Vec::new(),
+            collectors: vec![CollectorStatus {
+                component: "lsblk".into(),
+                state: lsm_core::CollectorState::Complete,
+                detail: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn navigation_exposes_expected_sections() {
+        assert_eq!(
+            Section::ALL,
+            [
+                Section::Disks,
+                Section::Volumes,
+                Section::Swap,
+                Section::Mounts,
+                Section::Diagnostics,
+                Section::Plans,
+            ]
+        );
+    }
+
+    #[test]
+    fn flattened_devices_preserve_hierarchy_and_selection() {
+        let snap = snapshot();
+        let rows = device_rows(&snap.storage);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].depth, 0);
+        assert_eq!(rows[0].device.name, "sda");
+        assert_eq!(rows[1].depth, 1);
+        assert_eq!(rows[1].device.name, "sda1");
+
+        let mut state = AppState::new(&snap);
+        state.select_next_device(&snap);
+        assert_eq!(state.selected_device, 1);
+        state.select_next_device(&snap);
+        assert_eq!(state.selected_device, 1);
+        state.select_previous_device();
+        assert_eq!(state.selected_device, 0);
+    }
+
+    #[test]
+    fn plan_target_prefers_mountpoint_then_device_path() {
+        let snap = snapshot();
+        let rows = device_rows(&snap.storage);
+        assert_eq!(plan_target(rows[1].device), "/");
+        assert_eq!(plan_target(rows[0].device), "/dev/sda");
+    }
+}
