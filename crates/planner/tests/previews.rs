@@ -303,7 +303,6 @@ fn validates_explicit_binary_units_without_float_conversion() {
     }
 }
 
-
 #[test]
 fn lvm_preview_exposes_profile_preflight_and_future_gates() {
     let (snapshot, caps) = input();
@@ -319,9 +318,12 @@ fn lvm_preview_exposes_profile_preflight_and_future_gates() {
         "lvm-layout-supported",
         "capacity-verified",
     ] {
-        assert!(checks.iter().any(|check| {
-            check.code == code && check.state == PreflightState::Verified
-        }), "missing verified preflight check: {code}");
+        assert!(
+            checks
+                .iter()
+                .any(|check| { check.code == code && check.state == PreflightState::Verified }),
+            "missing verified preflight check: {code}"
+        );
     }
     assert!(checks.iter().any(|check| {
         check.code == "filesystem-health" && check.state == PreflightState::Required
