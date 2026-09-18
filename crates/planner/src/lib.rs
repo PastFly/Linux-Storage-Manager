@@ -2324,30 +2324,22 @@ fn try_build_partition_candidate(
     )?;
 
     let nodes = flatten(&snapshot.storage.block_devices);
-    let source = if request.target.starts_with("/dev/") {
-        request.target.as_str()
-    } else {
-        unique(
-            snapshot
-                .mounts
-                .iter()
-                .filter(|mount| mount.target == request.target),
-            "ambiguous-target",
-        )?
-        .source
-        .as_deref()
-        .ok_or_else(|| blocked("unknown-source", "mount source is absent"))?
-    };
-
-    let partition_matches: Vec<_> = nodes
-        .iter()
-        .copied()
-        .filter(|device| device.kind == NodeKind::Partition && node_alias(device, source))
-        .collect();
-    if partition_matches.is_empty() {
+    let route = resolve_extend_route_adapter(snapshot, &request.target);
+    if route.profile != ExtendPlannerProfile::DirectPartition {
         return Ok(None);
     }
-    let device = unique(partition_matches.into_iter(), "ambiguous-device")?;
+    let resolved_device = route.resolved_device.as_deref().ok_or_else(|| {
+        blocked(
+            "route-device-not-found",
+            "direct-partition target did not resolve to one device",
+        )
+    })?;
+    let device = unique(
+        nodes.iter().copied().filter(|device| {
+            device.kind == NodeKind::Partition && node_alias(device, resolved_device)
+        }),
+        "ambiguous-device",
+    )?;
 
     for component in ["lsblk", "partition_tables", "mounts", "fstab", "swap"] {
         let status = unique(
@@ -2387,17 +2379,25 @@ fn try_build_partition_candidate(
         "direct partition filesystem is unsupported; only ext4 and XFS previews are supported",
     )?;
 
+    let mountpoint = route.mountpoint.as_deref().ok_or_else(|| {
+        blocked(
+            "mount-not-unique",
+            "direct-partition target is not uniquely mounted",
+        )
+    })?;
     let mount = unique(
-        snapshot.mounts.iter().filter(|mount| {
-            mount
-                .source
-                .as_deref()
-                .is_some_and(|source| node_alias(device, source))
-        }),
+        snapshot
+            .mounts
+            .iter()
+            .filter(|mount| mount.target == mountpoint),
         "mount-not-unique",
     )?;
     ensure(
-        mount.fs_type.as_deref() == Some(fs.fs_type.as_str())
+        mount
+            .source
+            .as_deref()
+            .is_some_and(|source| node_alias(device, source))
+            && mount.fs_type.as_deref() == Some(fs.fs_type.as_str())
             && mount.options.iter().any(|option| option == "rw")
             && !mount
                 .options
@@ -2849,34 +2849,24 @@ pub fn analyze_lvm_underlying_growth(
 
     let lvm = snapshot.lvm.as_ref()?;
     let nodes = flatten(&snapshot.storage.block_devices);
-    let source = if request.target.starts_with("/dev/") {
-        request.target.as_str()
-    } else {
-        unique(
-            snapshot
-                .mounts
-                .iter()
-                .filter(|mount| mount.target == request.target),
-            "ambiguous-target",
-        )
-        .ok()?
-        .source
-        .as_deref()?
-    };
-
-    let lv = unique(
-        lvm.logical_volumes.iter().filter(|lv| {
-            lv_alias(lv, source)
-                || nodes
-                    .iter()
-                    .any(|device| node_alias(device, source) && lv_device(lv, device))
-        }),
-        "ambiguous-lv",
+    let route = resolve_extend_route_adapter(snapshot, &request.target);
+    if route.profile != ExtendPlannerProfile::Lvm {
+        return None;
+    }
+    let resolved_device = route.resolved_device.as_deref()?;
+    let lv_device = unique(
+        nodes
+            .iter()
+            .copied()
+            .filter(|device| node_alias(device, resolved_device)),
+        "ambiguous-device",
     )
     .ok()?;
-    let lv_device = unique(
-        nodes.iter().copied().filter(|device| lv_device(lv, device)),
-        "ambiguous-device",
+    let lv = unique(
+        lvm.logical_volumes
+            .iter()
+            .filter(|lv| lv_device(lv, lv_device)),
+        "ambiguous-lv",
     )
     .ok()?;
     if lv_device.kind != NodeKind::Lvm
@@ -2893,17 +2883,20 @@ pub fn analyze_lvm_underlying_growth(
     if !matches!(fs.fs_type.as_str(), "ext4" | "xfs") {
         return None;
     }
+    let mountpoint = route.mountpoint.as_deref()?;
     let mount = unique(
-        snapshot.mounts.iter().filter(|mount| {
-            mount
-                .source
-                .as_deref()
-                .is_some_and(|source| node_alias(lv_device, source) || lv_alias(lv, source))
-        }),
+        snapshot
+            .mounts
+            .iter()
+            .filter(|mount| mount.target == mountpoint),
         "mount-not-unique",
     )
     .ok()?;
-    if mount.fs_type.as_deref() != Some(fs.fs_type.as_str())
+    if !mount
+        .source
+        .as_deref()
+        .is_some_and(|source| node_alias(lv_device, source) || lv_alias(lv, source))
+        || mount.fs_type.as_deref() != Some(fs.fs_type.as_str())
         || !mount.options.iter().any(|option| option == "rw")
         || mount
             .options
@@ -3359,33 +3352,30 @@ fn build_candidate(
         .as_ref()
         .ok_or_else(|| blocked("lvm-missing", "LVM inventory is absent"))?;
     let nodes = flatten(&snapshot.storage.block_devices);
-    let source = if request.target.starts_with("/dev/") {
-        request.target.as_str()
-    } else {
-        unique(
-            snapshot
-                .mounts
-                .iter()
-                .filter(|m| m.target == request.target),
-            "ambiguous-target",
-        )?
-        .source
-        .as_deref()
-        .ok_or_else(|| blocked("unknown-source", "mount source is absent"))?
-    };
-    // Resolve all common aliases; never accept the first match silently.
-    let lv = unique(
-        lvm.logical_volumes.iter().filter(|lv| {
-            lv_alias(lv, source)
-                || nodes
-                    .iter()
-                    .any(|d| node_alias(d, source) && lv_device(lv, d))
-        }),
-        "ambiguous-lv",
+    let route = resolve_extend_route_adapter(snapshot, &request.target);
+    ensure(
+        route.profile == ExtendPlannerProfile::Lvm,
+        "route-profile-mismatch",
+        "LVM builder received a non-LVM semantic route",
     )?;
+    let resolved_device = route.resolved_device.as_deref().ok_or_else(|| {
+        blocked(
+            "route-device-not-found",
+            "LVM target did not resolve to one logical-volume device",
+        )
+    })?;
     let device = unique(
-        nodes.iter().copied().filter(|d| lv_device(lv, d)),
+        nodes
+            .iter()
+            .copied()
+            .filter(|device| node_alias(device, resolved_device)),
         "ambiguous-device",
+    )?;
+    let lv = unique(
+        lvm.logical_volumes
+            .iter()
+            .filter(|lv| lv_device(lv, device)),
+        "ambiguous-lv",
     )?;
     ensure(
         device.kind == NodeKind::Lvm,
@@ -3474,16 +3464,25 @@ fn build_candidate(
         "unsupported-filesystem",
         "filesystem is unsupported; only ext4 and XFS previews are supported",
     )?;
+    let mountpoint = route.mountpoint.as_deref().ok_or_else(|| {
+        blocked(
+            "mount-not-unique",
+            "LVM target is not uniquely mounted",
+        )
+    })?;
     let mount = unique(
-        snapshot.mounts.iter().filter(|m| {
-            m.source
-                .as_deref()
-                .is_some_and(|s| node_alias(device, s) || lv_alias(lv, s))
-        }),
+        snapshot
+            .mounts
+            .iter()
+            .filter(|mount| mount.target == mountpoint),
         "mount-not-unique",
     )?;
     ensure(
-        mount.fs_type.as_deref() == Some(fs.fs_type.as_str())
+        mount
+            .source
+            .as_deref()
+            .is_some_and(|source| node_alias(device, source) || lv_alias(lv, source))
+            && mount.fs_type.as_deref() == Some(fs.fs_type.as_str())
             && mount.options.iter().any(|o| o == "rw")
             && !mount
                 .options
