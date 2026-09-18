@@ -32,6 +32,9 @@ fn probe_ext4(device: &BlockDevice) -> FilesystemPreflightEvidence {
             None,
             Vec::new(),
             None,
+            None,
+            None,
+            None,
             Some(
                 "ext4 block-device path is unavailable; tune2fs metadata probe was not run".into(),
             ),
@@ -50,6 +53,9 @@ fn probe_ext4(device: &BlockDevice) -> FilesystemPreflightEvidence {
                 parsed.filesystem_state,
                 parsed.revision,
                 parsed.features,
+                parsed.block_size_bytes,
+                parsed.block_count,
+                parsed.size_bytes(),
                 None,
                 Some(
                     "read-only ext4 superblock metadata collected; a dedicated health check is still required before execution"
@@ -67,6 +73,9 @@ fn probe_ext4(device: &BlockDevice) -> FilesystemPreflightEvidence {
             None,
             Vec::new(),
             None,
+            None,
+            None,
+            None,
             Some(command_failure("tune2fs -l", &output)),
         ),
         Err(error) if error.kind() == ErrorKind::NotFound => evidence(
@@ -79,6 +88,9 @@ fn probe_ext4(device: &BlockDevice) -> FilesystemPreflightEvidence {
             None,
             Vec::new(),
             None,
+            None,
+            None,
+            None,
             Some("tune2fs is unavailable; ext4 superblock metadata was not probed".into()),
         ),
         Err(error) => evidence(
@@ -90,6 +102,9 @@ fn probe_ext4(device: &BlockDevice) -> FilesystemPreflightEvidence {
             None,
             None,
             Vec::new(),
+            None,
+            None,
+            None,
             None,
             Some(format!("tune2fs -l could not be executed: {error}")),
         ),
@@ -110,6 +125,9 @@ fn probe_xfs(device: &BlockDevice) -> FilesystemPreflightEvidence {
             None,
             Vec::new(),
             None,
+            None,
+            None,
+            None,
             Some(
                 "XFS is not mounted; xfs_growfs requires a mounted filesystem, so dry-run growth validation was not attempted"
                     .into(),
@@ -123,10 +141,18 @@ fn probe_xfs(device: &BlockDevice) -> FilesystemPreflightEvidence {
         .output();
 
     let mut features = Vec::new();
+    let mut block_size_bytes = None;
+    let mut block_count = None;
+    let mut size_bytes = None;
     let mut details = Vec::new();
     let info_ok = match info {
         Ok(output) if output.status.success() => {
-            features = parse_xfs_info_features(&String::from_utf8_lossy(&output.stdout));
+            let text = String::from_utf8_lossy(&output.stdout);
+            features = parse_xfs_info_features(&text);
+            let geometry = parse_xfs_info_geometry(&text);
+            block_size_bytes = geometry.block_size_bytes;
+            block_count = geometry.block_count;
+            size_bytes = geometry.size_bytes();
             true
         }
         Ok(output) => {
@@ -187,6 +213,9 @@ fn probe_xfs(device: &BlockDevice) -> FilesystemPreflightEvidence {
         None,
         None,
         features,
+        block_size_bytes,
+        block_count,
+        size_bytes,
         grow_check_passed,
         (!details.is_empty()).then(|| details.join("; ")),
     )
@@ -202,6 +231,9 @@ fn evidence(
     filesystem_state: Option<String>,
     revision: Option<String>,
     features: Vec<String>,
+    block_size_bytes: Option<u64>,
+    block_count: Option<u64>,
+    size_bytes: Option<u64>,
     grow_check_passed: Option<bool>,
     detail: Option<String>,
 ) -> FilesystemPreflightEvidence {
@@ -214,6 +246,9 @@ fn evidence(
         filesystem_state,
         revision,
         features,
+        block_size_bytes,
+        block_count,
+        size_bytes,
         grow_check_passed,
         detail,
     }
@@ -250,6 +285,14 @@ struct Ext4Superblock {
     filesystem_state: Option<String>,
     revision: Option<String>,
     features: Vec<String>,
+    block_size_bytes: Option<u64>,
+    block_count: Option<u64>,
+}
+
+impl Ext4Superblock {
+    fn size_bytes(&self) -> Option<u64> {
+        self.block_size_bytes?.checked_mul(self.block_count?)
+    }
 }
 
 fn parse_tune2fs_list(input: &str) -> Ext4Superblock {
@@ -265,6 +308,8 @@ fn parse_tune2fs_list(input: &str) -> Ext4Superblock {
             "Filesystem features" => {
                 parsed.features = value.split_whitespace().map(str::to_owned).collect();
             }
+            "Block size" => parsed.block_size_bytes = value.parse::<u64>().ok(),
+            "Block count" => parsed.block_count = value.parse::<u64>().ok(),
             _ => {}
         }
     }
@@ -304,6 +349,38 @@ fn parse_xfs_info_features(input: &str) -> Vec<String> {
     features
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct XfsGeometry {
+    block_size_bytes: Option<u64>,
+    block_count: Option<u64>,
+}
+
+impl XfsGeometry {
+    fn size_bytes(&self) -> Option<u64> {
+        self.block_size_bytes?.checked_mul(self.block_count?)
+    }
+}
+
+fn parse_xfs_info_geometry(input: &str) -> XfsGeometry {
+    let mut geometry = XfsGeometry::default();
+    let Some(line) = input
+        .lines()
+        .find(|line| line.trim_start().starts_with("data"))
+    else {
+        return geometry;
+    };
+
+    for raw in line.split_whitespace() {
+        let token = raw.trim_matches(',');
+        if let Some(value) = token.strip_prefix("bsize=") {
+            geometry.block_size_bytes = value.trim_matches(',').parse::<u64>().ok();
+        } else if let Some(value) = token.strip_prefix("blocks=") {
+            geometry.block_count = value.trim_matches(',').parse::<u64>().ok();
+        }
+    }
+    geometry
+}
+
 fn nonempty(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
@@ -318,11 +395,16 @@ mod tests {
             "Filesystem UUID:          deadbeef\n\
              Filesystem revision #:    1 (dynamic)\n\
              Filesystem features:      has_journal ext_attr resize_inode extent 64bit metadata_csum\n\
+             Block count:              262144\n\
+             Block size:               4096\n\
              Filesystem state:         clean\n",
         );
 
         assert_eq!(parsed.filesystem_state.as_deref(), Some("clean"));
         assert_eq!(parsed.revision.as_deref(), Some("1 (dynamic)"));
+        assert_eq!(parsed.block_count, Some(262144));
+        assert_eq!(parsed.block_size_bytes, Some(4096));
+        assert_eq!(parsed.size_bytes(), Some(1_073_741_824));
         assert_eq!(
             parsed.features,
             vec![
@@ -347,6 +429,18 @@ mod tests {
              log =internal bsize=4096 blocks=16384, version=2\n\
              = bigtime=1 inobtcount=1 nrext64=0 exchange=0 metadir=0\n",
         );
+        let geometry = parse_xfs_info_geometry(
+            "meta-data=/dev/vda1 isize=512 agcount=4, agsize=65536 blks\n\
+             = sectsz=512 attr=2, projid32bit=1\n\
+             = crc=1 finobt=1, sparse=1, rmapbt=0 reflink=1\n\
+             data = bsize=4096 blocks=262144, imaxpct=25\n\
+             naming =version 2 bsize=4096 ascii-ci=0, ftype=1\n\
+             log =internal bsize=4096 blocks=16384, version=2\n\
+             = bigtime=1 inobtcount=1 nrext64=0 exchange=0 metadir=0\n",
+        );
+        assert_eq!(geometry.block_count, Some(262144));
+        assert_eq!(geometry.block_size_bytes, Some(4096));
+        assert_eq!(geometry.size_bytes(), Some(1_073_741_824));
 
         assert_eq!(
             features,
