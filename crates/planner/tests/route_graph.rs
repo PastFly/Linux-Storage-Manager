@@ -213,8 +213,7 @@ fn inactive_linear_lv_is_visible_but_requires_adapter() {
 
     assert_eq!(route.status, LayerRouteStatus::AdapterRequired);
     assert!(route.issues.iter().any(|issue| {
-        issue.kind == RouteIssueKind::AdapterRequired
-            && issue.code == "lvm-layout-adapter-required"
+        issue.kind == RouteIssueKind::AdapterRequired && issue.code == "lvm-layout-adapter-required"
     }));
 }
 
