@@ -282,6 +282,13 @@ pub enum CreatePurpose {
     Swap,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CreatePartitionTablePolicy {
+    Gpt,
+    Dos,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CreateRequest {
     pub source_id: String,
@@ -289,6 +296,7 @@ pub struct CreateRequest {
     pub purpose: CreatePurpose,
     pub filesystem: Option<String>,
     pub mountpoint: Option<String>,
+    pub partition_table: Option<CreatePartitionTablePolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -301,6 +309,7 @@ pub struct CreateAllocation {
     pub start_sector: Option<u64>,
     pub sector_count: Option<u64>,
     pub volume_group: Option<String>,
+    pub partition_table: Option<CreatePartitionTablePolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
