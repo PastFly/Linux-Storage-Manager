@@ -1406,6 +1406,30 @@ mod tests {
         assert_eq!(state.plan_growth(), Growth::ByBytes(1024 * 1024 * 1024));
     }
 
+
+    #[test]
+    fn adaptive_growth_presets_hide_values_larger_than_verified_capacity() {
+        let presets = growth_presets_for_capacity(Some(1_047_552));
+        assert_eq!(
+            presets,
+            vec![Growth::ByBytes(512 * 1024), Growth::MaxFree]
+        );
+    }
+
+    #[test]
+    fn adaptive_growth_presets_fall_back_when_capacity_is_unknown() {
+        assert_eq!(
+            growth_presets_for_capacity(None),
+            PLAN_GROWTH_PRESETS.to_vec()
+        );
+    }
+
+    #[test]
+    fn precise_size_display_distinguishes_small_growth_on_large_volume() {
+        assert_eq!(human_bytes_precise(9_711_910_912), "9.044 GiB");
+        assert_eq!(human_bytes_precise(9_712_958_464), "9.045 GiB");
+    }
+
     #[test]
     fn plan_target_prefers_mountpoint_then_device_path() {
         let snap = snapshot();
