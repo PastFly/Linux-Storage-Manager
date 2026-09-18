@@ -119,6 +119,21 @@ pub struct PartitionSizeChange {
     pub remaining_adjacent_free_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LayoutAlternative {
+    pub code: String,
+    pub summary: String,
+    pub disk: String,
+    pub target: String,
+    pub requested_growth_bytes: u64,
+    pub disk_tail_free_bytes: u64,
+    pub swap_bytes: u64,
+    pub required_partition_growth_bytes: u64,
+    pub remaining_raw_tail_bytes: u64,
+    pub blocking_devices: Vec<String>,
+    pub steps: Vec<String>,
+}
+
 // Private fields, no setters and deliberately no Deserialize implementation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlanPreview {
@@ -131,6 +146,7 @@ pub struct PlanPreview {
     request: ExtendRequest,
     size_change: Option<SizeChange>,
     partition_size_change: Option<PartitionSizeChange>,
+    layout_alternatives: Vec<LayoutAlternative>,
     blockers: Vec<Blocker>,
     preflight_checks: Vec<PreflightCheck>,
     steps: Vec<PlanStep>,
@@ -170,6 +186,10 @@ impl PlanPreview {
 
     pub fn partition_size_change(&self) -> Option<&PartitionSizeChange> {
         self.partition_size_change.as_ref()
+    }
+
+    pub fn layout_alternatives(&self) -> &[LayoutAlternative] {
+        &self.layout_alternatives
     }
 
     pub fn plan_id(&self) -> &str {
@@ -214,6 +234,18 @@ impl PlanPreview {
                 size.rounded_growth_bytes,
                 size.remaining_adjacent_free_bytes
             ));
+        }
+        for alternative in &self.layout_alternatives {
+            text.push_str(&format!(
+                "Layout alternative [{}]: {}\nDisk tail free: {} bytes\nSwap to migrate: {} bytes\n",
+                alternative.code,
+                alternative.summary,
+                alternative.disk_tail_free_bytes,
+                alternative.swap_bytes
+            ));
+            for step in &alternative.steps {
+                text.push_str(&format!("  Alternative step: {step}\n"));
+            }
         }
         for blocker in &self.blockers {
             text.push_str(&format!(
@@ -282,6 +314,7 @@ pub fn plan_extend(
         request,
         size_change: None,
         partition_size_change: None,
+        layout_alternatives: Vec::new(),
         blockers: Vec::new(),
         preflight_checks: Vec::new(),
         steps: Vec::new(),
@@ -306,7 +339,12 @@ pub fn plan_extend(
                 plan.preflight_checks = lvm_preflight_checks();
                 plan.steps = steps;
             }
-            Err(blocker) => plan.blockers.push(blocker),
+            Err(blocker) => {
+            if blocker.code == "insufficient-adjacent-capacity" {
+                plan.layout_alternatives = detect_layout_alternatives(snapshot, &plan.request);
+            }
+            plan.blockers.push(blocker);
+        },
         },
         Err(blocker) => plan.blockers.push(blocker),
     }
@@ -734,6 +772,195 @@ fn try_build_partition_candidate(
     ];
 
     Ok(Some((size, steps)))
+}
+
+fn detect_layout_alternatives(
+    snapshot: &HostSnapshot,
+    request: &ExtendRequest,
+) -> Vec<LayoutAlternative> {
+    detect_tail_swap_migration(snapshot, request)
+        .into_iter()
+        .collect()
+}
+
+fn detect_tail_swap_migration(
+    snapshot: &HostSnapshot,
+    request: &ExtendRequest,
+) -> Option<LayoutAlternative> {
+    let Growth::ByBytes(requested_growth_bytes) = request.growth else {
+        return None;
+    };
+    if requested_growth_bytes == 0 {
+        return None;
+    }
+
+    let source = if request.target.starts_with("/dev/") {
+        request.target.as_str()
+    } else {
+        let mut mounts = snapshot
+            .mounts
+            .iter()
+            .filter(|mount| mount.target == request.target);
+        let mount = mounts.next()?;
+        if mounts.next().is_some() {
+            return None;
+        }
+        mount.source.as_deref()?
+    };
+
+    let nodes = flatten(&snapshot.storage.block_devices);
+    let mut targets = nodes
+        .iter()
+        .copied()
+        .filter(|device| device.kind == NodeKind::Partition && node_alias(device, source));
+    let target_device = targets.next()?;
+    if targets.next().is_some() {
+        return None;
+    }
+
+    let parent_name = target_device.parent_kernel_name.as_deref()?;
+    let mut disks = nodes.iter().copied().filter(|candidate| {
+        candidate.kind == NodeKind::Disk
+            && candidate.kernel_name.as_deref() == Some(parent_name)
+    });
+    let disk = disks.next()?;
+    if disks.next().is_some() {
+        return None;
+    }
+    let disk_path = disk.path.as_deref()?;
+    let target_path = target_device.path.as_deref()?;
+
+    let mut tables = snapshot
+        .partition_tables
+        .iter()
+        .filter(|table| table.device == disk_path && table.label.as_deref() == Some("dos"));
+    let table = tables.next()?;
+    if tables.next().is_some() {
+        return None;
+    }
+    let sector = table.sector_size_bytes?;
+    if !matches!(sector, 512 | 4096) || disk.size_bytes % sector != 0 {
+        return None;
+    }
+
+    let target = table
+        .partitions
+        .iter()
+        .find(|record| record.node == target_path)?;
+    let target_end = target.start_sector.checked_add(target.size_sectors)?;
+    let disk_sectors = disk.size_bytes / sector;
+
+    let mut extended_records = table.partitions.iter().filter(|record| {
+        parse_dos_type(record.partition_type.as_deref().unwrap_or(""))
+            .map(|kind| matches!(kind, 0x05 | 0x0f | 0x85))
+            .unwrap_or(false)
+            && record.start_sector >= target_end
+    });
+    let extended = extended_records.next()?;
+    if extended_records.next().is_some() {
+        return None;
+    }
+    let extended_end = extended.start_sector.checked_add(extended.size_sectors)?;
+    if extended_end > disk_sectors {
+        return None;
+    }
+
+    // The supported advisory case is intentionally narrow: exactly one Linux swap
+    // logical partition inside the sole extended container, with no other payload.
+    let logicals: Vec<_> = table
+        .partitions
+        .iter()
+        .filter(|record| {
+            if record.node == extended.node {
+                return false;
+            }
+            let Some(end) = record.start_sector.checked_add(record.size_sectors) else {
+                return false;
+            };
+            record.start_sector >= extended.start_sector && end <= extended_end
+        })
+        .collect();
+    if logicals.len() != 1 {
+        return None;
+    }
+    let swap_record = logicals[0];
+    if parse_dos_type(swap_record.partition_type.as_deref()?).ok()? != 0x82 {
+        return None;
+    }
+    let active_swap = snapshot.swaps.iter().find(|swap| swap.name == swap_record.node)?;
+    let swap_bytes = swap_record.size_sectors.checked_mul(sector)?;
+    if active_swap.size_bytes != swap_bytes {
+        return None;
+    }
+
+    // Refuse any other primary payload after the target. The extended container may
+    // be removed in the advisory migration, but unrelated partitions may not.
+    if table.partitions.iter().any(|record| {
+        if record.node == target.node || record.node == extended.node || record.node == swap_record.node
+        {
+            return false;
+        }
+        record.start_sector >= target_end
+    }) {
+        return None;
+    }
+
+    let tail_sectors = disk_sectors.checked_sub(extended_end)?;
+    let disk_tail_free_bytes = tail_sectors.checked_mul(sector)?;
+    if disk_tail_free_bytes == 0 {
+        return None;
+    }
+
+    let reclaimable_span_bytes = disk_sectors
+        .checked_sub(target_end)?
+        .checked_mul(sector)?;
+    let requested_sectors =
+        requested_growth_bytes / sector + u64::from(requested_growth_bytes % sector != 0);
+    let rounded_requested_bytes = requested_sectors.checked_mul(sector)?;
+    let required_partition_growth_bytes = rounded_requested_bytes.checked_add(swap_bytes)?;
+    if required_partition_growth_bytes > reclaimable_span_bytes {
+        return None;
+    }
+    let remaining_raw_tail_bytes =
+        reclaimable_span_bytes.checked_sub(required_partition_growth_bytes)?;
+
+    Some(LayoutAlternative {
+        code: "migrate-tail-swap".to_owned(),
+        summary: format!(
+            "{} bytes of disk-tail capacity are separated from {} by DOS extended/swap layout; preserving equivalent swap as a swapfile can make the requested filesystem growth possible",
+            disk_tail_free_bytes, target_path
+        ),
+        disk: disk_path.to_owned(),
+        target: target_path.to_owned(),
+        requested_growth_bytes,
+        disk_tail_free_bytes,
+        swap_bytes,
+        required_partition_growth_bytes,
+        remaining_raw_tail_bytes,
+        blocking_devices: vec![extended.node.clone(), swap_record.node.clone()],
+        steps: vec![
+            format!(
+                "verify that {} is not used for hibernation/resume and that swap can be safely deactivated",
+                swap_record.node
+            ),
+            "create and verify partition-table, fstab and resume-configuration backups".to_owned(),
+            format!("deactivate swap on {}", swap_record.node),
+            format!(
+                "remove logical swap {} and its extended container {} only after swap migration is prepared",
+                swap_record.node, extended.node
+            ),
+            format!(
+                "extend {} by {} bytes so the filesystem gains the requested capacity plus room for an equivalent swapfile",
+                target_path, required_partition_growth_bytes
+            ),
+            "grow the filesystem and verify its new size".to_owned(),
+            format!(
+                "create and activate a swapfile of {} bytes, update persistent swap configuration, and verify swap",
+                swap_bytes
+            ),
+            "rediscover the complete storage layout and verify no unexpected raw tail or identity changes".to_owned(),
+        ],
+    })
 }
 
 fn adjacent_free_sectors(
