@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use lsm_core::{HostCapabilities, HostSnapshot};
 use lsm_planner::{
     analyze_layer_route, list_extend_targets, plan_extend, resolve_extend_route_adapter,
@@ -631,9 +633,10 @@ fn unknown_nested_device_mapper_layer_is_visible_and_blocked() {
         .layers
         .iter()
         .any(|layer| layer.kind == RouteLayerKind::Unknown));
-    assert!(route.issues.iter().any(|issue| {
-        issue.kind == RouteIssueKind::Blocker && issue.code == "unknown-layer"
-    }));
+    assert!(route
+        .issues
+        .iter()
+        .any(|issue| { issue.kind == RouteIssueKind::Blocker && issue.code == "unknown-layer" }));
     assert_eq!(adapter.profile, ExtendPlannerProfile::LegacyFailClosed);
     assert_eq!(adapter.status, LayerRouteStatus::Blocked);
 }
@@ -647,8 +650,7 @@ fn snapshot_lv_role_is_visible_but_requires_dedicated_adapter() {
 
     assert_eq!(route.status, LayerRouteStatus::AdapterRequired);
     assert!(route.issues.iter().any(|issue| {
-        issue.kind == RouteIssueKind::AdapterRequired
-            && issue.code == "lvm-layout-adapter-required"
+        issue.kind == RouteIssueKind::AdapterRequired && issue.code == "lvm-layout-adapter-required"
     }));
     assert_eq!(
         select_extend_planner_profile(&snapshot, "/"),
