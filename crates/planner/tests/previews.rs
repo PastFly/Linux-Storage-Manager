@@ -2,8 +2,8 @@ use lsm_core::{
     CollectorState, DiagnosticSeverity, HostCapabilities, HostSnapshot, StorageDiagnostic,
 };
 use lsm_planner::{
-    list_extend_targets, list_provisioning_opportunities, parse_growth_size, plan_extend,
-    analyze_lvm_underlying_growth, ExtendRequest, ExtendTargetAvailability, ExtendTargetKind,
+    analyze_lvm_underlying_growth, list_extend_targets, list_provisioning_opportunities,
+    parse_growth_size, plan_extend, ExtendRequest, ExtendTargetAvailability, ExtendTargetKind,
     Growth, Operation, PlanStatus, PreflightState, ProvisioningSpaceKind,
 };
 use serde_json::json;
@@ -374,6 +374,7 @@ fn with_gpt_tail(mut snapshot: HostSnapshot) -> HostSnapshot {
     let sector = 512_u64;
     let start = 2048_u64;
     let disk_sectors = snapshot.storage.block_devices[0].size_bytes / sector;
+    snapshot.storage.block_devices[0].children[0].parent_kernel_name = Some("vda".into());
     snapshot.partition_tables = vec![lsm_core::PartitionTable {
         device: "/dev/vda".into(),
         label: Some("gpt".into()),
@@ -386,9 +387,7 @@ fn with_gpt_tail(mut snapshot: HostSnapshot) -> HostSnapshot {
             node: "/dev/vda1".into(),
             start_sector: start,
             size_sectors: partition_size / sector,
-            partition_type: Some(
-                "E6D6D379-F507-44C2-A23C-238F2A3DF928".into(),
-            ),
+            partition_type: Some("E6D6D379-F507-44C2-A23C-238F2A3DF928".into()),
             uuid: Some("part-1".into()),
             name: None,
             attrs: None,
@@ -438,7 +437,10 @@ fn max_target_catalog_includes_verified_lvm_underlying_route_capacity() {
     let targets = list_extend_targets(&snapshot, &caps);
 
     assert_eq!(targets.len(), 1);
-    assert_eq!(targets[0].availability, ExtendTargetAvailability::PreviewReady);
+    assert_eq!(
+        targets[0].availability,
+        ExtendTargetAvailability::PreviewReady
+    );
     assert_eq!(targets[0].verified_growth_bytes, Some(8 * GIB));
     assert!(targets[0].layout_growth_bytes.unwrap() > 8 * GIB);
 }
