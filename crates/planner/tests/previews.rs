@@ -876,6 +876,7 @@ fn create_plan_accepts_unique_source_id_prefix() {
             purpose: CreatePurpose::Filesystem,
             filesystem: Some("ext4".into()),
             mountpoint: None,
+            partition_table: None,
         },
     )
     .unwrap();
@@ -900,6 +901,7 @@ fn create_plan_builds_extent_aligned_filesystem_volume_from_vg_free_space() {
             purpose: CreatePurpose::Filesystem,
             filesystem: Some("ext4".into()),
             mountpoint: Some("/data".into()),
+            partition_table: None,
         },
     )
     .unwrap();
@@ -935,6 +937,7 @@ fn create_plan_builds_sector_aligned_partition_filesystem_from_gpt_tail() {
             purpose: CreatePurpose::Filesystem,
             filesystem: Some("xfs".into()),
             mountpoint: Some("/srv/data".into()),
+            partition_table: None,
         },
     )
     .unwrap();
@@ -968,6 +971,7 @@ fn create_plan_blocks_conflicting_mountpoint_and_invalid_swap_options() {
             purpose: CreatePurpose::Filesystem,
             filesystem: Some("ext4".into()),
             mountpoint: Some("/".into()),
+            partition_table: None,
         },
     )
     .unwrap();
