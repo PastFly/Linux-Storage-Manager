@@ -227,7 +227,11 @@ fn requirement_for_operation(
             let partition = match matches.as_slice() {
                 [partition] => *partition,
                 [] => return Err(BackupManifestError::PartitionIdentityMissing(disk.clone())),
-                _ => return Err(BackupManifestError::PartitionIdentityAmbiguous(disk.clone())),
+                _ => {
+                    return Err(BackupManifestError::PartitionIdentityAmbiguous(
+                        disk.clone(),
+                    ))
+                }
             };
 
             let artifact_path =
@@ -440,10 +444,9 @@ mod tests {
             table_id: Some("disk-guid".to_owned()),
         };
 
-        let requirement =
-            requirement_for_operation(&identity, &operation, Path::new("/safe"), 1)
-                .unwrap()
-                .unwrap();
+        let requirement = requirement_for_operation(&identity, &operation, Path::new("/safe"), 1)
+            .unwrap()
+            .unwrap();
 
         assert_eq!(requirement.kind, MetadataBackupKind::PartitionTable);
         assert_eq!(requirement.capture.program, "sfdisk");
