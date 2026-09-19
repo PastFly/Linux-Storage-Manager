@@ -231,7 +231,8 @@ mod tests {
             "filesystem_preflight":[{
                 "device":"/dev/mapper/vg0-root","mountpoint":"/","fs_type":"ext4",
                 "fs_version":"1.0","state":"verified","filesystem_state":"clean",
-                "revision":"1","features":[],"block_size_bytes":4096,
+                "revision":"1","features":["has_journal","extent","64bit","metadata_csum"],
+                "block_size_bytes":4096,
                 "block_count":2097152,"size_bytes":8*GIB,"grow_check_passed":null,
                 "detail":"fixture"
             }]
