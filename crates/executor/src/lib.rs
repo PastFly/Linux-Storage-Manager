@@ -1,3 +1,9 @@
+mod locked_session;
+
+pub use locked_session::{
+    LockedExecutionSession, LockedRevalidation, LockedRevalidationStatus, LockedSessionError,
+};
+
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd;
