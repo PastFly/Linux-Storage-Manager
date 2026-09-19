@@ -94,7 +94,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends lvm2 e2fsprogs xfsprogs util-linux fdisk
       - name: Build storagemgr
         run: cargo build --locked --release --workspace
-      - name: Test planning on disposable ext4 and XFS fixtures
+      - name: Test planning and partition-table recovery on disposable fixtures
         run: |
           for attempt in 1 2 3; do
             echo "Integration repetition ${attempt}/3"
