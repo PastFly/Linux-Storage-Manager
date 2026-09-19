@@ -81,10 +81,14 @@ impl DurableJournalStore {
         }
 
         let final_path = self.path_for(&journal.journal_id)?;
-        if let Ok(metadata) = fs::symlink_metadata(&final_path) {
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                return Err(JournalStoreError::NotRegularFile(final_path));
+        match fs::symlink_metadata(&final_path) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(JournalStoreError::NotRegularFile(final_path));
+                }
             }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => return Err(io_error(&final_path, source)),
         }
 
         let temp_path = self.temp_path(&journal.journal_id);
