@@ -112,6 +112,23 @@ M1B6 validates partition-table recovery only inside the root-only disposable int
 
 This is recovery-test evidence, not permission to enable the production backup/restore executor path.
 
+## Disposable LVM metadata recovery drill
+
+M1B7 validates LVM metadata recovery only inside the root-only disposable integration harness.
+
+- the drill creates and ownership-checks one loop-backed PV, one VG and one LV whose VG name is harness-generated;
+- baseline PV/VG/LV identity and capacity are captured from machine-readable `pvs`, `vgs` and `lvs` JSON reports;
+- `vgcfgbackup --file ... VG` produces the artifact and `vgcfgrestore --test` must accept it before any controlled metadata mutation;
+- the filesystem is unmounted and a sentinel is preserved before metadata mutation;
+- the controlled mutation is limited to renaming the single owned LV; VG UUID, PV UUID, PV membership and capacity must remain unchanged;
+- the VG is deactivated before `vgcfgrestore --file ... VG`, then reactivated and rediscovered;
+- restored PV/VG/LV facts must exactly match the baseline, including UUIDs, sizes, free capacity, segment type and original LV name;
+- the original LV is remounted and the sentinel must match byte-for-byte;
+- once LVM metadata mutation begins, any ambiguity marks fixture state uncertain and automatic cleanup refuses to guess;
+- none of these mutation calls are reachable from the production CLI, TUI or executor API.
+
+This is recovery-test evidence only. The production LVM backup/restore executor path remains disabled and owner acceptance is still required before mutation-capable rollout.
+
 ## Immutable metadata-backup manifest
 
 M1B5 adds a pure backup/recovery manifest without executing any backup or restore command.
