@@ -395,6 +395,80 @@ class IdentityReadinessTests(unittest.TestCase):
         self.assertTrue(M.fixture_identity_ready(snapshot, "/dev/loop987654", None))
 
 
+class PartitionRecoveryHelperTests(unittest.TestCase):
+    def facts(self, label="gpt"):
+        return {
+            "partitiontable": {
+                "label": label,
+                "id": "disk-id",
+                "device": "/dev/loop987654",
+                "unit": "sectors",
+                "firstlba": 34 if label == "gpt" else None,
+                "lastlba": 524254 if label == "gpt" else None,
+                "sectorsize": 512,
+                "partitions": [{
+                    "node": "/dev/loop987654p1",
+                    "start": 2048,
+                    "size": 262144,
+                    "type": (
+                        "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
+                        if label == "gpt" else "83"
+                    ),
+                    "uuid": "part-id" if label == "gpt" else None,
+                }],
+            }
+        }
+
+    def test_machine_readable_facts_preserve_exact_geometry(self):
+        for label in ("gpt", "dos"):
+            with self.subTest(label=label):
+                facts = M.partition_table_facts(
+                    self.facts(label), "/dev/loop987654", "/dev/loop987654p1"
+                )
+                self.assertEqual(facts["label"], label)
+                self.assertEqual(facts["sectorsize"], 512)
+                self.assertEqual(facts["partitions"][0]["start"], 2048)
+                self.assertEqual(facts["partitions"][0]["size"], 262144)
+
+    def test_recovery_facts_reject_foreign_device_or_multiple_partitions(self):
+        with self.assertRaises(M.SafetyError):
+            M.partition_table_facts(
+                self.facts(), "/dev/loop987655", "/dev/loop987655p1"
+            )
+        duplicate = self.facts()
+        duplicate["partitiontable"]["partitions"].append(
+            copy.deepcopy(duplicate["partitiontable"]["partitions"][0])
+        )
+        duplicate["partitiontable"]["partitions"][1]["node"] = "/dev/loop987654p2"
+        with self.assertRaises(M.SafetyError):
+            M.partition_table_facts(
+                duplicate, "/dev/loop987654", "/dev/loop987654p1"
+            )
+
+    def test_controlled_mutation_only_grows_partition_end(self):
+        facts = M.partition_table_facts(
+            self.facts(), "/dev/loop987654", "/dev/loop987654p1"
+        )
+        script, new_size = M.growth_only_partition_script(
+            facts, disk_sectors=524288, growth_sectors=8192
+        )
+
+        self.assertEqual(new_size, 270336)
+        self.assertIn("label: gpt", script)
+        self.assertIn("unit: sectors", script)
+        self.assertIn("2048,270336,", script)
+        self.assertTrue(script.splitlines()[-1].startswith("2048,270336,"))
+
+    def test_controlled_mutation_refuses_insufficient_guarded_tail(self):
+        facts = M.partition_table_facts(
+            self.facts(), "/dev/loop987654", "/dev/loop987654p1"
+        )
+        with self.assertRaisesRegex(M.SafetyError, "insufficient guarded tail"):
+            M.growth_only_partition_script(
+                facts, disk_sectors=272000, growth_sectors=8192
+            )
+
+
 class UdevRefreshTests(unittest.TestCase):
     def test_refresh_targets_only_created_block_sysname_and_settles(self):
         runner = Mock()

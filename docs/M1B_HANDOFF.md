@@ -83,6 +83,14 @@ non-deserializable as an execution authorization, and exposes no command runner.
 
 Capture/restore execution and recovery drills remain future gated work.
 
+## M1B6 disposable partition recovery evidence
+
+CI now performs a separate root-only recovery drill on harness-owned loop images for GPT
+and DOS/MBR. The drill proves exact `sfdisk --dump` restoration using machine-readable
+before/after geometry and filesystem sentinel verification. These storage-mutating test
+commands exist only in the disposable integration harness and are not callable through the
+executor crate, CLI or TUI.
+
 ## Non-goals
 
 M1B0 does not implement:
