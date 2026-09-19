@@ -72,6 +72,9 @@ impl MetadataBackupReceipt {
 pub struct BackupReceiptRevalidation {
     receipt_id: String,
     manifest_id: String,
+    handoff_id: String,
+    plan_id: String,
+    target_manifest_digest: String,
     matches: bool,
     blockers: Vec<String>,
 }
@@ -83,6 +86,18 @@ impl BackupReceiptRevalidation {
 
     pub fn manifest_id(&self) -> &str {
         &self.manifest_id
+    }
+
+    pub fn handoff_id(&self) -> &str {
+        &self.handoff_id
+    }
+
+    pub fn plan_id(&self) -> &str {
+        &self.plan_id
+    }
+
+    pub fn target_manifest_digest(&self) -> &str {
+        &self.target_manifest_digest
     }
 
     pub fn matches(&self) -> bool {
@@ -414,6 +429,9 @@ fn revalidate_receipt_at_root(
     Ok(BackupReceiptRevalidation {
         receipt_id: receipt.receipt_id.clone(),
         manifest_id: manifest.manifest_id().to_owned(),
+        handoff_id: manifest.handoff_id().to_owned(),
+        plan_id: manifest.plan_id().to_owned(),
+        target_manifest_digest: manifest.target_manifest_digest().to_owned(),
         matches: blockers.is_empty(),
         blockers,
     })
@@ -596,6 +614,25 @@ fn io_error(path: &Path, source: io::Error) -> BackupCaptureError {
     BackupCaptureError::Io {
         path: path.to_path_buf(),
         source,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_backup_receipt_revalidation(
+    handoff_id: &str,
+    plan_id: &str,
+    target_manifest_digest: &str,
+    matches: bool,
+    blockers: Vec<String>,
+) -> BackupReceiptRevalidation {
+    BackupReceiptRevalidation {
+        receipt_id: "test-receipt".to_owned(),
+        manifest_id: "test-manifest".to_owned(),
+        handoff_id: handoff_id.to_owned(),
+        plan_id: plan_id.to_owned(),
+        target_manifest_digest: target_manifest_digest.to_owned(),
+        matches,
+        blockers,
     }
 }
 
