@@ -38,7 +38,9 @@ pub enum LockedSessionError {
     HandoffBlocked,
     #[error("a mutation-enabled handoff is forbidden in the M1B2 pre-executor session")]
     MutationEnabled,
-    #[error("locked revalidation has already been attempted; release the lock and build a fresh plan")]
+    #[error(
+        "locked revalidation has already been attempted; release the lock and build a fresh plan"
+    )]
     RevalidationAlreadyAttempted,
     #[error("host lock acquisition failed: {0}")]
     Lock(#[from] HostLockError),
