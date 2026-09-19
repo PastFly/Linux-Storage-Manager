@@ -57,6 +57,13 @@ offline ext4 verification or read-only XFS scrub remain explicit future gates.
 If the filesystem decision is blocked or requires an unsupported adapter, the handoff is
 created as `blocked` so the reason stays inspectable, while mutation remains disabled.
 
+## M1B3 durable journal foundation
+
+The dedicated executor crate now has an atomic durable journal store for the already-defined
+`OperationJournal` model. It can persist/reload validated journal state, including
+`RecoveryRequired`, but it is not connected to any mutation command. The owner-acceptance
+gate and exact-plan approval requirements remain unchanged.
+
 ## Non-goals
 
 M1B0 does not implement:
