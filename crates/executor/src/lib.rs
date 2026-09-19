@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn mutation_api_remains_disabled() {
-        assert!(!MUTATION_ENABLED);
+        assert!(!std::hint::black_box(MUTATION_ENABLED));
         assert_eq!(
             HOST_STORAGE_LOCK_PATH,
             "/run/lock/linux-storage-manager/storage.lock"
