@@ -74,6 +74,15 @@ held. Failed revalidation remains at the prior durable phase and requires a fres
 This does not expose precondition approval or execution transitions and does not authorize
 storage mutation.
 
+## M1B5 backup/recovery manifest
+
+The executor crate can now derive an immutable metadata-backup manifest from one frozen
+handoff. It contains only exact future process specifications and verification expectations
+for required partition-table and LVM metadata backups. The model is deterministic,
+non-deserializable as an execution authorization, and exposes no command runner.
+
+Capture/restore execution and recovery drills remain future gated work.
+
 ## Non-goals
 
 M1B0 does not implement:

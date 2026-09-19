@@ -95,6 +95,23 @@ Read-only metadata is evidence, not permission to repair or resize.
 
 Unknown filesystems or unsupported feature/layout combinations remain visible but require a dedicated adapter.
 
+## Immutable metadata-backup manifest
+
+M1B5 adds a pure backup/recovery manifest without executing any backup or restore command.
+
+- required backup steps are derived only from the frozen `PlanPreview` operations in the M1B handoff;
+- partition-table backup identity must match the frozen disk/table label/table ID in the target manifest;
+- LVM backup identity must resolve the exact frozen VG UUID to one frozen VG name;
+- command descriptions are explicit program/argv/stdin/stdout fields rather than shell strings;
+- partition capture is modeled as `sfdisk --dump DISK` to a dedicated artifact; recovery is separately modeled as `sfdisk DISK` with that artifact as stdin;
+- LVM capture/recovery are modeled as `vgcfgbackup --file ... VG` and `vgcfgrestore --file ... VG`;
+- capture specs are marked non-mutating for storage metadata; recovery specs are explicitly marked mutating;
+- restore drills remain limited to disposable fixtures or an explicit future recovery workflow;
+- blocked handoffs cannot produce an executor backup manifest;
+- manifest identity is repeatable and bound to the exact handoff, plan and target manifest digest.
+
+No command runner consumes these specs in M1B5.
+
 ## Durable journal storage primitive
 
 M1B3 adds persistence for the existing journal state machine without enabling execution.

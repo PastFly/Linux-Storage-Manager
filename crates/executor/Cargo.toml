@@ -11,4 +11,5 @@ lsm-core = { path = "../core" }
 lsm-planner = { path = "../planner" }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10.9"
 thiserror.workspace = true
