@@ -523,6 +523,7 @@ def exercise_lvm_metadata_recovery(resources: Resources, binary: Runner) -> None
     backup_text = backup_path.read_text()
     if vg_name not in backup_text or group.uuid not in backup_text:
         raise SafetyError("LVM metadata backup artifact lacks frozen VG identity")
+    binary.run("vgcfgrestore", "--test", "--file", str(backup_path), vg_name)
 
     binary.run("umount", str(target))
     absent = binary.run("findmnt", "--json", "--mountpoint", str(target),
