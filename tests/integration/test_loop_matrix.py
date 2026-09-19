@@ -395,6 +395,82 @@ class IdentityReadinessTests(unittest.TestCase):
         self.assertTrue(M.fixture_identity_ready(snapshot, "/dev/loop987654", None))
 
 
+class LvmRecoveryHelperTests(unittest.TestCase):
+    def reports(self, pv_name="/dev/loop987654p1", lv_name="data"):
+        return {
+            "vgs": {
+                "report": [{"vg": [{
+                    "vg_name": "lsmtestabc",
+                    "vg_uuid": "vg-uuid-1",
+                    "vg_size": "671088640",
+                    "vg_free": "268435456",
+                    "pv_count": "1",
+                    "lv_count": "1",
+                }]}]
+            },
+            "pvs": {
+                "report": [{"pv": [{
+                    "pv_name": pv_name,
+                    "pv_uuid": "pv-uuid-1",
+                    "vg_name": "lsmtestabc",
+                    "vg_uuid": "vg-uuid-1",
+                    "pv_size": "671088640",
+                    "pv_free": "268435456",
+                }]}]
+            },
+            "lvs": {
+                "report": [{"lv": [{
+                    "lv_name": lv_name,
+                    "lv_uuid": "lv-uuid-1",
+                    "vg_name": "lsmtestabc",
+                    "vg_uuid": "vg-uuid-1",
+                    "lv_size": "402653184",
+                    "segtype": "linear",
+                }]}]
+            },
+        }
+
+    def runner(self, reports):
+        runner = Mock()
+        runner.json.side_effect = lambda name, *args: reports[name]
+        return runner
+
+    def test_machine_readable_lvm_facts_preserve_exact_identity(self):
+        facts = M.lvm_metadata_facts(
+            self.runner(self.reports()),
+            "lsmtestabc",
+            "/dev/loop987654p1",
+        )
+
+        self.assertEqual(facts["vg"]["vg_uuid"], "vg-uuid-1")
+        self.assertEqual(facts["pv"]["pv_uuid"], "pv-uuid-1")
+        self.assertEqual(facts["lv"]["lv_uuid"], "lv-uuid-1")
+        self.assertEqual(facts["lv"]["lv_name"], "data")
+
+    def test_lvm_facts_reject_foreign_pv_membership(self):
+        with self.assertRaisesRegex(M.SafetyError, "PV identity changed"):
+            M.lvm_metadata_facts(
+                self.runner(self.reports(pv_name="/dev/sda1")),
+                "lsmtestabc",
+                "/dev/loop987654p1",
+            )
+
+    def test_controlled_lvm_mutation_may_only_rename_one_lv(self):
+        baseline = M.lvm_metadata_facts(
+            self.runner(self.reports()),
+            "lsmtestabc",
+            "/dev/loop987654p1",
+        )
+        renamed = copy.deepcopy(baseline)
+        renamed["lv"]["lv_name"] = "data_mutated"
+        M.assert_only_lv_name_changed(baseline, renamed, "data_mutated")
+
+        wrong = copy.deepcopy(renamed)
+        wrong["vg"]["vg_free"] = "1"
+        with self.assertRaisesRegex(M.SafetyError, "VG/PV identity or capacity"):
+            M.assert_only_lv_name_changed(baseline, wrong, "data_mutated")
+
+
 class PartitionRecoveryHelperTests(unittest.TestCase):
     def facts(self, label="gpt"):
         return {
