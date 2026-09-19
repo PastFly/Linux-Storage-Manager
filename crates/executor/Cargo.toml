@@ -7,5 +7,9 @@ publish.workspace = true
 
 [dependencies]
 libc = "0.2"
+lsm-core = { path = "../core" }
 lsm-planner = { path = "../planner" }
 thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
