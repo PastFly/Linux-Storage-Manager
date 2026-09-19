@@ -110,6 +110,20 @@ M1B3 adds persistence for the existing journal state machine without enabling ex
 
 The mutation-capable executor must later persist the relevant state before crossing the first mutation boundary; that wiring remains gated.
 
+## Durable locked-session progression
+
+M1B4 connects the M1B2 locked revalidation session to the M1B3 durable store while mutation remains disabled.
+
+- entering a durable session acquires the host-exclusive lock and durably records `HostLockHeld` before returning the session;
+- successful target/capability revalidation advances and durably records `IdentityRevalidated` while the same host lock remains held;
+- blocked identity/capability revalidation does not advance the durable journal;
+- a journal persistence failure aborts session construction or revalidation and the session cannot retry the failed revalidation;
+- if initial durable persistence fails, the owned lock handle is dropped and the kernel lock is released;
+- no precondition, approval, execution or verification transition is exposed by this session;
+- `MUTATION_ENABLED` remains false and owner acceptance remains a separate required gate.
+
+The future mutation-capable path must continue persistence through preconditions/approval and must durably cross into `Executing` before launching a mutating tool.
+
 ## Operation journal and crash boundary
 
 M1A defines a future execution journal state machine:
