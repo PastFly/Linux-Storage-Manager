@@ -1,0 +1,11 @@
+[package]
+name = "lsm-executor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+libc = "0.2"
+lsm-planner = { path = "../planner" }
+thiserror.workspace = true
