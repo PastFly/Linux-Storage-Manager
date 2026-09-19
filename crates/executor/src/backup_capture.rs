@@ -496,6 +496,178 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    fn direct_fixture() -> (lsm_core::HostSnapshot, lsm_core::HostCapabilities) {
+        use lsm_core::{FilesystemPreflightEvidence, FilesystemProbeState};
+        use serde_json::json;
+
+        const GIB: u64 = 1 << 30;
+        let sector = 512_u64;
+        let partition_bytes = 10 * GIB;
+        let mut snapshot: lsm_core::HostSnapshot = serde_json::from_value(json!({
+            "storage":{"block_devices":[{
+                "name":"sda","kernel_name":"sda","path":"/dev/sda","kind":"disk",
+                "size_bytes":20*GIB,"logical_sector_bytes":sector,
+                "model":"Virtual Disk","serial":"BACKUP-CAPTURE-TEST","mountpoints":[],"children":[{
+                    "name":"sda1","kernel_name":"sda1","path":"/dev/sda1","kind":"partition",
+                    "size_bytes":partition_bytes,"start_512_sector":2048,
+                    "logical_sector_bytes":sector,"uuid":"fs-data","partition_uuid":"part-data",
+                    "partition_table":"gpt","filesystem":{"fs_type":"ext4","version":"1.0"},
+                    "mountpoints":["/data"],"parent_kernel_name":"sda","children":[]
+                }]
+            }]},
+            "partition_tables":[{
+                "device":"/dev/sda","label":"gpt","id":"gpt-backup-capture","unit":"sectors",
+                "first_lba":34,"last_lba":(20*GIB/sector)-34,
+                "sector_size_bytes":sector,
+                "partitions":[{
+                    "node":"/dev/sda1","start_sector":2048,
+                    "size_sectors":partition_bytes/sector,
+                    "partition_type":"0FC63DAF-8483-4772-8E79-3D69D8477DE4",
+                    "uuid":"part-data","name":null,"attrs":null,"bootable":null
+                }]
+            }],
+            "mounts":[{
+                "source":"/dev/sda1","target":"/data","fs_type":"ext4","options":["rw","relatime"]
+            }],
+            "fstab":[],
+            "swaps":[],
+            "lvm":null,
+            "filesystem_preflight":[],
+            "diagnostics":[],
+            "collectors":[
+                {"component":"lsblk","state":"complete"},
+                {"component":"partition_tables","state":"complete"},
+                {"component":"mounts","state":"complete"},
+                {"component":"fstab","state":"complete"},
+                {"component":"swap","state":"complete"}
+            ]
+        }))
+        .unwrap();
+        snapshot.filesystem_preflight.push(FilesystemPreflightEvidence {
+            device: "/dev/sda1".into(),
+            mountpoint: Some("/data".into()),
+            fs_type: "ext4".into(),
+            fs_version: Some("1.0".into()),
+            state: FilesystemProbeState::Verified,
+            filesystem_state: Some("clean".into()),
+            revision: Some("1".into()),
+            features: vec![
+                "has_journal".into(),
+                "extent".into(),
+                "64bit".into(),
+                "metadata_csum".into(),
+            ],
+            block_size_bytes: Some(4096),
+            block_count: Some(partition_bytes / 4096),
+            size_bytes: Some(partition_bytes),
+            grow_check_passed: None,
+            detail: None,
+        });
+        let capabilities = serde_json::from_value(json!({"tools":[
+            {"name":"sfdisk","available":true},
+            {"name":"resize2fs","available":true},
+            {"name":"e2fsck","available":true}
+        ]}))
+        .unwrap();
+        (snapshot, capabilities)
+    }
+
+    fn direct_handoff(
+        snapshot: &lsm_core::HostSnapshot,
+        capabilities: &lsm_core::HostCapabilities,
+    ) -> lsm_planner::FrozenExecutionHandoff {
+        use lsm_planner::{
+            build_frozen_execution_handoff, plan_extend, ExtendRequest, Growth, PlanStatus,
+        };
+        const GIB: u64 = 1 << 30;
+        let plan = plan_extend(
+            snapshot,
+            capabilities,
+            ExtendRequest {
+                target: "/data".into(),
+                growth: Growth::ByBytes(GIB),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.status(), PlanStatus::Preview);
+        build_frozen_execution_handoff(snapshot, capabilities, &plan).unwrap()
+    }
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "lsm-backup-capture-session-test-{}-{name}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn exact_revalidated_session_can_capture_manifest_with_fake_runner() {
+        let (snapshot, capabilities) = direct_fixture();
+        let handoff = direct_handoff(&snapshot, &capabilities);
+        let manifest = crate::build_metadata_backup_manifest(&handoff).unwrap();
+        assert_eq!(manifest.requirements().len(), 1);
+
+        let lock = temp_path("lock").join("storage.lock");
+        let root = temp_path("artifacts");
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(&root);
+        let mut session =
+            crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        let result = session.revalidate(&snapshot, &capabilities).unwrap();
+        assert_eq!(
+            result.status,
+            crate::LockedRevalidationStatus::Revalidated
+        );
+
+        let runner = FakeRunner::new(b"label: gpt\ndevice: /dev/sda\n");
+        let receipt =
+            capture_with_runner(&session, &manifest, Some(&root), &runner).unwrap();
+
+        assert!(!receipt.mutation_enabled());
+        assert_eq!(receipt.manifest_id(), manifest.manifest_id());
+        assert_eq!(receipt.handoff_id(), handoff.handoff_id());
+        assert_eq!(receipt.artifacts().len(), 1);
+        assert_eq!(receipt.artifacts()[0].kind, MetadataBackupKind::PartitionTable);
+        assert!(receipt.artifacts()[0].size_bytes > 0);
+        assert_eq!(receipt.artifacts()[0].sha256.len(), 64);
+        assert_eq!(
+            runner.calls.lock().unwrap().as_slice(),
+            [("sfdisk".to_owned(), "/dev/sda".to_owned())]
+        );
+
+        drop(session);
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn backup_capture_is_rejected_before_locked_identity_revalidation() {
+        let (snapshot, capabilities) = direct_fixture();
+        let handoff = direct_handoff(&snapshot, &capabilities);
+        let manifest = crate::build_metadata_backup_manifest(&handoff).unwrap();
+        let lock = temp_path("not-revalidated-lock").join("storage.lock");
+        let root = temp_path("not-revalidated-artifacts");
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(&root);
+        let session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+
+        let result = capture_with_runner(
+            &session,
+            &manifest,
+            Some(&root),
+            &FakeRunner::new(b"unused"),
+        );
+
+        assert!(matches!(
+            result,
+            Err(BackupCaptureError::SessionNotRevalidated)
+        ));
+        assert!(!root.exists());
+
+        drop(session);
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+    }
+
     #[test]
     fn mutation_flag_remains_disabled() {
         assert!(!std::hint::black_box(MUTATION_ENABLED));
