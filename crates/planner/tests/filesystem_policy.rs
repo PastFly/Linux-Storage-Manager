@@ -120,6 +120,23 @@ fn clean_mounted_ext4_is_online_grow_candidate_without_mounted_e2fsck() {
 }
 
 #[test]
+fn missing_mounted_ext4_evidence_blocks_without_panicking() {
+    let snapshot = snapshot("ext4", true, &["rw", "relatime"]);
+
+    let decision = decide_filesystem_growth(&snapshot, &capabilities(), "/data");
+
+    assert_eq!(decision.state, FilesystemDecisionState::Blocked);
+    assert!(decision
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("metadata evidence is missing")));
+    assert!(decision
+        .required_actions
+        .iter()
+        .any(|action| action.contains("tune2fs")));
+}
+
+#[test]
 fn questionable_mounted_ext4_requires_explicit_offline_read_only_check() {
     let mut snapshot = snapshot("ext4", true, &["rw"]);
     snapshot

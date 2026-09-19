@@ -362,7 +362,7 @@ fn exact_evidence<'a>(
                     }))
         })
         .collect();
-    (matches.len() == 1).then_some(matches[0])
+    (matches.len() == 1).then(|| matches[0])
 }
 
 fn mount_is_normal_read_write(mount: &lsm_core::MountEntry) -> bool {

@@ -2,7 +2,7 @@
 
 Linux Storage Manager is a safety-first terminal application for inspecting and managing Linux storage without requiring administrators to manually compose low-level storage commands.
 
-The project is currently in the **M0 — Storage Discovery** phase. M0 is intentionally read-only: it discovers the host storage topology, reconciles independent system data sources, and explains what can potentially be done, but does not mutate disks, partitions, LVM metadata, filesystems, mounts, or swap configuration.
+The project has completed the read-only **M0 — Storage Discovery** and **M1A — Planning** baselines and is entering **M1B pre-executor foundation work**. Storage discovery, Grow/Create planning, target identity guards and the M1B0 execution handoff are still non-mutating: no current CLI/TUI path changes disks, partitions, LVM metadata, filesystems, mounts, or swap configuration.
 
 ## Initial goals
 
@@ -16,7 +16,7 @@ The project is currently in the **M0 — Storage Discovery** phase. M0 is intent
 - Metadata backup and post-operation verification for future mutating operations.
 - Conservative safety model: unsupported, incomplete, or contradictory storage layouts must fail closed.
 
-## Current M0 CLI
+## Current read-only CLI
 
 ```text
 storagemgr                  # open the read-only TUI
@@ -31,12 +31,19 @@ storagemgr lvm              # PV/VG/LV inventory
 storagemgr capabilities     # available host storage tools
 storagemgr diagnose         # topology and cross-source diagnostics
 storagemgr explain /        # read-only growth explanation for a target
+storagemgr plan targets      # selectable Grow targets and current blockers
+storagemgr plan create-spaces # verified/blocked provisioning sources
+storagemgr plan extend / --max
+storagemgr plan create <id> --max --purpose filesystem --fs ext4
 ```
 
-## Planned M0 completion
+## Current execution boundary
 
-- Disposable loop-device / VM integration test matrix.
+M1A plans and M1B0 handoff bundles are data only. There is no mutation-capable executor
+or apply command. Executor rollout remains gated on explicit owner acceptance plus the
+lock, fresh identity revalidation, health checks, verified backups, durable journal and
+post-mutation verification described in the roadmap and safety documentation.
 
 Implementation language: **Rust**.
 
-> This repository is under active development. M0 contains no storage-changing executor. Do not use unfinished future builds to modify production storage.
+> This repository is under active development. Current M0/M1A/M1B0 code contains no storage-changing executor. Do not treat a preview or handoff bundle as authorization to modify production storage.
