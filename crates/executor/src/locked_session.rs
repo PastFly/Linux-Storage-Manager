@@ -171,7 +171,7 @@ impl<'a> LockedExecutionSession<'a> {
     }
 
     #[cfg(test)]
-    fn begin_at_path(
+    pub(crate) fn begin_at_path(
         handoff: &'a FrozenExecutionHandoff,
         path: &Path,
     ) -> Result<Self, LockedSessionError> {
