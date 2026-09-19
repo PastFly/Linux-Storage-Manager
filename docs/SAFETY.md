@@ -28,6 +28,21 @@ Important rules:
 - deleting a lock pathname is never evidence that a lock is stale;
 - target resource keys are journal/audit metadata, not permission to bypass the host-exclusive lock.
 
+## Implemented host-lock primitive
+
+M1B1 adds a narrow Linux advisory-lock primitive without enabling storage mutation.
+
+- the lock path remains `/run/lock/linux-storage-manager/storage.lock`;
+- acquisition is nonblocking and host-exclusive via an OS-backed `flock`;
+- a busy lock fails closed instead of waiting or racing another operation;
+- the lock file is opened with `O_NOFOLLOW` and `O_CLOEXEC`, and must resolve to a regular file;
+- the immediate lock directory must be a real directory rather than a symlink;
+- lock ownership is RAII-scoped and closing/dropping the handle releases the kernel lock;
+- no code treats deleting a lock pathname as stale-lock recovery;
+- this primitive has no storage-command API and `MUTATION_ENABLED` remains false.
+
+The primitive is not yet wired to a mutation-capable executor. Explicit owner acceptance remains required before that rollout.
+
 ## Target identity and stale-plan rejection
 
 M1A already models a target-scoped identity manifest for the selected route. It records relevant disk/partition/PV/VG/LV/filesystem/mount facts rather than hashing unrelated devices on the host.
