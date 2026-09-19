@@ -96,6 +96,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Add a non-mutating atomic durable journal-store primitive with strict reload validation and recovery-state preservation.
 - [x] Persist HostLockHeld and successful IdentityRevalidated transitions from the non-mutating locked session through the durable journal store.
 - [ ] Persist the operation-journal model durably before the first mutating command.
+- [x] Freeze exact partition-table/LVM metadata backup and recovery command manifests without executing them.
 - [ ] Add partition-table metadata backup plus a recovery drill.
 - [ ] Add LVM metadata backup plus a recovery drill.
 - [ ] Grow GPT/MBR partitions where safe without moving a partition start.
