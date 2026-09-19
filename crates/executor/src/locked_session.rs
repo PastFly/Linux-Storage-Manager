@@ -39,7 +39,7 @@ pub struct LockedExecutionSession<'a> {
 pub enum LockedSessionError {
     #[error("frozen handoff is blocked and cannot enter a locked executor session")]
     HandoffBlocked,
-    #[error("a mutation-enabled handoff is forbidden in the M1B2 pre-executor session")]
+    #[error("a mutation-enabled handoff is forbidden in the M1B pre-executor session")]
     MutationEnabled,
     #[error(
         "locked revalidation has already been attempted; release the lock and build a fresh plan"
