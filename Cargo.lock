@@ -738,7 +738,9 @@ name = "lsm-executor"
 version = "0.1.0-dev"
 dependencies = [
  "libc",
+ "lsm-core",
  "lsm-planner",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 
