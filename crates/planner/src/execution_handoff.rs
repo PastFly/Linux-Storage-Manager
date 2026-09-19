@@ -69,6 +69,13 @@ impl FrozenExecutionHandoff {
         &self.capabilities_digest
     }
 
+    pub fn matches_capabilities(
+        &self,
+        capabilities: &HostCapabilities,
+    ) -> Result<bool, PlannerError> {
+        Ok(crate::fingerprint(capabilities)? == self.capabilities_digest)
+    }
+
     pub fn target_identity(&self) -> &TargetIdentityManifest {
         &self.target_identity
     }
