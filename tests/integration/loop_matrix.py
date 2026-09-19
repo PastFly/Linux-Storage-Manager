@@ -115,6 +115,7 @@ class Resources:
         self.mounts: list[Mount] = []
         self.images: list[Path] = []
         self.directories: list[Path] = []
+        self.artifacts: list[tuple[Path, tuple[int, int]]] = []
         self.uncertain = False
 
     def loop_report(self) -> list[dict[str, Any]]:
@@ -208,6 +209,12 @@ class Resources:
         (target / "readonly-sentinel").write_bytes(b"Linux Storage Manager read-only sentinel\n")
         return target
 
+    def track_artifact(self, path: Path) -> None:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or path.parent.resolve(strict=True) != self.root:
+            raise SafetyError("recovery artifact is not a regular file owned by the harness")
+        self.artifacts.append((path, (info.st_dev, info.st_ino)))
+
     def cleanup(self) -> None:
         # Never detach/remove resources after an ownership or unmount failure.
         if self.uncertain:
@@ -255,6 +262,15 @@ class Resources:
             time.sleep(0.1)
         else:
             raise SafetyError("loop detach has not completed; retaining image files")
+        for artifact, inode in self.artifacts:
+            if not artifact.exists():
+                continue
+            info = artifact.lstat()
+            if (not stat.S_ISREG(info.st_mode)
+                    or artifact.parent.resolve(strict=True) != self.root
+                    or (info.st_dev, info.st_ino) != inode):
+                raise SafetyError(f"recovery artifact identity changed: {artifact}")
+            artifact.unlink()
         # rmdir fails on unexpected contents; no recursive deletion, even on error.
         for directory in reversed(self.directories):
             directory.rmdir()
@@ -366,6 +382,7 @@ def exercise_partition_table_recovery(resources: Resources, binary: Runner,
         raise SafetyError("partition-table backup artifact is empty or lacks target identity")
     backup_path = resources.root / f"{label}-partition-table.sfdisk"
     backup_path.write_text(backup)
+    resources.track_artifact(backup_path)
     if backup_path.read_text() != backup:
         raise SafetyError("partition-table backup artifact is not readable byte-for-byte")
 
@@ -520,10 +537,10 @@ def exercise_lvm_metadata_recovery(resources: Resources, binary: Runner) -> None
     binary.run("vgcfgbackup", "--file", str(backup_path), vg_name)
     if not backup_path.is_file() or backup_path.stat().st_size == 0:
         raise SafetyError("LVM metadata backup artifact is absent or empty")
+    resources.track_artifact(backup_path)
     backup_text = backup_path.read_text()
     if vg_name not in backup_text or group.uuid not in backup_text:
         raise SafetyError("LVM metadata backup artifact lacks frozen VG identity")
-    binary.run("vgcfgrestore", "--test", "--file", str(backup_path), vg_name)
 
     binary.run("umount", str(target))
     absent = binary.run("findmnt", "--json", "--mountpoint", str(target),
@@ -532,6 +549,12 @@ def exercise_lvm_metadata_recovery(resources: Resources, binary: Runner) -> None
         raise SafetyError("disposable LVM recovery filesystem did not unmount cleanly")
 
     resources.check_loop(loop)
+    binary.run("vgchange", "-an", vg_name)
+    binary.run("vgcfgrestore", "--test", "--file", str(backup_path), vg_name)
+    binary.run("vgchange", "-ay", vg_name)
+    binary.run("udevadm", "settle", "--timeout=30")
+    wait_block(source)
+
     resources.uncertain = True
     binary.run("lvrename", vg_name, "data", "data_mutated")
     binary.run("udevadm", "settle", "--timeout=30")
