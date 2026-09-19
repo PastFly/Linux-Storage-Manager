@@ -29,8 +29,9 @@ class SafetyError(RuntimeError):
 class Runner:
     def __init__(self, binary: Path):
         names = ("losetup", "sfdisk", "partx", "mkfs.ext4", "mkfs.xfs", "pvcreate",
-                 "vgcreate", "lvcreate", "vgremove", "vgs", "pvs", "mount", "umount",
-                 "findmnt", "vgcfgbackup", "lvextend", "resize2fs", "xfs_growfs", "udevadm")
+                 "vgcreate", "vgchange", "lvcreate", "lvrename", "vgremove", "vgs", "pvs", "lvs",
+                 "mount", "umount", "findmnt", "vgcfgbackup", "vgcfgrestore", "lvextend",
+                 "resize2fs", "xfs_growfs", "udevadm")
         self.tools = {}
         for name in names:
             path = shutil.which(name)
@@ -114,6 +115,7 @@ class Resources:
         self.mounts: list[Mount] = []
         self.images: list[Path] = []
         self.directories: list[Path] = []
+        self.artifacts: list[tuple[Path, tuple[int, int]]] = []
         self.uncertain = False
 
     def loop_report(self) -> list[dict[str, Any]]:
@@ -207,6 +209,12 @@ class Resources:
         (target / "readonly-sentinel").write_bytes(b"Linux Storage Manager read-only sentinel\n")
         return target
 
+    def track_artifact(self, path: Path) -> None:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or path.parent.resolve(strict=True) != self.root:
+            raise SafetyError("recovery artifact is not a regular file owned by the harness")
+        self.artifacts.append((path, (info.st_dev, info.st_ino)))
+
     def cleanup(self) -> None:
         # Never detach/remove resources after an ownership or unmount failure.
         if self.uncertain:
@@ -254,6 +262,15 @@ class Resources:
             time.sleep(0.1)
         else:
             raise SafetyError("loop detach has not completed; retaining image files")
+        for artifact, inode in self.artifacts:
+            if not artifact.exists():
+                continue
+            info = artifact.lstat()
+            if (not stat.S_ISREG(info.st_mode)
+                    or artifact.parent.resolve(strict=True) != self.root
+                    or (info.st_dev, info.st_ino) != inode):
+                raise SafetyError(f"recovery artifact identity changed: {artifact}")
+            artifact.unlink()
         # rmdir fails on unexpected contents; no recursive deletion, even on error.
         for directory in reversed(self.directories):
             directory.rmdir()
@@ -365,6 +382,7 @@ def exercise_partition_table_recovery(resources: Resources, binary: Runner,
         raise SafetyError("partition-table backup artifact is empty or lacks target identity")
     backup_path = resources.root / f"{label}-partition-table.sfdisk"
     backup_path.write_text(backup)
+    resources.track_artifact(backup_path)
     if backup_path.read_text() != backup:
         raise SafetyError("partition-table backup artifact is not readable byte-for-byte")
 
@@ -412,6 +430,153 @@ def exercise_partition_table_recovery(resources: Resources, binary: Runner,
     assert_owned_mount(binary, tracked_mount)
     if (target / "readonly-sentinel").read_bytes() != sentinel:
         raise SafetyError("filesystem sentinel changed across partition-table recovery drill")
+
+    backup_path.unlink()
+    resources.uncertain = False
+
+
+def _normalized_report_row(row: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    normalized = {}
+    for key in keys:
+        value = row.get(key)
+        normalized[key] = value.strip() if isinstance(value, str) else value
+    return normalized
+
+
+def lvm_metadata_facts(binary: Runner, vg_name: str, pv_path: str) -> dict[str, Any]:
+    if re.fullmatch(r"lsmtest[a-f0-9]+", vg_name) is None:
+        raise SafetyError("LVM recovery drill requires a harness-owned VG name")
+    reports = {
+        "vg": rows(
+            binary.json(
+                "vgs", "--reportformat", "json", "--units", "b", "--nosuffix",
+                "--options", "vg_name,vg_uuid,vg_size,vg_free,pv_count,lv_count",
+                "--select", f"vg_name={vg_name}",
+            ),
+            "report", "vg",
+        ),
+        "pv": rows(
+            binary.json(
+                "pvs", "--reportformat", "json", "--units", "b", "--nosuffix",
+                "--options", "pv_name,pv_uuid,vg_name,vg_uuid,pv_size,pv_free",
+                "--select", f"vg_name={vg_name}",
+            ),
+            "report", "pv",
+        ),
+        "lv": rows(
+            binary.json(
+                "lvs", "--reportformat", "json", "--units", "b", "--nosuffix",
+                "--options", "lv_name,lv_uuid,vg_name,vg_uuid,lv_size,segtype",
+                "--select", f"vg_name={vg_name}",
+            ),
+            "report", "lv",
+        ),
+    }
+    if any(len(reports[key]) != 1 for key in ("vg", "pv", "lv")):
+        raise SafetyError("LVM recovery drill requires exactly one VG, PV and LV")
+    vg = _normalized_report_row(
+        reports["vg"][0],
+        ("vg_name", "vg_uuid", "vg_size", "vg_free", "pv_count", "lv_count"),
+    )
+    pv = _normalized_report_row(
+        reports["pv"][0],
+        ("pv_name", "pv_uuid", "vg_name", "vg_uuid", "pv_size", "pv_free"),
+    )
+    lv = _normalized_report_row(
+        reports["lv"][0],
+        ("lv_name", "lv_uuid", "vg_name", "vg_uuid", "lv_size", "segtype"),
+    )
+    if vg["vg_name"] != vg_name or pv["vg_name"] != vg_name or lv["vg_name"] != vg_name:
+        raise SafetyError("LVM recovery report escaped the owned VG")
+    if not isinstance(vg["vg_uuid"], str) or not vg["vg_uuid"]:
+        raise SafetyError("LVM recovery VG UUID is unavailable")
+    if pv["vg_uuid"] != vg["vg_uuid"] or lv["vg_uuid"] != vg["vg_uuid"]:
+        raise SafetyError("LVM recovery report disagrees on VG UUID")
+    if os.path.realpath(str(pv["pv_name"])) != os.path.realpath(pv_path):
+        raise SafetyError("LVM recovery PV identity changed")
+    if not isinstance(pv["pv_uuid"], str) or not pv["pv_uuid"]:
+        raise SafetyError("LVM recovery PV UUID is unavailable")
+    if not isinstance(lv["lv_uuid"], str) or not lv["lv_uuid"]:
+        raise SafetyError("LVM recovery LV UUID is unavailable")
+    return {"vg": vg, "pv": pv, "lv": lv}
+
+
+def assert_only_lv_name_changed(baseline: dict[str, Any], mutated: dict[str, Any],
+                                expected_name: str) -> None:
+    if mutated["vg"] != baseline["vg"] or mutated["pv"] != baseline["pv"]:
+        raise SafetyError("controlled LVM recovery mutation changed VG/PV identity or capacity")
+    expected_lv = dict(baseline["lv"])
+    expected_lv["lv_name"] = expected_name
+    if mutated["lv"] != expected_lv:
+        raise SafetyError("controlled LVM recovery mutation changed more than the LV name")
+
+
+def exercise_lvm_metadata_recovery(resources: Resources, binary: Runner) -> None:
+    label = "recovery-lvm"
+    loop = resources.create_loop(label, 768 * 1024 * 1024)
+    partition = resources.create_partition(loop, 640, True)
+    vg_name = "lsmtest" + os.urandom(12).hex()
+    source = resources.create_vg(loop, partition, vg_name)
+    group = resources.groups[-1]
+    if group.uuid is None:
+        raise SafetyError("LVM recovery fixture lacks the tracked VG UUID")
+
+    binary.run("mkfs.ext4", "-F", source)
+    refresh_fixture_udev(binary, Path(source).resolve(strict=True).name)
+    target = resources.mount(source, label + "-mount")
+    tracked_mount = resources.mounts[-1]
+    assert_owned_mount(binary, tracked_mount)
+    sentinel = (target / "readonly-sentinel").read_bytes()
+
+    resources.check_loop(loop)
+    baseline = lvm_metadata_facts(binary, vg_name, partition)
+    if baseline["vg"]["vg_uuid"] != group.uuid:
+        raise SafetyError("tracked VG UUID disagrees with recovery baseline")
+
+    backup_path = resources.root / f"{label}-vgcfgbackup.conf"
+    binary.run("vgcfgbackup", "--file", str(backup_path), vg_name)
+    if not backup_path.is_file() or backup_path.stat().st_size == 0:
+        raise SafetyError("LVM metadata backup artifact is absent or empty")
+    resources.track_artifact(backup_path)
+    backup_text = backup_path.read_text()
+    if vg_name not in backup_text or group.uuid not in backup_text:
+        raise SafetyError("LVM metadata backup artifact lacks frozen VG identity")
+
+    binary.run("umount", str(target))
+    absent = binary.run("findmnt", "--json", "--mountpoint", str(target),
+                        "--output", "SOURCE,TARGET", allowed=(0, 1))
+    if absent.returncode != 1 or absent.stdout.strip() or absent.stderr.strip():
+        raise SafetyError("disposable LVM recovery filesystem did not unmount cleanly")
+
+    resources.check_loop(loop)
+    binary.run("vgchange", "-an", vg_name)
+    binary.run("vgcfgrestore", "--test", "--file", str(backup_path), vg_name)
+    binary.run("vgchange", "-ay", vg_name)
+    binary.run("udevadm", "settle", "--timeout=30")
+    wait_block(source)
+
+    resources.uncertain = True
+    binary.run("lvrename", vg_name, "data", "data_mutated")
+    binary.run("udevadm", "settle", "--timeout=30")
+    mutated = lvm_metadata_facts(binary, vg_name, partition)
+    assert_only_lv_name_changed(baseline, mutated, "data_mutated")
+
+    binary.run("vgchange", "-an", vg_name)
+    binary.run("vgcfgrestore", "--file", str(backup_path), vg_name)
+    binary.run("vgchange", "-ay", vg_name)
+    binary.run("udevadm", "settle", "--timeout=30")
+    wait_block(source)
+    resources.check_loop(loop)
+
+    restored = lvm_metadata_facts(binary, vg_name, partition)
+    if restored != baseline:
+        evidence = json.dumps({"before": baseline, "restored": restored}, sort_keys=True)
+        raise SafetyError("LVM metadata recovery did not restore exact identity: " + evidence)
+
+    binary.run("mount", source, str(target))
+    assert_owned_mount(binary, tracked_mount)
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("filesystem sentinel changed across LVM metadata recovery drill")
 
     backup_path.unlink()
     resources.uncertain = False
@@ -659,6 +824,8 @@ def main(argv: list[str] | None = None) -> int:
         for table_label in ("gpt", "dos"):
             print(f"==> partition-recovery-{table_label}", flush=True)
             exercise_partition_table_recovery(resources, runner, table_label)
+        print("==> lvm-metadata-recovery", flush=True)
+        exercise_lvm_metadata_recovery(resources, runner)
     except (OSError, ValueError, KeyError, TypeError, SafetyError, subprocess.SubprocessError, KeyboardInterrupt) as error:
         print(f"INTEGRATION_FAILED: {error}", file=sys.stderr)
         failed = True
@@ -669,7 +836,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,partition-recovery-gpt,partition-recovery-dos cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
     return int(failed)
 
 
