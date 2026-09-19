@@ -293,7 +293,8 @@ fn revalidate_receipt_at_root(
         || receipt.plan_id != manifest.plan_id()
         || receipt.target_manifest_digest != manifest.target_manifest_digest()
     {
-        blockers.push("receipt identity does not match the exact frozen backup manifest".to_owned());
+        blockers
+            .push("receipt identity does not match the exact frozen backup manifest".to_owned());
     }
 
     let production_root = Path::new(crate::BACKUP_DIRECTORY).join(manifest.handoff_id());
@@ -821,8 +822,7 @@ mod tests {
             runner.calls.lock().unwrap().as_slice(),
             [("sfdisk".to_owned(), "/dev/sda".to_owned())]
         );
-        let revalidation =
-            revalidate_receipt_at_root(&manifest, &receipt, Some(&root)).unwrap();
+        let revalidation = revalidate_receipt_at_root(&manifest, &receipt, Some(&root)).unwrap();
         assert!(revalidation.matches());
         assert!(revalidation.blockers().is_empty());
 
@@ -875,8 +875,7 @@ mod tests {
         let root = temp_path(&format!("{suffix}-artifacts"));
         let _ = fs::remove_dir_all(lock.parent().unwrap());
         let _ = fs::remove_dir_all(&root);
-        let mut session =
-            crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
         let revalidation = session.revalidate(&snapshot, &capabilities).unwrap();
         assert_eq!(
             revalidation.status,
@@ -958,8 +957,7 @@ mod tests {
 
     #[test]
     fn receipt_revalidation_rejects_receipt_identity_tampering() {
-        let (_handoff, manifest, mut receipt, lock, root) =
-            captured_direct_fixture("receipt-id");
+        let (_handoff, manifest, mut receipt, lock, root) = captured_direct_fixture("receipt-id");
         receipt.receipt_id = "0".repeat(64);
 
         let result = revalidate_receipt_at_root(&manifest, &receipt, Some(&root)).unwrap();
