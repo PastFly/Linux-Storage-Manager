@@ -95,6 +95,21 @@ Read-only metadata is evidence, not permission to repair or resize.
 
 Unknown filesystems or unsupported feature/layout combinations remain visible but require a dedicated adapter.
 
+## Durable journal storage primitive
+
+M1B3 adds persistence for the existing journal state machine without enabling execution.
+
+- records are written to the application journal directory through a same-directory temporary file, `fsync`, atomic rename and directory `fsync`;
+- durable journal files are mode `0600`, opened with `O_NOFOLLOW` and `O_CLOEXEC`;
+- directory components must be real directories rather than symlinks;
+- the journal ID, plan ID and baseline manifest digest are validated as frozen SHA-256 identities;
+- reload validates schema, event sequence, phase continuity, allowed transitions and the mutation-boundary flag before returning an `OperationJournal`;
+- impossible/tampered histories fail closed;
+- a persisted `RecoveryRequired` record reloads as `RecoveryRequired`; persistence never converts it into an automatic retry state;
+- the store has no API for running storage tools and does not satisfy the owner-acceptance gate by itself.
+
+The mutation-capable executor must later persist the relevant state before crossing the first mutation boundary; that wiring remains gated.
+
 ## Operation journal and crash boundary
 
 M1A defines a future execution journal state machine:

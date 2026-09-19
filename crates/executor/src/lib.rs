@@ -1,5 +1,7 @@
+mod journal_store;
 mod locked_session;
 
+pub use journal_store::{DurableJournalStore, JournalStoreError};
 pub use locked_session::{
     LockedExecutionSession, LockedRevalidation, LockedRevalidationStatus, LockedSessionError,
 };
