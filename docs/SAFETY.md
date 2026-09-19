@@ -95,6 +95,23 @@ Read-only metadata is evidence, not permission to repair or resize.
 
 Unknown filesystems or unsupported feature/layout combinations remain visible but require a dedicated adapter.
 
+## Disposable partition-table recovery drill
+
+M1B6 validates partition-table recovery only inside the root-only disposable integration harness.
+
+- the drill accepts only loop devices created and ownership-checked by the harness;
+- it runs separately for GPT and DOS/MBR;
+- an ext4 sentinel is written and the filesystem is cleanly unmounted before table mutation;
+- baseline and restored table identity/geometry are compared from `sfdisk --json`, not parsed human-readable output;
+- the backup artifact is captured with `sfdisk --dump` and verified readable before mutation;
+- the controlled mutation keeps the partition start unchanged and only grows the end inside a guarded free tail;
+- the exact backup is then restored, kernel partition state is refreshed, and authoritative JSON facts must match the baseline exactly;
+- the filesystem is remounted and the sentinel must match byte-for-byte;
+- once table mutation begins, any ambiguity marks fixture state uncertain and automatic cleanup refuses to guess;
+- none of these mutation calls are reachable from the production CLI, TUI, executor crate or backup-manifest API.
+
+This is recovery-test evidence, not permission to enable the production backup/restore executor path.
+
 ## Immutable metadata-backup manifest
 
 M1B5 adds a pure backup/recovery manifest without executing any backup or restore command.
