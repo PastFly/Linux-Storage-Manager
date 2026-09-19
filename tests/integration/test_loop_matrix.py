@@ -457,7 +457,7 @@ class PartitionRecoveryHelperTests(unittest.TestCase):
         self.assertIn("label: gpt", script)
         self.assertIn("unit: sectors", script)
         self.assertIn("2048,270336,", script)
-        self.assertNotIn("203", script.splitlines()[-1].split(",")[0])
+        self.assertTrue(script.splitlines()[-1].startswith("2048,270336,"))
 
     def test_controlled_mutation_refuses_insufficient_guarded_tail(self):
         facts = M.partition_table_facts(
