@@ -2,7 +2,7 @@
 
 Linux Storage Manager is a safety-first terminal application for inspecting and managing Linux storage without requiring administrators to manually compose low-level storage commands.
 
-The project has completed the read-only **M0 — Storage Discovery** and **M1A — Planning** baselines and is entering **M1B pre-executor foundation work**. Storage discovery, Grow/Create planning, target identity guards and the M1B0 execution handoff are still non-mutating: no current CLI/TUI path changes disks, partitions, LVM metadata, filesystems, mounts, or swap configuration.
+The project has completed the read-only **M0 — Storage Discovery** and **M1A — Planning** baselines and is in **M1B pre-executor foundation work**. M1B0 freezes an exact non-mutating execution handoff, and M1B1 adds the host-exclusive advisory lock primitive without enabling storage mutation. Storage discovery, Grow/Create planning, target identity guards and the M1B0 execution handoff are still non-mutating: no current CLI/TUI path changes disks, partitions, LVM metadata, filesystems, mounts, or swap configuration.
 
 ## Initial goals
 
