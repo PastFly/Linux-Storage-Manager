@@ -89,7 +89,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 
 - [x] Freeze the exact M1A plan, target identity manifest, filesystem decision and execution guard into a repeatable non-mutating M1B0 handoff.
 - [ ] Obtain explicit owner acceptance of the completed M0/M1A baseline before any mutation-capable executor rollout.
-- [ ] Implement the already-designed host-exclusive advisory lock boundary in the future executor.
+- [x] Implement a non-mutating host-exclusive advisory lock primitive with nonblocking OS-backed locking and RAII release.\n- [ ] Wire the host-exclusive lock into the mutation-capable executor only after the owner-acceptance gate is satisfied.
 - [ ] Wire target-manifest revalidation into the locked execution path.
 - [ ] Persist the operation-journal model durably before the first mutating command.
 - [ ] Add partition-table metadata backup plus a recovery drill.
