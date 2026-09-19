@@ -1,6 +1,11 @@
+mod backup_manifest;
 mod journal_store;
 mod locked_session;
 
+pub use backup_manifest::{
+    build_metadata_backup_manifest, BackupCommandSpec, BackupExpectedIdentity, BackupManifestError,
+    MetadataBackupKind, MetadataBackupManifest, MetadataBackupRequirement, BACKUP_DIRECTORY,
+};
 pub use journal_store::{DurableJournalStore, JournalStoreError};
 pub use locked_session::{
     LockedExecutionSession, LockedRevalidation, LockedRevalidationStatus, LockedSessionError,
