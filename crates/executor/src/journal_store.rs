@@ -4,9 +4,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use lsm_planner::{
-    JournalEvent, JournalPhase, OperationJournal, JOURNAL_DIRECTORY,
-};
+use lsm_planner::{JournalEvent, JournalPhase, OperationJournal, JOURNAL_DIRECTORY};
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -109,8 +107,7 @@ impl DurableJournalStore {
                 .map_err(|source| io_error(&temp_path, source))?;
             drop(file);
 
-            fs::rename(&temp_path, &final_path)
-                .map_err(|source| io_error(&final_path, source))?;
+            fs::rename(&temp_path, &final_path).map_err(|source| io_error(&final_path, source))?;
             sync_directory(&self.root)?;
             Ok(final_path.clone())
         })();
