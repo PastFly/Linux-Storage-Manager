@@ -8,7 +8,9 @@ use lsm_planner::{
 };
 use thiserror::Error;
 
-use crate::{HostLockError, HostStorageLock, MUTATION_ENABLED};
+use crate::{
+    DurableJournalStore, HostLockError, HostStorageLock, JournalStoreError, MUTATION_ENABLED,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockedRevalidationStatus {
@@ -29,6 +31,7 @@ pub struct LockedExecutionSession<'a> {
     lock: HostStorageLock,
     handoff: &'a FrozenExecutionHandoff,
     journal: OperationJournal,
+    journal_store: Option<&'a DurableJournalStore>,
     revalidation_attempted: bool,
 }
 
@@ -48,12 +51,26 @@ pub enum LockedSessionError {
     Planner(#[from] PlannerError),
     #[error("in-memory journal transition failed: {0}")]
     Journal(#[from] JournalError),
+    #[error("durable journal persistence failed: {0}")]
+    DurableJournal(#[from] JournalStoreError),
 }
 
 impl<'a> LockedExecutionSession<'a> {
     pub fn begin(handoff: &'a FrozenExecutionHandoff) -> Result<Self, LockedSessionError> {
         validate_handoff(handoff)?;
-        Self::begin_with_lock(handoff, HostStorageLock::try_acquire_default()?)
+        Self::begin_with_lock(handoff, HostStorageLock::try_acquire_default()?, None)
+    }
+
+    pub fn begin_durable(
+        handoff: &'a FrozenExecutionHandoff,
+        journal_store: &'a DurableJournalStore,
+    ) -> Result<Self, LockedSessionError> {
+        validate_handoff(handoff)?;
+        Self::begin_with_lock(
+            handoff,
+            HostStorageLock::try_acquire_default()?,
+            Some(journal_store),
+        )
     }
 
     pub fn lock_path(&self) -> &Path {
@@ -70,6 +87,10 @@ impl<'a> LockedExecutionSession<'a> {
 
     pub fn mutation_enabled(&self) -> bool {
         MUTATION_ENABLED
+    }
+
+    pub fn durable_journal_enabled(&self) -> bool {
+        self.journal_store.is_some()
     }
 
     pub fn revalidate(
@@ -105,6 +126,7 @@ impl<'a> LockedExecutionSession<'a> {
             self.journal.apply(JournalTransition::IdentityRevalidated {
                 fresh_manifest_digest: fresh_digest,
             })?;
+            self.persist_journal_if_configured()?;
             LockedRevalidationStatus::Revalidated
         } else {
             LockedRevalidationStatus::Blocked
@@ -121,19 +143,31 @@ impl<'a> LockedExecutionSession<'a> {
     fn begin_with_lock(
         handoff: &'a FrozenExecutionHandoff,
         lock: HostStorageLock,
+        journal_store: Option<&'a DurableJournalStore>,
     ) -> Result<Self, LockedSessionError> {
         validate_handoff(handoff)?;
 
         let mut journal = OperationJournal::new(handoff.guard());
         journal.apply(JournalTransition::HostLockAcquired)?;
         debug_assert_eq!(journal.phase, JournalPhase::HostLockHeld);
+        if let Some(store) = journal_store {
+            store.persist(&journal)?;
+        }
 
         Ok(Self {
             lock,
             handoff,
             journal,
+            journal_store,
             revalidation_attempted: false,
         })
+    }
+
+    fn persist_journal_if_configured(&self) -> Result<(), LockedSessionError> {
+        if let Some(store) = self.journal_store {
+            store.persist(&self.journal)?;
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -142,7 +176,21 @@ impl<'a> LockedExecutionSession<'a> {
         path: &Path,
     ) -> Result<Self, LockedSessionError> {
         validate_handoff(handoff)?;
-        Self::begin_with_lock(handoff, HostStorageLock::try_acquire_path(path)?)
+        Self::begin_with_lock(handoff, HostStorageLock::try_acquire_path(path)?, None)
+    }
+
+    #[cfg(test)]
+    fn begin_durable_at_paths(
+        handoff: &'a FrozenExecutionHandoff,
+        lock_path: &Path,
+        journal_store: &'a DurableJournalStore,
+    ) -> Result<Self, LockedSessionError> {
+        validate_handoff(handoff)?;
+        Self::begin_with_lock(
+            handoff,
+            HostStorageLock::try_acquire_path(lock_path)?,
+            Some(journal_store),
+        )
     }
 }
 
