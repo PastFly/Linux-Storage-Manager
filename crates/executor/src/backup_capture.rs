@@ -110,20 +110,14 @@ pub fn capture_metadata_backups(
 }
 
 trait CaptureRunner {
-    fn capture_partition_table(&self, disk: &str, output: &Path)
-        -> Result<(), BackupCaptureError>;
-    fn capture_lvm_metadata(&self, vg_name: &str, output: &Path)
-        -> Result<(), BackupCaptureError>;
+    fn capture_partition_table(&self, disk: &str, output: &Path) -> Result<(), BackupCaptureError>;
+    fn capture_lvm_metadata(&self, vg_name: &str, output: &Path) -> Result<(), BackupCaptureError>;
 }
 
 struct SystemCaptureRunner;
 
 impl CaptureRunner for SystemCaptureRunner {
-    fn capture_partition_table(
-        &self,
-        disk: &str,
-        output: &Path,
-    ) -> Result<(), BackupCaptureError> {
+    fn capture_partition_table(&self, disk: &str, output: &Path) -> Result<(), BackupCaptureError> {
         let file = create_artifact_file(output)?;
         let stdout = file
             .try_clone()
@@ -147,11 +141,7 @@ impl CaptureRunner for SystemCaptureRunner {
         file.sync_all().map_err(|source| io_error(output, source))
     }
 
-    fn capture_lvm_metadata(
-        &self,
-        vg_name: &str,
-        output: &Path,
-    ) -> Result<(), BackupCaptureError> {
+    fn capture_lvm_metadata(&self, vg_name: &str, output: &Path) -> Result<(), BackupCaptureError> {
         ensure_artifact_absent(output)?;
         let status = Command::new("vgcfgbackup")
             .arg("--file")
@@ -202,7 +192,9 @@ fn capture_with_runner(
         validate_requirement(requirement)?;
         let file_name = Path::new(&requirement.artifact_path)
             .file_name()
-            .ok_or_else(|| BackupCaptureError::UnsafeArtifact(PathBuf::from(&requirement.artifact_path)))?;
+            .ok_or_else(|| {
+                BackupCaptureError::UnsafeArtifact(PathBuf::from(&requirement.artifact_path))
+            })?;
         let actual_path = artifact_root.join(file_name);
         if actual_path.parent() != Some(artifact_root) {
             return Err(BackupCaptureError::UnsafeArtifact(actual_path));
@@ -271,9 +263,7 @@ fn validate_binding(
     Ok(())
 }
 
-fn validate_requirement(
-    requirement: &MetadataBackupRequirement,
-) -> Result<(), BackupCaptureError> {
+fn validate_requirement(requirement: &MetadataBackupRequirement) -> Result<(), BackupCaptureError> {
     if requirement.capture.mutates_storage_metadata || requirement.capture.stdin_path.is_some() {
         return Err(BackupCaptureError::UnsupportedCaptureCommand);
     }
@@ -378,7 +368,7 @@ fn verify_artifact(path: &Path) -> Result<(u64, String), BackupCaptureError> {
         return Err(BackupCaptureError::ArtifactTooLarge);
     }
 
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
         .open(path)
@@ -462,10 +452,8 @@ mod tests {
 
     #[test]
     fn artifact_verifier_hashes_nonempty_regular_files() {
-        let root = std::env::temp_dir().join(format!(
-            "lsm-backup-capture-test-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("lsm-backup-capture-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         ensure_secure_directory(&root).unwrap();
         let path = root.join("artifact");
@@ -480,10 +468,8 @@ mod tests {
 
     #[test]
     fn artifact_verifier_rejects_empty_files() {
-        let root = std::env::temp_dir().join(format!(
-            "lsm-backup-empty-test-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("lsm-backup-empty-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         ensure_secure_directory(&root).unwrap();
         let path = root.join("artifact");
@@ -543,26 +529,28 @@ mod tests {
             ]
         }))
         .unwrap();
-        snapshot.filesystem_preflight.push(FilesystemPreflightEvidence {
-            device: "/dev/sda1".into(),
-            mountpoint: Some("/data".into()),
-            fs_type: "ext4".into(),
-            fs_version: Some("1.0".into()),
-            state: FilesystemProbeState::Verified,
-            filesystem_state: Some("clean".into()),
-            revision: Some("1".into()),
-            features: vec![
-                "has_journal".into(),
-                "extent".into(),
-                "64bit".into(),
-                "metadata_csum".into(),
-            ],
-            block_size_bytes: Some(4096),
-            block_count: Some(partition_bytes / 4096),
-            size_bytes: Some(partition_bytes),
-            grow_check_passed: None,
-            detail: None,
-        });
+        snapshot
+            .filesystem_preflight
+            .push(FilesystemPreflightEvidence {
+                device: "/dev/sda1".into(),
+                mountpoint: Some("/data".into()),
+                fs_type: "ext4".into(),
+                fs_version: Some("1.0".into()),
+                state: FilesystemProbeState::Verified,
+                filesystem_state: Some("clean".into()),
+                revision: Some("1".into()),
+                features: vec![
+                    "has_journal".into(),
+                    "extent".into(),
+                    "64bit".into(),
+                    "metadata_csum".into(),
+                ],
+                block_size_bytes: Some(4096),
+                block_count: Some(partition_bytes / 4096),
+                size_bytes: Some(partition_bytes),
+                grow_check_passed: None,
+                detail: None,
+            });
         let capabilities = serde_json::from_value(json!({"tools":[
             {"name":"sfdisk","available":true},
             {"name":"resize2fs","available":true},
@@ -611,23 +599,21 @@ mod tests {
         let root = temp_path("artifacts");
         let _ = fs::remove_dir_all(lock.parent().unwrap());
         let _ = fs::remove_dir_all(&root);
-        let mut session =
-            crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
         let result = session.revalidate(&snapshot, &capabilities).unwrap();
-        assert_eq!(
-            result.status,
-            crate::LockedRevalidationStatus::Revalidated
-        );
+        assert_eq!(result.status, crate::LockedRevalidationStatus::Revalidated);
 
         let runner = FakeRunner::new(b"label: gpt\ndevice: /dev/sda\n");
-        let receipt =
-            capture_with_runner(&session, &manifest, Some(&root), &runner).unwrap();
+        let receipt = capture_with_runner(&session, &manifest, Some(&root), &runner).unwrap();
 
         assert!(!receipt.mutation_enabled());
         assert_eq!(receipt.manifest_id(), manifest.manifest_id());
         assert_eq!(receipt.handoff_id(), handoff.handoff_id());
         assert_eq!(receipt.artifacts().len(), 1);
-        assert_eq!(receipt.artifacts()[0].kind, MetadataBackupKind::PartitionTable);
+        assert_eq!(
+            receipt.artifacts()[0].kind,
+            MetadataBackupKind::PartitionTable
+        );
         assert!(receipt.artifacts()[0].size_bytes > 0);
         assert_eq!(receipt.artifacts()[0].sha256.len(), 64);
         assert_eq!(
