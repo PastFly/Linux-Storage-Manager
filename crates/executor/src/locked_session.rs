@@ -50,6 +50,7 @@ pub enum LockedSessionError {
 
 impl<'a> LockedExecutionSession<'a> {
     pub fn begin(handoff: &'a FrozenExecutionHandoff) -> Result<Self, LockedSessionError> {
+        validate_handoff(handoff)?;
         Self::begin_with_lock(handoff, HostStorageLock::try_acquire_default()?)
     }
 
@@ -119,12 +120,7 @@ impl<'a> LockedExecutionSession<'a> {
         handoff: &'a FrozenExecutionHandoff,
         lock: HostStorageLock,
     ) -> Result<Self, LockedSessionError> {
-        if handoff.status() == ExecutionHandoffStatus::Blocked {
-            return Err(LockedSessionError::HandoffBlocked);
-        }
-        if handoff.mutation_enabled() || MUTATION_ENABLED {
-            return Err(LockedSessionError::MutationEnabled);
-        }
+        validate_handoff(handoff)?;
 
         let mut journal = OperationJournal::new(handoff.guard());
         journal.apply(JournalTransition::HostLockAcquired)?;
@@ -143,8 +139,19 @@ impl<'a> LockedExecutionSession<'a> {
         handoff: &'a FrozenExecutionHandoff,
         path: &Path,
     ) -> Result<Self, LockedSessionError> {
+        validate_handoff(handoff)?;
         Self::begin_with_lock(handoff, HostStorageLock::try_acquire_path(path)?)
     }
+}
+
+fn validate_handoff(handoff: &FrozenExecutionHandoff) -> Result<(), LockedSessionError> {
+    if handoff.status() == ExecutionHandoffStatus::Blocked {
+        return Err(LockedSessionError::HandoffBlocked);
+    }
+    if handoff.mutation_enabled() || MUTATION_ENABLED {
+        return Err(LockedSessionError::MutationEnabled);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
