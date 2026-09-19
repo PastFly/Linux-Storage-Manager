@@ -734,6 +734,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lsm-executor"
+version = "0.1.0-dev"
+dependencies = [
+ "libc",
+ "lsm-planner",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "lsm-planner"
 version = "0.1.0-dev"
 dependencies = [
