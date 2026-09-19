@@ -39,7 +39,7 @@ storagemgr plan create <id> --max --purpose filesystem --fs ext4
 
 ## Current execution boundary
 
-M1A plans and M1B0 handoff bundles are data only. There is no mutation-capable executor
+M1A plans and M1B0 handoff bundles are data only. M1B1-M1B8 add lock/revalidation/journal/backup foundations and disposable recovery evidence; metadata backup capture remains non-mutating. There is no mutation-capable executor
 or apply command. Executor rollout remains gated on explicit owner acceptance plus the
 lock, fresh identity revalidation, health checks, verified backups, durable journal and
 post-mutation verification described in the roadmap and safety documentation.

@@ -1,7 +1,11 @@
+mod backup_capture;
 mod backup_manifest;
 mod journal_store;
 mod locked_session;
 
+pub use backup_capture::{
+    capture_metadata_backups, BackupArtifactReceipt, BackupCaptureError, MetadataBackupReceipt,
+};
 pub use backup_manifest::{
     build_metadata_backup_manifest, BackupCommandSpec, BackupExpectedIdentity, BackupManifestError,
     MetadataBackupKind, MetadataBackupManifest, MetadataBackupRequirement, BACKUP_DIRECTORY,

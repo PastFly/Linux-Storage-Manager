@@ -99,6 +99,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Freeze exact partition-table/LVM metadata backup and recovery command manifests without executing them.
 - [x] Prove GPT and DOS/MBR partition-table backup/restore on owned disposable loop fixtures with exact machine-readable geometry and sentinel verification.
 - [x] Prove LVM VG metadata backup/restore on an owned disposable loop fixture with exact PV/VG/LV identity and sentinel verification.
+- [x] Capture required partition/LVM metadata backups only after locked identity revalidation, with secure artifact paths and SHA-256 receipts, while keeping recovery/mutation disabled.
 - [ ] Add partition-table metadata backup plus a recovery drill.
 - [ ] Add LVM metadata backup plus a recovery drill.
 - [ ] Grow GPT/MBR partitions where safe without moving a partition start.
