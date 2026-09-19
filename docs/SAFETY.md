@@ -59,6 +59,20 @@ A future executor must revalidate the manifest after acquiring the host lock and
 
 An unrelated disk appearing on the host does not by itself invalidate the selected target. A change to the selected storage chain does.
 
+## Locked revalidation session
+
+M1B2 connects the M1B0 frozen handoff to the M1B1 host lock without enabling execution.
+
+- the session rejects blocked or mutation-enabled handoffs before acquiring a lock;
+- the host-exclusive lock is acquired before the caller supplies the fresh snapshot and capability inventory;
+- target identity is compared against the frozen target-scoped manifest while the lock remains held;
+- the complete tool-capability inventory is compared against the frozen handoff digest;
+- any target-identity or capability change leaves the in-memory journal at `HostLockHeld` and blocks progress;
+- a successful revalidation advances only to `IdentityRevalidated`;
+- a failed revalidation cannot be retried inside the same session; the lock must be released and a fresh plan/handoff built;
+- no API in this session can approve a plan, enter `Executing`, persist a journal, or run a storage command;
+- `MUTATION_ENABLED` remains false and owner acceptance remains required before mutation-capable rollout.
+
 ## Filesystem health and growth decisions
 
 Read-only metadata is evidence, not permission to repair or resize.
