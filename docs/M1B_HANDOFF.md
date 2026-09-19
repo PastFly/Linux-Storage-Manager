@@ -68,3 +68,17 @@ M1B0 does not implement:
 - metadata backup/restore commands;
 - automatic recovery;
 - shrink or partition-start movement.
+
+
+## M1B1/M1B2 locked pre-executor boundary
+
+The frozen handoff can now enter a non-mutating host-exclusive lock session.
+
+1. Reject a blocked or mutation-enabled handoff.
+2. Acquire the host-wide advisory lock nonblockingly.
+3. Capture fresh discovery/capability inputs while the lock remains held.
+4. Revalidate the target-scoped identity manifest.
+5. Revalidate the frozen tool-capability inventory.
+6. Advance the in-memory journal only from `Planned` to `HostLockHeld` and, on exact revalidation, `IdentityRevalidated`.
+
+A mismatch is terminal for that session: release the lock, rediscover, and build a fresh plan/handoff. There is still no apply path, durable journal write, metadata-backup execution, approval transition, or storage mutation API. Explicit owner acceptance remains a prerequisite for any mutation-capable executor rollout.
