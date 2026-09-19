@@ -94,6 +94,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Wire target-manifest and capability-inventory revalidation into a non-mutating locked pre-executor session.
 - [ ] Wire the revalidated locked session into mutation-capable execution only after owner acceptance and the remaining executor gates.
 - [x] Add a non-mutating atomic durable journal-store primitive with strict reload validation and recovery-state preservation.
+- [x] Persist HostLockHeld and successful IdentityRevalidated transitions from the non-mutating locked session through the durable journal store.
 - [ ] Persist the operation-journal model durably before the first mutating command.
 - [ ] Add partition-table metadata backup plus a recovery drill.
 - [ ] Add LVM metadata backup plus a recovery drill.

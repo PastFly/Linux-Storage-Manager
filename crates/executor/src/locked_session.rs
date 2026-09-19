@@ -8,7 +8,9 @@ use lsm_planner::{
 };
 use thiserror::Error;
 
-use crate::{HostLockError, HostStorageLock, MUTATION_ENABLED};
+use crate::{
+    DurableJournalStore, HostLockError, HostStorageLock, JournalStoreError, MUTATION_ENABLED,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockedRevalidationStatus {
@@ -29,6 +31,7 @@ pub struct LockedExecutionSession<'a> {
     lock: HostStorageLock,
     handoff: &'a FrozenExecutionHandoff,
     journal: OperationJournal,
+    journal_store: Option<&'a DurableJournalStore>,
     revalidation_attempted: bool,
 }
 
@@ -36,7 +39,7 @@ pub struct LockedExecutionSession<'a> {
 pub enum LockedSessionError {
     #[error("frozen handoff is blocked and cannot enter a locked executor session")]
     HandoffBlocked,
-    #[error("a mutation-enabled handoff is forbidden in the M1B2 pre-executor session")]
+    #[error("a mutation-enabled handoff is forbidden in the M1B pre-executor session")]
     MutationEnabled,
     #[error(
         "locked revalidation has already been attempted; release the lock and build a fresh plan"
@@ -48,12 +51,26 @@ pub enum LockedSessionError {
     Planner(#[from] PlannerError),
     #[error("in-memory journal transition failed: {0}")]
     Journal(#[from] JournalError),
+    #[error("durable journal persistence failed: {0}")]
+    DurableJournal(#[from] JournalStoreError),
 }
 
 impl<'a> LockedExecutionSession<'a> {
     pub fn begin(handoff: &'a FrozenExecutionHandoff) -> Result<Self, LockedSessionError> {
         validate_handoff(handoff)?;
-        Self::begin_with_lock(handoff, HostStorageLock::try_acquire_default()?)
+        Self::begin_with_lock(handoff, HostStorageLock::try_acquire_default()?, None)
+    }
+
+    pub fn begin_durable(
+        handoff: &'a FrozenExecutionHandoff,
+        journal_store: &'a DurableJournalStore,
+    ) -> Result<Self, LockedSessionError> {
+        validate_handoff(handoff)?;
+        Self::begin_with_lock(
+            handoff,
+            HostStorageLock::try_acquire_default()?,
+            Some(journal_store),
+        )
     }
 
     pub fn lock_path(&self) -> &Path {
@@ -70,6 +87,10 @@ impl<'a> LockedExecutionSession<'a> {
 
     pub fn mutation_enabled(&self) -> bool {
         MUTATION_ENABLED
+    }
+
+    pub fn durable_journal_enabled(&self) -> bool {
+        self.journal_store.is_some()
     }
 
     pub fn revalidate(
@@ -105,6 +126,7 @@ impl<'a> LockedExecutionSession<'a> {
             self.journal.apply(JournalTransition::IdentityRevalidated {
                 fresh_manifest_digest: fresh_digest,
             })?;
+            self.persist_journal_if_configured()?;
             LockedRevalidationStatus::Revalidated
         } else {
             LockedRevalidationStatus::Blocked
@@ -121,19 +143,31 @@ impl<'a> LockedExecutionSession<'a> {
     fn begin_with_lock(
         handoff: &'a FrozenExecutionHandoff,
         lock: HostStorageLock,
+        journal_store: Option<&'a DurableJournalStore>,
     ) -> Result<Self, LockedSessionError> {
         validate_handoff(handoff)?;
 
         let mut journal = OperationJournal::new(handoff.guard());
         journal.apply(JournalTransition::HostLockAcquired)?;
         debug_assert_eq!(journal.phase, JournalPhase::HostLockHeld);
+        if let Some(store) = journal_store {
+            store.persist(&journal)?;
+        }
 
         Ok(Self {
             lock,
             handoff,
             journal,
+            journal_store,
             revalidation_attempted: false,
         })
+    }
+
+    fn persist_journal_if_configured(&self) -> Result<(), LockedSessionError> {
+        if let Some(store) = self.journal_store {
+            store.persist(&self.journal)?;
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -142,7 +176,21 @@ impl<'a> LockedExecutionSession<'a> {
         path: &Path,
     ) -> Result<Self, LockedSessionError> {
         validate_handoff(handoff)?;
-        Self::begin_with_lock(handoff, HostStorageLock::try_acquire_path(path)?)
+        Self::begin_with_lock(handoff, HostStorageLock::try_acquire_path(path)?, None)
+    }
+
+    #[cfg(test)]
+    fn begin_durable_at_paths(
+        handoff: &'a FrozenExecutionHandoff,
+        lock_path: &Path,
+        journal_store: &'a DurableJournalStore,
+    ) -> Result<Self, LockedSessionError> {
+        validate_handoff(handoff)?;
+        Self::begin_with_lock(
+            handoff,
+            HostStorageLock::try_acquire_path(lock_path)?,
+            Some(journal_store),
+        )
     }
 }
 
@@ -165,6 +213,7 @@ mod tests {
         PlanStatus,
     };
     use serde_json::json;
+    use std::os::unix::fs::symlink;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -180,6 +229,14 @@ mod tests {
                 std::process::id()
             ))
             .join("storage.lock")
+    }
+
+    fn journal_root(name: &str) -> PathBuf {
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "linux-storage-manager-session-journal-test-{}-{unique}-{name}",
+            std::process::id()
+        ))
     }
 
     fn fixture() -> (HostSnapshot, HostCapabilities) {
@@ -394,5 +451,84 @@ mod tests {
         ));
         drop(session);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn durable_session_persists_lock_and_identity_revalidation() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("round-trip");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+
+        assert!(session.durable_journal_enabled());
+        let locked = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(locked.phase, JournalPhase::HostLockHeld);
+        assert_eq!(locked.events.len(), 1);
+
+        let result = session.revalidate(&snapshot, &capabilities).unwrap();
+        assert_eq!(result.status, LockedRevalidationStatus::Revalidated);
+
+        let revalidated = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(revalidated.phase, JournalPhase::IdentityRevalidated);
+        assert_eq!(revalidated.events.len(), 2);
+        assert_eq!(revalidated, *session.journal());
+
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn blocked_revalidation_does_not_advance_durable_journal() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("blocked");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let mut changed = snapshot.clone();
+        changed.storage.block_devices[0].children[0].size_bytes += EXTENT;
+
+        let result = session.revalidate(&changed, &capabilities).unwrap();
+        assert_eq!(result.status, LockedRevalidationStatus::Blocked);
+
+        let persisted = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(persisted.phase, JournalPhase::HostLockHeld);
+        assert_eq!(persisted.events.len(), 1);
+        assert_eq!(persisted, *session.journal());
+
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn durable_journal_failure_releases_host_lock() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("unsafe");
+        let real = root.with_extension("real");
+        std::fs::create_dir_all(&real).unwrap();
+        symlink(&real, &root).unwrap();
+        let store = DurableJournalStore::at(&root);
+
+        let result = LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store);
+        assert!(matches!(
+            result,
+            Err(LockedSessionError::DurableJournal(
+                JournalStoreError::UnsafeDirectory(_)
+            ))
+        ));
+
+        let replacement = LockedExecutionSession::begin_at_path(&handoff, &path).unwrap();
+        drop(replacement);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_file(root);
+        let _ = std::fs::remove_dir_all(real);
     }
 }

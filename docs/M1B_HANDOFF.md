@@ -64,6 +64,16 @@ The dedicated executor crate now has an atomic durable journal store for the alr
 `RecoveryRequired`, but it is not connected to any mutation command. The owner-acceptance
 gate and exact-plan approval requirements remain unchanged.
 
+## M1B4 durable locked revalidation
+
+The non-mutating locked session can now opt into a `DurableJournalStore`. In that mode,
+`HostLockHeld` is persisted before the session is returned, and a successful fresh
+identity/capability check persists `IdentityRevalidated` while the same host lock is still
+held. Failed revalidation remains at the prior durable phase and requires a fresh session.
+
+This does not expose precondition approval or execution transitions and does not authorize
+storage mutation.
+
 ## Non-goals
 
 M1B0 does not implement:
