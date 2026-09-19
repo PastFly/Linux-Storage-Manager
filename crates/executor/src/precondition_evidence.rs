@@ -7,9 +7,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{
-    BackupReceiptRevalidation, LockedExecutionSession, MUTATION_ENABLED,
-};
+use crate::{BackupReceiptRevalidation, LockedExecutionSession, MUTATION_ENABLED};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -116,8 +114,7 @@ pub fn build_pre_mutation_evidence(
     let handoff = session.handoff();
     if backup_revalidation.handoff_id() != handoff.handoff_id()
         || backup_revalidation.plan_id() != handoff.plan().plan_id()
-        || backup_revalidation.target_manifest_digest()
-            != handoff.target_identity().manifest_digest
+        || backup_revalidation.target_manifest_digest() != handoff.target_identity().manifest_digest
     {
         return Err(PreMutationEvidenceError::BackupBindingMismatch);
     }
@@ -297,26 +294,28 @@ mod tests {
             ]
         }))
         .unwrap();
-        snapshot.filesystem_preflight.push(FilesystemPreflightEvidence {
-            device: "/dev/sda1".into(),
-            mountpoint: Some("/data".into()),
-            fs_type: "ext4".into(),
-            fs_version: Some("1.0".into()),
-            state: FilesystemProbeState::Verified,
-            filesystem_state: Some(filesystem_state.into()),
-            revision: Some("1".into()),
-            features: vec![
-                "has_journal".into(),
-                "extent".into(),
-                "64bit".into(),
-                "metadata_csum".into(),
-            ],
-            block_size_bytes: Some(4096),
-            block_count: Some(partition_bytes / 4096),
-            size_bytes: Some(partition_bytes),
-            grow_check_passed: None,
-            detail: None,
-        });
+        snapshot
+            .filesystem_preflight
+            .push(FilesystemPreflightEvidence {
+                device: "/dev/sda1".into(),
+                mountpoint: Some("/data".into()),
+                fs_type: "ext4".into(),
+                fs_version: Some("1.0".into()),
+                state: FilesystemProbeState::Verified,
+                filesystem_state: Some(filesystem_state.into()),
+                revision: Some("1".into()),
+                features: vec![
+                    "has_journal".into(),
+                    "extent".into(),
+                    "64bit".into(),
+                    "metadata_csum".into(),
+                ],
+                block_size_bytes: Some(4096),
+                block_count: Some(partition_bytes / 4096),
+                size_bytes: Some(partition_bytes),
+                grow_check_passed: None,
+                detail: None,
+            });
         let capabilities = serde_json::from_value(json!({"tools":[
             {"name":"sfdisk","available":true},
             {"name":"resize2fs","available":true},
@@ -357,8 +356,7 @@ mod tests {
         let handoff = handoff(&snapshot, &capabilities);
         let lock = test_path("complete").join("storage.lock");
         let _ = fs::remove_dir_all(lock.parent().unwrap());
-        let mut session =
-            crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
         let locked = session.revalidate(&snapshot, &capabilities).unwrap();
         assert_eq!(locked.status, crate::LockedRevalidationStatus::Revalidated);
         let backup = crate::backup_capture::test_backup_receipt_revalidation(
@@ -386,8 +384,7 @@ mod tests {
         let handoff = handoff(&snapshot, &capabilities);
         let lock = test_path("backup-block").join("storage.lock");
         let _ = fs::remove_dir_all(lock.parent().unwrap());
-        let mut session =
-            crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
         session.revalidate(&snapshot, &capabilities).unwrap();
         let backup = crate::backup_capture::test_backup_receipt_revalidation(
             handoff.handoff_id(),
@@ -415,8 +412,7 @@ mod tests {
         let handoff = handoff(&snapshot, &capabilities);
         let lock = test_path("future-check").join("storage.lock");
         let _ = fs::remove_dir_all(lock.parent().unwrap());
-        let mut session =
-            crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
         session.revalidate(&snapshot, &capabilities).unwrap();
         let backup = crate::backup_capture::test_backup_receipt_revalidation(
             handoff.handoff_id(),
@@ -447,8 +443,7 @@ mod tests {
         let handoff = handoff(&snapshot, &capabilities);
         let lock = test_path("stale").join("storage.lock");
         let _ = fs::remove_dir_all(lock.parent().unwrap());
-        let mut session =
-            crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
         session.revalidate(&snapshot, &capabilities).unwrap();
         let backup = crate::backup_capture::test_backup_receipt_revalidation(
             handoff.handoff_id(),
