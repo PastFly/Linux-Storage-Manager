@@ -213,6 +213,7 @@ mod tests {
         PlanStatus,
     };
     use serde_json::json;
+    use std::os::unix::fs::symlink;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -228,6 +229,14 @@ mod tests {
                 std::process::id()
             ))
             .join("storage.lock")
+    }
+
+    fn journal_root(name: &str) -> PathBuf {
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "linux-storage-manager-session-journal-test-{}-{unique}-{name}",
+            std::process::id()
+        ))
     }
 
     fn fixture() -> (HostSnapshot, HostCapabilities) {
@@ -442,5 +451,84 @@ mod tests {
         ));
         drop(session);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn durable_session_persists_lock_and_identity_revalidation() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("round-trip");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+
+        assert!(session.durable_journal_enabled());
+        let locked = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(locked.phase, JournalPhase::HostLockHeld);
+        assert_eq!(locked.events.len(), 1);
+
+        let result = session.revalidate(&snapshot, &capabilities).unwrap();
+        assert_eq!(result.status, LockedRevalidationStatus::Revalidated);
+
+        let revalidated = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(revalidated.phase, JournalPhase::IdentityRevalidated);
+        assert_eq!(revalidated.events.len(), 2);
+        assert_eq!(revalidated, *session.journal());
+
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn blocked_revalidation_does_not_advance_durable_journal() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("blocked");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let mut changed = snapshot.clone();
+        changed.storage.block_devices[0].children[0].size_bytes += EXTENT;
+
+        let result = session.revalidate(&changed, &capabilities).unwrap();
+        assert_eq!(result.status, LockedRevalidationStatus::Blocked);
+
+        let persisted = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(persisted.phase, JournalPhase::HostLockHeld);
+        assert_eq!(persisted.events.len(), 1);
+        assert_eq!(persisted, *session.journal());
+
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn durable_journal_failure_releases_host_lock() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("unsafe");
+        let real = root.with_extension("real");
+        std::fs::create_dir_all(&real).unwrap();
+        symlink(&real, &root).unwrap();
+        let store = DurableJournalStore::at(&root);
+
+        let result = LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store);
+        assert!(matches!(
+            result,
+            Err(LockedSessionError::DurableJournal(
+                JournalStoreError::UnsafeDirectory(_)
+            ))
+        ));
+
+        let replacement = LockedExecutionSession::begin_at_path(&handoff, &path).unwrap();
+        drop(replacement);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_file(root);
+        let _ = std::fs::remove_dir_all(real);
     }
 }
