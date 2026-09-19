@@ -128,6 +128,21 @@ M1B8 can materialize the already-frozen backup requirements without enabling a s
 
 This establishes backup-capture evidence and durable artifact identity, not permission to resize, restore or otherwise mutate storage.
 
+## Backup receipt revalidation
+
+M1B9 treats a backup receipt as evidence that must remain true, not as a one-time success flag.
+
+- the receipt identity is recomputed from its frozen manifest/plan/target binding and artifact evidence;
+- every manifest requirement must have exactly one matching receipt ordinal, kind, path and expected storage identity;
+- the artifact directory is rechecked component-by-component and must already exist as real directories;
+- every artifact is reopened with `O_NOFOLLOW`, must remain a regular non-empty bounded file, and is re-hashed;
+- current size and SHA-256 must exactly match the original capture receipt;
+- missing, replaced, symlinked or modified artifacts fail closed and produce explicit blockers;
+- revalidation runs no storage command and cannot execute recovery specs;
+- successful receipt revalidation still does not satisfy owner acceptance or enable mutation.
+
+This check is intended to precede any later journal transition that claims backup prerequisites are verified.
+
 ## Disposable LVM metadata recovery drill
 
 M1B7 validates LVM metadata recovery only inside the root-only disposable integration harness.

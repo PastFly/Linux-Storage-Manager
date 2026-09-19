@@ -4,7 +4,8 @@ mod journal_store;
 mod locked_session;
 
 pub use backup_capture::{
-    capture_metadata_backups, BackupArtifactReceipt, BackupCaptureError, MetadataBackupReceipt,
+    capture_metadata_backups, revalidate_metadata_backup_receipt, BackupArtifactReceipt,
+    BackupCaptureError, BackupReceiptRevalidation, MetadataBackupReceipt,
 };
 pub use backup_manifest::{
     build_metadata_backup_manifest, BackupCommandSpec, BackupExpectedIdentity, BackupManifestError,

@@ -68,6 +68,32 @@ impl MetadataBackupReceipt {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BackupReceiptRevalidation {
+    receipt_id: String,
+    manifest_id: String,
+    matches: bool,
+    blockers: Vec<String>,
+}
+
+impl BackupReceiptRevalidation {
+    pub fn receipt_id(&self) -> &str {
+        &self.receipt_id
+    }
+
+    pub fn manifest_id(&self) -> &str {
+        &self.manifest_id
+    }
+
+    pub fn matches(&self) -> bool {
+        self.matches
+    }
+
+    pub fn blockers(&self) -> &[String] {
+        &self.blockers
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum BackupCaptureError {
     #[error("metadata backup capture requires a successfully identity-revalidated locked session")]
@@ -107,6 +133,13 @@ pub fn capture_metadata_backups(
     manifest: &MetadataBackupManifest,
 ) -> Result<MetadataBackupReceipt, BackupCaptureError> {
     capture_with_runner(session, manifest, None, &SystemCaptureRunner)
+}
+
+pub fn revalidate_metadata_backup_receipt(
+    manifest: &MetadataBackupManifest,
+    receipt: &MetadataBackupReceipt,
+) -> Result<BackupReceiptRevalidation, BackupCaptureError> {
+    revalidate_receipt_at_root(manifest, receipt, None)
 }
 
 trait CaptureRunner {
@@ -240,6 +273,175 @@ fn capture_with_runner(
         mutation_enabled: false,
         artifacts: receipts,
     })
+}
+
+fn revalidate_receipt_at_root(
+    manifest: &MetadataBackupManifest,
+    receipt: &MetadataBackupReceipt,
+    root_override: Option<&Path>,
+) -> Result<BackupReceiptRevalidation, BackupCaptureError> {
+    let mut blockers = Vec::new();
+
+    if manifest.mutation_enabled() || receipt.mutation_enabled || MUTATION_ENABLED {
+        blockers.push("mutation-enabled backup evidence is forbidden".to_owned());
+    }
+    if receipt.schema_version != 1 {
+        blockers.push("receipt schema version is unsupported".to_owned());
+    }
+    if receipt.manifest_id != manifest.manifest_id()
+        || receipt.handoff_id != manifest.handoff_id()
+        || receipt.plan_id != manifest.plan_id()
+        || receipt.target_manifest_digest != manifest.target_manifest_digest()
+    {
+        blockers
+            .push("receipt identity does not match the exact frozen backup manifest".to_owned());
+    }
+
+    let production_root = Path::new(crate::BACKUP_DIRECTORY).join(manifest.handoff_id());
+    if Path::new(manifest.artifact_directory()) != production_root {
+        blockers.push("backup artifact directory does not match the frozen handoff".to_owned());
+    }
+
+    let expected_receipt_id = fingerprint(&(
+        1_u32,
+        manifest.manifest_id(),
+        manifest.handoff_id(),
+        manifest.plan_id(),
+        manifest.target_manifest_digest(),
+        false,
+        &receipt.artifacts,
+    ))?;
+    if receipt.receipt_id != expected_receipt_id {
+        blockers.push("receipt ID does not match its serialized artifact evidence".to_owned());
+    }
+
+    if receipt.artifacts.len() != manifest.requirements().len() {
+        blockers.push(format!(
+            "receipt artifact count {} does not match manifest requirement count {}",
+            receipt.artifacts.len(),
+            manifest.requirements().len()
+        ));
+    }
+
+    let artifact_root = root_override.unwrap_or_else(|| Path::new(manifest.artifact_directory()));
+    if let Err(error) = verify_existing_secure_directory(artifact_root) {
+        blockers.push(format!("artifact directory verification failed: {error}"));
+    }
+
+    for requirement in manifest.requirements() {
+        if let Err(error) = validate_requirement(requirement) {
+            blockers.push(format!(
+                "manifest requirement {} is invalid: {error}",
+                requirement.ordinal
+            ));
+            continue;
+        }
+
+        let matching = receipt
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.ordinal == requirement.ordinal)
+            .collect::<Vec<_>>();
+        let artifact = match matching.as_slice() {
+            [artifact] => *artifact,
+            [] => {
+                blockers.push(format!(
+                    "receipt is missing artifact ordinal {}",
+                    requirement.ordinal
+                ));
+                continue;
+            }
+            _ => {
+                blockers.push(format!(
+                    "receipt contains duplicate artifact ordinal {}",
+                    requirement.ordinal
+                ));
+                continue;
+            }
+        };
+
+        if artifact.kind != requirement.kind
+            || artifact.artifact_path != requirement.artifact_path
+            || artifact.expected_identity != requirement.expected_identity
+        {
+            blockers.push(format!(
+                "receipt artifact {} does not match the frozen manifest requirement",
+                requirement.ordinal
+            ));
+            continue;
+        }
+
+        let Some(file_name) = Path::new(&requirement.artifact_path).file_name() else {
+            blockers.push(format!(
+                "receipt artifact {} has an unsafe path",
+                requirement.ordinal
+            ));
+            continue;
+        };
+        let actual_path = artifact_root.join(file_name);
+        if actual_path.parent() != Some(artifact_root) {
+            blockers.push(format!(
+                "receipt artifact {} escapes the artifact directory",
+                requirement.ordinal
+            ));
+            continue;
+        }
+
+        match verify_artifact(&actual_path) {
+            Ok((size_bytes, sha256)) => {
+                if size_bytes != artifact.size_bytes {
+                    blockers.push(format!(
+                        "receipt artifact {} size changed: expected {}, found {}",
+                        requirement.ordinal, artifact.size_bytes, size_bytes
+                    ));
+                }
+                if sha256 != artifact.sha256 {
+                    blockers.push(format!(
+                        "receipt artifact {} SHA-256 changed",
+                        requirement.ordinal
+                    ));
+                }
+            }
+            Err(error) => blockers.push(format!(
+                "receipt artifact {} verification failed: {error}",
+                requirement.ordinal
+            )),
+        }
+    }
+
+    blockers.sort();
+    blockers.dedup();
+    Ok(BackupReceiptRevalidation {
+        receipt_id: receipt.receipt_id.clone(),
+        manifest_id: manifest.manifest_id().to_owned(),
+        matches: blockers.is_empty(),
+        blockers,
+    })
+}
+
+fn verify_existing_secure_directory(path: &Path) -> Result<(), BackupCaptureError> {
+    if !path.is_absolute() {
+        return Err(BackupCaptureError::UnsafeDirectory(path.to_path_buf()));
+    }
+
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir => {
+                current.push("/");
+                continue;
+            }
+            Component::Normal(part) => current.push(part),
+            _ => return Err(BackupCaptureError::UnsafeDirectory(path.to_path_buf())),
+        }
+
+        let metadata =
+            fs::symlink_metadata(&current).map_err(|source| io_error(&current, source))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(BackupCaptureError::UnsafeDirectory(current));
+        }
+    }
+    Ok(())
 }
 
 fn validate_binding(
@@ -620,6 +822,9 @@ mod tests {
             runner.calls.lock().unwrap().as_slice(),
             [("sfdisk".to_owned(), "/dev/sda".to_owned())]
         );
+        let revalidation = revalidate_receipt_at_root(&manifest, &receipt, Some(&root)).unwrap();
+        assert!(revalidation.matches());
+        assert!(revalidation.blockers().is_empty());
 
         drop(session);
         let _ = fs::remove_dir_all(lock.parent().unwrap());
@@ -652,6 +857,118 @@ mod tests {
 
         drop(session);
         let _ = fs::remove_dir_all(lock.parent().unwrap());
+    }
+
+    fn captured_direct_fixture(
+        suffix: &str,
+    ) -> (
+        lsm_planner::FrozenExecutionHandoff,
+        MetadataBackupManifest,
+        MetadataBackupReceipt,
+        PathBuf,
+        PathBuf,
+    ) {
+        let (snapshot, capabilities) = direct_fixture();
+        let handoff = direct_handoff(&snapshot, &capabilities);
+        let manifest = crate::build_metadata_backup_manifest(&handoff).unwrap();
+        let lock = temp_path(&format!("{suffix}-lock")).join("storage.lock");
+        let root = temp_path(&format!("{suffix}-artifacts"));
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(&root);
+        let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        let revalidation = session.revalidate(&snapshot, &capabilities).unwrap();
+        assert_eq!(
+            revalidation.status,
+            crate::LockedRevalidationStatus::Revalidated
+        );
+        let receipt = capture_with_runner(
+            &session,
+            &manifest,
+            Some(&root),
+            &FakeRunner::new(b"label: gpt\ndevice: /dev/sda\n"),
+        )
+        .unwrap();
+        drop(session);
+        (handoff, manifest, receipt, lock, root)
+    }
+
+    #[test]
+    fn receipt_revalidation_detects_tampered_artifact_bytes() {
+        let (_handoff, manifest, receipt, lock, root) = captured_direct_fixture("tamper");
+        let file_name = Path::new(&receipt.artifacts()[0].artifact_path)
+            .file_name()
+            .unwrap();
+        fs::write(root.join(file_name), b"tampered-backup").unwrap();
+
+        let result = revalidate_receipt_at_root(&manifest, &receipt, Some(&root)).unwrap();
+
+        assert!(!result.matches());
+        assert!(result
+            .blockers()
+            .iter()
+            .any(|blocker| blocker.contains("SHA-256 changed")));
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn receipt_revalidation_detects_missing_artifact() {
+        let (_handoff, manifest, receipt, lock, root) = captured_direct_fixture("missing");
+        let file_name = Path::new(&receipt.artifacts()[0].artifact_path)
+            .file_name()
+            .unwrap();
+        fs::remove_file(root.join(file_name)).unwrap();
+
+        let result = revalidate_receipt_at_root(&manifest, &receipt, Some(&root)).unwrap();
+
+        assert!(!result.matches());
+        assert!(result
+            .blockers()
+            .iter()
+            .any(|blocker| blocker.contains("verification failed")));
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn receipt_revalidation_rejects_symlink_replacement() {
+        use std::os::unix::fs::symlink;
+
+        let (_handoff, manifest, receipt, lock, root) = captured_direct_fixture("symlink");
+        let file_name = Path::new(&receipt.artifacts()[0].artifact_path)
+            .file_name()
+            .unwrap();
+        let artifact = root.join(file_name);
+        let foreign = root.join("foreign");
+        fs::write(&foreign, b"label: gpt\ndevice: /dev/sda\n").unwrap();
+        fs::remove_file(&artifact).unwrap();
+        symlink(&foreign, &artifact).unwrap();
+
+        let result = revalidate_receipt_at_root(&manifest, &receipt, Some(&root)).unwrap();
+
+        assert!(!result.matches());
+        assert!(result
+            .blockers()
+            .iter()
+            .any(|blocker| blocker.contains("unsafe")));
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn receipt_revalidation_rejects_receipt_identity_tampering() {
+        let (_handoff, manifest, mut receipt, lock, root) = captured_direct_fixture("receipt-id");
+        receipt.receipt_id = "0".repeat(64);
+
+        let result = revalidate_receipt_at_root(&manifest, &receipt, Some(&root)).unwrap();
+
+        assert!(!result.matches());
+        assert!(result
+            .blockers()
+            .iter()
+            .any(|blocker| blocker.contains("receipt ID")));
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
