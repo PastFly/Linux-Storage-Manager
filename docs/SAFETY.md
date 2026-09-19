@@ -112,6 +112,22 @@ M1B6 validates partition-table recovery only inside the root-only disposable int
 
 This is recovery-test evidence, not permission to enable the production backup/restore executor path.
 
+## Non-mutating metadata backup capture
+
+M1B8 can materialize the already-frozen backup requirements without enabling a storage mutation path.
+
+- capture is accepted only from a host-locked session whose exact target identity and capability inventory were successfully revalidated;
+- the backup manifest must match the same frozen handoff, plan ID and target-manifest digest;
+- only the exact non-mutating capture forms modeled by M1B5 are accepted: `sfdisk --dump DISK` and `vgcfgbackup --file ARTIFACT VG`;
+- commands are invoked directly with explicit argv; shell execution and arbitrary programs are not supported;
+- artifact directories are absolute, created with restrictive permissions and checked component-by-component against symlinks/non-directories;
+- existing artifact paths are never overwritten by the capture API;
+- artifacts must be regular, non-empty, bounded-size files and receive a SHA-256 receipt bound to the frozen manifest identity;
+- recovery command specs are never executed by this API;
+- `MUTATION_ENABLED` remains false and owner acceptance remains required before any storage-changing executor rollout.
+
+This establishes backup-capture evidence and durable artifact identity, not permission to resize, restore or otherwise mutate storage.
+
 ## Disposable LVM metadata recovery drill
 
 M1B7 validates LVM metadata recovery only inside the root-only disposable integration harness.
