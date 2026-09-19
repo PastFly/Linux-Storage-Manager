@@ -214,6 +214,28 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(extra.read_text(), "keep me")
         self.assertTrue(self.image.exists())
 
+    def test_tracked_recovery_artifact_is_removed_only_by_exact_identity(self):
+        artifact = self.root / "backup.conf"
+        artifact.write_text("owned backup")
+        self.resources.track_artifact(artifact)
+
+        self.resources.cleanup()
+
+        self.assertFalse(self.root.exists())
+
+    def test_replaced_recovery_artifact_is_not_deleted(self):
+        artifact = self.root / "backup.conf"
+        artifact.write_text("owned backup")
+        self.resources.track_artifact(artifact)
+        replacement = self.root / "replacement.conf"
+        replacement.write_text("foreign replacement")
+        replacement.replace(artifact)
+
+        with self.assertRaisesRegex(M.SafetyError, "artifact identity changed"):
+            self.resources.cleanup()
+
+        self.assertEqual(artifact.read_text(), "foreign replacement")
+
     def test_uncertain_creation_preserves_everything(self):
         self.resources.uncertain = True
         with self.assertRaises(M.SafetyError):
