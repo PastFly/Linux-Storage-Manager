@@ -153,14 +153,19 @@ class Resources:
         self.uncertain = False
         return loop
 
-    def create_partition(self, loop: Loop, size_mib: int, lvm: bool) -> str:
+    def create_partition(self, loop: Loop, size_mib: int, lvm: bool,
+                         table_label: str = "gpt") -> str:
         self.check_loop(loop)
         device_info = Path(loop.device).stat()
         if not stat.S_ISBLK(device_info.st_mode) or os.major(device_info.st_rdev) != 7:
             raise SafetyError("expected an actual Linux loop block device")
-        partition_type = ",E6D6D379-F507-44C2-A23C-238F2A3DF928" if lvm else ""
+        if table_label not in ("gpt", "dos"):
+            raise SafetyError("fixture partition table must be GPT or DOS/MBR")
+        partition_type = ""
+        if lvm:
+            partition_type = ",E6D6D379-F507-44C2-A23C-238F2A3DF928" if table_label == "gpt" else ",8e"
         self.runner.run("sfdisk", loop.device,
-                        input=f"label: gpt\n,{size_mib}MiB{partition_type}\n")
+                        input=f"label: {table_label}\n,{size_mib}MiB{partition_type}\n")
         self.runner.run("partx", "--update", loop.device)
         partition = loop.device + "p1"
         wait_block(partition)
@@ -255,6 +260,161 @@ class Resources:
         for image in self.images:
             image.unlink()
         self.root.rmdir()
+
+
+def partition_table_facts(data: Any, loop_device: str, partition: str) -> dict[str, Any]:
+    if re.fullmatch(r"/dev/loop[0-9]+", loop_device) is None or partition != loop_device + "p1":
+        raise SafetyError("partition recovery fixture identity is not an owned loop p1")
+    if not isinstance(data, dict) or not isinstance(data.get("partitiontable"), dict):
+        raise SafetyError("sfdisk JSON lacks one partitiontable object")
+    table = data["partitiontable"]
+    if table.get("device") != loop_device or table.get("label") not in ("gpt", "dos"):
+        raise SafetyError("sfdisk JSON does not identify the expected GPT/DOS loop table")
+    if table.get("unit") != "sectors" or not isinstance(table.get("sectorsize"), int):
+        raise SafetyError("sfdisk JSON does not expose sector geometry")
+    if table["sectorsize"] < 512 or table["sectorsize"] & (table["sectorsize"] - 1):
+        raise SafetyError("invalid sector size in recovery fixture")
+    partitions = table.get("partitions")
+    if not isinstance(partitions, list) or len(partitions) != 1 or not isinstance(partitions[0], dict):
+        raise SafetyError("partition recovery drill requires exactly one partition")
+    record = partitions[0]
+    if record.get("node") != partition:
+        raise SafetyError("partition recovery fixture node identity changed")
+    if not isinstance(record.get("start"), int) or not isinstance(record.get("size"), int):
+        raise SafetyError("partition recovery fixture lacks numeric geometry")
+    if record["start"] <= 0 or record["size"] <= 0 or not isinstance(record.get("type"), str):
+        raise SafetyError("partition recovery fixture geometry/type is invalid")
+    return {
+        "label": table["label"],
+        "id": table.get("id"),
+        "device": table["device"],
+        "unit": table["unit"],
+        "firstlba": table.get("firstlba"),
+        "lastlba": table.get("lastlba"),
+        "sectorsize": table["sectorsize"],
+        "partitions": [{
+            "node": record["node"],
+            "start": record["start"],
+            "size": record["size"],
+            "type": record["type"],
+            "uuid": record.get("uuid"),
+            "name": record.get("name"),
+            "attrs": record.get("attrs"),
+            "bootable": record.get("bootable"),
+        }],
+    }
+
+
+def growth_only_partition_script(facts: dict[str, Any], disk_sectors: int,
+                                 growth_sectors: int = 8192) -> tuple[str, int]:
+    partitions = facts.get("partitions")
+    if not isinstance(partitions, list) or len(partitions) != 1:
+        raise SafetyError("cannot build recovery mutation from ambiguous partition facts")
+    record = partitions[0]
+    start, size = record.get("start"), record.get("size")
+    partition_type = record.get("type")
+    if (facts.get("label") not in ("gpt", "dos") or not isinstance(start, int)
+            or not isinstance(size, int) or not isinstance(partition_type, str)
+            or growth_sectors <= 0 or disk_sectors <= 0):
+        raise SafetyError("cannot build recovery mutation from invalid geometry")
+    new_size = size + growth_sectors
+    # Keep a guard region at the end of the disposable loop. The recovery drill
+    # changes only the partition end; moving the start is never exercised.
+    if start + new_size + 2048 >= disk_sectors:
+        raise SafetyError("disposable recovery fixture has insufficient guarded tail capacity")
+    script = (
+        f"label: {facts['label']}\n"
+        "unit: sectors\n"
+        f"{start},{new_size},{partition_type}\n"
+    )
+    return script, new_size
+
+
+def assert_owned_mount(binary: Runner, mount: Mount) -> None:
+    current = binary.run("findmnt", "--json", "--mountpoint", str(mount.target),
+                         "--output", "SOURCE,TARGET", allowed=(0, 1))
+    if current.returncode != 0:
+        raise SafetyError("expected disposable recovery mount is absent")
+    entries = mount_rows(json.loads(current.stdout))
+    if (len(entries) != 1 or entries[0]["target"] != str(mount.target)
+            or not isinstance(entries[0].get("source"), str)
+            or os.path.realpath(entries[0]["source"]) != os.path.realpath(mount.source)):
+        raise SafetyError("disposable recovery mount ownership changed")
+
+
+def exercise_partition_table_recovery(resources: Resources, binary: Runner,
+                                      table_label: str) -> None:
+    if table_label not in ("gpt", "dos"):
+        raise SafetyError("recovery drill table label must be GPT or DOS/MBR")
+    label = f"recovery-{table_label}"
+    loop = resources.create_loop(label, 256 * 1024 * 1024)
+    partition = resources.create_partition(loop, 128, False, table_label=table_label)
+    binary.run("mkfs.ext4", "-F", partition)
+    refresh_fixture_udev(binary, Path(partition).name)
+    target = resources.mount(partition, label + "-mount")
+    tracked_mount = resources.mounts[-1]
+    assert_owned_mount(binary, tracked_mount)
+    sentinel = (target / "readonly-sentinel").read_bytes()
+
+    resources.check_loop(loop)
+    baseline = partition_table_facts(
+        binary.json("sfdisk", "--json", loop.device), loop.device, partition
+    )
+    backup = binary.run("sfdisk", "--dump", loop.device).stdout
+    if not backup.strip() or loop.device not in backup:
+        raise SafetyError("partition-table backup artifact is empty or lacks target identity")
+    backup_path = resources.root / f"{label}-partition-table.sfdisk"
+    backup_path.write_text(backup)
+    if backup_path.read_text() != backup:
+        raise SafetyError("partition-table backup artifact is not readable byte-for-byte")
+
+    binary.run("umount", str(target))
+    absent = binary.run("findmnt", "--json", "--mountpoint", str(target),
+                        "--output", "SOURCE,TARGET", allowed=(0, 1))
+    if absent.returncode != 1 or absent.stdout.strip() or absent.stderr.strip():
+        raise SafetyError("disposable recovery filesystem did not unmount cleanly")
+
+    resources.check_loop(loop)
+    disk_sectors = loop.image.stat().st_size // baseline["sectorsize"]
+    mutation_script, expected_size = growth_only_partition_script(baseline, disk_sectors)
+
+    # From here until exact restoration + sentinel verification, ambiguity retains
+    # the owned fixture instead of attempting automatic cleanup.
+    resources.uncertain = True
+    binary.run("sfdisk", loop.device, input=mutation_script)
+    binary.run("partx", "--update", loop.device)
+    binary.run("udevadm", "settle", "--timeout=30")
+    wait_block(partition)
+    resources.check_loop(loop)
+    mutated = partition_table_facts(
+        binary.json("sfdisk", "--json", loop.device), loop.device, partition
+    )
+    before_record, mutated_record = baseline["partitions"][0], mutated["partitions"][0]
+    if mutated_record["start"] != before_record["start"] or mutated_record["size"] != expected_size:
+        raise SafetyError("controlled recovery mutation moved the start or has unexpected size")
+    if mutated == baseline:
+        raise SafetyError("partition-table recovery mutation did not change authoritative facts")
+
+    restore_input = backup_path.read_text()
+    binary.run("sfdisk", loop.device, input=restore_input)
+    binary.run("partx", "--update", loop.device)
+    binary.run("udevadm", "settle", "--timeout=30")
+    wait_block(partition)
+    resources.check_loop(loop)
+    restored = partition_table_facts(
+        binary.json("sfdisk", "--json", loop.device), loop.device, partition
+    )
+    if restored != baseline:
+        evidence = json.dumps({"before": baseline, "restored": restored}, sort_keys=True)
+        raise SafetyError("partition-table recovery did not restore exact geometry: " + evidence)
+
+    binary.run("mount", partition, str(target))
+    assert_owned_mount(binary, tracked_mount)
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("filesystem sentinel changed across partition-table recovery drill")
+
+    backup_path.unlink()
+    resources.uncertain = False
 
 
 def wait_block(path: str) -> None:
@@ -496,6 +656,9 @@ def main(argv: list[str] | None = None) -> int:
             refresh_fixture_udev(runner, canonical_source.name)
             target = resources.mount(source, label + "-mount")
             exercise(resources, runner, loop, target, vg)
+        for table_label in ("gpt", "dos"):
+            print(f"==> partition-recovery-{table_label}", flush=True)
+            exercise_partition_table_recovery(resources, runner, table_label)
     except (OSError, ValueError, KeyError, TypeError, SafetyError, subprocess.SubprocessError, KeyboardInterrupt) as error:
         print(f"INTEGRATION_FAILED: {error}", file=sys.stderr)
         failed = True
@@ -506,7 +669,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,partition-recovery-gpt,partition-recovery-dos cleanup=complete")
     return int(failed)
 
 
