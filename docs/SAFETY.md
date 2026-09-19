@@ -143,6 +143,22 @@ M1B9 treats a backup receipt as evidence that must remain true, not as a one-tim
 
 This check is intended to precede any later journal transition that claims backup prerequisites are verified.
 
+## Pre-mutation evidence bundle
+
+M1B10 combines the non-mutating gates that can already be proven without claiming execution readiness.
+
+- the bundle requires an already identity-revalidated host-locked session;
+- target identity and capability inventory are checked again against the supplied fresh snapshot/capabilities;
+- the filesystem growth decision is recomputed from those fresh facts rather than trusting only the older frozen decision;
+- backup evidence must be bound to the exact handoff/plan/target identity and must have passed M1B9 receipt revalidation;
+- blocked/adapter-only filesystem states or changed identity/capabilities produce explicit blockers;
+- ext4/XFS states that still require a read-only health check, mount transition or other prerequisite remain `future_checks_required`;
+- `evidence_complete` means only that currently modeled non-mutating evidence is complete; owner acceptance, exact plan approval and later journal transitions remain outstanding;
+- building the bundle does not advance the journal beyond `identity_revalidated`;
+- `mutation_enabled` remains false.
+
+The bundle is deliberately not an execution token and is not accepted by any storage-changing API.
+
 ## Disposable LVM metadata recovery drill
 
 M1B7 validates LVM metadata recovery only inside the root-only disposable integration harness.
