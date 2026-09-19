@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -193,7 +193,7 @@ fn resource_keys(manifest: &TargetIdentityManifest) -> Vec<String> {
     keys
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JournalPhase {
     Planned,
@@ -216,7 +216,7 @@ pub enum ResumeDisposition {
     Complete,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalEvent {
     pub sequence: u64,
     pub from: JournalPhase,
