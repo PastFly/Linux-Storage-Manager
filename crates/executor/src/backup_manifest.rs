@@ -489,10 +489,9 @@ mod tests {
             vg_uuid: "vg-uuid-1".to_owned(),
         };
 
-        let requirement =
-            requirement_for_operation(&identity, &operation, Path::new("/safe"), 1)
-                .unwrap()
-                .unwrap();
+        let requirement = requirement_for_operation(&identity, &operation, Path::new("/safe"), 1)
+            .unwrap()
+            .unwrap();
 
         assert_eq!(requirement.kind, MetadataBackupKind::LvmVolumeGroup);
         assert_eq!(requirement.capture.program, "vgcfgbackup");
