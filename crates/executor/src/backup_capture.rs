@@ -4,7 +4,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use lsm_planner::{JournalPhase, OperationJournal};
+use lsm_planner::JournalPhase;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -172,6 +172,7 @@ impl CaptureRunner for SystemCaptureRunner {
         }
         let file = OpenOptions::new()
             .read(true)
+            .write(true)
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
             .open(output)
             .map_err(|source| io_error(output, source))?;
@@ -201,7 +202,7 @@ fn capture_with_runner(
         validate_requirement(requirement)?;
         let file_name = Path::new(&requirement.artifact_path)
             .file_name()
-            .ok_or_else(|| BackupCaptureError::UnsafeArtifact(requirement.artifact_path.into()))?;
+            .ok_or_else(|| BackupCaptureError::UnsafeArtifact(PathBuf::from(&requirement.artifact_path)))?;
         let actual_path = artifact_root.join(file_name);
         if actual_path.parent() != Some(artifact_root) {
             return Err(BackupCaptureError::UnsafeArtifact(actual_path));
