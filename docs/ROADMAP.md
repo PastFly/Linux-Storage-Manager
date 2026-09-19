@@ -97,6 +97,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Persist HostLockHeld and successful IdentityRevalidated transitions from the non-mutating locked session through the durable journal store.
 - [ ] Persist the operation-journal model durably before the first mutating command.
 - [x] Freeze exact partition-table/LVM metadata backup and recovery command manifests without executing them.
+- [x] Prove GPT and DOS/MBR partition-table backup/restore on owned disposable loop fixtures with exact machine-readable geometry and sentinel verification.
 - [ ] Add partition-table metadata backup plus a recovery drill.
 - [ ] Add LVM metadata backup plus a recovery drill.
 - [ ] Grow GPT/MBR partitions where safe without moving a partition start.
