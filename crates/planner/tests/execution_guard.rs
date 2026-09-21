@@ -5,6 +5,7 @@ use lsm_planner::{
     ResumeDisposition, HOST_STORAGE_LOCK_PATH,
 };
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 const GIB: u64 = 1 << 30;
 
@@ -52,14 +53,17 @@ fn guard() -> lsm_planner::ExecutionGuardPlan {
     build_execution_guard_plan("plan-test-001", &manifest).unwrap()
 }
 
-fn approval(guard: &lsm_planner::ExecutionGuardPlan) -> ExactApprovalBinding {
+fn approval(journal: &OperationJournal) -> ExactApprovalBinding {
     let mut approval = ExactApprovalBinding {
         approval_id: String::new(),
-        plan_id: guard.plan_id.clone(),
+        plan_id: journal.plan_id.clone(),
         evidence_bundle_id: "evidence-test-001".to_owned(),
-        target_manifest_digest: guard.baseline_manifest_digest.clone(),
+        target_manifest_digest: journal.baseline_manifest_digest.clone(),
         locked_session_id: "session-test-001".to_owned(),
-        preconditions_journal_digest: "journal-test-001".to_owned(),
+        preconditions_journal_digest: format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(journal).unwrap())
+        ),
     };
     approval.approval_id = approval.expected_approval_id().unwrap();
     approval
@@ -107,7 +111,7 @@ fn journal_happy_path_requires_exact_order_and_exact_identity() {
     journal
         .apply(JournalTransition::PreconditionsVerified)
         .unwrap();
-    let approval = approval(&guard);
+    let approval = approval(&journal);
     journal
         .apply(JournalTransition::ExactPlanApproved {
             approved_plan_id: &guard.plan_id,
@@ -177,7 +181,7 @@ fn approval_for_another_plan_is_rejected() {
         .apply(JournalTransition::PreconditionsVerified)
         .unwrap();
 
-    let approval = approval(&guard);
+    let approval = approval(&journal);
     let error = journal
         .apply(JournalTransition::ExactPlanApproved {
             approved_plan_id: "older-plan-id",
@@ -203,7 +207,7 @@ fn approval_binding_for_another_preconditions_journal_is_rejected() {
         .apply(JournalTransition::PreconditionsVerified)
         .unwrap();
 
-    let mut approval = approval(&guard);
+    let mut approval = approval(&journal);
     approval.preconditions_journal_digest = "different-preconditions-journal".to_owned();
     approval.approval_id = approval.expected_approval_id().unwrap();
 
@@ -250,7 +254,7 @@ fn interruption_after_execution_boundary_requires_reconciliation_not_replay() {
     journal
         .apply(JournalTransition::PreconditionsVerified)
         .unwrap();
-    let approval = approval(&guard);
+    let approval = approval(&journal);
     journal
         .apply(JournalTransition::ExactPlanApproved {
             approved_plan_id: &guard.plan_id,
@@ -292,7 +296,7 @@ fn abort_after_execution_boundary_is_recovery_required() {
     journal
         .apply(JournalTransition::PreconditionsVerified)
         .unwrap();
-    let approval = approval(&guard);
+    let approval = approval(&journal);
     journal
         .apply(JournalTransition::ExactPlanApproved {
             approved_plan_id: &guard.plan_id,
