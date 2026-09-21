@@ -300,4 +300,31 @@ cargo test -p lsm-executor execution_intent::tests::duplicate_step_id_is_rejecte
 cargo test -p lsm-executor execution_intent::tests::dependency_cycle_is_rejected
 ```
 
-Expected: failures bec
+Expected: failures because graph validation is absent.
+
+- [ ] **Step 3: Implement graph validation**
+
+Use `BTreeMap<u32, Vec<u32>>`/`BTreeSet<u32>` for deterministic validation. Reject zero/duplicate IDs first, then unknown/self dependencies, then detect cycles with a three-state DFS (`unseen`, `visiting`, `done`). Do not sort or repair the source dependency lists.
+
+Add error variants:
+
+```rust
+DuplicateStepId(u32),
+ZeroStepId,
+UnknownDependency { step_id: u32, dependency: u32 },
+SelfDependency(u32),
+DependencyCycle,
+```
+
+Call `validate_dependency_graph(handoff.plan().steps())?` before translation.
+
+- [ ] **Step 4: Verify GREEN and commit**
+
+```bash
+cargo test -p lsm-executor execution_intent::tests::
+cargo test -p lsm-executor
+git add crates/executor/src/execution_intent.rs
+git commit -m "executor: validate frozen intent dependency graph"
+```
+
+---
