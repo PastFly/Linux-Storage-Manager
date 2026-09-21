@@ -65,3 +65,56 @@ git commit -m "docs: advance continuity to merged M1B12"
 **Interfaces:** consumes `LockedExecutionSession<'_>`, `ExactPlanApproval`, approved `OperationJournal`, `FrozenExecutionHandoff::plan()`; produces `freeze_execution_intent(...)`, `require_current_durable_journal()`, and immutable manifest getters.
 
 - [ ] **Step 1: Write RED test `exact_approved_session_freezes_non_executable_intent`.** Compose existing revalidation/preconditions/approval helpers to reach `Approved`, retain `before = session.journal().clone()`, call `freeze_execution_intent`, and assert:
+
+```rust
+assert_eq!(manifest.status(), ExecutionIntentManifestStatus::FrozenNonExecutable);
+assert_eq!(manifest.approval_id(), approval.approval_id());
+assert_eq!(manifest.plan_id(), handoff.plan().plan_id());
+assert_eq!(manifest.evidence_bundle_id(), approval.evidence_bundle_id());
+assert_eq!(manifest.locked_session_id(), session.session_id());
+assert_eq!(manifest.steps().len(), handoff.plan().steps().len());
+assert!(manifest.owner_acceptance_required());
+assert!(!manifest.mutation_enabled());
+assert_eq!(session.journal(), &before);
+assert_eq!(session.journal().phase, JournalPhase::Approved);
+assert!(!session.journal().mutation_may_have_started);
+assert_eq!(store.load(&before.journal_id).unwrap(), before);
+```
+
+Also assert a second lock returns `HostLockError::Busy`.
+
+- [ ] **Step 2: Verify RED**
+
+```bash
+cargo test -p lsm-executor exact_approved_session_freezes_non_executable_intent -- --exact
+```
+
+Expected: compile failure because the M1B13 API/types do not exist.
+
+- [ ] **Step 3: Add the read-only durable helper**
+
+```rust
+pub(crate) fn require_current_durable_journal(&self) -> Result<(), LockedSessionError> {
+    let store = self
+        .journal_store
+        .ok_or(LockedSessionError::DurableJournalRequired)?;
+    let persisted = store.load(&self.journal.journal_id)?;
+    if persisted != self.journal {
+        return Err(LockedSessionError::DurableJournalMismatch);
+    }
+    Ok(())
+}
+```
+
+Refactor the existing durable transition helpers to call this before cloning/persisting.
+
+- [ ] **Step 4: Add the minimal immutable model**
+
+`execution_intent.rs` defines:
+
+```rust
+pub enum ExecutionIntentManifestStatus { FrozenNonExecutable }
+pub enum FrozenIntentRole { PreExecutionEvidence, MutationCandidate, Verification }
+
+pub enum FrozenIntentAction {
+    RevalidateSnapshot
