@@ -412,6 +412,15 @@ mod tests {
         (snapshot, capabilities)
     }
 
+    fn assert_identity_revalidated_is_durable(
+        session: &LockedExecutionSession<'_>,
+        store: &DurableJournalStore,
+    ) {
+        assert_eq!(session.journal().phase, JournalPhase::IdentityRevalidated);
+        let persisted = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(persisted, *session.journal());
+    }
+
     #[test]
     fn unchanged_fresh_state_revalidates_while_lock_is_held() {
         let (snapshot, capabilities) = fixture();
