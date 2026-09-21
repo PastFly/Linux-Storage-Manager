@@ -921,7 +921,14 @@ mod tests {
         session.revalidate(&snapshot, &capabilities).unwrap();
         let mut changed = snapshot.clone();
         changed.storage.block_devices[0].children[0].children[0].uuid = Some("fs-2".into());
-        let evidence = evidence(&session, &handoff, &changed, &capabilities, true, Vec::new());
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &changed,
+            &capabilities,
+            true,
+            Vec::new(),
+        );
 
         let result = crate::verify_preconditions(&mut session, &evidence);
 
@@ -1087,14 +1094,7 @@ mod tests {
         let first_path = lock_path();
         let mut first = LockedExecutionSession::begin_at_path(&handoff, &first_path).unwrap();
         first.revalidate(&snapshot, &capabilities).unwrap();
-        let evidence = evidence(
-            &first,
-            &handoff,
-            &snapshot,
-            &capabilities,
-            true,
-            Vec::new(),
-        );
+        let evidence = evidence(&first, &handoff, &snapshot, &capabilities, true, Vec::new());
         let first_session_id = first.session_id().to_owned();
         drop(first);
         let _ = std::fs::remove_dir_all(first_path.parent().unwrap());
