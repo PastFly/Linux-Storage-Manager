@@ -526,3 +526,39 @@ git commit -m "executor: fail closed on stale execution intent approval"
 ```
 
 ---
+
+### Task 7: Final documentation, safety scan, full CI and PR
+
+**Files:** modify `README.md`, `docs/ROADMAP.md`, `docs/SAFETY.md`, `docs/HANDOFF.md`, `docs/M1B_HANDOFF.md`; review all M1B13 code.
+
+**Interfaces:** consumes the completed M1B13 API/tests; produces reviewer-facing documentation and an exact-head PR. No merge.
+
+- [ ] **Step 1: Update README and roadmap**
+
+README must state M1B13 freezes a non-executable semantic intent manifest from the exact `Approved` state and still has no executor/apply path.
+
+Add this completed roadmap item immediately after M1B12 approval:
+
+```markdown
+- [x] Freeze the exact approved semantic `PlanStep` graph into a deterministic non-executable execution-intent manifest with per-mutation verification barriers, while keeping the journal at `Approved` and mutation disabled.
+```
+
+Keep actual partition/PV/LV/filesystem growth items unchecked.
+
+- [ ] **Step 2: Add the M1B13 safety section**
+
+`docs/SAFETY.md` must state:
+
+- exact approval/session/durable-journal equality is revalidated before intent freezing;
+- every source plan step maps exactly once;
+- no extra mutation may be synthesized;
+- backups/revalidation are historical evidence roles, not permission to rerun recovery/mutation;
+- every mutation candidate has a fresh-identity/capability/expected-state stop-on-mismatch barrier;
+- manifest construction leaves `Approved` and `mutation_may_have_started=false`;
+- SHA-256 is structural identity, not secret-key authentication;
+- `MUTATION_ENABLED=false`;
+- M1B14 may compile semantic intent to allowlisted argv but still may not execute it.
+
+- [ ] **Step 3: Refresh handoff documents to completed M1B13 branch state**
+
+Record the exact branch head, RED run numbers collected during implementation, final PR number, and final exact-head CI/Portabl
