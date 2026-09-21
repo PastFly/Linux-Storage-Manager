@@ -444,6 +444,36 @@ mod tests {
         assert_eq!(persisted, *session.journal());
     }
 
+    fn verified_preconditions(
+        session: &mut LockedExecutionSession<'_>,
+        handoff: &FrozenExecutionHandoff,
+        snapshot: &HostSnapshot,
+        capabilities: &HostCapabilities,
+    ) -> (
+        crate::PreMutationEvidenceBundle,
+        crate::PreconditionsVerification,
+    ) {
+        let evidence = evidence(
+            session,
+            handoff,
+            snapshot,
+            capabilities,
+            true,
+            Vec::new(),
+        );
+        let verified = crate::verify_preconditions(session, &evidence).unwrap();
+        (evidence, verified)
+    }
+
+    fn assert_preconditions_verified_is_durable(
+        session: &LockedExecutionSession<'_>,
+        store: &DurableJournalStore,
+    ) {
+        assert_eq!(session.journal().phase, JournalPhase::PreconditionsVerified);
+        let persisted = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(persisted, *session.journal());
+    }
+
     #[test]
     fn unchanged_fresh_state_revalidates_while_lock_is_held() {
         let (snapshot, capabilities) = fixture();
