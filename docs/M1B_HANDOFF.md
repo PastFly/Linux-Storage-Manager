@@ -1,215 +1,170 @@
 # M1B pre-executor handoff
 
-M1B is the guarded foundation between read-only planning and any future mutation-capable
-executor. It must remain fail-closed and capability/topology driven.
+M1B is the safety foundation between read-only planning and any future mutation-capable
+executor. It remains fail-closed and capability/topology driven.
 
-Live master baseline verified on 2026-09-21:
+Verified master baseline on 2026-09-21:
 
-`810dcc512a0f23000d7bf49f090ed22d5688ab01`
+`72594ed3128d5c373e79c53ec81a4d9107817b16`
 
-That master contains M1B0 through M1B10 and passed post-merge CI #452 and Portable Linux #331.
+That master contains M1B0 through M1B11 and passed post-merge CI #471 and Portable Linux #350.
 
 ## Non-negotiable boundary
 
 `MUTATION_ENABLED = false`
 
-No current production API may resize partitions, PVs, LVs or filesystems, change mount/fstab
-state, mutate swap, or execute recovery commands.
-
-Owner acceptance remains an explicit future gate.
+There is no current production API that resizes partitions, PVs, LVs or filesystems,
+changes mount/fstab or swap state, executes recovery commands, or starts mutation-capable
+execution.
 
 ## Milestone map
 
 ### M1B0 — frozen execution handoff
-
-Freezes one exact M1A plan together with:
-
-- plan-basis digest;
-- capabilities digest;
-- target identity manifest;
-- filesystem growth decision;
-- execution guard;
-- explicit owner-acceptance requirement;
-- mutation disabled.
+Freezes the exact M1A plan, basis/capability identity, target manifest, filesystem decision,
+guard state, owner-acceptance requirement and `mutation_enabled=false`.
 
 ### M1B1 — host-exclusive lock
-
-Adds the OS-backed nonblocking host storage lock with RAII release.
+Adds the nonblocking OS-backed host storage lock with RAII release.
 
 ### M1B2 — locked revalidation
-
-While the lock is held, revalidates the exact target identity and capabilities.
-Any change fails closed.
+Revalidates exact target identity and capability inventory while the lock remains held.
 
 ### M1B3 — durable journal store
-
-Persists validated journal records with secure same-directory temporary files, fsync,
-atomic rename and directory fsync. Tampered/impossible histories fail closed.
+Adds secure atomic persistence, reload validation and recovery-state preservation.
 
 ### M1B4 — durable locked-session progression
+Durably records `HostLockHeld` and `IdentityRevalidated`.
 
-Durably records `HostLockHeld` and, after successful locked revalidation,
-`IdentityRevalidated`.
+### M1B5 — immutable backup manifest
+Freezes exact partition/LVM metadata capture and recovery command specs without executing them.
 
-### M1B5 — immutable metadata backup manifest
-
-Freezes exact partition/LVM backup and recovery command specs without executing them.
-
-### M1B6 — partition metadata recovery drill
-
-Proves GPT and DOS/MBR metadata backup/restore on owned disposable loop fixtures.
-
-### M1B7 — LVM metadata recovery drill
-
-Proves VG metadata backup/restore on an owned disposable loop/LVM fixture.
+### M1B6/M1B7 — disposable recovery evidence
+Proves GPT/DOS partition-table and LVM metadata recovery on owned disposable fixtures.
 
 ### M1B8 — locked backup capture
-
-After successful locked identity revalidation, captures required partition/LVM metadata
-backups with secure artifact paths and SHA-256 receipts. Recovery execution remains disabled.
+Captures required metadata backup artifacts after locked revalidation and produces SHA-256
+receipts while recovery/mutation remains disabled.
 
 ### M1B9 — backup receipt revalidation
-
-Reopens backup artifacts with fail-closed path rules and verifies exact manifest binding,
-size and SHA-256 from disk.
+Reopens the exact artifacts and verifies manifest binding, size and SHA-256 from disk.
 
 ### M1B10 — immutable pre-mutation evidence
-
-Builds `PreMutationEvidenceBundle` from:
-
-- the identity-revalidated locked session;
-- a fresh target identity check;
-- a fresh capability check;
-- a freshly recomputed filesystem decision;
-- revalidated backup evidence.
-
-M1B10 deliberately leaves the durable journal at `IdentityRevalidated`.
+Combines fresh identity/capability/filesystem decisions and revalidated backup evidence into
+an immutable bundle without advancing the journal.
 
 ### M1B11 — durable preconditions verification
-
-Current PR: **#25**, branch `feature/m1b11-preconditions-verification`.
-
-M1B11 introduces the first safe journal progression after M1B10:
+Merged as PR #25. Binds evidence to the current locked session and durably advances only:
 
 `IdentityRevalidated -> PreconditionsVerified`
 
-It still performs no storage mutation.
+It freezes the exact `PreconditionsVerified` journal identity for later approval and keeps
+owner acceptance/mutation as future gates.
 
-The verifier accepts only:
+### M1B12 — exact-plan approval
 
-- the current `LockedExecutionSession`;
-- the corresponding immutable `PreMutationEvidenceBundle`.
+Current PR: **#26**, branch `feature/m1b12-exact-plan-approval`.
 
-Required invariants:
-
-- the host lock is still owned by the session;
-- the journal is exactly `IdentityRevalidated`;
-- a durable journal store is attached;
-- the durable journal on disk exactly equals the session journal;
-- evidence schema is the M1B11-aware schema v2;
-- evidence fingerprint exactly matches its contents;
-- evidence is bound to the exact live locked-session ID;
-- handoff ID exactly matches;
-- plan ID exactly matches;
-- target-manifest digest exactly matches;
-- backup manifest and receipt IDs are present digest identities;
-- the backup receipt was successfully revalidated;
-- evidence status is `EvidenceComplete`;
-- no evidence blocker remains;
-- filesystem state is `ReadyOnlineGrow`;
-- no mandatory filesystem read-only check/future gate remains;
-- `mutation_enabled` remains false everywhere;
-- owner acceptance remains required rather than being auto-granted.
-
-A clean mounted ext4 decision can contain informational guidance such as not running e2fsck
-on the mounted filesystem. M1B11 therefore distinguishes those notes from an actual
-mandatory filesystem check.
-
-The transition is produced by cloning the current journal, applying
-`JournalTransition::PreconditionsVerified` to the clone, durably persisting that next
-state, and only then replacing the in-memory session journal. A failed persist cannot make the
-live session appear advanced.
-
-## Locked-session evidence replay protection
-
-M1B10 originally bound evidence to handoff/plan/target identity. M1B11 additionally creates a
-process-local SHA-256 locked-session binding token when a session is acquired. Evidence schema
-v2 freezes this token and includes it in the bundle fingerprint.
-
-This prevents evidence from a previous lock lifetime from authorizing the same transition in
-a later locked session, even when both sessions use the same plan and target identity.
-
-The token is not a cross-process recovery credential. `PreMutationEvidenceBundle` has no
-Deserialize implementation; after process restart the executor must rediscover and build fresh
-evidence rather than replaying an old in-memory bundle.
-
-## M1B11 tests
-
-Positive:
-
-- exact current-session evidence advances to `PreconditionsVerified`;
-- the host lock is still exclusive during verification;
-- durable reload returns exactly `PreconditionsVerified`;
-- `mutation_may_have_started` remains false;
-- owner acceptance remains outstanding.
-
-Fail-closed:
-
-- foreign plan ID;
-- foreign handoff ID;
-- changed target manifest;
-- tampered backup receipt;
-- missing backup;
-- stale capabilities;
-- changed filesystem identity;
-- filesystem `Blocked`;
-- filesystem `AdapterRequired`;
-- required offline ext4 check;
-- required XFS check;
-- wrong journal phase;
-- repeated transition;
-- evidence from another locked session;
-- non-durable session;
-- mutation flag unexpectedly true;
-- durable journal mismatch.
-
-All of these must leave the journal unadvanced.
-
-The initial TDD RED proof was CI #453: it failed specifically because the new
-`verify_preconditions` API did not yet exist.
-
-## Next: M1B12 exact-plan approval
-
-Do not combine approval with M1B11.
-
-M1B12 should bind an explicit operator decision to:
-
-- exact plan ID;
-- exact pre-mutation evidence bundle ID;
-- current target identity;
-- durable journal state.
-
-Only an exact accepted approval may advance:
+M1B12 adds only:
 
 `PreconditionsVerified -> Approved`
 
-Do not add `ExecutionStarted` or any storage-changing command as part of M1B12.
+It does not cross into `Executing`.
 
-## Before first real mutation
+The caller must explicitly supply the values being approved:
 
-Separately design and review:
+- exact plan ID;
+- exact M1B11 evidence bundle ID;
+- exact target-manifest digest.
 
-- explicit owner acceptance;
-- privileged-helper boundary;
-- minimal executable allowlist;
-- exact argv command specs;
-- privilege model;
-- per-layer rediscovery;
+The approval API also requires the M1B11 verification object from the same locked session.
+That object freezes:
+
+- evidence bundle ID;
+- locked-session ID;
+- journal ID;
+- plan ID;
+- target-manifest digest;
+- SHA-256 of the exact `PreconditionsVerified` journal.
+
+Before approval, all six identities are checked against the live session.
+
+## ExactApprovalBinding
+
+The durable `OperationJournal` now carries an optional structured approval binding.
+
+For an `Approved` journal it contains:
+
+- `approval_id`;
+- `plan_id`;
+- `evidence_bundle_id`;
+- `target_manifest_digest`;
+- `locked_session_id`;
+- `preconditions_journal_digest`.
+
+`approval_id` is a SHA-256 fingerprint over the exact binding fields.
+
+A journal containing an approval transition without a binding, or a binding without an
+approval transition, fails durable reload validation.
+
+Durable reload additionally reconstructs the pre-approval journal by removing the approval
+event/binding and restoring the `PreconditionsVerified` phase. Its SHA-256 must exactly match
+`preconditions_journal_digest`. Recomputing the approval fingerprint after substituting a
+different journal digest is therefore insufficient to forge a valid durable approval.
+
+## Atomic transition semantics
+
+M1B12 follows the same durability pattern as M1B11:
+
+1. require the durable journal on disk to equal the current live session journal;
+2. clone the live `PreconditionsVerified` journal;
+3. apply the exact approval transition/binding to the clone;
+4. durably persist the clone;
+5. update the in-memory journal only after successful persistence.
+
+A failed persist or binding check cannot make the live session appear approved.
+
+## M1B12 tests
+
+Positive:
+
+- exact caller-supplied plan/evidence/target approval succeeds;
+- host lock remains exclusive;
+- durable reload returns `Approved`;
+- exact approval binding survives reload;
+- mutation boundary is not crossed;
+- owner acceptance remains required.
+
+Fail-closed:
+
+- wrong explicit plan;
+- wrong explicit evidence bundle;
+- wrong explicit target manifest;
+- stale preconditions-journal digest;
+- verification from another lock lifetime;
+- wrong phase;
+- repeated approval;
+- durable journal mismatch;
+- planner approval bound to another journal state;
+- recomputed/tampered durable approval binding.
+
+TDD RED history includes CI #472, #482 and #484. Use the final exact PR-head Actions as the
+actual completion evidence.
+
+## Next safety boundary
+
+Even after M1B12, `Approved` is an authorization record, not permission for this codebase to
+mutate storage.
+
+Before any production path can enter `Executing`, separately review:
+
+- explicit owner acceptance for mutation-capable rollout;
+- privileged-helper architecture;
+- minimal command allowlist;
+- exact executable argv specs;
+- post-each-layer rediscovery;
 - per-layer verification;
-- interruption semantics;
-- recovery semantics and UX;
-- exact approval UX;
-- test-only mutation adapters;
+- crash/interruption semantics;
+- recovery UX;
 - disposable integration matrix.
 
-Backups are defense-in-depth, not permission to bypass topology proof.
+Backups and approval are defense-in-depth. Neither permits bypassing topology proof.
