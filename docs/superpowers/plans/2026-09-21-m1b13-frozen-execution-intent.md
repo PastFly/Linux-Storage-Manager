@@ -412,3 +412,56 @@ git commit -m "executor: validate frozen intent target semantics"
 ```
 
 ---
+
+### Task 6: Complete the fail-closed approval/session/journal matrix
+
+**Files:** modify/test `crates/executor/src/locked_session.rs`; modify `crates/executor/src/approval.rs`; modify `crates/executor/src/execution_intent.rs`.
+
+**Interfaces:** consumes exact M1B12 approval plus live/durable `Approved` state; produces only a manifest or a typed rejection. No rejection changes the journal.
+
+- [ ] **Step 1: Add test-only approval mutation helpers**
+
+Under `#[cfg(test)]` in `approval.rs` add consuming helpers used only to construct negative fixtures:
+
+```rust
+pub(crate) fn test_with_approval_id(mut self, value: String) -> Self {
+    self.binding.approval_id = value;
+    self
+}
+pub(crate) fn test_with_plan_id(mut self, value: String) -> Self {
+    self.binding.plan_id = value;
+    self
+}
+pub(crate) fn test_with_evidence_bundle_id(mut self, value: String) -> Self {
+    self.binding.evidence_bundle_id = value;
+    self
+}
+pub(crate) fn test_with_target_manifest_digest(mut self, value: String) -> Self {
+    self.binding.target_manifest_digest = value;
+    self
+}
+pub(crate) fn test_with_journal_id(mut self, value: String) -> Self {
+    self.journal_id = value;
+    self
+}
+pub(crate) fn test_with_mutation_enabled(mut self) -> Self {
+    self.mutation_enabled = true;
+    self
+}
+```
+
+These helpers must remain test-only and are not exported.
+
+- [ ] **Step 2: Write RED fail-closed integration tests**
+
+Add tests named:
+
+- `intent_rejects_wrong_approval_id`
+- `intent_rejects_approval_from_another_locked_session`
+- `intent_rejects_wrong_approval_journal_id`
+- `intent_rejects_wrong_plan_id`
+- `intent_rejects_wrong_evidence_bundle_id`
+- `intent_rejects_wrong_target_manifest`
+- `durable_approved_journal_divergence_is_rejected`
+- `intent_requires_durable_session`
+- `intent_requires_approved_p
