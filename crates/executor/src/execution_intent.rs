@@ -309,6 +309,9 @@ fn validate_step_semantics(
             new_size_sectors,
             sector_size_bytes,
         } => {
+            if partition.is_empty() || partition.chars().any(char::is_control) {
+                return Err(mismatch("partition path is empty or contains a control character"));
+            }
             if !matches!(*sector_size_bytes, 512 | 4096)
                 || new_size_sectors <= old_size_sectors
                 || old_size_sectors.checked_mul(*sector_size_bytes).is_none()
