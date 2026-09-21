@@ -77,7 +77,9 @@ pub fn verify_preconditions(
     if !session.durable_journal_enabled() {
         return Err(PreconditionsVerificationError::DurableJournalRequired);
     }
-    if MUTATION_ENABLED || session.mutation_enabled() || session.handoff().mutation_enabled()
+    if MUTATION_ENABLED
+        || session.mutation_enabled()
+        || session.handoff().mutation_enabled()
         || evidence.mutation_enabled()
     {
         return Err(PreconditionsVerificationError::MutationEnabled);
