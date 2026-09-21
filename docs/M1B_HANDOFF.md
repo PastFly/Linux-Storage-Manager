@@ -94,6 +94,7 @@ The durable `OperationJournal` now carries an optional structured approval bindi
 
 For an `Approved` journal it contains:
 
+- `schema_version` (currently exactly `1`);
 - `approval_id`;
 - `plan_id`;
 - `evidence_bundle_id`;
@@ -101,7 +102,8 @@ For an `Approved` journal it contains:
 - `locked_session_id`;
 - `preconditions_journal_digest`.
 
-`approval_id` is a SHA-256 fingerprint over the exact binding fields.
+`approval_id` is a SHA-256 fingerprint over the schema version and exact binding fields.
+Durable reload rejects any approval-binding schema other than v1.
 
 A journal containing an approval transition without a binding, or a binding without an
 approval transition, fails durable reload validation.
@@ -147,8 +149,9 @@ Fail-closed:
 - planner approval bound to another journal state;
 - recomputed/tampered durable approval binding.
 
-TDD RED history includes CI #472, #482 and #484. Use the final exact PR-head Actions as the
-actual completion evidence.
+TDD RED history includes CI #472, #482, #484 and #499. CI #499 specifically proved that an
+unknown durable approval-binding schema was not yet rejected; explicit schema-v1 validation
+closes that fail-open path. Use the final exact PR-head Actions as the actual completion evidence.
 
 ## Next safety boundary
 
