@@ -266,10 +266,7 @@ fn validate_step_semantics(
     decision: &lsm_planner::FilesystemGrowthDecision,
 ) -> Result<(), ExecutionIntentError> {
     let mismatch = |detail: &str| {
-        ExecutionIntentError::FrozenIdentityMismatch(format!(
-            "plan step {}: {detail}",
-            step.id
-        ))
+        ExecutionIntentError::FrozenIdentityMismatch(format!("plan step {}: {detail}", step.id))
     };
 
     match &step.operation {
@@ -375,7 +372,9 @@ fn validate_step_semantics(
                 || decision.mountpoint.as_deref() != Some(mountpoint.as_str())
                 || decision.state != lsm_planner::FilesystemDecisionState::ReadyOnlineGrow
             {
-                return Err(mismatch("filesystem decision no longer matches approved intent"));
+                return Err(mismatch(
+                    "filesystem decision no longer matches approved intent",
+                ));
             }
             let mounts = identity
                 .mounts
@@ -517,7 +516,11 @@ pub fn freeze_execution_intent(
     let mut steps = Vec::with_capacity(handoff.plan().steps().len());
     let mut verification_barriers = Vec::new();
     for step in handoff.plan().steps() {
-        validate_step_semantics(step, handoff.target_identity(), handoff.filesystem_decision())?;
+        validate_step_semantics(
+            step,
+            handoff.target_identity(),
+            handoff.filesystem_decision(),
+        )?;
         let frozen = translate_step(step)?;
         if frozen.role == FrozenIntentRole::MutationCandidate {
             verification_barriers.push(VerificationBarrierSpec {
@@ -561,7 +564,6 @@ pub fn freeze_execution_intent(
     manifest.manifest_id = manifest.compute_manifest_id()?;
     Ok(manifest)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -887,7 +889,10 @@ mod tests {
 
         assert_eq!(frozen.len(), source.len());
         assert_eq!(
-            frozen.iter().map(|step| step.plan_step_id).collect::<Vec<_>>(),
+            frozen
+                .iter()
+                .map(|step| step.plan_step_id)
+                .collect::<Vec<_>>(),
             source.iter().map(|step| step.id).collect::<Vec<_>>()
         );
         assert_eq!(
