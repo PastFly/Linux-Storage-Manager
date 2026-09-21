@@ -83,9 +83,10 @@ The next journal is built on a clone, durably persisted, and only then replaces 
 in-memory journal.
 
 On durable reload, the store reconstructs the exact pre-approval journal from the event
-history and verifies its digest against the stored approval binding. An attacker cannot
-make a stale approval valid merely by changing the preconditions digest and recomputing the
-approval ID.
+history and verifies its digest against the stored approval binding. Changing only the stored
+preconditions digest and recomputing the approval ID is therefore insufficient to make a stale
+approval record validate. These SHA-256 values are structural identity fingerprints, not a
+secret-key authenticity mechanism.
 
 ## TDD evidence for M1B12
 
