@@ -204,8 +204,10 @@ M1B12 records an explicit operator decision without enabling storage mutation.
 - durable reload requires an approval transition and binding to appear together, validates every
   binding identity, verifies the approval fingerprint, reconstructs the exact pre-approval
   journal from history, and requires its SHA-256 to match the stored preconditions-journal digest;
-- changing a journal digest and recomputing the approval fingerprint therefore still fails
-  closed;
+- changing only the stored journal digest and recomputing the approval fingerprint therefore
+  still fails closed;
+- SHA-256 IDs/fingerprints provide exact structural identity matching here; they are not a
+  secret-key authenticity mechanism against an actor that can arbitrarily rewrite trusted state;
 - the approved journal remains before the mutation boundary:
   `mutation_may_have_started=false`;
 - owner acceptance remains explicitly required and `MUTATION_ENABLED` remains false.
