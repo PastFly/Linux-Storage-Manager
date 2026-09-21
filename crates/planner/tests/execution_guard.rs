@@ -1,7 +1,7 @@
 use lsm_core::HostSnapshot;
 use lsm_planner::{
-    build_execution_guard_plan, capture_target_identity, GuardPlanStatus, JournalError,
-    JournalPhase, JournalTransition, LayerRouteStatus, LockScope, OperationJournal,
+    build_execution_guard_plan, capture_target_identity, ExactApprovalBinding, GuardPlanStatus,
+    JournalError, JournalPhase, JournalTransition, LayerRouteStatus, LockScope, OperationJournal,
     ResumeDisposition, HOST_STORAGE_LOCK_PATH,
 };
 use serde_json::json;
@@ -52,6 +52,19 @@ fn guard() -> lsm_planner::ExecutionGuardPlan {
     build_execution_guard_plan("plan-test-001", &manifest).unwrap()
 }
 
+fn approval(guard: &lsm_planner::ExecutionGuardPlan) -> ExactApprovalBinding {
+    let mut approval = ExactApprovalBinding {
+        approval_id: String::new(),
+        plan_id: guard.plan_id.clone(),
+        evidence_bundle_id: "evidence-test-001".to_owned(),
+        target_manifest_digest: guard.baseline_manifest_digest.clone(),
+        locked_session_id: "session-test-001".to_owned(),
+        preconditions_journal_digest: "journal-test-001".to_owned(),
+    };
+    approval.approval_id = approval.expected_approval_id().unwrap();
+    approval
+}
+
 #[test]
 fn guard_uses_one_nonblocking_host_exclusive_storage_lock() {
     let guard = guard();
@@ -94,13 +107,16 @@ fn journal_happy_path_requires_exact_order_and_exact_identity() {
     journal
         .apply(JournalTransition::PreconditionsVerified)
         .unwrap();
+    let approval = approval(&guard);
     journal
         .apply(JournalTransition::ExactPlanApproved {
             approved_plan_id: &guard.plan_id,
+            approval: &approval,
         })
         .unwrap();
 
     assert_eq!(journal.phase, JournalPhase::Approved);
+    assert_eq!(journal.approval.as_ref(), Some(&approval));
     assert_eq!(
         journal.resume_disposition(),
         ResumeDisposition::RestartFromFreshPlan
@@ -161,9 +177,11 @@ fn approval_for_another_plan_is_rejected() {
         .apply(JournalTransition::PreconditionsVerified)
         .unwrap();
 
+    let approval = approval(&guard);
     let error = journal
         .apply(JournalTransition::ExactPlanApproved {
             approved_plan_id: "older-plan-id",
+            approval: &approval,
         })
         .unwrap_err();
 
@@ -204,9 +222,11 @@ fn interruption_after_execution_boundary_requires_reconciliation_not_replay() {
     journal
         .apply(JournalTransition::PreconditionsVerified)
         .unwrap();
+    let approval = approval(&guard);
     journal
         .apply(JournalTransition::ExactPlanApproved {
             approved_plan_id: &guard.plan_id,
+            approval: &approval,
         })
         .unwrap();
     journal.apply(JournalTransition::ExecutionStarted).unwrap();
@@ -244,9 +264,11 @@ fn abort_after_execution_boundary_is_recovery_required() {
     journal
         .apply(JournalTransition::PreconditionsVerified)
         .unwrap();
+    let approval = approval(&guard);
     journal
         .apply(JournalTransition::ExactPlanApproved {
             approved_plan_id: &guard.plan_id,
+            approval: &approval,
         })
         .unwrap();
     journal.apply(JournalTransition::ExecutionStarted).unwrap();
