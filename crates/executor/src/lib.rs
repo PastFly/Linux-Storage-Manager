@@ -3,6 +3,7 @@ mod backup_manifest;
 mod journal_store;
 mod locked_session;
 mod precondition_evidence;
+mod preconditions;
 
 pub use backup_capture::{
     capture_metadata_backups, revalidate_metadata_backup_receipt, BackupArtifactReceipt,
@@ -19,6 +20,9 @@ pub use locked_session::{
 pub use precondition_evidence::{
     build_pre_mutation_evidence, PreMutationEvidenceBundle, PreMutationEvidenceError,
     PreMutationEvidenceStatus,
+};
+pub use preconditions::{
+    verify_preconditions, PreconditionsVerification, PreconditionsVerificationError,
 };
 
 use std::fs::{self, File, OpenOptions};
