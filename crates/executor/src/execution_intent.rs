@@ -367,6 +367,63 @@ mod tests {
     use super::*;
     use lsm_planner::PlanStep;
 
+    fn graph_step(id: u32, depends_on: Vec<u32>) -> lsm_planner::PlanStep {
+        lsm_planner::PlanStep {
+            id,
+            depends_on,
+            operation: Operation::RevalidateSnapshot,
+            reversibility: Reversibility::NotApplicable,
+        }
+    }
+
+    #[test]
+    fn duplicate_step_id_is_rejected() {
+        let steps = vec![graph_step(1, vec![]), graph_step(1, vec![])];
+        assert!(matches!(
+            validate_dependency_graph(&steps),
+            Err(ExecutionIntentError::DuplicateStepId(1))
+        ));
+    }
+
+    #[test]
+    fn zero_step_id_is_rejected() {
+        let steps = vec![graph_step(0, vec![])];
+        assert!(matches!(
+            validate_dependency_graph(&steps),
+            Err(ExecutionIntentError::ZeroStepId)
+        ));
+    }
+
+    #[test]
+    fn unknown_dependency_is_rejected() {
+        let steps = vec![graph_step(1, vec![]), graph_step(2, vec![99])];
+        assert!(matches!(
+            validate_dependency_graph(&steps),
+            Err(ExecutionIntentError::UnknownDependency {
+                step_id: 2,
+                dependency: 99
+            })
+        ));
+    }
+
+    #[test]
+    fn self_dependency_is_rejected() {
+        let steps = vec![graph_step(1, vec![1])];
+        assert!(matches!(
+            validate_dependency_graph(&steps),
+            Err(ExecutionIntentError::SelfDependency(1))
+        ));
+    }
+
+    #[test]
+    fn dependency_cycle_is_rejected() {
+        let steps = vec![graph_step(1, vec![2]), graph_step(2, vec![1])];
+        assert!(matches!(
+            validate_dependency_graph(&steps),
+            Err(ExecutionIntentError::DependencyCycle)
+        ));
+    }
+
     #[test]
     fn mapping_preserves_every_source_step_exactly_once() {
         let source = vec![
