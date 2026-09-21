@@ -187,7 +187,7 @@ impl<'a> LockedExecutionSession<'a> {
         Ok(())
     }
 
-    pub(crate) fn persist_preconditions_verified(&mut self) -> Result<(), LockedSessionError> {
+    pub(crate) fn require_current_durable_journal(&self) -> Result<(), LockedSessionError> {
         let store = self
             .journal_store
             .ok_or(LockedSessionError::DurableJournalRequired)?;
@@ -195,6 +195,14 @@ impl<'a> LockedExecutionSession<'a> {
         if persisted != self.journal {
             return Err(LockedSessionError::DurableJournalMismatch);
         }
+        Ok(())
+    }
+
+    pub(crate) fn persist_preconditions_verified(&mut self) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
 
         let mut next = self.journal.clone();
         next.apply(JournalTransition::PreconditionsVerified)?;
@@ -208,13 +216,10 @@ impl<'a> LockedExecutionSession<'a> {
         approved_plan_id: &str,
         approval: &ExactApprovalBinding,
     ) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
         let store = self
             .journal_store
             .ok_or(LockedSessionError::DurableJournalRequired)?;
-        let persisted = store.load(&self.journal.journal_id)?;
-        if persisted != self.journal {
-            return Err(LockedSessionError::DurableJournalMismatch);
-        }
 
         let mut next = self.journal.clone();
         next.apply(JournalTransition::ExactPlanApproved {
