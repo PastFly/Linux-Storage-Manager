@@ -262,19 +262,19 @@ fn validate_journal(journal: &OperationJournal) -> Result<(), JournalStoreError>
 }
 
 fn validate_approval_binding(journal: &OperationJournal) -> Result<(), JournalStoreError> {
-    let approval_transition_seen = journal.events.iter().any(|event| {
+    let approval_transition_index = journal.events.iter().position(|event| {
         event.from == JournalPhase::PreconditionsVerified && event.to == JournalPhase::Approved
     });
 
-    match (&journal.approval, approval_transition_seen) {
-        (None, false) => Ok(()),
-        (None, true) => Err(JournalStoreError::InvalidRecord(
+    match (&journal.approval, approval_transition_index) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(JournalStoreError::InvalidRecord(
             "approved journal is missing the exact approval binding".to_owned(),
         )),
-        (Some(_), false) => Err(JournalStoreError::InvalidRecord(
+        (Some(_), None) => Err(JournalStoreError::InvalidRecord(
             "journal contains an approval binding without an approval transition".to_owned(),
         )),
-        (Some(binding), true) => {
+        (Some(binding), Some(approval_index)) => {
             for (value, label) in [
                 (binding.approval_id.as_str(), "approval ID"),
                 (binding.plan_id.as_str(), "approval plan ID"),
@@ -305,6 +305,19 @@ fn validate_approval_binding(journal: &OperationJournal) -> Result<(), JournalSt
             if !binding.integrity_matches()? {
                 return Err(JournalStoreError::InvalidRecord(
                     "approval binding fingerprint does not match its contents".to_owned(),
+                ));
+            }
+
+            let mut preconditions = journal.clone();
+            preconditions.phase = JournalPhase::PreconditionsVerified;
+            preconditions.mutation_may_have_started = false;
+            preconditions.approval = None;
+            preconditions.events.truncate(approval_index);
+            let expected_digest = crate::preconditions::journal_digest(&preconditions)?;
+            if binding.preconditions_journal_digest != expected_digest {
+                return Err(JournalStoreError::InvalidRecord(
+                    "approval binding does not match the exact preconditions journal state"
+                        .to_owned(),
                 ));
             }
             Ok(())
