@@ -1,4 +1,6 @@
-use lsm_planner::{JournalPhase, Operation, Reversibility};
+use std::collections::BTreeMap;
+
+use lsm_planner::{JournalPhase, Operation, PlanStep, Reversibility};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -187,12 +189,73 @@ pub enum ExecutionIntentError {
     ApprovalBindingMismatch,
     #[error("owner acceptance must remain an explicit future gate")]
     OwnerAcceptanceInvariant,
+    #[error("plan step ID must be non-zero")]
+    ZeroStepId,
+    #[error("duplicate plan step ID {0}")]
+    DuplicateStepId(u32),
+    #[error("plan step {step_id} depends on unknown step {dependency}")]
+    UnknownDependency { step_id: u32, dependency: u32 },
+    #[error("plan step {0} depends on itself")]
+    SelfDependency(u32),
+    #[error("plan dependency graph contains a cycle")]
+    DependencyCycle,
     #[error("approved operation is not yet representable as M1B13 semantic intent")]
     UnsupportedOperation,
     #[error("could not serialize frozen execution intent: {0}")]
     Serialization(#[from] serde_json::Error),
     #[error("locked-session durable state verification failed: {0}")]
     Session(#[from] LockedSessionError),
+}
+
+fn validate_dependency_graph(steps: &[PlanStep]) -> Result<(), ExecutionIntentError> {
+    let mut by_id = BTreeMap::new();
+    for step in steps {
+        if step.id == 0 {
+            return Err(ExecutionIntentError::ZeroStepId);
+        }
+        if by_id.insert(step.id, step).is_some() {
+            return Err(ExecutionIntentError::DuplicateStepId(step.id));
+        }
+    }
+
+    for step in steps {
+        for dependency in &step.depends_on {
+            if *dependency == step.id {
+                return Err(ExecutionIntentError::SelfDependency(step.id));
+            }
+            if !by_id.contains_key(dependency) {
+                return Err(ExecutionIntentError::UnknownDependency {
+                    step_id: step.id,
+                    dependency: *dependency,
+                });
+            }
+        }
+    }
+
+    fn visit(
+        id: u32,
+        by_id: &BTreeMap<u32, &PlanStep>,
+        states: &mut BTreeMap<u32, u8>,
+    ) -> Result<(), ExecutionIntentError> {
+        match states.get(&id).copied() {
+            Some(1) => return Err(ExecutionIntentError::DependencyCycle),
+            Some(2) => return Ok(()),
+            _ => {}
+        }
+        states.insert(id, 1);
+        let step = by_id[&id];
+        for dependency in &step.depends_on {
+            visit(*dependency, by_id, states)?;
+        }
+        states.insert(id, 2);
+        Ok(())
+    }
+
+    let mut states = BTreeMap::new();
+    for id in by_id.keys().copied() {
+        visit(id, &by_id, &mut states)?;
+    }
+    Ok(())
 }
 
 fn translate_step(step: &lsm_planner::PlanStep) -> Result<FrozenIntentStep, ExecutionIntentError> {
@@ -313,6 +376,8 @@ pub fn freeze_execution_intent(
     if !approval.owner_acceptance_required() || !handoff.owner_acceptance_required() {
         return Err(ExecutionIntentError::OwnerAcceptanceInvariant);
     }
+
+    validate_dependency_graph(handoff.plan().steps())?;
 
     let mut steps = Vec::with_capacity(handoff.plan().steps().len());
     let mut verification_barriers = Vec::new();
