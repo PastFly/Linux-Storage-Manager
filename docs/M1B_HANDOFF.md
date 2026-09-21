@@ -69,16 +69,13 @@ M1B12 durably records only:
 
 `PreconditionsVerified -> Approved`
 
-The exact schema-v1 approval binding remains part of the durable journal. It does not authorize
-this codebase to enter `Executing`.
+The exact schema-v1 approval binding remains part of the durable journal. It does not authorize this codebase to enter `Executing`.
 
 ### M1B13 — frozen execution intent
 
 Current branch: `feature/m1b13-frozen-execution-intent`.
 
-M1B13 freezes the exact approved `PlanStep` graph into typed semantic intent plus mandatory
-read-only verification barriers. It adds no journal transition, keeps the journal exactly
-`Approved`, and keeps `MUTATION_ENABLED=false`.
+M1B13 freezes the exact approved `PlanStep` graph into typed semantic intent plus mandatory read-only verification barriers. It adds no journal transition and keeps `MUTATION_ENABLED=false`.
 
 ## ExactApprovalBinding
 
