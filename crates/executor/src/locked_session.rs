@@ -939,8 +939,7 @@ mod tests {
             &approval_store,
         )
         .unwrap();
-        let approval =
-            approved_session(&mut approval_session, &handoff, &snapshot, &capabilities);
+        let approval = approved_session(&mut approval_session, &handoff, &snapshot, &capabilities);
         drop(approval_session);
         let _ = std::fs::remove_dir_all(approval_path.parent().unwrap());
 
