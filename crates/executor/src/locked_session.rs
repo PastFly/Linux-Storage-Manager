@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use lsm_core::{HostCapabilities, HostSnapshot};
 use lsm_planner::{
-    revalidate_target_identity, ExecutionHandoffStatus, FrozenExecutionHandoff,
-    IdentityRevalidation, JournalError, JournalPhase, JournalTransition, OperationJournal,
-    PlannerError,
+    revalidate_target_identity, ExactApprovalBinding, ExecutionHandoffStatus,
+    FrozenExecutionHandoff, IdentityRevalidation, JournalError, JournalPhase, JournalTransition,
+    OperationJournal, PlannerError,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -198,6 +198,29 @@ impl<'a> LockedExecutionSession<'a> {
 
         let mut next = self.journal.clone();
         next.apply(JournalTransition::PreconditionsVerified)?;
+        store.persist(&next)?;
+        self.journal = next;
+        Ok(())
+    }
+
+    pub(crate) fn persist_exact_plan_approved(
+        &mut self,
+        approved_plan_id: &str,
+        approval: &ExactApprovalBinding,
+    ) -> Result<(), LockedSessionError> {
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+        let persisted = store.load(&self.journal.journal_id)?;
+        if persisted != self.journal {
+            return Err(LockedSessionError::DurableJournalMismatch);
+        }
+
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::ExactPlanApproved {
+            approved_plan_id,
+            approval,
+        })?;
         store.persist(&next)?;
         self.journal = next;
         Ok(())
