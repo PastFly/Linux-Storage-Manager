@@ -505,4 +505,24 @@ if binding.approval_id != approval.approval_id()
 }
 ```
 
-Separately compare `approv
+Separately compare `approval.journal_id()` to the live journal ID and approval/session/plan/target identities to the handoff. Validate every digest-shaped identity as lowercase 64-char SHA-256 text before fingerprinting the manifest.
+
+Map `LockedSessionError::DurableJournalRequired` and `DurableJournalMismatch` to the corresponding M1B13 errors so callers get a stable M1B13 surface.
+
+- [ ] **Step 5: Verify GREEN and full workspace regression**
+
+```bash
+cargo test -p lsm-executor
+cargo test --locked --workspace
+```
+
+Expected: all pass; `Approved` remains non-mutating.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/executor/src/approval.rs crates/executor/src/locked_session.rs crates/executor/src/execution_intent.rs
+git commit -m "executor: fail closed on stale execution intent approval"
+```
+
+---
