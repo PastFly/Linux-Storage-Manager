@@ -299,6 +299,8 @@ pub enum JournalError {
     IdentityMismatch,
     #[error("approval does not match the exact frozen plan ID")]
     ApprovalMismatch,
+    #[error("approval binding schema is not supported")]
+    ApprovalBindingSchemaMismatch,
     #[error("approval binding does not match the journal plan ID")]
     ApprovalBindingPlanMismatch,
     #[error("approval binding does not match the journal target manifest")]
@@ -372,6 +374,9 @@ impl OperationJournal {
                 }
                 if approved_plan_id != self.plan_id {
                     return Err(JournalError::ApprovalMismatch);
+                }
+                if approval.schema_version != 1 {
+                    return Err(JournalError::ApprovalBindingSchemaMismatch);
                 }
                 if approval.plan_id != self.plan_id {
                     return Err(JournalError::ApprovalBindingPlanMismatch);
