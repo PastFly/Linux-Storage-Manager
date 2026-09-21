@@ -489,6 +489,194 @@ mod tests {
         ));
     }
 
+    fn semantic_identity() -> lsm_planner::TargetIdentityManifest {
+        lsm_planner::TargetIdentityManifest {
+            schema_version: 1,
+            target: "/".into(),
+            manifest_digest: "a".repeat(64),
+            resolved_device: "/dev/mapper/vg0-root".into(),
+            route_status: lsm_planner::LayerRouteStatus::SupportedProfile,
+            route_issue_codes: vec![],
+            devices: vec![],
+            partitions: vec![lsm_planner::PartitionGeometryIdentity {
+                partition: "/dev/vda1".into(),
+                disk: Some("/dev/vda".into()),
+                table_label: Some("gpt".into()),
+                table_id: Some("gpt-1".into()),
+                sector_size_bytes: Some(4096),
+                start_sector: Some(256),
+                size_sectors: Some(4096),
+                record_uuid: Some("part-1".into()),
+            }],
+            lvm: vec![
+                lsm_planner::LvmIdentity {
+                    kind: lsm_planner::LvmIdentityKind::VolumeGroup,
+                    name: "vg0".into(),
+                    uuid: Some("vg-1".into()),
+                    size_bytes: 16 * 1024 * 1024 * 1024,
+                    free_bytes: Some(8 * 1024 * 1024 * 1024),
+                    extent_size_bytes: Some(4 * 1024 * 1024),
+                    free_extent_count: Some(2048),
+                    pv_count: Some(1),
+                    lv_count: Some(1),
+                    attributes: Some("wz--n-".into()),
+                    layout: None,
+                    role: None,
+                },
+                lsm_planner::LvmIdentity {
+                    kind: lsm_planner::LvmIdentityKind::LogicalVolume,
+                    name: "root".into(),
+                    uuid: Some("lv-1".into()),
+                    size_bytes: 8 * 1024 * 1024 * 1024,
+                    free_bytes: None,
+                    extent_size_bytes: None,
+                    free_extent_count: None,
+                    pv_count: None,
+                    lv_count: None,
+                    attributes: Some("-wi-ao----".into()),
+                    layout: Some("linear".into()),
+                    role: Some("public".into()),
+                },
+            ],
+            filesystem: Some(lsm_planner::FilesystemIdentity {
+                device: "/dev/mapper/vg0-root".into(),
+                fs_type: "ext4".into(),
+                fs_version: Some("1.0".into()),
+                uuid: Some("fs-1".into()),
+                backing_device_size_bytes: 8 * 1024 * 1024 * 1024,
+                observed_filesystem_size_bytes: Some(8 * 1024 * 1024 * 1024),
+            }),
+            mounts: vec![lsm_planner::MountIdentity {
+                target: "/".into(),
+                source: Some("/dev/vg0/root".into()),
+                fs_type: Some("ext4".into()),
+                options: vec!["rw".into()],
+            }],
+        }
+    }
+
+    fn semantic_decision() -> lsm_planner::FilesystemGrowthDecision {
+        lsm_planner::FilesystemGrowthDecision {
+            target: "/".into(),
+            device: Some("/dev/mapper/vg0-root".into()),
+            mountpoint: Some("/".into()),
+            fs_type: Some("ext4".into()),
+            state: lsm_planner::FilesystemDecisionState::ReadyOnlineGrow,
+            metadata_state: None,
+            read_only_check: None,
+            reasons: vec![],
+            required_actions: vec![],
+        }
+    }
+
+    #[test]
+    fn four_kn_partition_geometry_is_preserved_exactly() {
+        let step = PlanStep {
+            id: 4,
+            depends_on: vec![3],
+            operation: Operation::ExtendPartition {
+                partition: "/dev/vda1".into(),
+                start_sector: 256,
+                old_size_sectors: 4096,
+                new_size_sectors: 8192,
+                sector_size_bytes: 4096,
+            },
+            reversibility: Reversibility::Irreversible,
+        };
+        let identity = semantic_identity();
+        validate_step_semantics(&step, &identity, &semantic_decision()).unwrap();
+        let translated = translate_step(&step).unwrap();
+        assert!(matches!(
+            translated.action,
+            FrozenIntentAction::ExtendPartition {
+                start_sector: 256,
+                old_size_sectors: 4096,
+                new_size_sectors: 8192,
+                sector_size_bytes: 4096,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn partition_start_or_old_size_mismatch_is_rejected() {
+        let step = PlanStep {
+            id: 4,
+            depends_on: vec![],
+            operation: Operation::ExtendPartition {
+                partition: "/dev/vda1".into(),
+                start_sector: 257,
+                old_size_sectors: 4096,
+                new_size_sectors: 8192,
+                sector_size_bytes: 4096,
+            },
+            reversibility: Reversibility::Irreversible,
+        };
+        assert!(matches!(
+            validate_step_semantics(&step, &semantic_identity(), &semantic_decision()),
+            Err(ExecutionIntentError::FrozenIdentityMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn duplicate_matching_lv_uuid_is_rejected() {
+        let mut identity = semantic_identity();
+        identity.lvm.push(identity.lvm[1].clone());
+        let step = PlanStep {
+            id: 5,
+            depends_on: vec![],
+            operation: Operation::ExtendLogicalVolume {
+                lv_uuid: "lv-1".into(),
+                additional_extents: 256,
+                expected_lv_size_bytes: 9 * 1024 * 1024 * 1024,
+            },
+            reversibility: Reversibility::Irreversible,
+        };
+        assert!(matches!(
+            validate_step_semantics(&step, &identity, &semantic_decision()),
+            Err(ExecutionIntentError::FrozenIdentityMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn filesystem_mountpoint_mismatch_is_rejected() {
+        let mut identity = semantic_identity();
+        identity.mounts[0].target = "/other".into();
+        let step = PlanStep {
+            id: 6,
+            depends_on: vec![],
+            operation: Operation::GrowFilesystem {
+                fs_type: "ext4".into(),
+                mountpoint: "/".into(),
+            },
+            reversibility: Reversibility::Irreversible,
+        };
+        assert!(matches!(
+            validate_step_semantics(&step, &identity, &semantic_decision()),
+            Err(ExecutionIntentError::FrozenIdentityMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn invalid_partition_sector_size_is_rejected() {
+        let step = PlanStep {
+            id: 4,
+            depends_on: vec![],
+            operation: Operation::ExtendPartition {
+                partition: "/dev/vda1".into(),
+                start_sector: 256,
+                old_size_sectors: 4096,
+                new_size_sectors: 8192,
+                sector_size_bytes: 1024,
+            },
+            reversibility: Reversibility::Irreversible,
+        };
+        assert!(matches!(
+            validate_step_semantics(&step, &semantic_identity(), &semantic_decision()),
+            Err(ExecutionIntentError::FrozenIdentityMismatch(_))
+        ));
+    }
+
     #[test]
     fn mapping_preserves_every_source_step_exactly_once() {
         let source = vec![
