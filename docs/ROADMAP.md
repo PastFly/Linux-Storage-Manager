@@ -104,6 +104,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Freeze locked identity, fresh filesystem policy and revalidated backup evidence into a non-mutating pre-mutation evidence bundle without advancing the journal.
 - [x] Durably verify exact current-session pre-mutation evidence and advance only `IdentityRevalidated -> PreconditionsVerified` while mutation remains disabled.
 - [x] Bind explicit operator approval to the exact plan/evidence/current target and exact `PreconditionsVerified` journal state, and durably advance only `PreconditionsVerified -> Approved` while mutation remains disabled.
+- [x] Freeze the exact approved semantic `PlanStep` graph into a deterministic non-executable execution-intent manifest with per-mutation verification barriers, while leaving the durable journal at `Approved` and mutation disabled.
 - [x] Add partition-table metadata backup plus a recovery drill.
 - [x] Add LVM metadata backup plus a recovery drill.
 - [ ] Grow GPT/MBR partitions where safe without moving a partition start.
