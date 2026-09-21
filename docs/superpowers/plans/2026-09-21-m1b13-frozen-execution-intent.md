@@ -62,4 +62,6 @@ git commit -m "docs: advance continuity to merged M1B12"
 
 **Files:** create `crates/executor/src/execution_intent.rs`; modify `crates/executor/src/lib.rs`, `crates/executor/src/locked_session.rs`.
 
-**Interfaces:
+**Interfaces:** consumes `LockedExecutionSession<'_>`, `ExactPlanApproval`, approved `OperationJournal`, `FrozenExecutionHandoff::plan()`; produces `freeze_execution_intent(...)`, `require_current_durable_journal()`, and immutable manifest getters.
+
+- [ ] **Step 1: Write RED test `exact_approved_session_freezes_non_executable_intent`.** Compose existing revalidation/preconditions/approval helpers to reach `Approved`, retain `before = session.journal().clone()`, call `freeze_execution_intent`, and assert:
