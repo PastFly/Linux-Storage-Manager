@@ -41,6 +41,12 @@ impl PreconditionsVerification {
     pub fn journal_digest(&self) -> &str {
         &self.journal_digest
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_with_journal_digest(mut self, value: String) -> Self {
+        self.journal_digest = value;
+        self
+    }
 }
 
 #[derive(Debug, Error)]
