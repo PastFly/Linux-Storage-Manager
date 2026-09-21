@@ -509,6 +509,7 @@ pub fn freeze_execution_intent(
         || binding.plan_id != approval.plan_id()
         || binding.target_manifest_digest != approval.target_manifest_digest()
         || binding.locked_session_id != approval.locked_session_id()
+        || binding.preconditions_journal_digest != approval.preconditions_journal_digest()
     {
         return Err(ExecutionIntentError::ApprovalBindingMismatch);
     }
