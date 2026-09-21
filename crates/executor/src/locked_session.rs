@@ -992,6 +992,49 @@ mod tests {
     }
 
     #[test]
+    fn exact_approved_session_freezes_non_executable_intent() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("execution-intent-red");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let (evidence, verified) =
+            verified_preconditions(&mut session, &handoff, &snapshot, &capabilities);
+        let approval = crate::approve_exact_plan(
+            &mut session,
+            &verified,
+            handoff.plan().plan_id(),
+            evidence.bundle_id(),
+            &handoff.target_identity().manifest_digest,
+        )
+        .unwrap();
+        let before = session.journal().clone();
+
+        let manifest = crate::freeze_execution_intent(&session, &approval).unwrap();
+
+        assert_eq!(
+            manifest.status(),
+            crate::ExecutionIntentManifestStatus::FrozenNonExecutable
+        );
+        assert_eq!(manifest.approval_id(), approval.approval_id());
+        assert_eq!(manifest.plan_id(), handoff.plan().plan_id());
+        assert_eq!(manifest.steps().len(), handoff.plan().steps().len());
+        assert!(manifest.owner_acceptance_required());
+        assert!(!manifest.mutation_enabled());
+        assert_eq!(session.journal(), &before);
+        assert_eq!(session.journal().phase, JournalPhase::Approved);
+        assert!(!session.journal().mutation_may_have_started);
+        assert_eq!(store.load(&before.journal_id).unwrap(), before);
+
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn approval_rejects_foreign_explicit_plan_id() {
         let (snapshot, capabilities) = fixture();
         let handoff = handoff(&snapshot, &capabilities);
