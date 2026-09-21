@@ -470,8 +470,7 @@ mod tests {
         capabilities: &HostCapabilities,
     ) -> crate::ExactPlanApproval {
         session.revalidate(snapshot, capabilities).unwrap();
-        let (evidence, verified) =
-            verified_preconditions(session, handoff, snapshot, capabilities);
+        let (evidence, verified) = verified_preconditions(session, handoff, snapshot, capabilities);
         crate::approve_exact_plan(
             session,
             &verified,
@@ -796,19 +795,13 @@ mod tests {
         );
         assert_eq!(manifest.approval_id(), approval.approval_id());
         assert_eq!(manifest.plan_id(), handoff.plan().plan_id());
-        assert_eq!(
-            manifest.evidence_bundle_id(),
-            approval.evidence_bundle_id()
-        );
+        assert_eq!(manifest.evidence_bundle_id(), approval.evidence_bundle_id());
         assert_eq!(
             manifest.target_manifest_digest(),
             handoff.target_identity().manifest_digest
         );
         assert_eq!(manifest.locked_session_id(), session.session_id());
-        assert_eq!(
-            manifest.approved_journal_id(),
-            session.journal().journal_id
-        );
+        assert_eq!(manifest.approved_journal_id(), session.journal().journal_id);
         assert_eq!(manifest.steps().len(), handoff.plan().steps().len());
         assert_eq!(
             manifest.verification_barriers().len(),
