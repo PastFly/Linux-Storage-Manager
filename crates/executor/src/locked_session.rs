@@ -592,27 +592,595 @@ mod tests {
         let result = session.revalidate(&snapshot, &capabilities).unwrap();
         assert_eq!(result.status, LockedRevalidationStatus::Revalidated);
 
-        let backup = crate::backup_capture::test_backup_receipt_revalidation(
-            handoff.handoff_id(),
-            handoff.plan().plan_id(),
-            &handoff.target_identity().manifest_digest,
+        let second = LockedExecutionSession::begin_at_path(&handoff, &path);
+        assert!(matches!(
+            second,
+            Err(LockedSessionError::Lock(HostLockError::Busy))
+        ));
+
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
             true,
             Vec::new(),
         );
-        let evidence =
-            crate::build_pre_mutation_evidence(&session, &snapshot, &capabilities, &backup).unwrap();
         assert_eq!(
             evidence.status(),
             crate::PreMutationEvidenceStatus::EvidenceComplete
         );
+        assert_eq!(evidence.locked_session_id(), session.session_id());
+        assert!(evidence.owner_acceptance_required());
 
-        crate::verify_preconditions(&mut session, &evidence).unwrap();
+        let verified = crate::verify_preconditions(&mut session, &evidence).unwrap();
 
+        assert_eq!(verified.bundle_id(), evidence.bundle_id());
+        assert_eq!(verified.locked_session_id(), session.session_id());
         assert_eq!(session.journal().phase, JournalPhase::PreconditionsVerified);
+        assert!(!session.journal().mutation_may_have_started);
         let persisted = store.load(&session.journal().journal_id).unwrap();
         assert_eq!(persisted.phase, JournalPhase::PreconditionsVerified);
         assert_eq!(persisted, *session.journal());
 
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn foreign_plan_id_is_rejected_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("foreign-plan");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        )
+        .test_with_plan_id("c".repeat(64));
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::PlanBindingMismatch)
+        ));
+        assert_identity_revalidated_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn foreign_handoff_id_is_rejected_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("foreign-handoff");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        )
+        .test_with_handoff_id("d".repeat(64));
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::HandoffBindingMismatch)
+        ));
+        assert_identity_revalidated_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn changed_target_manifest_binding_is_rejected_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("foreign-target");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        )
+        .test_with_target_manifest_digest("e".repeat(64));
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::TargetBindingMismatch)
+        ));
+        assert_identity_revalidated_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tampered_backup_receipt_evidence_is_rejected_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("tampered-backup");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            false,
+            vec!["artifact SHA-256 changed".into()],
+        );
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::BackupReceiptNotRevalidated)
+        ));
+        assert_identity_revalidated_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_backup_binding_is_rejected_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("missing-backup");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        )
+        .test_without_backup();
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::BackupBindingInvalid)
+        ));
+        assert_identity_revalidated_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mutation_enabled_evidence_is_rejected_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("mutation-flag");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        )
+        .test_with_mutation_enabled();
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::MutationEnabled)
+        ));
+        assert_identity_revalidated_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn filesystem_blocked_state_is_rejected_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("filesystem-blocked");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        )
+        .test_with_filesystem_state(lsm_planner::FilesystemDecisionState::Blocked);
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::FilesystemNotReady)
+        ));
+        assert_identity_revalidated_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn filesystem_adapter_required_state_is_rejected_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("filesystem-adapter");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        )
+        .test_with_filesystem_state(lsm_planner::FilesystemDecisionState::AdapterRequired);
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::FilesystemNotReady)
+        ));
+        assert_identity_revalidated_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stale_capabilities_evidence_is_rejected_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("stale-capabilities");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let mut changed = capabilities.clone();
+        changed.tools[0].available = false;
+        let evidence = evidence(&session, &handoff, &snapshot, &changed, true, Vec::new());
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::EvidenceIncomplete)
+        ));
+        assert_identity_revalidated_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn changed_filesystem_identity_evidence_is_rejected_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("changed-filesystem");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let mut changed = snapshot.clone();
+        changed.storage.block_devices[0].children[0].children[0].uuid = Some("fs-2".into());
+        let evidence = evidence(&session, &handoff, &changed, &capabilities, true, Vec::new());
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::EvidenceIncomplete)
+        ));
+        assert_identity_revalidated_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn required_offline_ext4_check_is_rejected_without_journal_advance() {
+        let (mut snapshot, capabilities) = fixture();
+        snapshot.filesystem_preflight[0].filesystem_state = Some("not clean".into());
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("ext4-offline-check");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        );
+        assert_eq!(
+            evidence.status(),
+            crate::PreMutationEvidenceStatus::FutureChecksRequired
+        );
+        assert!(evidence.filesystem_decision().read_only_check.is_some());
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::EvidenceIncomplete)
+        ));
+        assert_identity_revalidated_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn required_xfs_check_is_rejected_without_journal_advance() {
+        let (snapshot, capabilities) = xfs_fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("xfs-check");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        );
+        assert_eq!(
+            evidence.status(),
+            crate::PreMutationEvidenceStatus::FutureChecksRequired
+        );
+        assert!(evidence.filesystem_decision().read_only_check.is_some());
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::EvidenceIncomplete)
+        ));
+        assert_identity_revalidated_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wrong_journal_phase_is_rejected() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let source_path = lock_path();
+        let mut source = LockedExecutionSession::begin_at_path(&handoff, &source_path).unwrap();
+        source.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &source,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        );
+        drop(source);
+        let _ = std::fs::remove_dir_all(source_path.parent().unwrap());
+
+        let path = lock_path();
+        let root = journal_root("wrong-phase");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::SessionNotIdentityRevalidated)
+        ));
+        assert_eq!(session.journal().phase, JournalPhase::HostLockHeld);
+        let persisted = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(persisted, *session.journal());
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repeated_precondition_transition_is_rejected() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("repeat");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        );
+        crate::verify_preconditions(&mut session, &evidence).unwrap();
+        let first = session.journal().clone();
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::SessionNotIdentityRevalidated)
+        ));
+        assert_eq!(*session.journal(), first);
+        assert_eq!(store.load(&first.journal_id).unwrap(), first);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn evidence_from_previous_locked_session_is_rejected() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let first_path = lock_path();
+        let mut first = LockedExecutionSession::begin_at_path(&handoff, &first_path).unwrap();
+        first.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &first,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        );
+        let first_session_id = first.session_id().to_owned();
+        drop(first);
+        let _ = std::fs::remove_dir_all(first_path.parent().unwrap());
+
+        let path = lock_path();
+        let root = journal_root("session-replay");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        assert_ne!(session.session_id(), first_session_id);
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::SessionBindingMismatch)
+        ));
+        assert_identity_revalidated_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn non_durable_session_cannot_verify_preconditions() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let mut session = LockedExecutionSession::begin_at_path(&handoff, &path).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        );
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::DurableJournalRequired)
+        ));
+        assert_eq!(session.journal().phase, JournalPhase::IdentityRevalidated);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn durable_journal_mismatch_is_rejected_without_memory_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("durable-mismatch");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        );
+
+        let mut stale = lsm_planner::OperationJournal::new(handoff.guard());
+        stale
+            .apply(lsm_planner::JournalTransition::HostLockAcquired)
+            .unwrap();
+        store.persist(&stale).unwrap();
+
+        let result = crate::verify_preconditions(&mut session, &evidence);
+
+        assert!(matches!(
+            result,
+            Err(crate::PreconditionsVerificationError::Session(
+                LockedSessionError::DurableJournalMismatch
+            ))
+        ));
+        assert_eq!(session.journal().phase, JournalPhase::IdentityRevalidated);
+        assert_eq!(store.load(&stale.journal_id).unwrap(), stale);
         drop(session);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
         let _ = std::fs::remove_dir_all(root);
