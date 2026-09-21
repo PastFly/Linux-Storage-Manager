@@ -1,4 +1,5 @@
-use lsm_planner::{FilesystemDecisionState, JournalPhase};
+use lsm_planner::{FilesystemDecisionState, JournalPhase, OperationJournal};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
@@ -11,6 +12,9 @@ pub struct PreconditionsVerification {
     bundle_id: String,
     locked_session_id: String,
     journal_id: String,
+    plan_id: String,
+    target_manifest_digest: String,
+    journal_digest: String,
 }
 
 impl PreconditionsVerification {
@@ -24,6 +28,18 @@ impl PreconditionsVerification {
 
     pub fn journal_id(&self) -> &str {
         &self.journal_id
+    }
+
+    pub fn plan_id(&self) -> &str {
+        &self.plan_id
+    }
+
+    pub fn target_manifest_digest(&self) -> &str {
+        &self.target_manifest_digest
+    }
+
+    pub fn journal_digest(&self) -> &str {
+        &self.journal_digest
     }
 }
 
@@ -150,7 +166,17 @@ pub fn verify_preconditions(
         bundle_id: evidence.bundle_id().to_owned(),
         locked_session_id: session.session_id().to_owned(),
         journal_id: session.journal().journal_id.clone(),
+        plan_id: session.journal().plan_id.clone(),
+        target_manifest_digest: session.journal().baseline_manifest_digest.clone(),
+        journal_digest: journal_digest(session.journal())?,
     })
+}
+
+pub(crate) fn journal_digest(journal: &OperationJournal) -> Result<String, serde_json::Error> {
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(journal)?)
+    ))
 }
 
 fn is_lower_hex_digest(value: &str) -> bool {
