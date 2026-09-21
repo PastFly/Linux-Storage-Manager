@@ -296,6 +296,10 @@ pub enum JournalError {
     ApprovalBindingPlanMismatch,
     #[error("approval binding does not match the journal target manifest")]
     ApprovalBindingTargetMismatch,
+    #[error("approval binding fingerprint does not match its contents")]
+    ApprovalBindingIntegrityMismatch,
+    #[error("approval binding does not match the exact preconditions journal state")]
+    ApprovalBindingJournalMismatch,
     #[error("journal is terminal and cannot advance")]
     Terminal,
 }
@@ -367,6 +371,14 @@ impl OperationJournal {
                 }
                 if approval.target_manifest_digest != self.baseline_manifest_digest {
                     return Err(JournalError::ApprovalBindingTargetMismatch);
+                }
+                if !approval.integrity_matches().unwrap_or(false) {
+                    return Err(JournalError::ApprovalBindingIntegrityMismatch);
+                }
+                if fingerprint(self).ok().as_deref()
+                    != Some(approval.preconditions_journal_digest.as_str())
+                {
+                    return Err(JournalError::ApprovalBindingJournalMismatch);
                 }
                 self.advance(
                     JournalPhase::PreconditionsVerified,
