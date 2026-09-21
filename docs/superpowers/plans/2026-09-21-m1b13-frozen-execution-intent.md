@@ -199,3 +199,54 @@ git commit -m "executor: freeze approved semantic execution intent"
 ```
 
 ---
+
+### Task 3: Prove exact one-to-one mapping, determinism and barrier coverage
+
+**Files:** modify/test `crates/executor/src/execution_intent.rs`.
+
+**Interfaces:** consumes `&[PlanStep]`; produces `Vec<FrozenIntentStep>` and `Vec<VerificationBarrierSpec>` with no synthesized mutation.
+
+- [ ] **Step 1: Write RED unit tests**
+
+Add `mapping_preserves_every_source_step_exactly_once`, `manifest_id_is_stable_for_identical_inputs`, and `barriers_cover_exactly_mutation_candidates`.
+
+Core assertions:
+
+```rust
+let frozen = translate_steps(source, identity, decision).unwrap();
+assert_eq!(
+    frozen.iter().map(|s| s.plan_step_id).collect::<Vec<_>>(),
+    source.iter().map(|s| s.id).collect::<Vec<_>>()
+);
+assert_eq!(
+    frozen.iter().map(|s| &s.depends_on).collect::<Vec<_>>(),
+    source.iter().map(|s| &s.depends_on).collect::<Vec<_>>()
+);
+
+let source_mutations = source.iter().filter(|s| matches!(
+    s.operation,
+    Operation::ExtendPartition { .. }
+        | Operation::ExtendLogicalVolume { .. }
+        | Operation::GrowFilesystem { .. }
+)).count();
+let frozen_mutations = frozen.iter()
+    .filter(|s| s.role == FrozenIntentRole::MutationCandidate)
+    .count();
+assert_eq!(frozen_mutations, source_mutations);
+assert_eq!(barriers.len(), source_mutations);
+```
+
+For determinism call `freeze_execution_intent` twice without changing the session and assert identical manifests/IDs.
+
+- [ ] **Step 2: Verify RED**
+
+```bash
+cargo test -p lsm-executor execution_intent::tests::mapping_preserves_every_source_step_exactly_once
+cargo test -p lsm-executor execution_intent::tests::manifest_id_is_stable_for_identical_inputs
+```
+
+Expected: at least one assertion fails until exact mapping/fingerprint behavior is implemented.
+
+- [ ] **Step 3: Implement exact mapping invariants**
+
+Use a single exhaustiv
