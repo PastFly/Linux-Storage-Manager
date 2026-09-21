@@ -165,3 +165,20 @@ Before any production path can enter `Executing`, separately review:
 - disposable integration matrix.
 
 Backups and approval are defense-in-depth. Neither permits bypassing topology proof.
+
+
+## M1B13 frozen execution intent contract
+
+M1B13 freezes the exact M1B12-approved plan into `FrozenExecutionIntentManifest`.
+
+The manifest binds approval ID, approved journal ID/digest, plan ID, evidence bundle ID, target
+manifest digest and locked-session ID. Every source `PlanStep` is represented exactly once,
+dependency lists are preserved, and malformed/cyclic graphs fail closed.
+
+Semantic actions are typed as pre-execution evidence, mutation candidates or verification.
+No `pvresize` or other absent mutation is synthesized. Every mutation candidate receives a
+read-only barrier requiring fresh target identity, fresh capabilities, expected-state validation
+and stop-on-mismatch before any later mutation can be considered by a future executor.
+
+Freezing the manifest does not change the durable journal: it remains `Approved`, with
+`mutation_may_have_started=false` and `MUTATION_ENABLED=false`.
