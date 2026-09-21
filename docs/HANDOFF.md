@@ -55,6 +55,7 @@ It additionally proves that the M1B11 `PreconditionsVerification` belongs to:
 The SHA-256 digest of that pre-approval journal is frozen into a structured
 `ExactApprovalBinding`. The durable journal stores that binding, including:
 
+- approval-binding schema version (currently v1);
 - approval ID;
 - plan ID;
 - evidence bundle ID;
@@ -96,7 +97,10 @@ The milestone has explicit RED proofs:
   the dedicated regression test failed until the transition itself validated that digest;
 - **CI #484**: durable reload accepted a tampered preconditions-journal binding even after
   its approval fingerprint was recomputed; the journal store was then hardened to reconstruct
-  and verify the original `PreconditionsVerified` state.
+  and verify the original `PreconditionsVerified` state;
+- **CI #499**: durable reload ignored an injected unknown approval-binding schema field; the
+  binding now carries an explicit schema version, v1 is part of its fingerprint, and any other
+  durable approval schema fails closed.
 
 Final PR-head CI numbers must be read live from PR #26; do not copy an intermediate run as
 release evidence.
