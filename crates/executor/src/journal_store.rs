@@ -278,12 +278,18 @@ fn validate_approval_binding(journal: &OperationJournal) -> Result<(), JournalSt
             for (value, label) in [
                 (binding.approval_id.as_str(), "approval ID"),
                 (binding.plan_id.as_str(), "approval plan ID"),
-                (binding.evidence_bundle_id.as_str(), "approval evidence bundle ID"),
+                (
+                    binding.evidence_bundle_id.as_str(),
+                    "approval evidence bundle ID",
+                ),
                 (
                     binding.target_manifest_digest.as_str(),
                     "approval target manifest digest",
                 ),
-                (binding.locked_session_id.as_str(), "approval locked session ID"),
+                (
+                    binding.locked_session_id.as_str(),
+                    "approval locked session ID",
+                ),
                 (
                     binding.preconditions_journal_digest.as_str(),
                     "approval preconditions journal digest",
