@@ -482,6 +482,44 @@ mod tests {
     }
 
     #[test]
+    fn exact_precondition_evidence_advances_durable_journal() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("preconditions");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let result = session.revalidate(&snapshot, &capabilities).unwrap();
+        assert_eq!(result.status, LockedRevalidationStatus::Revalidated);
+
+        let backup = crate::backup_capture::test_backup_receipt_revalidation(
+            handoff.handoff_id(),
+            handoff.plan().plan_id(),
+            &handoff.target_identity().manifest_digest,
+            true,
+            Vec::new(),
+        );
+        let evidence =
+            crate::build_pre_mutation_evidence(&session, &snapshot, &capabilities, &backup).unwrap();
+        assert_eq!(
+            evidence.status(),
+            crate::PreMutationEvidenceStatus::EvidenceComplete
+        );
+
+        crate::verify_preconditions(&mut session, &evidence).unwrap();
+
+        assert_eq!(session.journal().phase, JournalPhase::PreconditionsVerified);
+        let persisted = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(persisted.phase, JournalPhase::PreconditionsVerified);
+        assert_eq!(persisted, *session.journal());
+
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn blocked_revalidation_does_not_advance_durable_journal() {
         let (snapshot, capabilities) = fixture();
         let handoff = handoff(&snapshot, &capabilities);
