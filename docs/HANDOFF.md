@@ -32,52 +32,15 @@ Current branch:
 
 `feature/m1b13-frozen-execution-intent`
 
-M1B13 remains strictly non-mutating. It freezes the exact approved semantic `PlanStep`
-graph into a typed, immutable, non-executable intent manifest. It revalidates the current
-locked session, exact approval binding and durable `Approved` journal before freezing.
+M1B13 is still strictly non-mutating. It freezes the exact approved semantic plan into a typed, immutable, non-executable intent manifest. The durable journal remains `Approved`.
 
-M1B13 adds no journal transition. The durable journal remains exactly `Approved`, and
-`MUTATION_ENABLED=false`.
+The approved M1B13 design is in:
 
-## Durable approval safety rules
+`docs/superpowers/specs/2026-09-21-m1b13-frozen-execution-intent-design.md`
 
-Before `PreconditionsVerified -> Approved`:
+The implementation plan is in:
 
-1. the host-exclusive lock is still held by the same session;
-2. the session journal is exactly `PreconditionsVerified`;
-3. a durable journal store is attached;
-4. the durable journal on disk exactly equals the live session journal;
-5. the supplied M1B11 verification matches the same session/journal/plan/target;
-6. the current journal SHA-256 still equals the verification's frozen journal digest;
-7. the explicitly approved plan/evidence/target values exactly match;
-8. mutation remains disabled;
-9. owner acceptance remains an explicit future gate.
-
-The next journal is built on a clone, durably persisted, and only then replaces the
-in-memory journal.
-
-On durable reload, the store reconstructs the exact pre-approval journal from the event
-history and verifies its digest against the stored approval binding. Changing only the stored
-preconditions digest and recomputing the approval ID is therefore insufficient to make a stale
-approval record validate. These SHA-256 values are structural identity fingerprints, not a
-secret-key authenticity mechanism.
-
-## Historical TDD evidence for M1B12
-
-The milestone has explicit RED proofs:
-
-- **CI #472**: initial contract failed because `approve_exact_plan` and durable
-  `OperationJournal.approval` did not exist;
-- **CI #482**: planner accepted an approval whose preconditions-journal binding was changed;
-  the dedicated regression test failed until the transition itself validated that digest;
-- **CI #484**: durable reload accepted a tampered preconditions-journal binding even after
-  its approval fingerprint was recomputed; the journal store was then hardened to reconstruct
-  and verify the original `PreconditionsVerified` state;
-- **CI #499**: durable reload ignored an injected unknown approval-binding schema field; the
-  binding now carries an explicit schema version, v1 is part of its fingerprint, and any other
-  durable approval schema fails closed.
-
-Final M1B12 release evidence is the merged master plus post-merge CI #512 and Portable Linux #391.
+`docs/superpowers/plans/2026-09-21-m1b13-frozen-execution-intent.md`
 
 ## M1B12 regression contract
 
