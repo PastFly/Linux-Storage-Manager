@@ -5,9 +5,9 @@ executor. It remains fail-closed and capability/topology driven.
 
 Verified master baseline on 2026-09-21:
 
-`72594ed3128d5c373e79c53ec81a4d9107817b16`
+`e4c34bf952b942a37b4ea7c79effd2f18162fc03`
 
-That master contains M1B0 through M1B11 and passed post-merge CI #471 and Portable Linux #350.
+That master contains M1B0 through M1B12 and passed post-merge CI #512 and Portable Linux #391. Portable Linux #391 x86_64 succeeded on attempt #2 after attempt #1 hit an external Docker Hub connection reset while pulling `almalinux:9`.
 
 ## Non-negotiable boundary
 
@@ -62,31 +62,23 @@ owner acceptance/mutation as future gates.
 
 ### M1B12 — exact-plan approval
 
-Current PR: **#26**, branch `feature/m1b12-exact-plan-approval`.
+Merged as PR #26 at master `e4c34bf952b942a37b4ea7c79effd2f18162fc03`.
+Post-merge CI #512 and Portable Linux #391 succeeded.
 
-M1B12 adds only:
+M1B12 durably records only:
 
 `PreconditionsVerified -> Approved`
 
-It does not cross into `Executing`.
+The exact schema-v1 approval binding remains part of the durable journal. It does not authorize
+this codebase to enter `Executing`.
 
-The caller must explicitly supply the values being approved:
+### M1B13 — frozen execution intent
 
-- exact plan ID;
-- exact M1B11 evidence bundle ID;
-- exact target-manifest digest.
+Current branch: `feature/m1b13-frozen-execution-intent`.
 
-The approval API also requires the M1B11 verification object from the same locked session.
-That object freezes:
-
-- evidence bundle ID;
-- locked-session ID;
-- journal ID;
-- plan ID;
-- target-manifest digest;
-- SHA-256 of the exact `PreconditionsVerified` journal.
-
-Before approval, all six identities are checked against the live session.
+M1B13 freezes the exact approved `PlanStep` graph into typed semantic intent plus mandatory
+read-only verification barriers. It adds no journal transition, keeps the journal exactly
+`Approved`, and keeps `MUTATION_ENABLED=false`.
 
 ## ExactApprovalBinding
 
@@ -153,7 +145,7 @@ TDD RED history includes CI #472, #482, #484 and #499. CI #499 specifically prov
 unknown durable approval-binding schema was not yet rejected; explicit schema-v1 validation
 closes that fail-open path. Use the final exact PR-head Actions as the actual completion evidence.
 
-## Next safety boundary
+## M1B13 and next safety boundary
 
 Even after M1B12, `Approved` is an authorization record, not permission for this codebase to
 mutate storage.
