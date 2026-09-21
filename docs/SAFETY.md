@@ -159,6 +159,30 @@ M1B10 combines the non-mutating gates that can already be proven without claimin
 
 The bundle is deliberately not an execution token and is not accepted by any storage-changing API.
 
+## Durable preconditions verification
+
+M1B11 is the first journal transition that consumes the immutable pre-mutation evidence bundle.
+It remains non-mutating and does not imply approval.
+
+- verification accepts only the current locked execution session plus its corresponding evidence bundle;
+- evidence schema v2 includes a process-local locked-session binding in the bundle fingerprint so evidence from an earlier lock lifetime cannot be replayed;
+- the journal must be exactly `IdentityRevalidated` and a durable journal store must be attached;
+- the durable record on disk must exactly equal the live session journal before any transition is attempted;
+- handoff ID, plan ID and target-manifest digest must exactly match the current session;
+- backup manifest/receipt identities must be present and the receipt must have passed revalidation;
+- evidence must be `EvidenceComplete`, blocker-free and backed by a `ReadyOnlineGrow` filesystem decision with no outstanding mandatory read-only check/future filesystem gate;
+- informational filesystem guidance is not promoted into a blocking health check;
+- mutation-enabled state is rejected and owner acceptance remains explicitly required;
+- the next journal is built from a clone, `PreconditionsVerified` is applied to that clone, the clone is durably persisted, and only then is the in-memory session advanced;
+- any binding mismatch, replay, wrong phase, incomplete filesystem/backup evidence, or durable-journal mismatch leaves the journal unadvanced.
+
+The successful boundary is only:
+
+`IdentityRevalidated -> PreconditionsVerified`
+
+M1B11 does not expose `Approved`, `ExecutionStarted`, an apply command or any
+storage-changing executable path. `MUTATION_ENABLED` remains false.
+
 ## Disposable LVM metadata recovery drill
 
 M1B7 validates LVM metadata recovery only inside the root-only disposable integration harness.

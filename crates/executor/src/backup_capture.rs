@@ -626,8 +626,8 @@ pub(crate) fn test_backup_receipt_revalidation(
     blockers: Vec<String>,
 ) -> BackupReceiptRevalidation {
     BackupReceiptRevalidation {
-        receipt_id: "test-receipt".to_owned(),
-        manifest_id: "test-manifest".to_owned(),
+        receipt_id: "b".repeat(64),
+        manifest_id: "a".repeat(64),
         handoff_id: handoff_id.to_owned(),
         plan_id: plan_id.to_owned(),
         target_manifest_digest: target_manifest_digest.to_owned(),

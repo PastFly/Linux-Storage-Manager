@@ -102,8 +102,10 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Capture required partition/LVM metadata backups only after locked identity revalidation, with secure artifact paths and SHA-256 receipts, while keeping recovery/mutation disabled.
 - [x] Revalidate captured backup receipts from disk against the exact frozen manifest, size and SHA-256 before any future precondition transition.
 - [x] Freeze locked identity, fresh filesystem policy and revalidated backup evidence into a non-mutating pre-mutation evidence bundle without advancing the journal.
-- [ ] Add partition-table metadata backup plus a recovery drill.
-- [ ] Add LVM metadata backup plus a recovery drill.
+- [x] Durably verify exact current-session pre-mutation evidence and advance only `IdentityRevalidated -> PreconditionsVerified` while mutation remains disabled.
+- [ ] Bind explicit operator approval to the exact plan/evidence/current target and durably advance only `PreconditionsVerified -> Approved`.
+- [x] Add partition-table metadata backup plus a recovery drill.
+- [x] Add LVM metadata backup plus a recovery drill.
 - [ ] Grow GPT/MBR partitions where safe without moving a partition start.
 - [ ] Resize an existing LVM PV after its containing partition/device grows.
 - [ ] Extend VG/LV using existing or newly exposed extents.

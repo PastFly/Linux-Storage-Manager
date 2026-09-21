@@ -21,11 +21,13 @@ pub enum PreMutationEvidenceStatus {
 pub struct PreMutationEvidenceBundle {
     schema_version: u32,
     bundle_id: String,
+    locked_session_id: String,
     handoff_id: String,
     plan_id: String,
     target_manifest_digest: String,
     backup_manifest_id: String,
     backup_receipt_id: String,
+    backup_receipt_revalidated: bool,
     filesystem_decision: FilesystemGrowthDecision,
     status: PreMutationEvidenceStatus,
     owner_acceptance_required: bool,
@@ -37,6 +39,14 @@ pub struct PreMutationEvidenceBundle {
 impl PreMutationEvidenceBundle {
     pub fn bundle_id(&self) -> &str {
         &self.bundle_id
+    }
+
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    pub fn locked_session_id(&self) -> &str {
+        &self.locked_session_id
     }
 
     pub fn handoff_id(&self) -> &str {
@@ -57,6 +67,10 @@ impl PreMutationEvidenceBundle {
 
     pub fn backup_receipt_id(&self) -> &str {
         &self.backup_receipt_id
+    }
+
+    pub fn backup_receipt_revalidated(&self) -> bool {
+        self.backup_receipt_revalidated
     }
 
     pub fn filesystem_decision(&self) -> &FilesystemGrowthDecision {
@@ -204,13 +218,15 @@ pub fn build_pre_mutation_evidence(
     };
 
     let mut bundle = PreMutationEvidenceBundle {
-        schema_version: 1,
+        schema_version: 2,
         bundle_id: String::new(),
+        locked_session_id: session.session_id().to_owned(),
         handoff_id: handoff.handoff_id().to_owned(),
         plan_id: handoff.plan().plan_id().to_owned(),
         target_manifest_digest: handoff.target_identity().manifest_digest.clone(),
         backup_manifest_id: backup_revalidation.manifest_id().to_owned(),
         backup_receipt_id: backup_revalidation.receipt_id().to_owned(),
+        backup_receipt_revalidated: backup_revalidation.matches(),
         filesystem_decision,
         status,
         owner_acceptance_required: true,
@@ -218,21 +234,81 @@ pub fn build_pre_mutation_evidence(
         blockers,
         future_gates,
     };
-    bundle.bundle_id = fingerprint(&(
-        bundle.schema_version,
-        &bundle.handoff_id,
-        &bundle.plan_id,
-        &bundle.target_manifest_digest,
-        &bundle.backup_manifest_id,
-        &bundle.backup_receipt_id,
-        &bundle.filesystem_decision,
-        bundle.status,
-        bundle.owner_acceptance_required,
-        bundle.mutation_enabled,
-        &bundle.blockers,
-        &bundle.future_gates,
-    ))?;
+    bundle.bundle_id = bundle.compute_bundle_id()?;
     Ok(bundle)
+}
+
+impl PreMutationEvidenceBundle {
+    fn compute_bundle_id(&self) -> Result<String, serde_json::Error> {
+        fingerprint(&(
+            self.schema_version,
+            &self.locked_session_id,
+            &self.handoff_id,
+            &self.plan_id,
+            &self.target_manifest_digest,
+            &self.backup_manifest_id,
+            &self.backup_receipt_id,
+            self.backup_receipt_revalidated,
+            &self.filesystem_decision,
+            self.status,
+            self.owner_acceptance_required,
+            self.mutation_enabled,
+            &self.blockers,
+            &self.future_gates,
+        ))
+    }
+
+    pub(crate) fn integrity_matches(&self) -> Result<bool, serde_json::Error> {
+        Ok(self.bundle_id == self.compute_bundle_id()?)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_with_handoff_id(mut self, value: String) -> Self {
+        self.handoff_id = value;
+        self.bundle_id = self.compute_bundle_id().unwrap();
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_with_plan_id(mut self, value: String) -> Self {
+        self.plan_id = value;
+        self.bundle_id = self.compute_bundle_id().unwrap();
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_with_target_manifest_digest(mut self, value: String) -> Self {
+        self.target_manifest_digest = value;
+        self.bundle_id = self.compute_bundle_id().unwrap();
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_without_backup(mut self) -> Self {
+        self.backup_manifest_id.clear();
+        self.backup_receipt_id.clear();
+        self.backup_receipt_revalidated = false;
+        self.status = PreMutationEvidenceStatus::EvidenceComplete;
+        self.blockers.clear();
+        self.bundle_id = self.compute_bundle_id().unwrap();
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_with_mutation_enabled(mut self) -> Self {
+        self.mutation_enabled = true;
+        self.bundle_id = self.compute_bundle_id().unwrap();
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_with_filesystem_state(mut self, state: FilesystemDecisionState) -> Self {
+        self.filesystem_decision.state = state;
+        self.status = PreMutationEvidenceStatus::EvidenceComplete;
+        self.blockers.clear();
+        self.bundle_id = self.compute_bundle_id().unwrap();
+        self
+    }
 }
 
 fn fingerprint(value: &impl Serialize) -> Result<String, serde_json::Error> {
