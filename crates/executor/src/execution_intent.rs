@@ -201,6 +201,8 @@ pub enum ExecutionIntentError {
     DependencyCycle,
     #[error("approved operation is not yet representable as M1B13 semantic intent")]
     UnsupportedOperation,
+    #[error("frozen target identity does not support intent: {0}")]
+    FrozenIdentityMismatch(String),
     #[error("could not serialize frozen execution intent: {0}")]
     Serialization(#[from] serde_json::Error),
     #[error("locked-session durable state verification failed: {0}")]
@@ -256,6 +258,139 @@ fn validate_dependency_graph(steps: &[PlanStep]) -> Result<(), ExecutionIntentEr
         visit(id, &by_id, &mut states)?;
     }
     Ok(())
+}
+
+fn validate_step_semantics(
+    step: &PlanStep,
+    identity: &lsm_planner::TargetIdentityManifest,
+    decision: &lsm_planner::FilesystemGrowthDecision,
+) -> Result<(), ExecutionIntentError> {
+    let mismatch = |detail: &str| {
+        ExecutionIntentError::FrozenIdentityMismatch(format!(
+            "plan step {}: {detail}",
+            step.id
+        ))
+    };
+
+    match &step.operation {
+        Operation::RevalidateSnapshot | Operation::RediscoverAndVerify => Ok(()),
+        Operation::BackupLvmMetadata { vg_uuid } => {
+            let matches = identity
+                .lvm
+                .iter()
+                .filter(|entry| {
+                    entry.kind == lsm_planner::LvmIdentityKind::VolumeGroup
+                        && entry.uuid.as_deref() == Some(vg_uuid.as_str())
+                })
+                .count();
+            if matches == 1 {
+                Ok(())
+            } else {
+                Err(mismatch("volume-group backup identity is not unique"))
+            }
+        }
+        Operation::BackupPartitionTableMetadata {
+            disk,
+            table_label,
+            table_id,
+        } => {
+            let matches = identity.partitions.iter().any(|partition| {
+                partition.disk.as_deref() == Some(disk.as_str())
+                    && partition.table_label.as_deref() == Some(table_label.as_str())
+                    && partition.table_id.as_ref() == table_id.as_ref()
+            });
+            if matches {
+                Ok(())
+            } else {
+                Err(mismatch("partition-table backup identity is absent"))
+            }
+        }
+        Operation::ExtendPartition {
+            partition,
+            start_sector,
+            old_size_sectors,
+            new_size_sectors,
+            sector_size_bytes,
+        } => {
+            if !matches!(*sector_size_bytes, 512 | 4096)
+                || new_size_sectors <= old_size_sectors
+                || old_size_sectors.checked_mul(*sector_size_bytes).is_none()
+                || new_size_sectors.checked_mul(*sector_size_bytes).is_none()
+            {
+                return Err(mismatch("partition growth geometry is invalid"));
+            }
+            let matches = identity
+                .partitions
+                .iter()
+                .filter(|entry| entry.partition == *partition)
+                .collect::<Vec<_>>();
+            if matches.len() != 1 {
+                return Err(mismatch("partition identity is not unique"));
+            }
+            let entry = matches[0];
+            if entry.start_sector != Some(*start_sector)
+                || entry.size_sectors != Some(*old_size_sectors)
+                || entry.sector_size_bytes != Some(*sector_size_bytes)
+            {
+                return Err(mismatch("partition geometry changed"));
+            }
+            Ok(())
+        }
+        Operation::ExtendLogicalVolume {
+            lv_uuid,
+            additional_extents,
+            expected_lv_size_bytes,
+        } => {
+            if lv_uuid.is_empty() || *additional_extents == 0 || *expected_lv_size_bytes == 0 {
+                return Err(mismatch("logical-volume growth values are invalid"));
+            }
+            let matches = identity
+                .lvm
+                .iter()
+                .filter(|entry| {
+                    entry.kind == lsm_planner::LvmIdentityKind::LogicalVolume
+                        && entry.uuid.as_deref() == Some(lv_uuid.as_str())
+                })
+                .collect::<Vec<_>>();
+            if matches.len() != 1 {
+                return Err(mismatch("logical-volume identity is not unique"));
+            }
+            if *expected_lv_size_bytes <= matches[0].size_bytes {
+                return Err(mismatch("logical-volume expected size does not grow"));
+            }
+            Ok(())
+        }
+        Operation::GrowFilesystem {
+            fs_type,
+            mountpoint,
+        } => {
+            if fs_type.is_empty() || mountpoint.is_empty() {
+                return Err(mismatch("filesystem growth identity is empty"));
+            }
+            let Some(filesystem) = identity.filesystem.as_ref() else {
+                return Err(mismatch("filesystem identity is absent"));
+            };
+            if filesystem.fs_type != *fs_type
+                || decision.fs_type.as_deref() != Some(fs_type.as_str())
+                || decision.mountpoint.as_deref() != Some(mountpoint.as_str())
+                || decision.state != lsm_planner::FilesystemDecisionState::ReadyOnlineGrow
+            {
+                return Err(mismatch("filesystem decision no longer matches approved intent"));
+            }
+            let mounts = identity
+                .mounts
+                .iter()
+                .filter(|mount| {
+                    mount.target == *mountpoint
+                        && mount.fs_type.as_deref() == Some(fs_type.as_str())
+                })
+                .count();
+            if mounts != 1 {
+                return Err(mismatch("filesystem mount identity is not unique"));
+            }
+            Ok(())
+        }
+    }
 }
 
 fn translate_step(step: &lsm_planner::PlanStep) -> Result<FrozenIntentStep, ExecutionIntentError> {
@@ -382,6 +517,7 @@ pub fn freeze_execution_intent(
     let mut steps = Vec::with_capacity(handoff.plan().steps().len());
     let mut verification_barriers = Vec::new();
     for step in handoff.plan().steps() {
+        validate_step_semantics(step, handoff.target_identity(), handoff.filesystem_decision())?;
         let frozen = translate_step(step)?;
         if frozen.role == FrozenIntentRole::MutationCandidate {
             verification_barriers.push(VerificationBarrierSpec {
