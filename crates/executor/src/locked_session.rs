@@ -754,6 +754,297 @@ mod tests {
     }
 
     #[test]
+    fn approval_rejects_foreign_explicit_plan_id() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("approval-foreign-plan");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let (evidence, verified) =
+            verified_preconditions(&mut session, &handoff, &snapshot, &capabilities);
+
+        let result = crate::approve_exact_plan(
+            &mut session,
+            &verified,
+            &"a".repeat(64),
+            evidence.bundle_id(),
+            &handoff.target_identity().manifest_digest,
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::ExactPlanApprovalError::ApprovedPlanMismatch)
+        ));
+        assert_preconditions_verified_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn approval_rejects_foreign_explicit_evidence_bundle() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("approval-foreign-evidence");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let (_evidence, verified) =
+            verified_preconditions(&mut session, &handoff, &snapshot, &capabilities);
+
+        let result = crate::approve_exact_plan(
+            &mut session,
+            &verified,
+            handoff.plan().plan_id(),
+            &"b".repeat(64),
+            &handoff.target_identity().manifest_digest,
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::ExactPlanApprovalError::ApprovedEvidenceMismatch)
+        ));
+        assert_preconditions_verified_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn approval_rejects_foreign_explicit_target_manifest() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("approval-foreign-target");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let (evidence, verified) =
+            verified_preconditions(&mut session, &handoff, &snapshot, &capabilities);
+
+        let result = crate::approve_exact_plan(
+            &mut session,
+            &verified,
+            handoff.plan().plan_id(),
+            evidence.bundle_id(),
+            &"c".repeat(64),
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::ExactPlanApprovalError::ApprovedTargetMismatch)
+        ));
+        assert_preconditions_verified_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn approval_rejects_stale_preconditions_journal_digest() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("approval-stale-journal");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let (evidence, verified) =
+            verified_preconditions(&mut session, &handoff, &snapshot, &capabilities);
+        let stale = verified.test_with_journal_digest("d".repeat(64));
+
+        let result = crate::approve_exact_plan(
+            &mut session,
+            &stale,
+            handoff.plan().plan_id(),
+            evidence.bundle_id(),
+            &handoff.target_identity().manifest_digest,
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::ExactPlanApprovalError::VerificationJournalStale)
+        ));
+        assert_preconditions_verified_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn approval_rejects_preconditions_verification_from_another_locked_session() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+
+        let first_path = lock_path();
+        let first_root = journal_root("approval-first-session");
+        let first_store = DurableJournalStore::at(&first_root);
+        let mut first =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &first_path, &first_store)
+                .unwrap();
+        first.revalidate(&snapshot, &capabilities).unwrap();
+        let (first_evidence, first_verified) =
+            verified_preconditions(&mut first, &handoff, &snapshot, &capabilities);
+        drop(first);
+        let _ = std::fs::remove_dir_all(first_path.parent().unwrap());
+
+        let path = lock_path();
+        let root = journal_root("approval-second-session");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let (_evidence, _verified) =
+            verified_preconditions(&mut session, &handoff, &snapshot, &capabilities);
+
+        let result = crate::approve_exact_plan(
+            &mut session,
+            &first_verified,
+            handoff.plan().plan_id(),
+            first_evidence.bundle_id(),
+            &handoff.target_identity().manifest_digest,
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::ExactPlanApprovalError::VerificationSessionMismatch)
+        ));
+        assert_preconditions_verified_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(first_root);
+    }
+
+    #[test]
+    fn approval_rejects_wrong_journal_phase() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+
+        let source_path = lock_path();
+        let source_root = journal_root("approval-source");
+        let source_store = DurableJournalStore::at(&source_root);
+        let mut source =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &source_path, &source_store)
+                .unwrap();
+        source.revalidate(&snapshot, &capabilities).unwrap();
+        let (evidence, verified) =
+            verified_preconditions(&mut source, &handoff, &snapshot, &capabilities);
+        drop(source);
+        let _ = std::fs::remove_dir_all(source_path.parent().unwrap());
+
+        let path = lock_path();
+        let root = journal_root("approval-wrong-phase");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+
+        let result = crate::approve_exact_plan(
+            &mut session,
+            &verified,
+            handoff.plan().plan_id(),
+            evidence.bundle_id(),
+            &handoff.target_identity().manifest_digest,
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::ExactPlanApprovalError::SessionNotPreconditionsVerified)
+        ));
+        assert_identity_revalidated_is_durable(&session, &store);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(source_root);
+    }
+
+    #[test]
+    fn repeated_exact_approval_is_rejected_without_second_transition() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("approval-repeat");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let (evidence, verified) =
+            verified_preconditions(&mut session, &handoff, &snapshot, &capabilities);
+
+        crate::approve_exact_plan(
+            &mut session,
+            &verified,
+            handoff.plan().plan_id(),
+            evidence.bundle_id(),
+            &handoff.target_identity().manifest_digest,
+        )
+        .unwrap();
+        let approved = session.journal().clone();
+
+        let result = crate::approve_exact_plan(
+            &mut session,
+            &verified,
+            handoff.plan().plan_id(),
+            evidence.bundle_id(),
+            &handoff.target_identity().manifest_digest,
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::ExactPlanApprovalError::SessionNotPreconditionsVerified)
+        ));
+        assert_eq!(*session.journal(), approved);
+        assert_eq!(store.load(&approved.journal_id).unwrap(), approved);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn durable_journal_divergence_blocks_exact_approval() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("approval-durable-mismatch");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let stale = session.journal().clone();
+        let (evidence, verified) =
+            verified_preconditions(&mut session, &handoff, &snapshot, &capabilities);
+        store.persist(&stale).unwrap();
+
+        let result = crate::approve_exact_plan(
+            &mut session,
+            &verified,
+            handoff.plan().plan_id(),
+            evidence.bundle_id(),
+            &handoff.target_identity().manifest_digest,
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::ExactPlanApprovalError::Session(
+                LockedSessionError::DurableJournalMismatch
+            ))
+        ));
+        assert_eq!(session.journal().phase, JournalPhase::PreconditionsVerified);
+        assert_eq!(store.load(&stale.journal_id).unwrap(), stale);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn foreign_plan_id_is_rejected_without_journal_advance() {
         let (snapshot, capabilities) = fixture();
         let handoff = handoff(&snapshot, &capabilities);
