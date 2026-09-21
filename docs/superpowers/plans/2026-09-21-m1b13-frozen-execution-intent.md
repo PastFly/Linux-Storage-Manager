@@ -604,3 +604,31 @@ If a job fails, diagnose the concrete failure. For external registry/network fai
 
 - [ ] **Step 8: Whole-branch review and completion gate**
 
+Re-read the PR diff against the spec. Confirm:
+
+```text
+journal phase after freeze = Approved
+mutation_may_have_started = false
+MUTATION_ENABLED = false
+manifest Deserialize = absent
+process execution = absent
+source PlanStep count = frozen step count
+source mutation count = frozen mutation count = verification barrier count
+pvresize synthesis = absent
+```
+
+Only when CI and Portable Linux are both green on the same exact head should the PR be marked ready for review. Do not merge without separate owner authorization for that PR and exact head.
+
+---
+
+## Plan Self-Review Result
+
+- Spec coverage: Tasks 1-7 cover continuity, exact binding, immutable model, one-to-one mapping, dependency graph, semantic identity, barriers, negative matrix, documentation and exact-head CI.
+- Placeholder scan: no unresolved implementation placeholders are permitted in execution; every behavior above names the concrete test, function/type, validation rule, command, or documentation change.
+- Type consistency: the plan consistently uses `FrozenExecutionIntentManifest`, `FrozenIntentStep`, `FrozenIntentAction`, `FrozenIntentRole`, `VerificationBarrierSpec`, `ExecutionIntentManifestStatus`, `ExecutionIntentError`, and `freeze_execution_intent`.
+- Review Focus coverage: all five listed high-risk cases have explicit tests in Tasks 4-6.
+- Scope: M1B13 remains one non-executing subsystem. Semantic-to-argv compilation stays in M1B14.
+
+## Execution Recommendation
+
+Use **Native** execution for this plan. The tasks are sequential and share one tightly coupled Rust interface; keeping one implementation context minimizes interface drift, while the mandatory whole-branch review and exact-head CI/Portable gates provide the final independent safety check.
