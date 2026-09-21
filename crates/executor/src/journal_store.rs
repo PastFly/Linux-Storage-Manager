@@ -4,7 +4,9 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use lsm_planner::{JournalEvent, JournalPhase, OperationJournal, JOURNAL_DIRECTORY};
+use lsm_planner::{
+    ExactApprovalBinding, JournalEvent, JournalPhase, OperationJournal, JOURNAL_DIRECTORY,
+};
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -49,6 +51,8 @@ struct JournalWire {
     baseline_manifest_digest: String,
     phase: JournalPhase,
     mutation_may_have_started: bool,
+    #[serde(default)]
+    approval: Option<ExactApprovalBinding>,
     events: Vec<JournalEvent>,
 }
 
@@ -165,6 +169,7 @@ impl DurableJournalStore {
             baseline_manifest_digest: wire.baseline_manifest_digest,
             phase: wire.phase,
             mutation_may_have_started: wire.mutation_may_have_started,
+            approval: wire.approval,
             events: wire.events,
         };
         validate_journal(&journal)?;
@@ -251,7 +256,60 @@ fn validate_journal(journal: &OperationJournal) -> Result<(), JournalStoreError>
         ));
     }
 
+    validate_approval_binding(journal)?;
+
     Ok(())
+}
+
+fn validate_approval_binding(journal: &OperationJournal) -> Result<(), JournalStoreError> {
+    let approval_transition_seen = journal.events.iter().any(|event| {
+        event.from == JournalPhase::PreconditionsVerified && event.to == JournalPhase::Approved
+    });
+
+    match (&journal.approval, approval_transition_seen) {
+        (None, false) => Ok(()),
+        (None, true) => Err(JournalStoreError::InvalidRecord(
+            "approved journal is missing the exact approval binding".to_owned(),
+        )),
+        (Some(_), false) => Err(JournalStoreError::InvalidRecord(
+            "journal contains an approval binding without an approval transition".to_owned(),
+        )),
+        (Some(binding), true) => {
+            for (value, label) in [
+                (binding.approval_id.as_str(), "approval ID"),
+                (binding.plan_id.as_str(), "approval plan ID"),
+                (binding.evidence_bundle_id.as_str(), "approval evidence bundle ID"),
+                (
+                    binding.target_manifest_digest.as_str(),
+                    "approval target manifest digest",
+                ),
+                (binding.locked_session_id.as_str(), "approval locked session ID"),
+                (
+                    binding.preconditions_journal_digest.as_str(),
+                    "approval preconditions journal digest",
+                ),
+            ] {
+                validate_hex_digest(value, label)?;
+            }
+
+            if binding.plan_id != journal.plan_id {
+                return Err(JournalStoreError::InvalidRecord(
+                    "approval binding plan ID does not match the journal".to_owned(),
+                ));
+            }
+            if binding.target_manifest_digest != journal.baseline_manifest_digest {
+                return Err(JournalStoreError::InvalidRecord(
+                    "approval binding target manifest does not match the journal".to_owned(),
+                ));
+            }
+            if !binding.integrity_matches()? {
+                return Err(JournalStoreError::InvalidRecord(
+                    "approval binding fingerprint does not match its contents".to_owned(),
+                ));
+            }
+            Ok(())
+        }
+    }
 }
 
 fn allowed_transition(from: JournalPhase, to: JournalPhase) -> bool {
@@ -381,6 +439,7 @@ mod tests {
             baseline_manifest_digest: digest('c'),
             phase: JournalPhase::Planned,
             mutation_may_have_started: false,
+            approval: None,
             events: Vec::new(),
         }
     }
@@ -513,9 +572,19 @@ mod tests {
             .apply(JournalTransition::PreconditionsVerified)
             .unwrap();
         let plan_id = journal.plan_id.clone();
+        let mut approval = ExactApprovalBinding {
+            approval_id: String::new(),
+            plan_id: plan_id.clone(),
+            evidence_bundle_id: digest('d'),
+            target_manifest_digest: journal.baseline_manifest_digest.clone(),
+            locked_session_id: digest('e'),
+            preconditions_journal_digest: digest('f'),
+        };
+        approval.approval_id = approval.expected_approval_id().unwrap();
         journal
             .apply(JournalTransition::ExactPlanApproved {
                 approved_plan_id: &plan_id,
+                approval: &approval,
             })
             .unwrap();
         journal.apply(JournalTransition::ExecutionStarted).unwrap();
