@@ -629,6 +629,78 @@ mod tests {
     }
 
     #[test]
+    fn exact_operator_approval_advances_and_binds_durable_journal() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("exact-approval");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+
+        let evidence = evidence(
+            &session,
+            &handoff,
+            &snapshot,
+            &capabilities,
+            true,
+            Vec::new(),
+        );
+        let verified = crate::verify_preconditions(&mut session, &evidence).unwrap();
+        assert_eq!(session.journal().phase, JournalPhase::PreconditionsVerified);
+
+        let second = LockedExecutionSession::begin_at_path(&handoff, &path);
+        assert!(matches!(
+            second,
+            Err(LockedSessionError::Lock(HostLockError::Busy))
+        ));
+
+        let approval = crate::approve_exact_plan(
+            &mut session,
+            &verified,
+            handoff.plan().plan_id(),
+            evidence.bundle_id(),
+            &handoff.target_identity().manifest_digest,
+        )
+        .unwrap();
+
+        assert_eq!(session.journal().phase, JournalPhase::Approved);
+        assert!(!session.journal().mutation_may_have_started);
+        assert_eq!(approval.plan_id(), handoff.plan().plan_id());
+        assert_eq!(approval.evidence_bundle_id(), evidence.bundle_id());
+        assert_eq!(
+            approval.target_manifest_digest(),
+            handoff.target_identity().manifest_digest
+        );
+        assert_eq!(approval.locked_session_id(), session.session_id());
+        assert!(approval.owner_acceptance_required());
+        assert!(!approval.mutation_enabled());
+        assert_eq!(approval.approval_id().len(), 64);
+        assert_eq!(approval.preconditions_journal_digest().len(), 64);
+
+        let persisted = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(persisted.phase, JournalPhase::Approved);
+        assert!(!persisted.mutation_may_have_started);
+        let binding = persisted.approval.as_ref().unwrap();
+        assert_eq!(binding.approval_id, approval.approval_id());
+        assert_eq!(binding.plan_id, approval.plan_id());
+        assert_eq!(binding.evidence_bundle_id, approval.evidence_bundle_id());
+        assert_eq!(
+            binding.target_manifest_digest,
+            approval.target_manifest_digest()
+        );
+        assert_eq!(
+            binding.preconditions_journal_digest,
+            approval.preconditions_journal_digest()
+        );
+
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn foreign_plan_id_is_rejected_without_journal_advance() {
         let (snapshot, capabilities) = fixture();
         let handoff = handoff(&snapshot, &capabilities);
