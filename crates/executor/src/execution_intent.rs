@@ -330,3 +330,114 @@ pub fn freeze_execution_intent(
     manifest.manifest_id = manifest.compute_manifest_id()?;
     Ok(manifest)
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lsm_planner::PlanStep;
+
+    #[test]
+    fn mapping_preserves_every_source_step_exactly_once() {
+        let source = vec![
+            PlanStep {
+                id: 1,
+                depends_on: vec![],
+                operation: Operation::RevalidateSnapshot,
+                reversibility: Reversibility::NotApplicable,
+            },
+            PlanStep {
+                id: 2,
+                depends_on: vec![1],
+                operation: Operation::BackupLvmMetadata {
+                    vg_uuid: "vg-1".into(),
+                },
+                reversibility: Reversibility::Reversible,
+            },
+            PlanStep {
+                id: 3,
+                depends_on: vec![1],
+                operation: Operation::BackupPartitionTableMetadata {
+                    disk: "/dev/vda".into(),
+                    table_label: "gpt".into(),
+                    table_id: Some("gpt-1".into()),
+                },
+                reversibility: Reversibility::Reversible,
+            },
+            PlanStep {
+                id: 4,
+                depends_on: vec![3],
+                operation: Operation::ExtendPartition {
+                    partition: "/dev/vda1".into(),
+                    start_sector: 2048,
+                    old_size_sectors: 4096,
+                    new_size_sectors: 8192,
+                    sector_size_bytes: 512,
+                },
+                reversibility: Reversibility::Irreversible,
+            },
+            PlanStep {
+                id: 5,
+                depends_on: vec![2],
+                operation: Operation::ExtendLogicalVolume {
+                    lv_uuid: "lv-1".into(),
+                    additional_extents: 256,
+                    expected_lv_size_bytes: 9 * 1024 * 1024 * 1024,
+                },
+                reversibility: Reversibility::Irreversible,
+            },
+            PlanStep {
+                id: 6,
+                depends_on: vec![4, 5],
+                operation: Operation::GrowFilesystem {
+                    fs_type: "ext4".into(),
+                    mountpoint: "/".into(),
+                },
+                reversibility: Reversibility::Irreversible,
+            },
+            PlanStep {
+                id: 7,
+                depends_on: vec![6],
+                operation: Operation::RediscoverAndVerify,
+                reversibility: Reversibility::NotApplicable,
+            },
+        ];
+
+        let frozen = source
+            .iter()
+            .map(translate_step)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(frozen.len(), source.len());
+        assert_eq!(
+            frozen.iter().map(|step| step.plan_step_id).collect::<Vec<_>>(),
+            source.iter().map(|step| step.id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            frozen
+                .iter()
+                .map(|step| step.depends_on.clone())
+                .collect::<Vec<_>>(),
+            source
+                .iter()
+                .map(|step| step.depends_on.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            frozen
+                .iter()
+                .filter(|step| step.role == FrozenIntentRole::MutationCandidate)
+                .count(),
+            3
+        );
+        assert!(matches!(
+            frozen[2].action,
+            FrozenIntentAction::BackupPartitionTableMetadata { .. }
+        ));
+        assert!(matches!(
+            frozen[3].action,
+            FrozenIntentAction::ExtendPartition { .. }
+        ));
+    }
+}
