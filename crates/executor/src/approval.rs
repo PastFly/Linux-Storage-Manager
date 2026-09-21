@@ -56,7 +56,6 @@ impl ExactPlanApproval {
         self.binding.approval_id = value;
         self
     }
-
 }
 
 #[derive(Debug, Error)]
