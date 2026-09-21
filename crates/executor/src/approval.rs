@@ -82,6 +82,12 @@ impl ExactPlanApproval {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_with_preconditions_journal_digest(mut self, value: String) -> Self {
+        self.binding.preconditions_journal_digest = value;
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_with_mutation_enabled(mut self) -> Self {
         self.mutation_enabled = true;
         self
