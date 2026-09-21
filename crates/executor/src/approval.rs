@@ -153,6 +153,7 @@ pub fn approve_exact_plan(
     }
 
     let mut binding = ExactApprovalBinding {
+        schema_version: 1,
         approval_id: String::new(),
         plan_id: verification.plan_id().to_owned(),
         evidence_bundle_id: verification.bundle_id().to_owned(),
