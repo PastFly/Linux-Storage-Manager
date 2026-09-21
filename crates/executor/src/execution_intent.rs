@@ -796,6 +796,28 @@ mod tests {
     }
 
     #[test]
+    fn partition_path_with_control_character_is_rejected() {
+        let mut identity = semantic_identity();
+        identity.partitions[0].partition = "/dev/vda\n1".into();
+        let step = PlanStep {
+            id: 4,
+            depends_on: vec![],
+            operation: Operation::ExtendPartition {
+                partition: "/dev/vda\n1".into(),
+                start_sector: 256,
+                old_size_sectors: 4096,
+                new_size_sectors: 8192,
+                sector_size_bytes: 4096,
+            },
+            reversibility: Reversibility::Irreversible,
+        };
+        assert!(matches!(
+            validate_step_semantics(&step, &identity, &semantic_decision()),
+            Err(ExecutionIntentError::FrozenIdentityMismatch(_))
+        ));
+    }
+
+    #[test]
     fn invalid_partition_sector_size_is_rejected() {
         let step = PlanStep {
             id: 4,
