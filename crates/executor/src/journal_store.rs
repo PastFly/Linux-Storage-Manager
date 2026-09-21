@@ -625,6 +625,51 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_approval_binding_schema_is_rejected_on_reload() {
+        let root = root("approval-schema");
+        let store = DurableJournalStore::at(&root);
+        let mut journal = journal();
+        journal.apply(JournalTransition::HostLockAcquired).unwrap();
+        let baseline = journal.baseline_manifest_digest.clone();
+        journal
+            .apply(JournalTransition::IdentityRevalidated {
+                fresh_manifest_digest: &baseline,
+            })
+            .unwrap();
+        journal
+            .apply(JournalTransition::PreconditionsVerified)
+            .unwrap();
+
+        let plan_id = journal.plan_id.clone();
+        let mut approval = ExactApprovalBinding {
+            approval_id: String::new(),
+            plan_id: plan_id.clone(),
+            evidence_bundle_id: digest('d'),
+            target_manifest_digest: journal.baseline_manifest_digest.clone(),
+            locked_session_id: digest('e'),
+            preconditions_journal_digest: crate::preconditions::journal_digest(&journal).unwrap(),
+        };
+        approval.approval_id = approval.expected_approval_id().unwrap();
+        journal
+            .apply(JournalTransition::ExactPlanApproved {
+                approved_plan_id: &plan_id,
+                approval: &approval,
+            })
+            .unwrap();
+        store.persist(&journal).unwrap();
+
+        let path = store.path_for(&journal.journal_id).unwrap();
+        let mut value = serde_json::to_value(&journal).unwrap();
+        value["approval"]["schema_version"] = json!(2);
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let result = store.load(&journal.journal_id);
+
+        assert!(matches!(result, Err(JournalStoreError::InvalidRecord(_))));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn mutation_boundary_requires_recovery_after_reload() {
         let root = root("recovery");
         let store = DurableJournalStore::at(&root);
