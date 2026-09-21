@@ -357,3 +357,25 @@ Inspection should run unprivileged where possible. Future privileged operations 
 - automatic filesystem repair as a resize side effect;
 - arbitrary shell hooks;
 - blind resume/replay after a crash or uncertain mutation result.
+
+
+## M1B13 frozen execution intent
+
+M1B13 remains a non-executing boundary after exact approval.
+
+- the current locked session must still be exactly `Approved`;
+- the durable journal on disk must exactly equal the live approved journal before intent freezing;
+- the exact M1B12 approval/session/plan/evidence/target binding is revalidated;
+- every approved source `PlanStep` maps exactly once to typed semantic intent;
+- no mutation absent from the approved plan may be synthesized, including `pvresize`;
+- backup and revalidation steps are retained as historical pre-execution evidence roles, not permission to rerun recovery or mutation;
+- every mutation candidate receives a mandatory fresh-identity, fresh-capability and expected-state verification barrier that stops on mismatch;
+- dependency graphs with zero/duplicate IDs, unknown/self dependencies or cycles fail closed;
+- partition, LV and filesystem intents must match the frozen target identity exactly;
+- manifest construction leaves the journal at `Approved` with `mutation_may_have_started=false`;
+- SHA-256 manifest IDs are structural identity fingerprints, not secret-key authentication;
+- `MUTATION_ENABLED=false`.
+
+M1B13 adds no command compiler, process execution, privileged helper, `apply` command or
+`ExecutionStarted` path. M1B14 may compile the frozen semantic intent to reviewed allowlisted
+argv specifications, but it must still not execute them.
