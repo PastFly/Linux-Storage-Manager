@@ -235,6 +235,23 @@ pub struct ExactApprovalBinding {
     pub preconditions_journal_digest: String,
 }
 
+impl ExactApprovalBinding {
+    pub fn expected_approval_id(&self) -> Result<String, serde_json::Error> {
+        fingerprint(&(
+            1_u32,
+            &self.plan_id,
+            &self.evidence_bundle_id,
+            &self.target_manifest_digest,
+            &self.locked_session_id,
+            &self.preconditions_journal_digest,
+        ))
+    }
+
+    pub fn integrity_matches(&self) -> Result<bool, serde_json::Error> {
+        Ok(self.approval_id == self.expected_approval_id()?)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OperationJournal {
     pub schema_version: u32,
