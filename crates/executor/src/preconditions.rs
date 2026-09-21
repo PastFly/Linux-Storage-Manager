@@ -134,7 +134,6 @@ pub fn verify_preconditions(
         return Err(PreconditionsVerificationError::FilesystemNotReady);
     }
     if filesystem.read_only_check.is_some()
-        || !filesystem.required_actions.is_empty()
         || evidence.future_gates().iter().any(|gate| {
             gate.starts_with("filesystem:") || gate.starts_with("filesystem check required:")
         })
