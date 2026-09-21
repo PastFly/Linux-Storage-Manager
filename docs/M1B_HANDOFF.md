@@ -141,11 +141,13 @@ Fail-closed:
 - planner approval bound to another journal state;
 - recomputed/tampered durable approval binding.
 
-TDD RED history includes CI #472, #482, #484 and #499. CI #499 specifically proved that an
-unknown durable approval-binding schema was not yet rejected; explicit schema-v1 validation
-closes that fail-open path. Use the final exact PR-head Actions as the actual completion evidence.
+TDD RED history includes CI #472, #482, #484, #499 and #507. CI #499 proved that durable
+reload did not yet reject an unknown approval-binding schema; CI #507 then proved that the
+in-memory planner transition also needed the same explicit schema-v1 rejection. The merged
+M1B12 exact head passed CI #511 and Portable Linux #390 before merge, followed by post-merge
+CI #512 and Portable Linux #391.
 
-## M1B13 and next safety boundary
+## M1B13 safety boundary
 
 Even after M1B12, `Approved` is an authorization record, not permission for this codebase to
 mutate storage.
