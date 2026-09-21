@@ -275,6 +275,13 @@ fn validate_approval_binding(journal: &OperationJournal) -> Result<(), JournalSt
             "journal contains an approval binding without an approval transition".to_owned(),
         )),
         (Some(binding), Some(approval_index)) => {
+            if binding.schema_version != 1 {
+                return Err(JournalStoreError::InvalidRecord(format!(
+                    "unsupported exact approval binding schema version {}",
+                    binding.schema_version
+                )));
+            }
+
             for (value, label) in [
                 (binding.approval_id.as_str(), "approval ID"),
                 (binding.plan_id.as_str(), "approval plan ID"),
