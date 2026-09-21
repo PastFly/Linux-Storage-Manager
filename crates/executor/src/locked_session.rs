@@ -453,14 +453,7 @@ mod tests {
         crate::PreMutationEvidenceBundle,
         crate::PreconditionsVerification,
     ) {
-        let evidence = evidence(
-            session,
-            handoff,
-            snapshot,
-            capabilities,
-            true,
-            Vec::new(),
-        );
+        let evidence = evidence(session, handoff, snapshot, capabilities, true, Vec::new());
         let verified = crate::verify_preconditions(session, &evidence).unwrap();
         (evidence, verified)
     }
