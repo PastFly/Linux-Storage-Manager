@@ -1,118 +1,215 @@
-# M1B0: frozen execution handoff
+# M1B pre-executor handoff
 
-Status: pre-executor foundation, non-mutating.
+M1B is the guarded foundation between read-only planning and any future mutation-capable
+executor. It must remain fail-closed and capability/topology driven.
 
-M1B0 bridges the completed M1A planner into future executor work without enabling any
-storage mutation. The handoff is an immutable, non-deserializable Rust data structure with private fields and read-only accessors; external callers cannot construct or flip its safety flags.
-It performs no process execution, filesystem writes, lock acquisition, journal writes,
-backup commands, resize commands or mount changes.
+Live master baseline verified on 2026-09-21:
 
-## What the handoff freezes
+`810dcc512a0f23000d7bf49f090ed22d5688ab01`
 
-`build_frozen_execution_handoff(snapshot, capabilities, plan)` accepts only a
-preview-ready M1A `PlanPreview` whose exact serialized discovery/capability basis still
-matches the supplied inputs.
+That master contains M1B0 through M1B10 and passed post-merge CI #452 and Portable Linux #331.
 
-From that same basis it derives and binds:
+## Non-negotiable boundary
 
-- the exact M1A plan, plan ID and serialized discovery/capability basis digest;
-- a separate capability-inventory digest for future live tool-capability revalidation;
-- the target-scoped identity manifest and manifest digest;
-- the filesystem growth/preflight decision;
-- the existing execution-guard plan, including host-exclusive lock and durable-journal
-  gates;
-- one repeatable handoff ID over those frozen inputs.
+`MUTATION_ENABLED = false`
 
-A stale or blocked M1A preview is rejected before a handoff is produced.
+No current production API may resize partitions, PVs, LVs or filesystems, change mount/fstab
+state, mutate swap, or execute recovery commands.
 
-## Deliberate execution boundary
+Owner acceptance remains an explicit future gate.
 
-Every M1B0 handoff contains:
+## Milestone map
 
-- `mutation_enabled = false`;
-- `owner_acceptance_required = true`.
+### M1B0 — frozen execution handoff
 
-This is architectural state, not UI wording. There is no API in M1B0 that flips either
-field and no CLI command that consumes a handoff to run storage tools.
+Freezes one exact M1A plan together with:
 
-Before executor rollout, the project still requires explicit owner acceptance of the
-completed M0/M1A safety baseline. A future executor must additionally:
+- plan-basis digest;
+- capabilities digest;
+- target identity manifest;
+- filesystem growth decision;
+- execution guard;
+- explicit owner-acceptance requirement;
+- mutation disabled.
 
-1. acquire the host-exclusive storage-operation lock;
-2. rediscover under that lock;
-3. revalidate the frozen target identity;
-4. satisfy filesystem health/online-offline preconditions;
-5. create and verify required metadata backups;
-6. obtain approval for the exact fresh plan;
-7. durably create the operation journal;
-8. execute only a separately implemented supported operation adapter;
-9. rediscover and verify after every mutation boundary.
+### M1B1 — host-exclusive lock
 
-## Preflight status
+Adds the OS-backed nonblocking host storage lock with RAII release.
 
-A handoff is `future_executor_gates_required` only when the semantic route is supported
-and the filesystem decision is not itself blocked/adapter-only. Health checks such as
-offline ext4 verification or read-only XFS scrub remain explicit future gates.
+### M1B2 — locked revalidation
 
-If the filesystem decision is blocked or requires an unsupported adapter, the handoff is
-created as `blocked` so the reason stays inspectable, while mutation remains disabled.
+While the lock is held, revalidates the exact target identity and capabilities.
+Any change fails closed.
 
-## M1B3 durable journal foundation
+### M1B3 — durable journal store
 
-The dedicated executor crate now has an atomic durable journal store for the already-defined
-`OperationJournal` model. It can persist/reload validated journal state, including
-`RecoveryRequired`, but it is not connected to any mutation command. The owner-acceptance
-gate and exact-plan approval requirements remain unchanged.
+Persists validated journal records with secure same-directory temporary files, fsync,
+atomic rename and directory fsync. Tampered/impossible histories fail closed.
 
-## M1B4 durable locked revalidation
+### M1B4 — durable locked-session progression
 
-The non-mutating locked session can now opt into a `DurableJournalStore`. In that mode,
-`HostLockHeld` is persisted before the session is returned, and a successful fresh
-identity/capability check persists `IdentityRevalidated` while the same host lock is still
-held. Failed revalidation remains at the prior durable phase and requires a fresh session.
+Durably records `HostLockHeld` and, after successful locked revalidation,
+`IdentityRevalidated`.
 
-This does not expose precondition approval or execution transitions and does not authorize
-storage mutation.
+### M1B5 — immutable metadata backup manifest
 
-## M1B5 backup/recovery manifest
+Freezes exact partition/LVM backup and recovery command specs without executing them.
 
-The executor crate can now derive an immutable metadata-backup manifest from one frozen
-handoff. It contains only exact future process specifications and verification expectations
-for required partition-table and LVM metadata backups. The model is deterministic,
-non-deserializable as an execution authorization, and exposes no command runner.
+### M1B6 — partition metadata recovery drill
 
-Capture/restore execution and recovery drills remain future gated work.
+Proves GPT and DOS/MBR metadata backup/restore on owned disposable loop fixtures.
 
-## M1B6 disposable partition recovery evidence
+### M1B7 — LVM metadata recovery drill
 
-CI now performs a separate root-only recovery drill on harness-owned loop images for GPT
-and DOS/MBR. The drill proves exact `sfdisk --dump` restoration using machine-readable
-before/after geometry and filesystem sentinel verification. These storage-mutating test
-commands exist only in the disposable integration harness and are not callable through the
-executor crate, CLI or TUI.
+Proves VG metadata backup/restore on an owned disposable loop/LVM fixture.
 
-## Non-goals
+### M1B8 — locked backup capture
 
-M1B0 does not implement:
+After successful locked identity revalidation, captures required partition/LVM metadata
+backups with secure artifact paths and SHA-256 receipts. Recovery execution remains disabled.
 
-- `sfdisk`, `pvresize`, `lvextend`, `resize2fs` or `xfs_growfs` execution;
-- privileged helpers;
-- lock-file I/O;
-- persistent journal I/O;
-- metadata backup/restore commands;
-- automatic recovery;
-- shrink or partition-start movement.
+### M1B9 — backup receipt revalidation
 
+Reopens backup artifacts with fail-closed path rules and verifies exact manifest binding,
+size and SHA-256 from disk.
 
-## M1B1/M1B2 locked pre-executor boundary
+### M1B10 — immutable pre-mutation evidence
 
-The frozen handoff can now enter a non-mutating host-exclusive lock session.
+Builds `PreMutationEvidenceBundle` from:
 
-1. Reject a blocked or mutation-enabled handoff.
-2. Acquire the host-wide advisory lock nonblockingly.
-3. Capture fresh discovery/capability inputs while the lock remains held.
-4. Revalidate the target-scoped identity manifest.
-5. Revalidate the frozen tool-capability inventory.
-6. Advance the in-memory journal only from `Planned` to `HostLockHeld` and, on exact revalidation, `IdentityRevalidated`.
+- the identity-revalidated locked session;
+- a fresh target identity check;
+- a fresh capability check;
+- a freshly recomputed filesystem decision;
+- revalidated backup evidence.
 
-A mismatch is terminal for that session: release the lock, rediscover, and build a fresh plan/handoff. There is still no apply path, durable journal write, metadata-backup execution, approval transition, or storage mutation API. Explicit owner acceptance remains a prerequisite for any mutation-capable executor rollout.
+M1B10 deliberately leaves the durable journal at `IdentityRevalidated`.
+
+### M1B11 — durable preconditions verification
+
+Current PR: **#25**, branch `feature/m1b11-preconditions-verification`.
+
+M1B11 introduces the first safe journal progression after M1B10:
+
+`IdentityRevalidated -> PreconditionsVerified`
+
+It still performs no storage mutation.
+
+The verifier accepts only:
+
+- the current `LockedExecutionSession`;
+- the corresponding immutable `PreMutationEvidenceBundle`.
+
+Required invariants:
+
+- the host lock is still owned by the session;
+- the journal is exactly `IdentityRevalidated`;
+- a durable journal store is attached;
+- the durable journal on disk exactly equals the session journal;
+- evidence schema is the M1B11-aware schema v2;
+- evidence fingerprint exactly matches its contents;
+- evidence is bound to the exact live locked-session ID;
+- handoff ID exactly matches;
+- plan ID exactly matches;
+- target-manifest digest exactly matches;
+- backup manifest and receipt IDs are present digest identities;
+- the backup receipt was successfully revalidated;
+- evidence status is `EvidenceComplete`;
+- no evidence blocker remains;
+- filesystem state is `ReadyOnlineGrow`;
+- no mandatory filesystem read-only check/future gate remains;
+- `mutation_enabled` remains false everywhere;
+- owner acceptance remains required rather than being auto-granted.
+
+A clean mounted ext4 decision can contain informational guidance such as not running e2fsck
+on the mounted filesystem. M1B11 therefore distinguishes those notes from an actual
+mandatory filesystem check.
+
+The transition is produced by cloning the current journal, applying
+`JournalTransition::PreconditionsVerified` to the clone, durably persisting that next
+state, and only then replacing the in-memory session journal. A failed persist cannot make the
+live session appear advanced.
+
+## Locked-session evidence replay protection
+
+M1B10 originally bound evidence to handoff/plan/target identity. M1B11 additionally creates a
+process-local SHA-256 locked-session binding token when a session is acquired. Evidence schema
+v2 freezes this token and includes it in the bundle fingerprint.
+
+This prevents evidence from a previous lock lifetime from authorizing the same transition in
+a later locked session, even when both sessions use the same plan and target identity.
+
+The token is not a cross-process recovery credential. `PreMutationEvidenceBundle` has no
+Deserialize implementation; after process restart the executor must rediscover and build fresh
+evidence rather than replaying an old in-memory bundle.
+
+## M1B11 tests
+
+Positive:
+
+- exact current-session evidence advances to `PreconditionsVerified`;
+- the host lock is still exclusive during verification;
+- durable reload returns exactly `PreconditionsVerified`;
+- `mutation_may_have_started` remains false;
+- owner acceptance remains outstanding.
+
+Fail-closed:
+
+- foreign plan ID;
+- foreign handoff ID;
+- changed target manifest;
+- tampered backup receipt;
+- missing backup;
+- stale capabilities;
+- changed filesystem identity;
+- filesystem `Blocked`;
+- filesystem `AdapterRequired`;
+- required offline ext4 check;
+- required XFS check;
+- wrong journal phase;
+- repeated transition;
+- evidence from another locked session;
+- non-durable session;
+- mutation flag unexpectedly true;
+- durable journal mismatch.
+
+All of these must leave the journal unadvanced.
+
+The initial TDD RED proof was CI #453: it failed specifically because the new
+`verify_preconditions` API did not yet exist.
+
+## Next: M1B12 exact-plan approval
+
+Do not combine approval with M1B11.
+
+M1B12 should bind an explicit operator decision to:
+
+- exact plan ID;
+- exact pre-mutation evidence bundle ID;
+- current target identity;
+- durable journal state.
+
+Only an exact accepted approval may advance:
+
+`PreconditionsVerified -> Approved`
+
+Do not add `ExecutionStarted` or any storage-changing command as part of M1B12.
+
+## Before first real mutation
+
+Separately design and review:
+
+- explicit owner acceptance;
+- privileged-helper boundary;
+- minimal executable allowlist;
+- exact argv command specs;
+- privilege model;
+- per-layer rediscovery;
+- per-layer verification;
+- interruption semantics;
+- recovery semantics and UX;
+- exact approval UX;
+- test-only mutation adapters;
+- disposable integration matrix.
+
+Backups are defense-in-depth, not permission to bypass topology proof.
