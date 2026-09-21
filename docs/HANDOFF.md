@@ -11,59 +11,33 @@ Repository: `PastFly/Linux-Storage-Manager`
 
 Verified master:
 
-`72594ed3128d5c373e79c53ec81a4d9107817b16`
+`e4c34bf952b942a37b4ea7c79effd2f18162fc03`
 
 Latest merged milestone:
 
-- PR **#25 — M1B11: durably verify exact preconditions**
-- approved PR head: `5fe2ccc710a4adbd66de7602516ec6083e66b23f`
-- squash result / master: `72594ed3128d5c373e79c53ec81a4d9107817b16`
-- post-merge **CI #471: success**
-- post-merge **Portable Linux #350: success**.
+- PR **#26 — M1B12: bind exact operator approval durably**
+- approved PR head: `031b0afd1ac9ac527d8d0f3617824a0c11ef7edf`
+- squash result / master: `e4c34bf952b942a37b4ea7c79effd2f18162fc03`
+- post-merge **CI #512: success**
+- post-merge **Portable Linux #391: success**
+- Portable Linux #391 x86_64 succeeded on attempt #2 after attempt #1 hit an external
+  Docker Hub connection reset while pulling `almalinux:9`.
 
-M0 discovery, M1A planning and M1B0-M1B11 are merged. The old M1A PR #2 and the
-M1B11 feature branch are historical continuation points only.
+M0 discovery, M1A planning and M1B0-M1B12 are merged. PR #26 and
+`feature/m1b12-exact-plan-approval` are historical continuation points only.
 
-## Current milestone — M1B12 exact-plan approval
+## Current milestone — M1B13 frozen execution intent
 
 Current branch:
 
-`feature/m1b12-exact-plan-approval`
+`feature/m1b13-frozen-execution-intent`
 
-Current PR:
+M1B13 remains strictly non-mutating. It freezes the exact approved semantic `PlanStep`
+graph into a typed, immutable, non-executable intent manifest. It revalidates the current
+locked session, exact approval binding and durable `Approved` journal before freezing.
 
-**#26 — M1B12: bind exact operator approval durably**
-
-M1B12 remains strictly non-mutating. It adds only:
-
-`PreconditionsVerified -> Approved`
-
-The approval call requires explicit caller-supplied values for:
-
-- exact plan ID;
-- exact M1B11 pre-mutation evidence bundle ID;
-- exact current target-manifest digest.
-
-It additionally proves that the M1B11 `PreconditionsVerification` belongs to:
-
-- the same live locked execution session;
-- the same durable journal ID;
-- the same exact plan;
-- the same target manifest;
-- the exact current `PreconditionsVerified` journal bytes.
-
-The SHA-256 digest of that pre-approval journal is frozen into a structured
-`ExactApprovalBinding`. The durable journal stores that binding, including:
-
-- approval-binding schema version (currently v1);
-- approval ID;
-- plan ID;
-- evidence bundle ID;
-- target-manifest digest;
-- locked-session ID;
-- preconditions-journal digest.
-
-The approval ID is a fingerprint of those exact identities.
+M1B13 adds no journal transition. The durable journal remains exactly `Approved`, and
+`MUTATION_ENABLED=false`.
 
 ## Durable approval safety rules
 
@@ -88,7 +62,7 @@ preconditions digest and recomputing the approval ID is therefore insufficient t
 approval record validate. These SHA-256 values are structural identity fingerprints, not a
 secret-key authenticity mechanism.
 
-## TDD evidence for M1B12
+## Historical TDD evidence for M1B12
 
 The milestone has explicit RED proofs:
 
@@ -103,8 +77,7 @@ The milestone has explicit RED proofs:
   binding now carries an explicit schema version, v1 is part of its fingerprint, and any other
   durable approval schema fails closed.
 
-Final PR-head CI numbers must be read live from PR #26; do not copy an intermediate run as
-release evidence.
+Final M1B12 release evidence is the merged master plus post-merge CI #512 and Portable Linux #391.
 
 ## M1B12 regression contract
 
@@ -153,7 +126,7 @@ M1B12 does **not** add:
 The planner retains its future journal state model, but no M1B12 executor API crosses the
 mutation boundary.
 
-## After M1B12
+## M1B13 boundary and later work
 
 Do not enable production storage writes merely because an exact approval record exists.
 
@@ -174,7 +147,5 @@ Before a first write-capable executor milestone, separately design and review:
 - Start work from live `master`.
 - Use feature branches and PRs.
 - Require complete CI and Portable Linux success on the exact PR head.
-- Do not merge PR #26 into `master` without explicit owner authorization for PR #26 and
-  its exact head SHA.
-- After an authorized squash merge, verify the new master and post-merge Actions before
-  starting the next milestone.
+- Do not merge any M1B13 public-main PR without explicit owner authorization for that PR and its exact head SHA.
+- After an authorized squash merge, verify the new master and post-merge Actions before starting the next milestone.
