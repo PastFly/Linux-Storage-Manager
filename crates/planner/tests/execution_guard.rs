@@ -195,6 +195,34 @@ fn approval_for_another_plan_is_rejected() {
 }
 
 #[test]
+fn approval_binding_with_unknown_schema_is_rejected() {
+    let guard = guard();
+    let mut journal = OperationJournal::new(&guard);
+    journal.apply(JournalTransition::HostLockAcquired).unwrap();
+    journal
+        .apply(JournalTransition::IdentityRevalidated {
+            fresh_manifest_digest: &guard.baseline_manifest_digest,
+        })
+        .unwrap();
+    journal
+        .apply(JournalTransition::PreconditionsVerified)
+        .unwrap();
+
+    let mut approval = approval(&journal);
+    approval.schema_version = 2;
+    approval.approval_id = approval.expected_approval_id().unwrap();
+
+    let result = journal.apply(JournalTransition::ExactPlanApproved {
+        approved_plan_id: &guard.plan_id,
+        approval: &approval,
+    });
+
+    assert_eq!(result, Err(JournalError::ApprovalBindingSchemaMismatch));
+    assert_eq!(journal.phase, JournalPhase::PreconditionsVerified);
+    assert!(journal.approval.is_none());
+}
+
+#[test]
 fn approval_binding_for_another_preconditions_journal_is_rejected() {
     let guard = guard();
     let mut journal = OperationJournal::new(&guard);
