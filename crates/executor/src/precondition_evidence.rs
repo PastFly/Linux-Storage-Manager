@@ -302,10 +302,7 @@ impl PreMutationEvidenceBundle {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_with_filesystem_state(
-        mut self,
-        state: FilesystemDecisionState,
-    ) -> Self {
+    pub(crate) fn test_with_filesystem_state(mut self, state: FilesystemDecisionState) -> Self {
         self.filesystem_decision.state = state;
         self.status = PreMutationEvidenceStatus::EvidenceComplete;
         self.blockers.clear();
