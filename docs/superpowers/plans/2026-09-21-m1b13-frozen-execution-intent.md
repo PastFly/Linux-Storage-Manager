@@ -328,3 +328,57 @@ git commit -m "executor: validate frozen intent dependency graph"
 ```
 
 ---
+
+### Task 5: Validate semantic intent against the frozen target identity
+
+**Files:** modify/test `crates/executor/src/execution_intent.rs`.
+
+**Interfaces:** consumes each `PlanStep`, `TargetIdentityManifest`, and `FilesystemGrowthDecision`; produces one validated `FrozenIntentAction`.
+
+- [ ] **Step 1: Write RED semantic tests**
+
+Add tests with explicit synthetic identities:
+
+- `four_kn_partition_geometry_is_preserved_exactly`: partition identity and operation both use sector size 4096; translated action must retain 4096/start/old/new sectors exactly.
+- `partition_start_or_old_size_mismatch_is_rejected`: operation differs from frozen partition identity.
+- `duplicate_matching_lv_uuid_is_rejected`: identity contains two `LogicalVolume` entries with the same UUID.
+- `unknown_lv_uuid_is_rejected`.
+- `filesystem_type_mismatch_is_rejected`.
+- `filesystem_mountpoint_mismatch_is_rejected`.
+- `backup_partition_identity_mismatch_is_rejected`.
+- `backup_vg_identity_mismatch_is_rejected`.
+
+Representative assertion:
+
+```rust
+let result = translate_step(&step, &identity, &decision);
+assert!(matches!(
+    result,
+    Err(ExecutionIntentError::FrozenIdentityMismatch(_))
+));
+```
+
+The valid 4Kn case must assert:
+
+```rust
+assert!(matches!(
+    translated.action,
+    FrozenIntentAction::ExtendPartition {
+        start_sector: 256,
+        old_size_sectors: 4096,
+        new_size_sectors: 8192,
+        sector_size_bytes: 4096,
+        ..
+    }
+));
+```
+
+- [ ] **Step 2: Verify RED**
+
+```bash
+cargo test -p lsm-executor execution_intent::tests::four_kn_partition_geometry_is_preserved_exactly
+cargo test -p lsm-executor execution_intent::tests::duplicate_matching_lv_uuid_is_rejected
+cargo test -p lsm-executor execution_intent::tests::filesystem_mountpoint_mismatch_is_rejected
+```
+
+Expected: failur
