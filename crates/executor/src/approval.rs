@@ -57,35 +57,6 @@ impl ExactPlanApproval {
         self
     }
 
-    #[cfg(test)]
-    pub(crate) fn test_with_plan_id(mut self, value: String) -> Self {
-        self.binding.plan_id = value;
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_with_evidence_bundle_id(mut self, value: String) -> Self {
-        self.binding.evidence_bundle_id = value;
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_with_target_manifest_digest(mut self, value: String) -> Self {
-        self.binding.target_manifest_digest = value;
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_with_journal_id(mut self, value: String) -> Self {
-        self.journal_id = value;
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_with_mutation_enabled(mut self) -> Self {
-        self.mutation_enabled = true;
-        self
-    }
 }
 
 #[derive(Debug, Error)]
