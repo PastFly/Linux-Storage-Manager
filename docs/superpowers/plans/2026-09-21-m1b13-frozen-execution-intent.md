@@ -117,4 +117,50 @@ pub enum ExecutionIntentManifestStatus { FrozenNonExecutable }
 pub enum FrozenIntentRole { PreExecutionEvidence, MutationCandidate, Verification }
 
 pub enum FrozenIntentAction {
-    RevalidateSnapshot
+    RevalidateSnapshot,
+    BackupLvmMetadata { vg_uuid: String },
+    BackupPartitionTableMetadata { disk: String, table_label: String, table_id: Option<String> },
+    ExtendPartition { partition: String, start_sector: u64, old_size_sectors: u64, new_size_sectors: u64, sector_size_bytes: u64 },
+    ExtendLogicalVolume { lv_uuid: String, additional_extents: u64, expected_lv_size_bytes: u64 },
+    GrowFilesystem { fs_type: String, mountpoint: String },
+    RediscoverAndVerify,
+}
+
+pub struct FrozenIntentStep {
+    pub plan_step_id: u32,
+    pub depends_on: Vec<u32>,
+    pub reversibility: Reversibility,
+    pub role: FrozenIntentRole,
+    pub action: FrozenIntentAction,
+}
+
+pub struct VerificationBarrierSpec {
+    pub after_plan_step_id: u32,
+    pub before_next_mutation: bool,
+    pub require_fresh_target_identity: bool,
+    pub require_fresh_capabilities: bool,
+    pub require_expected_state_check: bool,
+    pub stop_on_mismatch: bool,
+}
+```
+
+`FrozenExecutionIntentManifest` contains schema/manifest IDs, approval/journal/plan/evidence/target/session bindings, status, `mutation_enabled=false`, `owner_acceptance_required=true`, steps, barriers, blockers and future gates. Derive `Serialize`, never `Deserialize`.
+
+- [ ] **Step 5: Implement the minimum positive path**
+
+Before translation require:
+
+```rust
+if session.journal().phase != JournalPhase::Approved {
+    return Err(ExecutionIntentError::SessionNotApproved);
+}
+if MUTATION_ENABLED || session.mutation_enabled() || session.handoff().mutation_enabled() {
+    return Err(ExecutionIntentError::MutationEnabled);
+}
+if session.journal().mutation_may_have_started {
+    return Err(ExecutionIntentError::MutationMayHaveStarted);
+}
+session.require_current_durable_journal()?;
+```
+
+Compare approval ID, journal ID, plan, evidence, target and locked-session I
