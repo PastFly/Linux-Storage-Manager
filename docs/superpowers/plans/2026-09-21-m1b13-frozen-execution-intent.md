@@ -22,3 +22,44 @@
 - Every mutation candidate receives a read-only verification barrier.
 - Owner acceptance for mutation-capable rollout remains outstanding.
 
+## Review Focus
+
+1. Non-linear/cyclic dependencies: Task 4 tests duplicate IDs, unknown dependencies, self-dependency and cycles.
+2. 4Kn partition geometry: Task 5 tests exact 4096-byte sector preservation.
+3. Ambiguous LV identity: Task 5 rejects duplicate matching LV UUIDs.
+4. Filesystem/mount alias drift: Task 5 rejects a mountpoint mismatch even when filesystem type matches.
+5. Approved journal memory/disk divergence: Task 6 rejects a live journal that differs from durable state.
+
+---
+
+### Task 1: Correct the post-M1B12 continuity baseline
+
+**Files:** `docs/HANDOFF.md`, `docs/M1B_HANDOFF.md`
+
+**Interfaces:** consumes merged M1B12 master `e4c34bf952b942a37b4ea7c79effd2f18162fc03`, CI #512 and Portable Linux #391; produces accurate M1B13 continuation context.
+
+- [ ] **Step 1: Update stale continuity.** Mark PR #26/`feature/m1b12-exact-plan-approval` historical; record master `e4c34bf952b942a37b4ea7c79effd2f18162fc03`, CI #512, Portable Linux #391, and the x86_64 attempt #2 success after the external Docker Hub reset while pulling `almalinux:9`. Mark `feature/m1b13-frozen-execution-intent` current.
+
+- [ ] **Step 2: Verify continuity**
+
+```bash
+grep -n "Current PR:.*#26\|feature/m1b12-exact-plan-approval" docs/HANDOFF.md docs/M1B_HANDOFF.md
+grep -n "e4c34bf952b942a37b4ea7c79effd2f18162fc03\|M1B13" docs/HANDOFF.md docs/M1B_HANDOFF.md
+```
+
+Expected: no stale-current match; new master/M1B13 are present.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add docs/HANDOFF.md docs/M1B_HANDOFF.md
+git commit -m "docs: advance continuity to merged M1B12"
+```
+
+---
+
+### Task 2: Establish the positive M1B13 contract and durable read boundary
+
+**Files:** create `crates/executor/src/execution_intent.rs`; modify `crates/executor/src/lib.rs`, `crates/executor/src/locked_session.rs`.
+
+**Interfaces:
