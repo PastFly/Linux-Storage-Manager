@@ -227,6 +227,7 @@ pub struct JournalEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExactApprovalBinding {
+    pub schema_version: u32,
     pub approval_id: String,
     pub plan_id: String,
     pub evidence_bundle_id: String,
@@ -238,7 +239,7 @@ pub struct ExactApprovalBinding {
 impl ExactApprovalBinding {
     pub fn expected_approval_id(&self) -> Result<String, serde_json::Error> {
         fingerprint(&(
-            1_u32,
+            self.schema_version,
             &self.plan_id,
             &self.evidence_bundle_id,
             &self.target_manifest_digest,
