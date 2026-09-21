@@ -55,6 +55,7 @@ fn guard() -> lsm_planner::ExecutionGuardPlan {
 
 fn approval(journal: &OperationJournal) -> ExactApprovalBinding {
     let mut approval = ExactApprovalBinding {
+        schema_version: 1,
         approval_id: String::new(),
         plan_id: journal.plan_id.clone(),
         evidence_bundle_id: "evidence-test-001".to_owned(),
