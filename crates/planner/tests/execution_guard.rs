@@ -190,6 +190,34 @@ fn approval_for_another_plan_is_rejected() {
 }
 
 #[test]
+fn approval_binding_for_another_preconditions_journal_is_rejected() {
+    let guard = guard();
+    let mut journal = OperationJournal::new(&guard);
+    journal.apply(JournalTransition::HostLockAcquired).unwrap();
+    journal
+        .apply(JournalTransition::IdentityRevalidated {
+            fresh_manifest_digest: &guard.baseline_manifest_digest,
+        })
+        .unwrap();
+    journal
+        .apply(JournalTransition::PreconditionsVerified)
+        .unwrap();
+
+    let mut approval = approval(&guard);
+    approval.preconditions_journal_digest = "different-preconditions-journal".to_owned();
+    approval.approval_id = approval.expected_approval_id().unwrap();
+
+    let result = journal.apply(JournalTransition::ExactPlanApproved {
+        approved_plan_id: &guard.plan_id,
+        approval: &approval,
+    });
+
+    assert!(result.is_err());
+    assert_eq!(journal.phase, JournalPhase::PreconditionsVerified);
+    assert!(journal.approval.is_none());
+}
+
+#[test]
 fn interruption_before_execution_can_only_restart_from_a_fresh_plan() {
     let guard = guard();
     let mut journal = OperationJournal::new(&guard);
