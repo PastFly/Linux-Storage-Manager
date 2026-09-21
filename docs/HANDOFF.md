@@ -149,3 +149,17 @@ Before a first write-capable executor milestone, separately design and review:
 - Require complete CI and Portable Linux success on the exact PR head.
 - Do not merge any M1B13 public-main PR without explicit owner authorization for that PR and its exact head SHA.
 - After an authorized squash merge, verify the new master and post-merge Actions before starting the next milestone.
+
+
+## M1B13 implementation state
+
+Branch: `feature/m1b13-frozen-execution-intent`.
+
+The branch now contains the typed frozen-intent model, exact approval/durable-journal binding,
+one-to-one operation mapping, dependency-graph validation, frozen target semantic validation,
+and fail-closed approval mismatch coverage. CI #526 is retained as a RED/diagnostic run that
+exposed a duplicate contract test and a missing test-only approval fixture; both were corrected.
+Final completion evidence must come from CI and Portable Linux on the final exact PR head.
+
+M1B13 adds no journal transition and no process execution. The next intended milestone is M1B14,
+a non-executing semantic-to-argv compiler plus minimal executable allowlist.
