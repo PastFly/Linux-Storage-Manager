@@ -249,4 +249,55 @@ Expected: at least one assertion fails until exact mapping/fingerprint behavior 
 
 - [ ] **Step 3: Implement exact mapping invariants**
 
-Use a single exhaustiv
+Use a single exhaustive `match &step.operation`; construct exactly one `FrozenIntentStep` per source step and preserve `id`, `depends_on`, and `reversibility` verbatim. Derive barriers only from the resulting `MutationCandidate` steps. Do not insert a `FrozenIntentStep` for a barrier.
+
+After translation enforce:
+
+```rust
+if frozen.len() != source.len() {
+    return Err(ExecutionIntentError::StepMappingMismatch);
+}
+if frozen_mutations != source_mutations {
+    return Err(ExecutionIntentError::MutationMappingMismatch);
+}
+```
+
+- [ ] **Step 4: Verify GREEN and commit**
+
+```bash
+cargo test -p lsm-executor execution_intent::tests::
+cargo test -p lsm-executor
+git add crates/executor/src/execution_intent.rs
+git commit -m "executor: preserve exact approved intent mapping"
+```
+
+---
+
+### Task 4: Validate the approved dependency graph fail-closed
+
+**Files:** modify/test `crates/executor/src/execution_intent.rs`.
+
+**Interfaces:** consumes `&[PlanStep]`; produces `Result<(), ExecutionIntentError>` before semantic translation.
+
+- [ ] **Step 1: Write RED graph tests**
+
+Build synthetic `PlanStep` vectors using `Operation::RevalidateSnapshot` and assert exact errors for:
+
+```rust
+#[test] fn duplicate_step_id_is_rejected() { /* IDs 1,1 */ }
+#[test] fn zero_step_id_is_rejected() { /* ID 0 */ }
+#[test] fn unknown_dependency_is_rejected() { /* step 2 depends on 99 */ }
+#[test] fn self_dependency_is_rejected() { /* step 2 depends on 2 */ }
+#[test] fn dependency_cycle_is_rejected() { /* 1 -> 2, 2 -> 1 */ }
+```
+
+The production change that makes each test pass is `validate_dependency_graph`.
+
+- [ ] **Step 2: Verify RED**
+
+```bash
+cargo test -p lsm-executor execution_intent::tests::duplicate_step_id_is_rejected
+cargo test -p lsm-executor execution_intent::tests::dependency_cycle_is_rejected
+```
+
+Expected: failures bec
