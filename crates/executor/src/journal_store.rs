@@ -593,6 +593,7 @@ mod tests {
 
         let plan_id = journal.plan_id.clone();
         let mut approval = ExactApprovalBinding {
+            schema_version: 1,
             approval_id: String::new(),
             plan_id: plan_id.clone(),
             evidence_bundle_id: digest('d'),
@@ -642,6 +643,7 @@ mod tests {
 
         let plan_id = journal.plan_id.clone();
         let mut approval = ExactApprovalBinding {
+            schema_version: 1,
             approval_id: String::new(),
             plan_id: plan_id.clone(),
             evidence_bundle_id: digest('d'),
@@ -686,6 +688,7 @@ mod tests {
             .unwrap();
         let plan_id = journal.plan_id.clone();
         let mut approval = ExactApprovalBinding {
+            schema_version: 1,
             approval_id: String::new(),
             plan_id: plan_id.clone(),
             evidence_bundle_id: digest('d'),
