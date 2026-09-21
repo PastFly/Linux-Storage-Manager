@@ -102,6 +102,11 @@ The module owns:
 The planner remains the authority for the approved semantic plan. M1B13 does not move planner
 logic into the executor.
 
+`LockedExecutionSession` additionally gains one narrow `pub(crate)` read-side helper that
+loads the attached durable journal and requires it to equal the current in-memory journal.
+The intent module uses that helper rather than receiving or exposing `DurableJournalStore`
+directly. The helper performs no transition and no write.
+
 The manifest derives from:
 
 `LockedExecutionSession + ExactPlanApproval + FrozenExecutionHandoff + approved OperationJournal`
@@ -159,7 +164,8 @@ Before translating any plan step it must prove:
 - durable journal storage is attached;
 - `MUTATION_ENABLED == false`;
 - session/handoff mutation state is false;
-- the durable journal on disk exactly equals the live session journal;
+- the session's narrow durable-state helper confirms the journal on disk exactly equals the
+  live session journal;
 - journal `mutation_may_have_started == false`;
 - journal contains the exact approval binding;
 - approval ID matches the journal binding;
@@ -431,8 +437,8 @@ Fail-closed tests:
 15. invalid partition geometry;
 16. unknown LV UUID;
 17. filesystem identity mismatch;
-18. a source step that cannot be represented exactly;
-19. attempted synthesis of an extra mutation.
+18. manifest/source step count or IDs diverge, proving an omitted or synthesized step;
+19. mutation-candidate count diverges from the exact approved mutation operations.
 
 Every failure must leave the journal unadvanced.
 
