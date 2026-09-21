@@ -464,4 +464,45 @@ Add tests named:
 - `intent_rejects_wrong_target_manifest`
 - `durable_approved_journal_divergence_is_rejected`
 - `intent_requires_durable_session`
-- `intent_requires_approved_p
+- `intent_requires_approved_phase`
+- `intent_rejects_mutation_may_have_started`
+- `intent_rejects_mutation_enabled_approval`
+- `intent_rejects_recomputed_tampered_durable_approval_binding`
+
+Every test snapshots `before = session.journal().clone()` and, after rejection, asserts the phase/events are unadvanced. Where the durable record is intentionally not tampered, also assert `store.load(...) == before`.
+
+For the recomputed binding case, mutate `session.journal.approval`, recompute `approval_id = expected_approval_id().unwrap()`, persist that internally consistent but foreign binding through the store, then pass the original `ExactPlanApproval`; expect `ApprovalBindingMismatch`.
+
+- [ ] **Step 3: Verify RED**
+
+```bash
+cargo test -p lsm-executor intent_rejects_wrong_approval_id -- --exact
+cargo test -p lsm-executor intent_rejects_approval_from_another_locked_session -- --exact
+cargo test -p lsm-executor durable_approved_journal_divergence_is_rejected -- --exact
+cargo test -p lsm-executor intent_rejects_recomputed_tampered_durable_approval_binding -- --exact
+```
+
+Expected: failures until all exact bindings are checked.
+
+- [ ] **Step 4: Implement binding checks in fail-closed order**
+
+Check phase/mutation flags first, then durable equality, then exact approval binding. Compare:
+
+```rust
+let binding = session
+    .journal()
+    .approval
+    .as_ref()
+    .ok_or(ExecutionIntentError::ApprovalBindingMismatch)?;
+
+if binding.approval_id != approval.approval_id()
+    || binding.plan_id != approval.plan_id()
+    || binding.evidence_bundle_id != approval.evidence_bundle_id()
+    || binding.target_manifest_digest != approval.target_manifest_digest()
+    || binding.locked_session_id != approval.locked_session_id()
+{
+    return Err(ExecutionIntentError::ApprovalBindingMismatch);
+}
+```
+
+Separately compare `approv
