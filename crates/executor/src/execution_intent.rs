@@ -195,6 +195,83 @@ pub enum ExecutionIntentError {
     Session(#[from] LockedSessionError),
 }
 
+fn translate_step(step: &lsm_planner::PlanStep) -> Result<FrozenIntentStep, ExecutionIntentError> {
+    let (role, action) = match &step.operation {
+        Operation::RevalidateSnapshot => (
+            FrozenIntentRole::PreExecutionEvidence,
+            FrozenIntentAction::RevalidateSnapshot,
+        ),
+        Operation::BackupLvmMetadata { vg_uuid } => (
+            FrozenIntentRole::PreExecutionEvidence,
+            FrozenIntentAction::BackupLvmMetadata {
+                vg_uuid: vg_uuid.clone(),
+            },
+        ),
+        Operation::BackupPartitionTableMetadata {
+            disk,
+            table_label,
+            table_id,
+        } => (
+            FrozenIntentRole::PreExecutionEvidence,
+            FrozenIntentAction::BackupPartitionTableMetadata {
+                disk: disk.clone(),
+                table_label: table_label.clone(),
+                table_id: table_id.clone(),
+            },
+        ),
+        Operation::ExtendPartition {
+            partition,
+            start_sector,
+            old_size_sectors,
+            new_size_sectors,
+            sector_size_bytes,
+        } => (
+            FrozenIntentRole::MutationCandidate,
+            FrozenIntentAction::ExtendPartition {
+                partition: partition.clone(),
+                start_sector: *start_sector,
+                old_size_sectors: *old_size_sectors,
+                new_size_sectors: *new_size_sectors,
+                sector_size_bytes: *sector_size_bytes,
+            },
+        ),
+        Operation::ExtendLogicalVolume {
+            lv_uuid,
+            additional_extents,
+            expected_lv_size_bytes,
+        } => (
+            FrozenIntentRole::MutationCandidate,
+            FrozenIntentAction::ExtendLogicalVolume {
+                lv_uuid: lv_uuid.clone(),
+                additional_extents: *additional_extents,
+                expected_lv_size_bytes: *expected_lv_size_bytes,
+            },
+        ),
+        Operation::GrowFilesystem {
+            fs_type,
+            mountpoint,
+        } => (
+            FrozenIntentRole::MutationCandidate,
+            FrozenIntentAction::GrowFilesystem {
+                fs_type: fs_type.clone(),
+                mountpoint: mountpoint.clone(),
+            },
+        ),
+        Operation::RediscoverAndVerify => (
+            FrozenIntentRole::Verification,
+            FrozenIntentAction::RediscoverAndVerify,
+        ),
+    };
+
+    Ok(FrozenIntentStep {
+        plan_step_id: step.id,
+        depends_on: step.depends_on.clone(),
+        reversibility: step.reversibility,
+        role,
+        action,
+    })
+}
+
 pub fn freeze_execution_intent(
     session: &LockedExecutionSession<'_>,
     approval: &ExactPlanApproval,
@@ -240,49 +317,8 @@ pub fn freeze_execution_intent(
     let mut steps = Vec::with_capacity(handoff.plan().steps().len());
     let mut verification_barriers = Vec::new();
     for step in handoff.plan().steps() {
-        let (role, action) = match &step.operation {
-            Operation::RevalidateSnapshot => (
-                FrozenIntentRole::PreExecutionEvidence,
-                FrozenIntentAction::RevalidateSnapshot,
-            ),
-            Operation::BackupLvmMetadata { vg_uuid } => (
-                FrozenIntentRole::PreExecutionEvidence,
-                FrozenIntentAction::BackupLvmMetadata {
-                    vg_uuid: vg_uuid.clone(),
-                },
-            ),
-            Operation::ExtendLogicalVolume {
-                lv_uuid,
-                additional_extents,
-                expected_lv_size_bytes,
-            } => (
-                FrozenIntentRole::MutationCandidate,
-                FrozenIntentAction::ExtendLogicalVolume {
-                    lv_uuid: lv_uuid.clone(),
-                    additional_extents: *additional_extents,
-                    expected_lv_size_bytes: *expected_lv_size_bytes,
-                },
-            ),
-            Operation::GrowFilesystem {
-                fs_type,
-                mountpoint,
-            } => (
-                FrozenIntentRole::MutationCandidate,
-                FrozenIntentAction::GrowFilesystem {
-                    fs_type: fs_type.clone(),
-                    mountpoint: mountpoint.clone(),
-                },
-            ),
-            Operation::RediscoverAndVerify => (
-                FrozenIntentRole::Verification,
-                FrozenIntentAction::RediscoverAndVerify,
-            ),
-            Operation::BackupPartitionTableMetadata { .. } | Operation::ExtendPartition { .. } => {
-                return Err(ExecutionIntentError::UnsupportedOperation);
-            }
-        };
-
-        if role == FrozenIntentRole::MutationCandidate {
+        let frozen = translate_step(step)?;
+        if frozen.role == FrozenIntentRole::MutationCandidate {
             verification_barriers.push(VerificationBarrierSpec {
                 after_plan_step_id: step.id,
                 before_next_mutation: true,
@@ -292,13 +328,7 @@ pub fn freeze_execution_intent(
                 stop_on_mismatch: true,
             });
         }
-        steps.push(FrozenIntentStep {
-            plan_step_id: step.id,
-            depends_on: step.depends_on.clone(),
-            reversibility: step.reversibility,
-            role,
-            action,
-        });
+        steps.push(frozen);
     }
 
     let mut manifest = FrozenExecutionIntentManifest {
