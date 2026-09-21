@@ -268,7 +268,9 @@ pub struct OperationJournal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JournalTransition<'a> {
     HostLockAcquired,
-    IdentityRevalidated { fresh_manifest_digest: &'a str },
+    IdentityRevalidated {
+        fresh_manifest_digest: &'a str,
+    },
     PreconditionsVerified,
     ExactPlanApproved {
         approved_plan_id: &'a str,
@@ -277,8 +279,12 @@ pub enum JournalTransition<'a> {
     ExecutionStarted,
     VerificationStarted,
     Completed,
-    Interrupted { reason: &'a str },
-    Abort { reason: &'a str },
+    Interrupted {
+        reason: &'a str,
+    },
+    Abort {
+        reason: &'a str,
+    },
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
