@@ -22,8 +22,7 @@ pub use execution_guard::{
     build_execution_guard_plan, ExactApprovalBinding, ExecutionGuardError, ExecutionGuardPlan,
     GuardGate, GuardGateKind, GuardPlanStatus, JournalError, JournalEvent, JournalPhase,
     JournalTransition, LockScope, OperationJournal, OperationLockPlan, ResumeDisposition,
-    HOST_STORAGE_LOCK_PATH,
-    JOURNAL_DIRECTORY,
+    HOST_STORAGE_LOCK_PATH, JOURNAL_DIRECTORY,
 };
 
 pub use execution_handoff::{
