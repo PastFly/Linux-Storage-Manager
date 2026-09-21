@@ -2,8 +2,8 @@
 
 Last live GitHub audit: **2026-09-21**.
 
-`AGENTS.md` is the governing engineering document. Always re-check live GitHub refs and
-the blob SHA of governing documentation before continuing from this handoff.
+`AGENTS.md` is the governing engineering document. Re-check live GitHub refs and changed
+governing-document blob SHAs before continuing.
 
 ## Verified master baseline
 
@@ -11,141 +11,170 @@ Repository: `PastFly/Linux-Storage-Manager`
 
 Verified master:
 
-`810dcc512a0f23000d7bf49f090ed22d5688ab01`
+`72594ed3128d5c373e79c53ec81a4d9107817b16`
 
-Latest merged milestone on that master:
+Latest merged milestone:
 
-- PR **#24 — M1B10: freeze non-mutating pre-mutation evidence**
-- PR head: `358ea9a8034f931aaf0b74146c330f3e569cffff`
-- squash result / master: `810dcc512a0f23000d7bf49f090ed22d5688ab01`
-- post-merge **CI #452: success**
-- post-merge **Portable Linux #331: success**
-- PR-head CI immediately before merge was CI #451 / Portable Linux #330.
+- PR **#25 — M1B11: durably verify exact preconditions**
+- approved PR head: `5fe2ccc710a4adbd66de7602516ec6083e66b23f`
+- squash result / master: `72594ed3128d5c373e79c53ec81a4d9107817b16`
+- post-merge **CI #471: success**
+- post-merge **Portable Linux #350: success**.
 
-The obsolete M1A draft PR #2 and `feature/m1a-read-only-planner` are historical only.
-They are not a continuation point.
+M0 discovery, M1A planning and M1B0-M1B11 are merged. The old M1A PR #2 and the
+M1B11 feature branch are historical continuation points only.
 
-## Current milestone
+## Current milestone — M1B12 exact-plan approval
 
-M0 discovery and M1A planning are complete. M1B0 through M1B10 are merged into master.
+Current branch:
 
-Current development is **M1B11 — durable preconditions verification**, isolated in:
+`feature/m1b12-exact-plan-approval`
 
-- branch: `feature/m1b11-preconditions-verification`
-- PR: **#25**
+Current PR:
 
-M1B11 remains strictly non-mutating. Its boundary is:
+**#26 — M1B12: bind exact operator approval durably**
 
-`IdentityRevalidated -> PreconditionsVerified`
-
-The transition is accepted only when an immutable pre-mutation evidence bundle proves the
-same current locked execution session, exact frozen handoff/plan/target identity, successfully
-revalidated backup evidence, and a filesystem decision with no outstanding mandatory check.
-
-The verifier additionally requires the durable journal on disk to equal the in-memory
-`IdentityRevalidated` journal before creating and atomically persisting the next journal state.
-
-A process-local locked-session binding is frozen into evidence schema v2 and included in the
-bundle fingerprint. This prevents replaying evidence from an earlier locked session even when
-the handoff, plan and target identity are otherwise identical.
-
-## Safety state
-
-The project remains safety-first and fail-closed.
-
-`MUTATION_ENABLED = false`
-
-M1B11 does **not** add:
-
-- an `apply` command;
-- `ExecutionStarted`;
-- partition writes;
-- `pvresize`;
-- `lvextend`;
-- `resize2fs` or `xfs_growfs` execution;
-- mount/fstab mutation;
-- swap mutation;
-- recovery-command execution;
-- automatic owner acceptance;
-- exact-plan approval.
-
-The host lock remains owned through the transition. Any binding mismatch, incomplete evidence,
-filesystem prerequisite, mutation-enabled state, wrong journal phase, cross-session evidence,
-missing/tampered backup evidence, or durable-journal divergence fails without advancing the
-journal.
-
-## M1B foundation already merged
-
-The master baseline already contains:
-
-1. frozen non-mutating M1B0 execution handoff;
-2. host-exclusive advisory lock;
-3. locked target/capability revalidation;
-4. atomic durable journal storage;
-5. durable `HostLockHeld` and `IdentityRevalidated`;
-6. immutable backup/recovery manifests;
-7. GPT/DOS partition recovery drills on disposable loops;
-8. LVM metadata recovery drill on disposable loop/LVM fixtures;
-9. locked metadata backup capture with SHA-256 receipts;
-10. receipt revalidation from disk;
-11. immutable M1B10 `PreMutationEvidenceBundle`.
-
-## M1B11 regression contract
-
-The M1B11 test matrix covers positive durable transition plus fail-closed rejection of:
-
-- foreign plan ID;
-- foreign handoff ID;
-- changed target manifest binding;
-- tampered backup receipt evidence;
-- missing backup binding;
-- stale capability evidence;
-- changed filesystem identity;
-- filesystem `Blocked`;
-- filesystem `AdapterRequired`;
-- required offline ext4 health check;
-- required XFS read-only scrub check;
-- wrong journal phase;
-- repeated transition;
-- evidence replayed from another locked session;
-- non-durable session;
-- unexpected mutation-enabled evidence;
-- durable journal diverging from the live locked session.
-
-No test touches host block devices. Existing destructive integration drills remain restricted to
-owned disposable loop/LVM fixtures.
-
-The initial TDD RED run was **CI #453**, which failed because `verify_preconditions`
-did not yet exist. Later branch heads must be judged from live PR #25 checks; do not copy a
-stale run number from this document.
-
-## Next milestone after M1B11
-
-The intended next step is a separate **M1B12 — exact-plan approval model**.
-
-It should bind explicit operator approval to:
-
-- exact plan ID;
-- exact pre-mutation evidence bundle ID;
-- current target identity;
-- current durable journal state.
-
-Only then may the journal transition:
+M1B12 remains strictly non-mutating. It adds only:
 
 `PreconditionsVerified -> Approved`
 
-Even after M1B12, storage mutation should remain disabled until the privileged-helper,
-command allowlist, per-layer rediscovery/verification, interruption/recovery model and
-disposable write matrix are separately reviewed and accepted.
+The approval call requires explicit caller-supplied values for:
+
+- exact plan ID;
+- exact M1B11 pre-mutation evidence bundle ID;
+- exact current target-manifest digest.
+
+It additionally proves that the M1B11 `PreconditionsVerification` belongs to:
+
+- the same live locked execution session;
+- the same durable journal ID;
+- the same exact plan;
+- the same target manifest;
+- the exact current `PreconditionsVerified` journal bytes.
+
+The SHA-256 digest of that pre-approval journal is frozen into a structured
+`ExactApprovalBinding`. The durable journal stores that binding, including:
+
+- approval-binding schema version (currently v1);
+- approval ID;
+- plan ID;
+- evidence bundle ID;
+- target-manifest digest;
+- locked-session ID;
+- preconditions-journal digest.
+
+The approval ID is a fingerprint of those exact identities.
+
+## Durable approval safety rules
+
+Before `PreconditionsVerified -> Approved`:
+
+1. the host-exclusive lock is still held by the same session;
+2. the session journal is exactly `PreconditionsVerified`;
+3. a durable journal store is attached;
+4. the durable journal on disk exactly equals the live session journal;
+5. the supplied M1B11 verification matches the same session/journal/plan/target;
+6. the current journal SHA-256 still equals the verification's frozen journal digest;
+7. the explicitly approved plan/evidence/target values exactly match;
+8. mutation remains disabled;
+9. owner acceptance remains an explicit future gate.
+
+The next journal is built on a clone, durably persisted, and only then replaces the
+in-memory journal.
+
+On durable reload, the store reconstructs the exact pre-approval journal from the event
+history and verifies its digest against the stored approval binding. Changing only the stored
+preconditions digest and recomputing the approval ID is therefore insufficient to make a stale
+approval record validate. These SHA-256 values are structural identity fingerprints, not a
+secret-key authenticity mechanism.
+
+## TDD evidence for M1B12
+
+The milestone has explicit RED proofs:
+
+- **CI #472**: initial contract failed because `approve_exact_plan` and durable
+  `OperationJournal.approval` did not exist;
+- **CI #482**: planner accepted an approval whose preconditions-journal binding was changed;
+  the dedicated regression test failed until the transition itself validated that digest;
+- **CI #484**: durable reload accepted a tampered preconditions-journal binding even after
+  its approval fingerprint was recomputed; the journal store was then hardened to reconstruct
+  and verify the original `PreconditionsVerified` state;
+- **CI #499**: durable reload ignored an injected unknown approval-binding schema field; the
+  binding now carries an explicit schema version, v1 is part of its fingerprint, and any other
+  durable approval schema fails closed.
+
+Final PR-head CI numbers must be read live from PR #26; do not copy an intermediate run as
+release evidence.
+
+## M1B12 regression contract
+
+Positive path proves:
+
+- exact approval advances only `PreconditionsVerified -> Approved`;
+- the host lock remains exclusive;
+- durable reload preserves `Approved` plus the exact approval binding;
+- `mutation_may_have_started=false`;
+- owner acceptance remains required;
+- `MUTATION_ENABLED=false`.
+
+Fail-closed coverage includes:
+
+- wrong explicit plan ID;
+- wrong explicit evidence bundle ID;
+- wrong explicit target-manifest digest;
+- stale preconditions-journal digest;
+- M1B11 verification from another locked session;
+- wrong journal phase;
+- repeated approval;
+- durable journal divergence;
+- approval binding for another preconditions journal;
+- durable reload tampering, including recomputed approval fingerprints.
+
+Every failed approval attempt must leave the live journal unadvanced.
+
+## Safety boundary
+
+`MUTATION_ENABLED = false`
+
+M1B12 does **not** add:
+
+- `apply`;
+- `ExecutionStarted` through the executor layer;
+- privileged helpers;
+- partition-table writes;
+- `pvresize`;
+- `lvextend`;
+- `resize2fs` / `xfs_growfs` execution;
+- mount/fstab mutation;
+- swap mutation;
+- recovery-command execution;
+- automatic owner acceptance.
+
+The planner retains its future journal state model, but no M1B12 executor API crosses the
+mutation boundary.
+
+## After M1B12
+
+Do not enable production storage writes merely because an exact approval record exists.
+
+Before a first write-capable executor milestone, separately design and review:
+
+- explicit owner acceptance for mutation-capable rollout;
+- privileged-helper boundary and privilege model;
+- minimal executable command allowlist;
+- exact argv specs;
+- per-layer rediscovery and verification;
+- interruption handling;
+- recovery semantics and UX;
+- test-only mutation adapters;
+- disposable write matrix.
 
 ## Git workflow
 
-- Always start new work from live `master`.
-- Work in feature branches.
-- Keep commits logically scoped.
-- Push and open a PR to master.
-- Run CI and Portable Linux to completion and fix every failure.
-- Do **not** merge PR #25 or any later public-main PR without explicit owner authorization
-  for that exact PR/head.
-- After an authorized squash merge, re-read the new master and post-merge Actions before
+- Start work from live `master`.
+- Use feature branches and PRs.
+- Require complete CI and Portable Linux success on the exact PR head.
+- Do not merge PR #26 into `master` without explicit owner authorization for PR #26 and
+  its exact head SHA.
+- After an authorized squash merge, verify the new master and post-merge Actions before
   starting the next milestone.

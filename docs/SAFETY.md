@@ -183,6 +183,42 @@ The successful boundary is only:
 M1B11 does not expose `Approved`, `ExecutionStarted`, an apply command or any
 storage-changing executable path. `MUTATION_ENABLED` remains false.
 
+## Durable exact-plan approval
+
+M1B12 records an explicit operator decision without enabling storage mutation.
+
+- approval is accepted only from the same host-locked session whose durable journal is exactly
+  `PreconditionsVerified`;
+- the caller must explicitly supply the exact plan ID, exact M1B11 evidence bundle ID and exact
+  current target-manifest digest being approved;
+- the M1B11 verification object must match the same locked-session ID, journal ID, plan ID and
+  target-manifest digest;
+- the verification freezes a SHA-256 digest of the exact `PreconditionsVerified` journal, and
+  that digest must still match the current journal immediately before approval;
+- the durable journal on disk must exactly equal the in-memory session journal before the
+  transition;
+- successful approval stores a structured schema-v1 `ExactApprovalBinding` containing the plan ID,
+  evidence bundle ID, target-manifest digest, locked-session ID and preconditions-journal digest;
+- the approval ID is a SHA-256 fingerprint of the schema version and those exact binding fields;
+- both the in-memory journal transition and durable reload reject unknown approval-binding schema versions before accepting the record;
+- durable reload requires an approval transition and binding to appear together, validates every
+  binding identity, verifies the approval fingerprint, reconstructs the exact pre-approval
+  journal from history, and requires its SHA-256 to match the stored preconditions-journal digest;
+- changing only the stored journal digest and recomputing the approval fingerprint therefore
+  still fails closed;
+- SHA-256 IDs/fingerprints provide exact structural identity matching here; they are not a
+  secret-key authenticity mechanism against an actor that can arbitrarily rewrite trusted state;
+- the approved journal remains before the mutation boundary:
+  `mutation_may_have_started=false`;
+- owner acceptance remains explicitly required and `MUTATION_ENABLED` remains false.
+
+The only newly enabled journal transition is:
+
+`PreconditionsVerified -> Approved`
+
+M1B12 does not expose an executor path to `ExecutionStarted`, does not add an `apply`
+command and does not execute any storage-changing tool.
+
 ## Disposable LVM metadata recovery drill
 
 M1B7 validates LVM metadata recovery only inside the root-only disposable integration harness.

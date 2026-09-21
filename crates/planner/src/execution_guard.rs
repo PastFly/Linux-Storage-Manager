@@ -225,6 +225,34 @@ pub struct JournalEvent {
     pub detail: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExactApprovalBinding {
+    pub schema_version: u32,
+    pub approval_id: String,
+    pub plan_id: String,
+    pub evidence_bundle_id: String,
+    pub target_manifest_digest: String,
+    pub locked_session_id: String,
+    pub preconditions_journal_digest: String,
+}
+
+impl ExactApprovalBinding {
+    pub fn expected_approval_id(&self) -> Result<String, serde_json::Error> {
+        fingerprint(&(
+            self.schema_version,
+            &self.plan_id,
+            &self.evidence_bundle_id,
+            &self.target_manifest_digest,
+            &self.locked_session_id,
+            &self.preconditions_journal_digest,
+        ))
+    }
+
+    pub fn integrity_matches(&self) -> Result<bool, serde_json::Error> {
+        Ok(self.approval_id == self.expected_approval_id()?)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OperationJournal {
     pub schema_version: u32,
@@ -234,20 +262,30 @@ pub struct OperationJournal {
     pub baseline_manifest_digest: String,
     pub phase: JournalPhase,
     pub mutation_may_have_started: bool,
+    pub approval: Option<ExactApprovalBinding>,
     pub events: Vec<JournalEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JournalTransition<'a> {
     HostLockAcquired,
-    IdentityRevalidated { fresh_manifest_digest: &'a str },
+    IdentityRevalidated {
+        fresh_manifest_digest: &'a str,
+    },
     PreconditionsVerified,
-    ExactPlanApproved { approved_plan_id: &'a str },
+    ExactPlanApproved {
+        approved_plan_id: &'a str,
+        approval: &'a ExactApprovalBinding,
+    },
     ExecutionStarted,
     VerificationStarted,
     Completed,
-    Interrupted { reason: &'a str },
-    Abort { reason: &'a str },
+    Interrupted {
+        reason: &'a str,
+    },
+    Abort {
+        reason: &'a str,
+    },
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -261,6 +299,16 @@ pub enum JournalError {
     IdentityMismatch,
     #[error("approval does not match the exact frozen plan ID")]
     ApprovalMismatch,
+    #[error("approval binding schema is not supported")]
+    ApprovalBindingSchemaMismatch,
+    #[error("approval binding does not match the journal plan ID")]
+    ApprovalBindingPlanMismatch,
+    #[error("approval binding does not match the journal target manifest")]
+    ApprovalBindingTargetMismatch,
+    #[error("approval binding fingerprint does not match its contents")]
+    ApprovalBindingIntegrityMismatch,
+    #[error("approval binding does not match the exact preconditions journal state")]
+    ApprovalBindingJournalMismatch,
     #[error("journal is terminal and cannot advance")]
     Terminal,
 }
@@ -275,6 +323,7 @@ impl OperationJournal {
             baseline_manifest_digest: guard.baseline_manifest_digest.clone(),
             phase: JournalPhase::Planned,
             mutation_may_have_started: false,
+            approval: None,
             events: Vec::new(),
         }
     }
@@ -316,19 +365,41 @@ impl OperationJournal {
                 "preconditions-verified",
                 "filesystem decision, backups and other future executor prerequisites verified",
             ),
-            JournalTransition::ExactPlanApproved { approved_plan_id } => {
+            JournalTransition::ExactPlanApproved {
+                approved_plan_id,
+                approval,
+            } => {
                 if self.phase != JournalPhase::PreconditionsVerified {
                     return Err(self.invalid("exact_plan_approved"));
                 }
                 if approved_plan_id != self.plan_id {
                     return Err(JournalError::ApprovalMismatch);
                 }
+                if approval.schema_version != 1 {
+                    return Err(JournalError::ApprovalBindingSchemaMismatch);
+                }
+                if approval.plan_id != self.plan_id {
+                    return Err(JournalError::ApprovalBindingPlanMismatch);
+                }
+                if approval.target_manifest_digest != self.baseline_manifest_digest {
+                    return Err(JournalError::ApprovalBindingTargetMismatch);
+                }
+                if !approval.integrity_matches().unwrap_or(false) {
+                    return Err(JournalError::ApprovalBindingIntegrityMismatch);
+                }
+                if fingerprint(self).ok().as_deref()
+                    != Some(approval.preconditions_journal_digest.as_str())
+                {
+                    return Err(JournalError::ApprovalBindingJournalMismatch);
+                }
                 self.advance(
                     JournalPhase::PreconditionsVerified,
                     JournalPhase::Approved,
                     "exact-plan-approved",
-                    "approval recorded for the exact frozen plan",
-                )
+                    "approval recorded for the exact frozen plan and precondition evidence",
+                )?;
+                self.approval = Some(approval.clone());
+                Ok(())
             }
             JournalTransition::ExecutionStarted => {
                 if self.phase != JournalPhase::Approved {
