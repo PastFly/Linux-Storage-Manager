@@ -1,4 +1,6 @@
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use lsm_core::{HostCapabilities, HostSnapshot};
 use lsm_planner::{
@@ -6,11 +8,14 @@ use lsm_planner::{
     IdentityRevalidation, JournalError, JournalPhase, JournalTransition, OperationJournal,
     PlannerError,
 };
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
     DurableJournalStore, HostLockError, HostStorageLock, JournalStoreError, MUTATION_ENABLED,
 };
+
+static SESSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockedRevalidationStatus {
@@ -29,6 +34,7 @@ pub struct LockedRevalidation {
 #[derive(Debug)]
 pub struct LockedExecutionSession<'a> {
     lock: HostStorageLock,
+    session_id: String,
     handoff: &'a FrozenExecutionHandoff,
     journal: OperationJournal,
     journal_store: Option<&'a DurableJournalStore>,
@@ -51,6 +57,10 @@ pub enum LockedSessionError {
     Planner(#[from] PlannerError),
     #[error("in-memory journal transition failed: {0}")]
     Journal(#[from] JournalError),
+    #[error("preconditions verification requires a durable journal store")]
+    DurableJournalRequired,
+    #[error("durable journal state does not match the current locked session")]
+    DurableJournalMismatch,
     #[error("durable journal persistence failed: {0}")]
     DurableJournal(#[from] JournalStoreError),
 }
@@ -75,6 +85,10 @@ impl<'a> LockedExecutionSession<'a> {
 
     pub fn lock_path(&self) -> &Path {
         self.lock.path()
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
     }
 
     pub fn journal(&self) -> &OperationJournal {
@@ -154,8 +168,11 @@ impl<'a> LockedExecutionSession<'a> {
             store.persist(&journal)?;
         }
 
+        let session_id = build_session_id(handoff, lock.path());
+
         Ok(Self {
             lock,
+            session_id,
             handoff,
             journal,
             journal_store,
@@ -167,6 +184,22 @@ impl<'a> LockedExecutionSession<'a> {
         if let Some(store) = self.journal_store {
             store.persist(&self.journal)?;
         }
+        Ok(())
+    }
+
+    pub(crate) fn persist_preconditions_verified(&mut self) -> Result<(), LockedSessionError> {
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+        let persisted = store.load(&self.journal.journal_id)?;
+        if persisted != self.journal {
+            return Err(LockedSessionError::DurableJournalMismatch);
+        }
+
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::PreconditionsVerified)?;
+        store.persist(&next)?;
+        self.journal = next;
         Ok(())
     }
 
@@ -192,6 +225,18 @@ impl<'a> LockedExecutionSession<'a> {
             Some(journal_store),
         )
     }
+}
+
+fn build_session_id(handoff: &FrozenExecutionHandoff, lock_path: &Path) -> String {
+    let sequence = SESSION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let mut hasher = Sha256::new();
+    hasher.update(b"linux-storage-manager:locked-session:v1\0");
+    hasher.update(handoff.handoff_id().as_bytes());
+    hasher.update([0_u8]);
+    hasher.update(std::process::id().to_le_bytes());
+    hasher.update(sequence.to_le_bytes());
+    hasher.update(lock_path.as_os_str().as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn validate_handoff(handoff: &FrozenExecutionHandoff) -> Result<(), LockedSessionError> {
