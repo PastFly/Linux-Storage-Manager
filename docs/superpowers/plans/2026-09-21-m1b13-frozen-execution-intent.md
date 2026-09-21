@@ -163,4 +163,39 @@ if session.journal().mutation_may_have_started {
 session.require_current_durable_journal()?;
 ```
 
-Compare approval ID, journal ID, plan, evidence, target and locked-session I
+Compare approval ID, journal ID, plan, evidence, target and locked-session ID against the live session/journal binding. Freeze `approved_journal_digest = journal_digest(session.journal())?`.
+
+Map every current `Operation` one-to-one. Roles are: revalidate/backups = `PreExecutionEvidence`; extend partition/LV/filesystem = `MutationCandidate`; rediscover = `Verification`.
+
+For every mutation candidate add:
+
+```rust
+VerificationBarrierSpec {
+    after_plan_step_id: step.id,
+    before_next_mutation: true,
+    require_fresh_target_identity: true,
+    require_fresh_capabilities: true,
+    require_expected_state_check: true,
+    stop_on_mismatch: true,
+}
+```
+
+Fingerprint the full manifest basis with SHA-256/`serde_json`, then export the module/types from `lib.rs`.
+
+- [ ] **Step 6: Verify GREEN and full executor suite**
+
+```bash
+cargo test -p lsm-executor exact_approved_session_freezes_non_executable_intent -- --exact
+cargo test -p lsm-executor
+```
+
+Expected: both pass; no journal mutation.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add crates/executor/src/execution_intent.rs crates/executor/src/lib.rs crates/executor/src/locked_session.rs
+git commit -m "executor: freeze approved semantic execution intent"
+```
+
+---
