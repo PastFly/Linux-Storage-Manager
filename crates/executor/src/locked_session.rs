@@ -367,6 +367,51 @@ mod tests {
         build_frozen_execution_handoff(snapshot, capabilities, &plan).unwrap()
     }
 
+    fn evidence(
+        session: &LockedExecutionSession<'_>,
+        handoff: &FrozenExecutionHandoff,
+        snapshot: &HostSnapshot,
+        capabilities: &HostCapabilities,
+        backup_matches: bool,
+        backup_blockers: Vec<String>,
+    ) -> crate::PreMutationEvidenceBundle {
+        let backup = crate::backup_capture::test_backup_receipt_revalidation(
+            handoff.handoff_id(),
+            handoff.plan().plan_id(),
+            &handoff.target_identity().manifest_digest,
+            backup_matches,
+            backup_blockers,
+        );
+        crate::build_pre_mutation_evidence(session, snapshot, capabilities, &backup).unwrap()
+    }
+
+    fn xfs_fixture() -> (HostSnapshot, HostCapabilities) {
+        let (mut snapshot, _) = fixture();
+        let filesystem = snapshot.storage.block_devices[0].children[0].children[0]
+            .filesystem
+            .as_mut()
+            .unwrap();
+        filesystem.fs_type = "xfs".into();
+        filesystem.version = Some("5".into());
+        snapshot.mounts[0].fs_type = Some("xfs".into());
+
+        let preflight = &mut snapshot.filesystem_preflight[0];
+        preflight.fs_type = "xfs".into();
+        preflight.fs_version = Some("5".into());
+        preflight.filesystem_state = None;
+        preflight.features = vec!["crc".into(), "finobt".into()];
+        preflight.grow_check_passed = Some(true);
+
+        let capabilities: HostCapabilities = serde_json::from_value(json!({"tools":[
+            {"name":"vgcfgbackup","available":true},
+            {"name":"lvextend","available":true},
+            {"name":"xfs_growfs","available":true},
+            {"name":"xfs_scrub","available":true}
+        ]}))
+        .unwrap();
+        (snapshot, capabilities)
+    }
+
     #[test]
     fn unchanged_fresh_state_revalidates_while_lock_is_held() {
         let (snapshot, capabilities) = fixture();
