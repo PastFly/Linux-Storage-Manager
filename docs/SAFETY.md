@@ -197,9 +197,10 @@ M1B12 records an explicit operator decision without enabling storage mutation.
   that digest must still match the current journal immediately before approval;
 - the durable journal on disk must exactly equal the in-memory session journal before the
   transition;
-- successful approval stores a structured `ExactApprovalBinding` containing the plan ID,
+- successful approval stores a structured schema-v1 `ExactApprovalBinding` containing the plan ID,
   evidence bundle ID, target-manifest digest, locked-session ID and preconditions-journal digest;
-- the approval ID is a SHA-256 fingerprint of those exact binding fields;
+- the approval ID is a SHA-256 fingerprint of the schema version and those exact binding fields;
+- durable reload rejects unknown approval-binding schema versions before accepting the record;
 - durable reload requires an approval transition and binding to appear together, validates every
   binding identity, verifies the approval fingerprint, reconstructs the exact pre-approval
   journal from history, and requires its SHA-256 to match the stored preconditions-journal digest;
