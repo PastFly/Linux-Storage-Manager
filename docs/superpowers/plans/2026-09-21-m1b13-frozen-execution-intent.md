@@ -561,4 +561,46 @@ Keep actual partition/PV/LV/filesystem growth items unchecked.
 
 - [ ] **Step 3: Refresh handoff documents to completed M1B13 branch state**
 
-Record the exact branch head, RED run numbers collected during implementation, final PR number, and final exact-head CI/Portabl
+Record the exact branch head, RED run numbers collected during implementation, final PR number, and final exact-head CI/Portable run numbers only after they exist. Keep PR #26 historical and M1B14 as the next non-executing milestone.
+
+- [ ] **Step 4: Run the local-equivalent verification gate**
+
+```bash
+bash tools/validate.sh --source-only
+cargo fmt --all -- --check
+cargo fetch --locked
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+```
+
+Expected: all commands exit 0.
+
+- [ ] **Step 5: Run a source safety scan**
+
+```bash
+grep -RIn "Command::new\|std::process::Command\|MUTATION_ENABLED: bool = true" crates || true
+git diff master...HEAD -- crates/executor crates/planner | grep -E "pvresize|lvextend|resize2fs|xfs_growfs|sfdisk" || true
+```
+
+Expected: no new process execution or mutation-enabled constant. Any storage-tool strings in the diff must be existing manifest/docs/test descriptions, not a new executable path.
+
+- [ ] **Step 6: Commit documentation**
+
+```bash
+git add README.md docs/ROADMAP.md docs/SAFETY.md docs/HANDOFF.md docs/M1B_HANDOFF.md
+git commit -m "docs: document M1B13 frozen execution intent"
+```
+
+- [ ] **Step 7: Push/open PR and verify exact head**
+
+Open a PR titled `M1B13: freeze approved execution intent`. The PR body must include the base master SHA, exact head SHA, RED evidence, positive/fail-closed matrix, and explicit statement that `MUTATION_ENABLED=false` and no command execution was added.
+
+Wait for both workflows on the exact PR head:
+
+- CI: Harness safety tests, Rust checks, Loop integration.
+- Portable Linux: x86_64 and aarch64.
+
+If a job fails, diagnose the concrete failure. For external registry/network failures, rerun only the failed job after confirming logs show an external transport/registry error; code/test failures require a code fix and a new exact head.
+
+- [ ] **Step 8: Whole-branch review and completion gate**
+
