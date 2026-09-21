@@ -381,4 +381,34 @@ cargo test -p lsm-executor execution_intent::tests::duplicate_matching_lv_uuid_i
 cargo test -p lsm-executor execution_intent::tests::filesystem_mountpoint_mismatch_is_rejected
 ```
 
-Expected: failur
+Expected: failures because semantic identity validation is not complete.
+
+- [ ] **Step 3: Implement conservative validators**
+
+For `ExtendPartition`, require exactly one matching frozen partition path, sector size 512 or 4096, exact start/old-size/sector match, `new_size_sectors > old_size_sectors`, and checked byte multiplication.
+
+For `ExtendLogicalVolume`, require non-empty UUID, `additional_extents > 0`, `expected_lv_size_bytes > 0`, and exactly one frozen `LvmIdentityKind::LogicalVolume` with that UUID. Reject zero or multiple matches.
+
+For `GrowFilesystem`, require non-empty fs type/mountpoint, exact match with `target_identity.filesystem.fs_type`, exactly one frozen mount with the same target, and exact match with `handoff.filesystem_decision().fs_type`/`mountpoint`.
+
+For backup intents, require exact frozen VG UUID or partition disk/table label/table ID identity. Revalidate/rediscover need no additional mutable identity.
+
+Use one structural error:
+
+```rust
+#[error("frozen target identity does not support intent: {0}")]
+FrozenIdentityMismatch(String),
+```
+
+Do not infer a PV resize, a filesystem size, or a different mount alias.
+
+- [ ] **Step 4: Verify GREEN and commit**
+
+```bash
+cargo test -p lsm-executor execution_intent::tests::
+cargo test -p lsm-executor
+git add crates/executor/src/execution_intent.rs
+git commit -m "executor: validate frozen intent target semantics"
+```
+
+---
