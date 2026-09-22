@@ -27,7 +27,8 @@ pub use locked_session::{
     LockedExecutionSession, LockedRevalidation, LockedRevalidationStatus, LockedSessionError,
 };
 pub use native_operation::{
-    classify_frozen_intent_action, NativeOperationKind, NATIVE_OPERATION_ALLOWLIST,
+    build_native_operation_spec, classify_frozen_intent_action, NativeOperationKind,
+    NativeOperationSpec, NativeOperationSpecError, NATIVE_OPERATION_ALLOWLIST,
 };
 pub use precondition_evidence::{
     build_pre_mutation_evidence, PreMutationEvidenceBundle, PreMutationEvidenceError,
