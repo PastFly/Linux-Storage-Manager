@@ -215,12 +215,8 @@ pub enum ExecutionIntentError {
 
 fn map_session_error(error: LockedSessionError) -> ExecutionIntentError {
     match error {
-        LockedSessionError::DurableJournalRequired => {
-            ExecutionIntentError::DurableJournalRequired
-        }
-        LockedSessionError::DurableJournalMismatch => {
-            ExecutionIntentError::DurableJournalMismatch
-        }
+        LockedSessionError::DurableJournalRequired => ExecutionIntentError::DurableJournalRequired,
+        LockedSessionError::DurableJournalMismatch => ExecutionIntentError::DurableJournalMismatch,
         other => ExecutionIntentError::Session(other),
     }
 }
