@@ -60,6 +60,9 @@ pub fn classify_frozen_intent_action(action: &FrozenIntentAction) -> NativeOpera
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum NativeOperationSpec {
     RevalidateSnapshot,
+    BackupLvmMetadata {
+        vg_uuid: String,
+    },
     ExtendPartition {
         partition: String,
         start_sector: u64,
@@ -89,15 +92,20 @@ pub enum NativeOperationSpecError {
 ///
 /// M1B14 builds payload support one operation at a time. Revalidation, exact
 /// partition-growth geometry, exact LV-growth identity/size, filesystem
-/// type/mountpoint, and rediscovery/verification are representable here; every
-/// other current frozen action remains rejected until its contract is added in
-/// a separate increment.
+/// type/mountpoint, rediscovery/verification, and LVM backup identity are
+/// representable here; every other current frozen action remains rejected until
+/// its contract is added in a separate increment.
 pub fn build_native_operation_spec(
     action: &FrozenIntentAction,
 ) -> Result<NativeOperationSpec, NativeOperationSpecError> {
     let kind = classify_frozen_intent_action(action);
     match action {
         FrozenIntentAction::RevalidateSnapshot => Ok(NativeOperationSpec::RevalidateSnapshot),
+        FrozenIntentAction::BackupLvmMetadata { vg_uuid } => {
+            Ok(NativeOperationSpec::BackupLvmMetadata {
+                vg_uuid: vg_uuid.clone(),
+            })
+        }
         FrozenIntentAction::ExtendPartition {
             partition,
             start_sector,
@@ -128,8 +136,7 @@ pub fn build_native_operation_spec(
             mountpoint: mountpoint.clone(),
         }),
         FrozenIntentAction::RediscoverAndVerify => Ok(NativeOperationSpec::RediscoverAndVerify),
-        FrozenIntentAction::BackupLvmMetadata { .. }
-        | FrozenIntentAction::BackupPartitionTableMetadata { .. } => {
+        FrozenIntentAction::BackupPartitionTableMetadata { .. } => {
             Err(NativeOperationSpecError::Unsupported(kind))
         }
     }
@@ -175,14 +182,30 @@ mod tests {
             NativeOperationSpec::RevalidateSnapshot
         );
 
-        let unsupported = FrozenIntentAction::BackupLvmMetadata {
-            vg_uuid: "vg-test".into(),
+        let unsupported = FrozenIntentAction::BackupPartitionTableMetadata {
+            disk: "/dev/test".into(),
+            table_label: "gpt".into(),
+            table_id: None,
         };
         assert_eq!(
             build_native_operation_spec(&unsupported),
             Err(NativeOperationSpecError::Unsupported(
-                NativeOperationKind::BackupLvmMetadata
+                NativeOperationKind::BackupPartitionTableMetadata
             ))
+        );
+    }
+
+    #[test]
+    fn native_lvm_backup_spec_preserves_exact_vg_identity() {
+        let action = FrozenIntentAction::BackupLvmMetadata {
+            vg_uuid: "vg-uuid-test".into(),
+        };
+
+        assert_eq!(
+            build_native_operation_spec(&action).unwrap(),
+            NativeOperationSpec::BackupLvmMetadata {
+                vg_uuid: "vg-uuid-test".into(),
+            }
         );
     }
 
