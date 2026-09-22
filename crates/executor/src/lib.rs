@@ -1,6 +1,7 @@
 mod approval;
 mod backup_capture;
 mod backup_manifest;
+mod execution_intent;
 mod journal_store;
 mod locked_session;
 mod precondition_evidence;
@@ -14,6 +15,11 @@ pub use backup_capture::{
 pub use backup_manifest::{
     build_metadata_backup_manifest, BackupCommandSpec, BackupExpectedIdentity, BackupManifestError,
     MetadataBackupKind, MetadataBackupManifest, MetadataBackupRequirement, BACKUP_DIRECTORY,
+};
+pub use execution_intent::{
+    freeze_execution_intent, ExecutionIntentError, ExecutionIntentManifestStatus,
+    FrozenExecutionIntentManifest, FrozenIntentAction, FrozenIntentRole, FrozenIntentStep,
+    VerificationBarrierSpec,
 };
 pub use journal_store::{DurableJournalStore, JournalStoreError};
 pub use locked_session::{

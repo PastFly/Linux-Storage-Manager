@@ -11,100 +11,36 @@ Repository: `PastFly/Linux-Storage-Manager`
 
 Verified master:
 
-`72594ed3128d5c373e79c53ec81a4d9107817b16`
+`e4c34bf952b942a37b4ea7c79effd2f18162fc03`
 
 Latest merged milestone:
 
-- PR **#25 — M1B11: durably verify exact preconditions**
-- approved PR head: `5fe2ccc710a4adbd66de7602516ec6083e66b23f`
-- squash result / master: `72594ed3128d5c373e79c53ec81a4d9107817b16`
-- post-merge **CI #471: success**
-- post-merge **Portable Linux #350: success**.
+- PR **#26 — M1B12: bind exact operator approval durably**
+- approved PR head: `031b0afd1ac9ac527d8d0f3617824a0c11ef7edf`
+- squash result / master: `e4c34bf952b942a37b4ea7c79effd2f18162fc03`
+- post-merge **CI #512: success**
+- post-merge **Portable Linux #391: success**
+- Portable Linux #391 x86_64 succeeded on attempt #2 after attempt #1 hit an external
+  Docker Hub connection reset while pulling `almalinux:9`.
 
-M0 discovery, M1A planning and M1B0-M1B11 are merged. The old M1A PR #2 and the
-M1B11 feature branch are historical continuation points only.
+M0 discovery, M1A planning and M1B0-M1B12 are merged. PR #26 and
+`feature/m1b12-exact-plan-approval` are historical continuation points only.
 
-## Current milestone — M1B12 exact-plan approval
+## Current milestone — M1B13 frozen execution intent
 
 Current branch:
 
-`feature/m1b12-exact-plan-approval`
+`feature/m1b13-frozen-execution-intent`
 
-Current PR:
+M1B13 is still strictly non-mutating. It freezes the exact approved semantic plan into a typed, immutable, non-executable intent manifest. The durable journal remains `Approved`.
 
-**#26 — M1B12: bind exact operator approval durably**
+The approved M1B13 design is in:
 
-M1B12 remains strictly non-mutating. It adds only:
+`docs/superpowers/specs/2026-09-21-m1b13-frozen-execution-intent-design.md`
 
-`PreconditionsVerified -> Approved`
+The implementation plan is in:
 
-The approval call requires explicit caller-supplied values for:
-
-- exact plan ID;
-- exact M1B11 pre-mutation evidence bundle ID;
-- exact current target-manifest digest.
-
-It additionally proves that the M1B11 `PreconditionsVerification` belongs to:
-
-- the same live locked execution session;
-- the same durable journal ID;
-- the same exact plan;
-- the same target manifest;
-- the exact current `PreconditionsVerified` journal bytes.
-
-The SHA-256 digest of that pre-approval journal is frozen into a structured
-`ExactApprovalBinding`. The durable journal stores that binding, including:
-
-- approval-binding schema version (currently v1);
-- approval ID;
-- plan ID;
-- evidence bundle ID;
-- target-manifest digest;
-- locked-session ID;
-- preconditions-journal digest.
-
-The approval ID is a fingerprint of those exact identities.
-
-## Durable approval safety rules
-
-Before `PreconditionsVerified -> Approved`:
-
-1. the host-exclusive lock is still held by the same session;
-2. the session journal is exactly `PreconditionsVerified`;
-3. a durable journal store is attached;
-4. the durable journal on disk exactly equals the live session journal;
-5. the supplied M1B11 verification matches the same session/journal/plan/target;
-6. the current journal SHA-256 still equals the verification's frozen journal digest;
-7. the explicitly approved plan/evidence/target values exactly match;
-8. mutation remains disabled;
-9. owner acceptance remains an explicit future gate.
-
-The next journal is built on a clone, durably persisted, and only then replaces the
-in-memory journal.
-
-On durable reload, the store reconstructs the exact pre-approval journal from the event
-history and verifies its digest against the stored approval binding. Changing only the stored
-preconditions digest and recomputing the approval ID is therefore insufficient to make a stale
-approval record validate. These SHA-256 values are structural identity fingerprints, not a
-secret-key authenticity mechanism.
-
-## TDD evidence for M1B12
-
-The milestone has explicit RED proofs:
-
-- **CI #472**: initial contract failed because `approve_exact_plan` and durable
-  `OperationJournal.approval` did not exist;
-- **CI #482**: planner accepted an approval whose preconditions-journal binding was changed;
-  the dedicated regression test failed until the transition itself validated that digest;
-- **CI #484**: durable reload accepted a tampered preconditions-journal binding even after
-  its approval fingerprint was recomputed; the journal store was then hardened to reconstruct
-  and verify the original `PreconditionsVerified` state;
-- **CI #499**: durable reload ignored an injected unknown approval-binding schema field; the
-  binding now carries an explicit schema version, v1 is part of its fingerprint, and any other
-  durable approval schema fails closed.
-
-Final PR-head CI numbers must be read live from PR #26; do not copy an intermediate run as
-release evidence.
+`docs/superpowers/plans/2026-09-21-m1b13-frozen-execution-intent.md`
 
 ## M1B12 regression contract
 
@@ -153,7 +89,7 @@ M1B12 does **not** add:
 The planner retains its future journal state model, but no M1B12 executor API crosses the
 mutation boundary.
 
-## After M1B12
+## M1B13 boundary and later work
 
 Do not enable production storage writes merely because an exact approval record exists.
 
@@ -174,7 +110,30 @@ Before a first write-capable executor milestone, separately design and review:
 - Start work from live `master`.
 - Use feature branches and PRs.
 - Require complete CI and Portable Linux success on the exact PR head.
-- Do not merge PR #26 into `master` without explicit owner authorization for PR #26 and
-  its exact head SHA.
-- After an authorized squash merge, verify the new master and post-merge Actions before
-  starting the next milestone.
+- Do not merge any M1B13 public-main PR without explicit owner authorization for that PR and its exact head SHA.
+- After an authorized squash merge, verify the new master and post-merge Actions before starting the next milestone.
+
+
+## M1B13 implementation state
+
+Branch: `feature/m1b13-frozen-execution-intent`.
+Current PR: **#27 — M1B13: freeze approved execution intent**.
+
+The branch contains the typed frozen-intent model, exact approval/durable-journal binding,
+one-to-one operation mapping, dependency-graph validation, frozen target semantic validation,
+and fail-closed approval mismatch coverage.
+
+TDD/review evidence retained on the branch includes:
+
+- CI #526: RED/diagnostic run that exposed a duplicate contract test and a missing test-only
+  approval fixture;
+- CI #544: RED proving the M1B12 preconditions-journal digest was not yet bound by M1B13;
+- CI #547: RED proving filesystem intent accepted a filesystem decision for a different device;
+- CI #549: RED proving filesystem intent accepted a filesystem decision for a different target.
+
+The corresponding fail-closed bindings were added. The final exact PR head and final CI /
+Portable Linux run numbers must be read live from PR #27 rather than copied from an intermediate
+branch run.
+
+M1B13 adds no journal transition and no process execution. The next intended milestone is M1B14,
+a non-executing semantic-to-argv compiler plus minimal executable allowlist.

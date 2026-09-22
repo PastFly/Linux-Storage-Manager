@@ -187,7 +187,7 @@ impl<'a> LockedExecutionSession<'a> {
         Ok(())
     }
 
-    pub(crate) fn persist_preconditions_verified(&mut self) -> Result<(), LockedSessionError> {
+    pub(crate) fn require_current_durable_journal(&self) -> Result<(), LockedSessionError> {
         let store = self
             .journal_store
             .ok_or(LockedSessionError::DurableJournalRequired)?;
@@ -195,6 +195,14 @@ impl<'a> LockedExecutionSession<'a> {
         if persisted != self.journal {
             return Err(LockedSessionError::DurableJournalMismatch);
         }
+        Ok(())
+    }
+
+    pub(crate) fn persist_preconditions_verified(&mut self) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
 
         let mut next = self.journal.clone();
         next.apply(JournalTransition::PreconditionsVerified)?;
@@ -208,13 +216,10 @@ impl<'a> LockedExecutionSession<'a> {
         approved_plan_id: &str,
         approval: &ExactApprovalBinding,
     ) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
         let store = self
             .journal_store
             .ok_or(LockedSessionError::DurableJournalRequired)?;
-        let persisted = store.load(&self.journal.journal_id)?;
-        if persisted != self.journal {
-            return Err(LockedSessionError::DurableJournalMismatch);
-        }
 
         let mut next = self.journal.clone();
         next.apply(JournalTransition::ExactPlanApproved {
@@ -456,6 +461,24 @@ mod tests {
         let evidence = evidence(session, handoff, snapshot, capabilities, true, Vec::new());
         let verified = crate::verify_preconditions(session, &evidence).unwrap();
         (evidence, verified)
+    }
+
+    fn approved_session<'a>(
+        session: &mut LockedExecutionSession<'a>,
+        handoff: &FrozenExecutionHandoff,
+        snapshot: &HostSnapshot,
+        capabilities: &HostCapabilities,
+    ) -> crate::ExactPlanApproval {
+        session.revalidate(snapshot, capabilities).unwrap();
+        let (evidence, verified) = verified_preconditions(session, handoff, snapshot, capabilities);
+        crate::approve_exact_plan(
+            session,
+            &verified,
+            handoff.plan().plan_id(),
+            evidence.bundle_id(),
+            &handoff.target_identity().manifest_digest,
+        )
+        .unwrap()
     }
 
     fn assert_preconditions_verified_is_durable(
@@ -741,6 +764,384 @@ mod tests {
             approval.preconditions_journal_digest()
         );
 
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exact_approved_session_freezes_non_executable_intent() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("execution-intent");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut session, &handoff, &snapshot, &capabilities);
+        let before = session.journal().clone();
+
+        let second = LockedExecutionSession::begin_at_path(&handoff, &path);
+        assert!(matches!(
+            second,
+            Err(LockedSessionError::Lock(HostLockError::Busy))
+        ));
+
+        let manifest = crate::freeze_execution_intent(&session, &approval).unwrap();
+        let repeated = crate::freeze_execution_intent(&session, &approval).unwrap();
+
+        assert_eq!(manifest, repeated);
+        assert_eq!(manifest.manifest_id(), repeated.manifest_id());
+        assert_eq!(
+            manifest.status(),
+            crate::ExecutionIntentManifestStatus::FrozenNonExecutable
+        );
+        assert_eq!(manifest.approval_id(), approval.approval_id());
+        assert_eq!(manifest.plan_id(), handoff.plan().plan_id());
+        assert_eq!(manifest.evidence_bundle_id(), approval.evidence_bundle_id());
+        assert_eq!(
+            manifest.target_manifest_digest(),
+            handoff.target_identity().manifest_digest
+        );
+        assert_eq!(manifest.locked_session_id(), session.session_id());
+        assert_eq!(manifest.approved_journal_id(), session.journal().journal_id);
+        assert_eq!(manifest.steps().len(), handoff.plan().steps().len());
+        assert_eq!(
+            manifest.verification_barriers().len(),
+            manifest
+                .steps()
+                .iter()
+                .filter(|step| step.role == crate::FrozenIntentRole::MutationCandidate)
+                .count()
+        );
+        assert!(manifest.owner_acceptance_required());
+        assert!(!manifest.mutation_enabled());
+        assert_eq!(session.journal(), &before);
+        assert_eq!(session.journal().phase, JournalPhase::Approved);
+        assert!(!session.journal().mutation_may_have_started);
+        assert_eq!(store.load(&before.journal_id).unwrap(), before);
+
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn intent_rejects_wrong_approval_id_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("intent-wrong-approval");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut session, &handoff, &snapshot, &capabilities);
+        let before = session.journal().clone();
+        let foreign = approval.clone().test_with_approval_id("f".repeat(64));
+
+        let result = crate::freeze_execution_intent(&session, &foreign);
+
+        assert!(matches!(
+            result,
+            Err(crate::ExecutionIntentError::ApprovalBindingMismatch)
+        ));
+        assert_eq!(session.journal(), &before);
+        assert_eq!(store.load(&before.journal_id).unwrap(), before);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn intent_rejects_approval_from_another_locked_session() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+
+        let first_path = lock_path();
+        let first_root = journal_root("intent-first-session");
+        let first_store = DurableJournalStore::at(&first_root);
+        let mut first =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &first_path, &first_store)
+                .unwrap();
+        let first_approval = approved_session(&mut first, &handoff, &snapshot, &capabilities);
+        drop(first);
+        let _ = std::fs::remove_dir_all(first_path.parent().unwrap());
+
+        let path = lock_path();
+        let root = journal_root("intent-second-session");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let _current = approved_session(&mut session, &handoff, &snapshot, &capabilities);
+        let before = session.journal().clone();
+
+        let result = crate::freeze_execution_intent(&session, &first_approval);
+
+        assert!(matches!(
+            result,
+            Err(crate::ExecutionIntentError::ApprovalBindingMismatch)
+        ));
+        assert_eq!(session.journal(), &before);
+        assert_eq!(store.load(&before.journal_id).unwrap(), before);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(first_root);
+    }
+
+    #[test]
+    fn intent_rejects_wrong_plan_id_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("intent-wrong-plan");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut session, &handoff, &snapshot, &capabilities)
+            .test_with_plan_id("a".repeat(64));
+        let before = session.journal().clone();
+
+        let result = crate::freeze_execution_intent(&session, &approval);
+
+        assert!(matches!(
+            result,
+            Err(crate::ExecutionIntentError::ApprovalBindingMismatch)
+        ));
+        assert_eq!(session.journal(), &before);
+        assert_eq!(store.load(&before.journal_id).unwrap(), before);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn intent_rejects_wrong_evidence_bundle_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("intent-wrong-evidence");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut session, &handoff, &snapshot, &capabilities)
+            .test_with_evidence_bundle_id("b".repeat(64));
+        let before = session.journal().clone();
+
+        let result = crate::freeze_execution_intent(&session, &approval);
+
+        assert!(matches!(
+            result,
+            Err(crate::ExecutionIntentError::ApprovalBindingMismatch)
+        ));
+        assert_eq!(session.journal(), &before);
+        assert_eq!(store.load(&before.journal_id).unwrap(), before);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn intent_rejects_wrong_target_manifest_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("intent-wrong-target");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut session, &handoff, &snapshot, &capabilities)
+            .test_with_target_manifest_digest("c".repeat(64));
+        let before = session.journal().clone();
+
+        let result = crate::freeze_execution_intent(&session, &approval);
+
+        assert!(matches!(
+            result,
+            Err(crate::ExecutionIntentError::ApprovalBindingMismatch)
+        ));
+        assert_eq!(session.journal(), &before);
+        assert_eq!(store.load(&before.journal_id).unwrap(), before);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn intent_rejects_wrong_approval_journal_id_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("intent-wrong-journal");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut session, &handoff, &snapshot, &capabilities)
+            .test_with_journal_id("d".repeat(64));
+        let before = session.journal().clone();
+
+        let result = crate::freeze_execution_intent(&session, &approval);
+
+        assert!(matches!(
+            result,
+            Err(crate::ExecutionIntentError::ApprovalBindingMismatch)
+        ));
+        assert_eq!(session.journal(), &before);
+        assert_eq!(store.load(&before.journal_id).unwrap(), before);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn intent_rejects_mutation_enabled_approval_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("intent-mutation-enabled");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut session, &handoff, &snapshot, &capabilities)
+            .test_with_mutation_enabled();
+        let before = session.journal().clone();
+
+        let result = crate::freeze_execution_intent(&session, &approval);
+
+        assert!(matches!(
+            result,
+            Err(crate::ExecutionIntentError::MutationEnabled)
+        ));
+        assert_eq!(session.journal(), &before);
+        assert_eq!(store.load(&before.journal_id).unwrap(), before);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn intent_rejects_wrong_preconditions_digest_without_journal_advance() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("intent-wrong-preconditions-digest");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut session, &handoff, &snapshot, &capabilities)
+            .test_with_preconditions_journal_digest("e".repeat(64));
+        let before = session.journal().clone();
+
+        let result = crate::freeze_execution_intent(&session, &approval);
+
+        assert!(matches!(
+            result,
+            Err(crate::ExecutionIntentError::ApprovalBindingMismatch)
+        ));
+        assert_eq!(session.journal(), &before);
+        assert_eq!(store.load(&before.journal_id).unwrap(), before);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn durable_approved_journal_divergence_is_rejected() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("intent-durable-divergence");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let (evidence, verified) =
+            verified_preconditions(&mut session, &handoff, &snapshot, &capabilities);
+        let preconditions = session.journal().clone();
+        let approval = crate::approve_exact_plan(
+            &mut session,
+            &verified,
+            handoff.plan().plan_id(),
+            evidence.bundle_id(),
+            &handoff.target_identity().manifest_digest,
+        )
+        .unwrap();
+        let approved = session.journal().clone();
+        store.persist(&preconditions).unwrap();
+
+        let result = crate::freeze_execution_intent(&session, &approval);
+
+        assert!(matches!(
+            result,
+            Err(crate::ExecutionIntentError::DurableJournalMismatch)
+        ));
+        assert_eq!(session.journal(), &approved);
+        assert_eq!(store.load(&approved.journal_id).unwrap(), preconditions);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn intent_rejects_wrong_journal_phase() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+
+        let approval_path = lock_path();
+        let approval_root = journal_root("intent-phase-approval");
+        let approval_store = DurableJournalStore::at(&approval_root);
+        let mut approval_session = LockedExecutionSession::begin_durable_at_paths(
+            &handoff,
+            &approval_path,
+            &approval_store,
+        )
+        .unwrap();
+        let approval = approved_session(&mut approval_session, &handoff, &snapshot, &capabilities);
+        drop(approval_session);
+        let _ = std::fs::remove_dir_all(approval_path.parent().unwrap());
+
+        let path = lock_path();
+        let root = journal_root("intent-wrong-phase");
+        let store = DurableJournalStore::at(&root);
+        let session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let before = session.journal().clone();
+
+        let result = crate::freeze_execution_intent(&session, &approval);
+
+        assert!(matches!(
+            result,
+            Err(crate::ExecutionIntentError::SessionNotApproved)
+        ));
+        assert_eq!(session.journal(), &before);
+        assert_eq!(store.load(&before.journal_id).unwrap(), before);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(approval_root);
+    }
+
+    #[test]
+    fn intent_rejects_mutation_may_have_started() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("intent-mutation-started");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut session, &handoff, &snapshot, &capabilities);
+        let persisted = session.journal().clone();
+        session.journal.mutation_may_have_started = true;
+
+        let result = crate::freeze_execution_intent(&session, &approval);
+
+        assert!(matches!(
+            result,
+            Err(crate::ExecutionIntentError::MutationMayHaveStarted)
+        ));
+        assert!(session.journal().mutation_may_have_started);
+        assert_eq!(store.load(&persisted.journal_id).unwrap(), persisted);
         drop(session);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
         let _ = std::fs::remove_dir_all(root);
