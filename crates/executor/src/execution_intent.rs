@@ -785,6 +785,75 @@ mod tests {
     }
 
     #[test]
+    fn unknown_lv_uuid_is_rejected() {
+        let step = PlanStep {
+            id: 5,
+            depends_on: vec![],
+            operation: Operation::ExtendLogicalVolume {
+                lv_uuid: "missing-lv".into(),
+                additional_extents: 256,
+                expected_lv_size_bytes: 9 * 1024 * 1024 * 1024,
+            },
+            reversibility: Reversibility::Irreversible,
+        };
+        assert!(matches!(
+            validate_step_semantics(&step, &semantic_identity(), &semantic_decision()),
+            Err(ExecutionIntentError::FrozenIdentityMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn filesystem_type_mismatch_is_rejected() {
+        let step = PlanStep {
+            id: 6,
+            depends_on: vec![],
+            operation: Operation::GrowFilesystem {
+                fs_type: "xfs".into(),
+                mountpoint: "/".into(),
+            },
+            reversibility: Reversibility::Irreversible,
+        };
+        assert!(matches!(
+            validate_step_semantics(&step, &semantic_identity(), &semantic_decision()),
+            Err(ExecutionIntentError::FrozenIdentityMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn backup_partition_identity_mismatch_is_rejected() {
+        let step = PlanStep {
+            id: 3,
+            depends_on: vec![],
+            operation: Operation::BackupPartitionTableMetadata {
+                disk: "/dev/vdb".into(),
+                table_label: "gpt".into(),
+                table_id: Some("gpt-1".into()),
+            },
+            reversibility: Reversibility::Reversible,
+        };
+        assert!(matches!(
+            validate_step_semantics(&step, &semantic_identity(), &semantic_decision()),
+            Err(ExecutionIntentError::FrozenIdentityMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn backup_vg_identity_mismatch_is_rejected() {
+        let step = PlanStep {
+            id: 2,
+            depends_on: vec![],
+            operation: Operation::BackupLvmMetadata {
+                vg_uuid: "missing-vg".into(),
+            },
+            reversibility: Reversibility::Reversible,
+        };
+        assert!(matches!(
+            validate_step_semantics(&step, &semantic_identity(), &semantic_decision()),
+            Err(ExecutionIntentError::FrozenIdentityMismatch(_))
+        ));
+    }
+
+    #[test]
     fn filesystem_mountpoint_mismatch_is_rejected() {
         let mut identity = semantic_identity();
         identity.mounts[0].target = "/other".into();
