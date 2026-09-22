@@ -67,6 +67,11 @@ pub enum NativeOperationSpec {
         new_size_sectors: u64,
         sector_size_bytes: u64,
     },
+    ExtendLogicalVolume {
+        lv_uuid: String,
+        additional_extents: u64,
+        expected_lv_size_bytes: u64,
+    },
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -77,9 +82,10 @@ pub enum NativeOperationSpecError {
 
 /// Builds a non-executable native operation payload.
 ///
-/// M1B14 builds payload support one operation at a time. Revalidation and exact
-/// partition-growth geometry are representable here; every other current frozen
-/// action remains rejected until its contract is added in a separate increment.
+/// M1B14 builds payload support one operation at a time. Revalidation, exact
+/// partition-growth geometry and exact LV-growth identity/size are representable
+/// here; every other current frozen action remains rejected until its contract is
+/// added in a separate increment.
 pub fn build_native_operation_spec(
     action: &FrozenIntentAction,
 ) -> Result<NativeOperationSpec, NativeOperationSpecError> {
@@ -99,9 +105,17 @@ pub fn build_native_operation_spec(
             new_size_sectors: *new_size_sectors,
             sector_size_bytes: *sector_size_bytes,
         }),
+        FrozenIntentAction::ExtendLogicalVolume {
+            lv_uuid,
+            additional_extents,
+            expected_lv_size_bytes,
+        } => Ok(NativeOperationSpec::ExtendLogicalVolume {
+            lv_uuid: lv_uuid.clone(),
+            additional_extents: *additional_extents,
+            expected_lv_size_bytes: *expected_lv_size_bytes,
+        }),
         FrozenIntentAction::BackupLvmMetadata { .. }
         | FrozenIntentAction::BackupPartitionTableMetadata { .. }
-        | FrozenIntentAction::ExtendLogicalVolume { .. }
         | FrozenIntentAction::GrowFilesystem { .. }
         | FrozenIntentAction::RediscoverAndVerify => {
             Err(NativeOperationSpecError::Unsupported(kind))
@@ -149,15 +163,14 @@ mod tests {
             NativeOperationSpec::RevalidateSnapshot
         );
 
-        let unsupported = FrozenIntentAction::ExtendLogicalVolume {
-            lv_uuid: "lv-test".into(),
-            additional_extents: 4,
-            expected_lv_size_bytes: 16 * 1024 * 1024,
+        let unsupported = FrozenIntentAction::GrowFilesystem {
+            fs_type: "ext4".into(),
+            mountpoint: "/mnt/test".into(),
         };
         assert_eq!(
             build_native_operation_spec(&unsupported),
             Err(NativeOperationSpecError::Unsupported(
-                NativeOperationKind::ExtendLogicalVolume
+                NativeOperationKind::GrowFilesystem
             ))
         );
     }
@@ -180,6 +193,24 @@ mod tests {
                 old_size_sectors: 4096,
                 new_size_sectors: 8192,
                 sector_size_bytes: 4096,
+            }
+        );
+    }
+
+    #[test]
+    fn native_lv_spec_preserves_exact_identity_and_growth() {
+        let action = FrozenIntentAction::ExtendLogicalVolume {
+            lv_uuid: "lv-test".into(),
+            additional_extents: 17,
+            expected_lv_size_bytes: 64 * 1024 * 1024,
+        };
+
+        assert_eq!(
+            build_native_operation_spec(&action).unwrap(),
+            NativeOperationSpec::ExtendLogicalVolume {
+                lv_uuid: "lv-test".into(),
+                additional_extents: 17,
+                expected_lv_size_bytes: 64 * 1024 * 1024,
             }
         );
     }
