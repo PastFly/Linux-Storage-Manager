@@ -1073,9 +1073,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(crate::ExecutionIntentError::Session(
-                LockedSessionError::DurableJournalMismatch
-            ))
+            Err(crate::ExecutionIntentError::DurableJournalMismatch)
         ));
         assert_eq!(session.journal(), &approved);
         assert_eq!(store.load(&approved.journal_id).unwrap(), preconditions);
