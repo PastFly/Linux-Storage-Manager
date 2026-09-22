@@ -190,9 +190,51 @@ pub fn compile_native_verification_barrier(
     }
 }
 
+pub fn compile_native_verification_barriers(
+    barriers: &[VerificationBarrierSpec],
+) -> Vec<NativeVerificationBarrier> {
+    barriers
+        .iter()
+        .map(compile_native_verification_barrier)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_verification_barrier_list_preserves_source_order() {
+        let barriers = vec![
+            VerificationBarrierSpec {
+                after_plan_step_id: 7,
+                before_next_mutation: true,
+                require_fresh_target_identity: true,
+                require_fresh_capabilities: true,
+                require_expected_state_check: true,
+                stop_on_mismatch: true,
+            },
+            VerificationBarrierSpec {
+                after_plan_step_id: 19,
+                before_next_mutation: true,
+                require_fresh_target_identity: true,
+                require_fresh_capabilities: true,
+                require_expected_state_check: true,
+                stop_on_mismatch: true,
+            },
+        ];
+
+        let compiled = compile_native_verification_barriers(&barriers);
+
+        assert_eq!(
+            compiled
+                .iter()
+                .map(|barrier| barrier.after_plan_step_id)
+                .collect::<Vec<_>>(),
+            vec![7, 19]
+        );
+        assert!(compiled.iter().all(|barrier| barrier.stop_on_mismatch));
+    }
 
     #[test]
     fn native_verification_barrier_preserves_all_fail_closed_requirements() {
