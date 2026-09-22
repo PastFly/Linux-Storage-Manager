@@ -371,7 +371,8 @@ M1B13 remains a non-executing boundary after exact approval.
 - backup and revalidation steps are retained as historical pre-execution evidence roles, not permission to rerun recovery or mutation;
 - every mutation candidate receives a mandatory fresh-identity, fresh-capability and expected-state verification barrier that stops on mismatch;
 - dependency graphs with zero/duplicate IDs, unknown/self dependencies or cycles fail closed;
-- partition, LV and filesystem intents must match the frozen target identity exactly;
+- partition and LV intents must match the frozen target identity exactly, and filesystem
+  intent must also match the exact frozen filesystem-decision target/device/type/mountpoint;
 - manifest construction leaves the journal at `Approved` with `mutation_may_have_started=false`;
 - SHA-256 manifest IDs are structural identity fingerprints, not secret-key authentication;
 - `MUTATION_ENABLED=false`.
