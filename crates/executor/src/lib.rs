@@ -26,7 +26,9 @@ pub use journal_store::{DurableJournalStore, JournalStoreError};
 pub use locked_session::{
     LockedExecutionSession, LockedRevalidation, LockedRevalidationStatus, LockedSessionError,
 };
-pub use native_operation::{NativeOperationKind, NATIVE_OPERATION_ALLOWLIST};
+pub use native_operation::{
+    classify_frozen_intent_action, NativeOperationKind, NATIVE_OPERATION_ALLOWLIST,
+};
 pub use precondition_evidence::{
     build_pre_mutation_evidence, PreMutationEvidenceBundle, PreMutationEvidenceError,
     PreMutationEvidenceStatus,
