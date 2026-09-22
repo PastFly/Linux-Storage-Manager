@@ -221,9 +221,7 @@ pub fn compile_native_manifest_parts(
     }
 }
 
-pub fn compile_native_manifest(
-    manifest: &FrozenExecutionIntentManifest,
-) -> NativeCompiledManifest {
+pub fn compile_native_manifest(manifest: &FrozenExecutionIntentManifest) -> NativeCompiledManifest {
     compile_native_manifest_parts(
         manifest.manifest_id(),
         manifest.steps(),
