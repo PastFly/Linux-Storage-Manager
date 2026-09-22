@@ -117,12 +117,23 @@ Before a first write-capable executor milestone, separately design and review:
 ## M1B13 implementation state
 
 Branch: `feature/m1b13-frozen-execution-intent`.
+Current PR: **#27 — M1B13: freeze approved execution intent**.
 
-The branch now contains the typed frozen-intent model, exact approval/durable-journal binding,
+The branch contains the typed frozen-intent model, exact approval/durable-journal binding,
 one-to-one operation mapping, dependency-graph validation, frozen target semantic validation,
-and fail-closed approval mismatch coverage. CI #526 is retained as a RED/diagnostic run that
-exposed a duplicate contract test and a missing test-only approval fixture; both were corrected.
-Final completion evidence must come from CI and Portable Linux on the final exact PR head.
+and fail-closed approval mismatch coverage.
+
+TDD/review evidence retained on the branch includes:
+
+- CI #526: RED/diagnostic run that exposed a duplicate contract test and a missing test-only
+  approval fixture;
+- CI #544: RED proving the M1B12 preconditions-journal digest was not yet bound by M1B13;
+- CI #547: RED proving filesystem intent accepted a filesystem decision for a different device;
+- CI #549: RED proving filesystem intent accepted a filesystem decision for a different target.
+
+The corresponding fail-closed bindings were added. The final exact PR head and final CI /
+Portable Linux run numbers must be read live from PR #27 rather than copied from an intermediate
+branch run.
 
 M1B13 adds no journal transition and no process execution. The next intended milestone is M1B14,
 a non-executing semantic-to-argv compiler plus minimal executable allowlist.
