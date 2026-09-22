@@ -76,6 +76,7 @@ pub enum NativeOperationSpec {
         fs_type: String,
         mountpoint: String,
     },
+    RediscoverAndVerify,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -87,9 +88,10 @@ pub enum NativeOperationSpecError {
 /// Builds a non-executable native operation payload.
 ///
 /// M1B14 builds payload support one operation at a time. Revalidation, exact
-/// partition-growth geometry, exact LV-growth identity/size, and filesystem
-/// type/mountpoint are representable here; every other current frozen action
-/// remains rejected until its contract is added in a separate increment.
+/// partition-growth geometry, exact LV-growth identity/size, filesystem
+/// type/mountpoint, and rediscovery/verification are representable here; every
+/// other current frozen action remains rejected until its contract is added in
+/// a separate increment.
 pub fn build_native_operation_spec(
     action: &FrozenIntentAction,
 ) -> Result<NativeOperationSpec, NativeOperationSpecError> {
@@ -125,9 +127,9 @@ pub fn build_native_operation_spec(
             fs_type: fs_type.clone(),
             mountpoint: mountpoint.clone(),
         }),
+        FrozenIntentAction::RediscoverAndVerify => Ok(NativeOperationSpec::RediscoverAndVerify),
         FrozenIntentAction::BackupLvmMetadata { .. }
-        | FrozenIntentAction::BackupPartitionTableMetadata { .. }
-        | FrozenIntentAction::RediscoverAndVerify => {
+        | FrozenIntentAction::BackupPartitionTableMetadata { .. } => {
             Err(NativeOperationSpecError::Unsupported(kind))
         }
     }
@@ -173,11 +175,13 @@ mod tests {
             NativeOperationSpec::RevalidateSnapshot
         );
 
-        let unsupported = FrozenIntentAction::RediscoverAndVerify;
+        let unsupported = FrozenIntentAction::BackupLvmMetadata {
+            vg_uuid: "vg-test".into(),
+        };
         assert_eq!(
             build_native_operation_spec(&unsupported),
             Err(NativeOperationSpecError::Unsupported(
-                NativeOperationKind::RediscoverAndVerify
+                NativeOperationKind::BackupLvmMetadata
             ))
         );
     }
@@ -235,6 +239,14 @@ mod tests {
                 fs_type: "xfs".into(),
                 mountpoint: "/srv/data".into(),
             }
+        );
+    }
+
+    #[test]
+    fn native_rediscover_spec_is_exact_verification_marker() {
+        assert_eq!(
+            build_native_operation_spec(&FrozenIntentAction::RediscoverAndVerify).unwrap(),
+            NativeOperationSpec::RediscoverAndVerify
         );
     }
 
