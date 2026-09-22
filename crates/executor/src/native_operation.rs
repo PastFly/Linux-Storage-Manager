@@ -163,9 +163,52 @@ pub fn compile_native_step(step: &FrozenIntentStep) -> NativeCompiledStep {
     }
 }
 
+pub fn compile_native_steps(steps: &[FrozenIntentStep]) -> Vec<NativeCompiledStep> {
+    steps.iter().map(compile_native_step).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_step_list_compiler_preserves_source_order() {
+        let steps = vec![
+            FrozenIntentStep {
+                plan_step_id: 10,
+                depends_on: vec![],
+                reversibility: Reversibility::NotApplicable,
+                role: FrozenIntentRole::PreExecutionEvidence,
+                action: FrozenIntentAction::RevalidateSnapshot,
+            },
+            FrozenIntentStep {
+                plan_step_id: 11,
+                depends_on: vec![10],
+                reversibility: Reversibility::NotApplicable,
+                role: FrozenIntentRole::Verification,
+                action: FrozenIntentAction::RediscoverAndVerify,
+            },
+        ];
+
+        let compiled = compile_native_steps(&steps);
+
+        assert_eq!(
+            compiled
+                .iter()
+                .map(|step| step.plan_step_id)
+                .collect::<Vec<_>>(),
+            vec![10, 11]
+        );
+        assert_eq!(compiled[1].depends_on, vec![10]);
+        assert_eq!(
+            compiled[0].operation,
+            NativeOperationSpec::RevalidateSnapshot
+        );
+        assert_eq!(
+            compiled[1].operation,
+            NativeOperationSpec::RediscoverAndVerify
+        );
+    }
 
     #[test]
     fn native_step_compiler_preserves_frozen_step_semantics() {
