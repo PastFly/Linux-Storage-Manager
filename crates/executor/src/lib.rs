@@ -28,7 +28,7 @@ pub use locked_session::{
 };
 pub use native_operation::{
     build_native_operation_spec, classify_frozen_intent_action, NativeOperationKind,
-    NativeOperationSpec, NativeOperationSpecError, NATIVE_OPERATION_ALLOWLIST,
+    NativeOperationSpec, NATIVE_OPERATION_ALLOWLIST,
 };
 pub use precondition_evidence::{
     build_pre_mutation_evidence, PreMutationEvidenceBundle, PreMutationEvidenceError,
