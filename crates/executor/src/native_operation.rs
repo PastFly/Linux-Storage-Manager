@@ -60,6 +60,13 @@ pub fn classify_frozen_intent_action(action: &FrozenIntentAction) -> NativeOpera
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum NativeOperationSpec {
     RevalidateSnapshot,
+    ExtendPartition {
+        partition: String,
+        start_sector: u64,
+        old_size_sectors: u64,
+        new_size_sectors: u64,
+        sector_size_bytes: u64,
+    },
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -70,18 +77,30 @@ pub enum NativeOperationSpecError {
 
 /// Builds a non-executable native operation payload.
 ///
-/// M1B14.3 intentionally supports only read-only snapshot revalidation. Every
-/// other current frozen action is rejected until its payload contract is added
-/// and tested in a separate increment.
+/// M1B14 builds payload support one operation at a time. Revalidation and exact
+/// partition-growth geometry are representable here; every other current frozen
+/// action remains rejected until its contract is added in a separate increment.
 pub fn build_native_operation_spec(
     action: &FrozenIntentAction,
 ) -> Result<NativeOperationSpec, NativeOperationSpecError> {
     let kind = classify_frozen_intent_action(action);
     match action {
         FrozenIntentAction::RevalidateSnapshot => Ok(NativeOperationSpec::RevalidateSnapshot),
+        FrozenIntentAction::ExtendPartition {
+            partition,
+            start_sector,
+            old_size_sectors,
+            new_size_sectors,
+            sector_size_bytes,
+        } => Ok(NativeOperationSpec::ExtendPartition {
+            partition: partition.clone(),
+            start_sector: *start_sector,
+            old_size_sectors: *old_size_sectors,
+            new_size_sectors: *new_size_sectors,
+            sector_size_bytes: *sector_size_bytes,
+        }),
         FrozenIntentAction::BackupLvmMetadata { .. }
         | FrozenIntentAction::BackupPartitionTableMetadata { .. }
-        | FrozenIntentAction::ExtendPartition { .. }
         | FrozenIntentAction::ExtendLogicalVolume { .. }
         | FrozenIntentAction::GrowFilesystem { .. }
         | FrozenIntentAction::RediscoverAndVerify => {
@@ -124,24 +143,44 @@ mod tests {
     }
 
     #[test]
-    fn native_spec_accepts_only_revalidate_snapshot() {
+    fn native_spec_keeps_unimplemented_actions_fail_closed() {
         assert_eq!(
             build_native_operation_spec(&FrozenIntentAction::RevalidateSnapshot).unwrap(),
             NativeOperationSpec::RevalidateSnapshot
         );
 
-        let unsupported = FrozenIntentAction::ExtendPartition {
-            partition: "/dev/test1".into(),
-            start_sector: 2048,
-            old_size_sectors: 4096,
-            new_size_sectors: 8192,
-            sector_size_bytes: 512,
+        let unsupported = FrozenIntentAction::ExtendLogicalVolume {
+            lv_uuid: "lv-test".into(),
+            additional_extents: 4,
+            expected_lv_size_bytes: 16 * 1024 * 1024,
         };
         assert_eq!(
             build_native_operation_spec(&unsupported),
             Err(NativeOperationSpecError::Unsupported(
-                NativeOperationKind::ExtendPartition
+                NativeOperationKind::ExtendLogicalVolume
             ))
+        );
+    }
+
+    #[test]
+    fn native_partition_spec_preserves_exact_geometry() {
+        let action = FrozenIntentAction::ExtendPartition {
+            partition: "/dev/test1".into(),
+            start_sector: 2048,
+            old_size_sectors: 4096,
+            new_size_sectors: 8192,
+            sector_size_bytes: 4096,
+        };
+
+        assert_eq!(
+            build_native_operation_spec(&action).unwrap(),
+            NativeOperationSpec::ExtendPartition {
+                partition: "/dev/test1".into(),
+                start_sector: 2048,
+                old_size_sectors: 4096,
+                new_size_sectors: 8192,
+                sector_size_bytes: 4096,
+            }
         );
     }
 
