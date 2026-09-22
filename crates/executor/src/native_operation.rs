@@ -84,7 +84,9 @@ pub fn build_native_operation_spec(
         | FrozenIntentAction::ExtendPartition { .. }
         | FrozenIntentAction::ExtendLogicalVolume { .. }
         | FrozenIntentAction::GrowFilesystem { .. }
-        | FrozenIntentAction::RediscoverAndVerify => Err(NativeOperationSpecError::Unsupported(kind)),
+        | FrozenIntentAction::RediscoverAndVerify => {
+            Err(NativeOperationSpecError::Unsupported(kind))
+        }
     }
 }
 
