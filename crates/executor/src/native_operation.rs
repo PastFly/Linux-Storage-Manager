@@ -1,7 +1,7 @@
 use lsm_planner::Reversibility;
 use serde::Serialize;
 
-use crate::{FrozenIntentAction, FrozenIntentRole, FrozenIntentStep};
+use crate::{FrozenIntentAction, FrozenIntentRole, FrozenIntentStep, VerificationBarrierSpec};
 
 /// Typed, non-executable operation classes for the future native executor.
 ///
@@ -167,9 +167,56 @@ pub fn compile_native_steps(steps: &[FrozenIntentStep]) -> Vec<NativeCompiledSte
     steps.iter().map(compile_native_step).collect()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVerificationBarrier {
+    pub after_plan_step_id: u32,
+    pub before_next_mutation: bool,
+    pub require_fresh_target_identity: bool,
+    pub require_fresh_capabilities: bool,
+    pub require_expected_state_check: bool,
+    pub stop_on_mismatch: bool,
+}
+
+pub fn compile_native_verification_barrier(
+    barrier: &VerificationBarrierSpec,
+) -> NativeVerificationBarrier {
+    NativeVerificationBarrier {
+        after_plan_step_id: barrier.after_plan_step_id,
+        before_next_mutation: barrier.before_next_mutation,
+        require_fresh_target_identity: barrier.require_fresh_target_identity,
+        require_fresh_capabilities: barrier.require_fresh_capabilities,
+        require_expected_state_check: barrier.require_expected_state_check,
+        stop_on_mismatch: barrier.stop_on_mismatch,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_verification_barrier_preserves_all_fail_closed_requirements() {
+        let barrier = VerificationBarrierSpec {
+            after_plan_step_id: 77,
+            before_next_mutation: true,
+            require_fresh_target_identity: true,
+            require_fresh_capabilities: true,
+            require_expected_state_check: true,
+            stop_on_mismatch: true,
+        };
+
+        assert_eq!(
+            compile_native_verification_barrier(&barrier),
+            NativeVerificationBarrier {
+                after_plan_step_id: 77,
+                before_next_mutation: true,
+                require_fresh_target_identity: true,
+                require_fresh_capabilities: true,
+                require_expected_state_check: true,
+                stop_on_mismatch: true,
+            }
+        );
+    }
 
     #[test]
     fn native_step_list_compiler_preserves_source_order() {
