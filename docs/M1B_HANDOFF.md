@@ -74,6 +74,7 @@ The exact schema-v1 approval binding remains part of the durable journal. It doe
 ### M1B13 — frozen execution intent
 
 Current branch: `feature/m1b13-frozen-execution-intent`.
+Current PR: **#27**.
 
 M1B13 freezes the exact approved `PlanStep` graph into typed semantic intent plus mandatory read-only verification barriers. It adds no journal transition and keeps `MUTATION_ENABLED=false`.
 
@@ -179,3 +180,8 @@ and stop-on-mismatch before any later mutation can be considered by a future exe
 
 Freezing the manifest does not change the durable journal: it remains `Approved`, with
 `mutation_may_have_started=false` and `MUTATION_ENABLED=false`.
+
+Filesystem growth intent is additionally bound to the exact frozen filesystem decision target
+and device, not only its filesystem type and mountpoint. CI #547 and #549 are the retained RED
+proofs for the device- and target-drift guards. Final completion evidence must be read live from
+the exact PR #27 head.
