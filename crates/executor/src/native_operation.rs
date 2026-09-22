@@ -72,6 +72,10 @@ pub enum NativeOperationSpec {
         additional_extents: u64,
         expected_lv_size_bytes: u64,
     },
+    GrowFilesystem {
+        fs_type: String,
+        mountpoint: String,
+    },
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -83,9 +87,9 @@ pub enum NativeOperationSpecError {
 /// Builds a non-executable native operation payload.
 ///
 /// M1B14 builds payload support one operation at a time. Revalidation, exact
-/// partition-growth geometry and exact LV-growth identity/size are representable
-/// here; every other current frozen action remains rejected until its contract is
-/// added in a separate increment.
+/// partition-growth geometry, exact LV-growth identity/size, and filesystem
+/// type/mountpoint are representable here; every other current frozen action
+/// remains rejected until its contract is added in a separate increment.
 pub fn build_native_operation_spec(
     action: &FrozenIntentAction,
 ) -> Result<NativeOperationSpec, NativeOperationSpecError> {
@@ -114,9 +118,15 @@ pub fn build_native_operation_spec(
             additional_extents: *additional_extents,
             expected_lv_size_bytes: *expected_lv_size_bytes,
         }),
+        FrozenIntentAction::GrowFilesystem {
+            fs_type,
+            mountpoint,
+        } => Ok(NativeOperationSpec::GrowFilesystem {
+            fs_type: fs_type.clone(),
+            mountpoint: mountpoint.clone(),
+        }),
         FrozenIntentAction::BackupLvmMetadata { .. }
         | FrozenIntentAction::BackupPartitionTableMetadata { .. }
-        | FrozenIntentAction::GrowFilesystem { .. }
         | FrozenIntentAction::RediscoverAndVerify => {
             Err(NativeOperationSpecError::Unsupported(kind))
         }
@@ -163,14 +173,11 @@ mod tests {
             NativeOperationSpec::RevalidateSnapshot
         );
 
-        let unsupported = FrozenIntentAction::GrowFilesystem {
-            fs_type: "ext4".into(),
-            mountpoint: "/mnt/test".into(),
-        };
+        let unsupported = FrozenIntentAction::RediscoverAndVerify;
         assert_eq!(
             build_native_operation_spec(&unsupported),
             Err(NativeOperationSpecError::Unsupported(
-                NativeOperationKind::GrowFilesystem
+                NativeOperationKind::RediscoverAndVerify
             ))
         );
     }
@@ -211,6 +218,22 @@ mod tests {
                 lv_uuid: "lv-test".into(),
                 additional_extents: 17,
                 expected_lv_size_bytes: 64 * 1024 * 1024,
+            }
+        );
+    }
+
+    #[test]
+    fn native_filesystem_spec_preserves_exact_type_and_mountpoint() {
+        let action = FrozenIntentAction::GrowFilesystem {
+            fs_type: "xfs".into(),
+            mountpoint: "/srv/data".into(),
+        };
+
+        assert_eq!(
+            build_native_operation_spec(&action).unwrap(),
+            NativeOperationSpec::GrowFilesystem {
+                fs_type: "xfs".into(),
+                mountpoint: "/srv/data".into(),
             }
         );
     }
