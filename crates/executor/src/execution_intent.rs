@@ -205,8 +205,24 @@ pub enum ExecutionIntentError {
     FrozenIdentityMismatch(String),
     #[error("could not serialize frozen execution intent: {0}")]
     Serialization(#[from] serde_json::Error),
+    #[error("execution intent freezing requires a durable journal store")]
+    DurableJournalRequired,
+    #[error("durable journal state does not match the current locked session")]
+    DurableJournalMismatch,
     #[error("locked-session durable state verification failed: {0}")]
     Session(#[from] LockedSessionError),
+}
+
+fn map_session_error(error: LockedSessionError) -> ExecutionIntentError {
+    match error {
+        LockedSessionError::DurableJournalRequired => {
+            ExecutionIntentError::DurableJournalRequired
+        }
+        LockedSessionError::DurableJournalMismatch => {
+            ExecutionIntentError::DurableJournalMismatch
+        }
+        other => ExecutionIntentError::Session(other),
+    }
 }
 
 fn validate_dependency_graph(steps: &[PlanStep]) -> Result<(), ExecutionIntentError> {
@@ -493,7 +509,9 @@ pub fn freeze_execution_intent(
     if session.journal().mutation_may_have_started {
         return Err(ExecutionIntentError::MutationMayHaveStarted);
     }
-    session.require_current_durable_journal()?;
+    session
+        .require_current_durable_journal()
+        .map_err(map_session_error)?;
 
     let handoff = session.handoff();
     let binding = session
