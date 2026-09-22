@@ -63,6 +63,11 @@ pub enum NativeOperationSpec {
     BackupLvmMetadata {
         vg_uuid: String,
     },
+    BackupPartitionTableMetadata {
+        disk: String,
+        table_label: String,
+        table_id: Option<String>,
+    },
     ExtendPartition {
         partition: String,
         start_sector: u64,
@@ -92,13 +97,12 @@ pub enum NativeOperationSpecError {
 ///
 /// M1B14 builds payload support one operation at a time. Revalidation, exact
 /// partition-growth geometry, exact LV-growth identity/size, filesystem
-/// type/mountpoint, rediscovery/verification, and LVM backup identity are
-/// representable here; every other current frozen action remains rejected until
-/// its contract is added in a separate increment.
+/// type/mountpoint, rediscovery/verification, LVM backup identity, and partition
+/// table backup identity are representable here. Every current M1B13 frozen
+/// action now has an exact non-executable native payload.
 pub fn build_native_operation_spec(
     action: &FrozenIntentAction,
 ) -> Result<NativeOperationSpec, NativeOperationSpecError> {
-    let kind = classify_frozen_intent_action(action);
     match action {
         FrozenIntentAction::RevalidateSnapshot => Ok(NativeOperationSpec::RevalidateSnapshot),
         FrozenIntentAction::BackupLvmMetadata { vg_uuid } => {
@@ -106,6 +110,15 @@ pub fn build_native_operation_spec(
                 vg_uuid: vg_uuid.clone(),
             })
         }
+        FrozenIntentAction::BackupPartitionTableMetadata {
+            disk,
+            table_label,
+            table_id,
+        } => Ok(NativeOperationSpec::BackupPartitionTableMetadata {
+            disk: disk.clone(),
+            table_label: table_label.clone(),
+            table_id: table_id.clone(),
+        }),
         FrozenIntentAction::ExtendPartition {
             partition,
             start_sector,
@@ -136,9 +149,6 @@ pub fn build_native_operation_spec(
             mountpoint: mountpoint.clone(),
         }),
         FrozenIntentAction::RediscoverAndVerify => Ok(NativeOperationSpec::RediscoverAndVerify),
-        FrozenIntentAction::BackupPartitionTableMetadata { .. } => {
-            Err(NativeOperationSpecError::Unsupported(kind))
-        }
     }
 }
 
@@ -176,22 +186,20 @@ mod tests {
     }
 
     #[test]
-    fn native_spec_keeps_unimplemented_actions_fail_closed() {
-        assert_eq!(
-            build_native_operation_spec(&FrozenIntentAction::RevalidateSnapshot).unwrap(),
-            NativeOperationSpec::RevalidateSnapshot
-        );
-
-        let unsupported = FrozenIntentAction::BackupPartitionTableMetadata {
+    fn native_partition_backup_spec_preserves_exact_table_identity() {
+        let action = FrozenIntentAction::BackupPartitionTableMetadata {
             disk: "/dev/test".into(),
             table_label: "gpt".into(),
-            table_id: None,
+            table_id: Some("A1B2-C3D4".into()),
         };
+
         assert_eq!(
-            build_native_operation_spec(&unsupported),
-            Err(NativeOperationSpecError::Unsupported(
-                NativeOperationKind::BackupPartitionTableMetadata
-            ))
+            build_native_operation_spec(&action).unwrap(),
+            NativeOperationSpec::BackupPartitionTableMetadata {
+                disk: "/dev/test".into(),
+                table_label: "gpt".into(),
+                table_id: Some("A1B2-C3D4".into()),
+            }
         );
     }
 
