@@ -788,7 +788,10 @@ mod tests {
         ));
 
         let manifest = crate::freeze_execution_intent(&session, &approval).unwrap();
+        let repeated = crate::freeze_execution_intent(&session, &approval).unwrap();
 
+        assert_eq!(manifest, repeated);
+        assert_eq!(manifest.manifest_id(), repeated.manifest_id());
         assert_eq!(
             manifest.status(),
             crate::ExecutionIntentManifestStatus::FrozenNonExecutable
