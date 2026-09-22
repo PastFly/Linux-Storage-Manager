@@ -199,9 +199,55 @@ pub fn compile_native_verification_barriers(
         .collect()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeCompiledManifest {
+    pub source_manifest_id: String,
+    pub steps: Vec<NativeCompiledStep>,
+    pub verification_barriers: Vec<NativeVerificationBarrier>,
+}
+
+pub fn compile_native_manifest_parts(
+    source_manifest_id: &str,
+    steps: &[FrozenIntentStep],
+    verification_barriers: &[VerificationBarrierSpec],
+) -> NativeCompiledManifest {
+    NativeCompiledManifest {
+        source_manifest_id: source_manifest_id.to_owned(),
+        steps: compile_native_steps(steps),
+        verification_barriers: compile_native_verification_barriers(verification_barriers),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_manifest_parts_combine_steps_and_barriers_without_reordering() {
+        let steps = vec![FrozenIntentStep {
+            plan_step_id: 5,
+            depends_on: vec![],
+            reversibility: Reversibility::NotApplicable,
+            role: FrozenIntentRole::PreExecutionEvidence,
+            action: FrozenIntentAction::RevalidateSnapshot,
+        }];
+        let barriers = vec![VerificationBarrierSpec {
+            after_plan_step_id: 5,
+            before_next_mutation: true,
+            require_fresh_target_identity: true,
+            require_fresh_capabilities: true,
+            require_expected_state_check: true,
+            stop_on_mismatch: true,
+        }];
+
+        let compiled = compile_native_manifest_parts("intent-test", &steps, &barriers);
+
+        assert_eq!(compiled.source_manifest_id, "intent-test");
+        assert_eq!(compiled.steps.len(), 1);
+        assert_eq!(compiled.steps[0].plan_step_id, 5);
+        assert_eq!(compiled.verification_barriers.len(), 1);
+        assert_eq!(compiled.verification_barriers[0].after_plan_step_id, 5);
+    }
 
     #[test]
     fn native_verification_barrier_list_preserves_source_order() {
