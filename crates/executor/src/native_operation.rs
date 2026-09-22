@@ -1,6 +1,4 @@
 use serde::Serialize;
-use thiserror::Error;
-
 use crate::FrozenIntentAction;
 
 /// Typed, non-executable operation classes for the future native executor.
@@ -87,12 +85,6 @@ pub enum NativeOperationSpec {
     RediscoverAndVerify,
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum NativeOperationSpecError {
-    #[error("native operation payload is not yet supported for {0:?}")]
-    Unsupported(NativeOperationKind),
-}
-
 /// Builds a non-executable native operation payload.
 ///
 /// M1B14 builds payload support one operation at a time. Revalidation, exact
@@ -100,55 +92,51 @@ pub enum NativeOperationSpecError {
 /// type/mountpoint, rediscovery/verification, LVM backup identity, and partition
 /// table backup identity are representable here. Every current M1B13 frozen
 /// action now has an exact non-executable native payload.
-pub fn build_native_operation_spec(
-    action: &FrozenIntentAction,
-) -> Result<NativeOperationSpec, NativeOperationSpecError> {
+pub fn build_native_operation_spec(action: &FrozenIntentAction) -> NativeOperationSpec {
     match action {
-        FrozenIntentAction::RevalidateSnapshot => Ok(NativeOperationSpec::RevalidateSnapshot),
-        FrozenIntentAction::BackupLvmMetadata { vg_uuid } => {
-            Ok(NativeOperationSpec::BackupLvmMetadata {
-                vg_uuid: vg_uuid.clone(),
-            })
-        }
+        FrozenIntentAction::RevalidateSnapshot => NativeOperationSpec::RevalidateSnapshot,
+        FrozenIntentAction::BackupLvmMetadata { vg_uuid } => NativeOperationSpec::BackupLvmMetadata {
+            vg_uuid: vg_uuid.clone(),
+        },
         FrozenIntentAction::BackupPartitionTableMetadata {
             disk,
             table_label,
             table_id,
-        } => Ok(NativeOperationSpec::BackupPartitionTableMetadata {
+        } => NativeOperationSpec::BackupPartitionTableMetadata {
             disk: disk.clone(),
             table_label: table_label.clone(),
             table_id: table_id.clone(),
-        }),
+        },
         FrozenIntentAction::ExtendPartition {
             partition,
             start_sector,
             old_size_sectors,
             new_size_sectors,
             sector_size_bytes,
-        } => Ok(NativeOperationSpec::ExtendPartition {
+        } => NativeOperationSpec::ExtendPartition {
             partition: partition.clone(),
             start_sector: *start_sector,
             old_size_sectors: *old_size_sectors,
             new_size_sectors: *new_size_sectors,
             sector_size_bytes: *sector_size_bytes,
-        }),
+        },
         FrozenIntentAction::ExtendLogicalVolume {
             lv_uuid,
             additional_extents,
             expected_lv_size_bytes,
-        } => Ok(NativeOperationSpec::ExtendLogicalVolume {
+        } => NativeOperationSpec::ExtendLogicalVolume {
             lv_uuid: lv_uuid.clone(),
             additional_extents: *additional_extents,
             expected_lv_size_bytes: *expected_lv_size_bytes,
-        }),
+        },
         FrozenIntentAction::GrowFilesystem {
             fs_type,
             mountpoint,
-        } => Ok(NativeOperationSpec::GrowFilesystem {
+        } => NativeOperationSpec::GrowFilesystem {
             fs_type: fs_type.clone(),
             mountpoint: mountpoint.clone(),
-        }),
-        FrozenIntentAction::RediscoverAndVerify => Ok(NativeOperationSpec::RediscoverAndVerify),
+        },
+        FrozenIntentAction::RediscoverAndVerify => NativeOperationSpec::RediscoverAndVerify,
     }
 }
 
@@ -194,7 +182,7 @@ mod tests {
         };
 
         assert_eq!(
-            build_native_operation_spec(&action).unwrap(),
+            build_native_operation_spec(&action),
             NativeOperationSpec::BackupPartitionTableMetadata {
                 disk: "/dev/test".into(),
                 table_label: "gpt".into(),
@@ -210,7 +198,7 @@ mod tests {
         };
 
         assert_eq!(
-            build_native_operation_spec(&action).unwrap(),
+            build_native_operation_spec(&action),
             NativeOperationSpec::BackupLvmMetadata {
                 vg_uuid: "vg-uuid-test".into(),
             }
@@ -228,7 +216,7 @@ mod tests {
         };
 
         assert_eq!(
-            build_native_operation_spec(&action).unwrap(),
+            build_native_operation_spec(&action),
             NativeOperationSpec::ExtendPartition {
                 partition: "/dev/test1".into(),
                 start_sector: 2048,
@@ -248,7 +236,7 @@ mod tests {
         };
 
         assert_eq!(
-            build_native_operation_spec(&action).unwrap(),
+            build_native_operation_spec(&action),
             NativeOperationSpec::ExtendLogicalVolume {
                 lv_uuid: "lv-test".into(),
                 additional_extents: 17,
@@ -265,7 +253,7 @@ mod tests {
         };
 
         assert_eq!(
-            build_native_operation_spec(&action).unwrap(),
+            build_native_operation_spec(&action),
             NativeOperationSpec::GrowFilesystem {
                 fs_type: "xfs".into(),
                 mountpoint: "/srv/data".into(),
@@ -276,7 +264,7 @@ mod tests {
     #[test]
     fn native_rediscover_spec_is_exact_verification_marker() {
         assert_eq!(
-            build_native_operation_spec(&FrozenIntentAction::RediscoverAndVerify).unwrap(),
+            build_native_operation_spec(&FrozenIntentAction::RediscoverAndVerify),
             NativeOperationSpec::RediscoverAndVerify
         );
     }
