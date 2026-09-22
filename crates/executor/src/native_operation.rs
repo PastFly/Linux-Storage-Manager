@@ -1,8 +1,10 @@
 use serde::Serialize;
 
+use crate::FrozenIntentAction;
+
 /// Typed, non-executable operation classes for the future native executor.
 ///
-/// M1B14.1 is metadata only: it does not invoke storage APIs, spawn commands,
+/// M1B14 remains metadata only: it does not invoke storage APIs, spawn commands,
 /// advance the journal, or enable mutation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +34,26 @@ impl NativeOperationKind {
             self,
             Self::ExtendPartition | Self::ExtendLogicalVolume | Self::GrowFilesystem
         )
+    }
+}
+
+/// Exhaustive semantic classification from the frozen M1B13 intent.
+///
+/// There is deliberately no fallback arm: adding a new frozen intent action must
+/// update this mapping before the native backend can represent it.
+pub fn classify_frozen_intent_action(action: &FrozenIntentAction) -> NativeOperationKind {
+    match action {
+        FrozenIntentAction::RevalidateSnapshot => NativeOperationKind::RevalidateSnapshot,
+        FrozenIntentAction::BackupLvmMetadata { .. } => NativeOperationKind::BackupLvmMetadata,
+        FrozenIntentAction::BackupPartitionTableMetadata { .. } => {
+            NativeOperationKind::BackupPartitionTableMetadata
+        }
+        FrozenIntentAction::ExtendPartition { .. } => NativeOperationKind::ExtendPartition,
+        FrozenIntentAction::ExtendLogicalVolume { .. } => {
+            NativeOperationKind::ExtendLogicalVolume
+        }
+        FrozenIntentAction::GrowFilesystem { .. } => NativeOperationKind::GrowFilesystem,
+        FrozenIntentAction::RediscoverAndVerify => NativeOperationKind::RediscoverAndVerify,
     }
 }
 
@@ -65,6 +87,63 @@ mod tests {
                     | NativeOperationKind::GrowFilesystem
             );
             assert_eq!(operation.is_mutation_candidate(), expected);
+        }
+    }
+
+    #[test]
+    fn frozen_intent_actions_map_to_exact_native_kinds() {
+        let cases = [
+            (
+                FrozenIntentAction::RevalidateSnapshot,
+                NativeOperationKind::RevalidateSnapshot,
+            ),
+            (
+                FrozenIntentAction::BackupLvmMetadata {
+                    vg_uuid: "vg-test".into(),
+                },
+                NativeOperationKind::BackupLvmMetadata,
+            ),
+            (
+                FrozenIntentAction::BackupPartitionTableMetadata {
+                    disk: "/dev/test".into(),
+                    table_label: "gpt".into(),
+                    table_id: None,
+                },
+                NativeOperationKind::BackupPartitionTableMetadata,
+            ),
+            (
+                FrozenIntentAction::ExtendPartition {
+                    partition: "/dev/test1".into(),
+                    start_sector: 2048,
+                    old_size_sectors: 4096,
+                    new_size_sectors: 8192,
+                    sector_size_bytes: 512,
+                },
+                NativeOperationKind::ExtendPartition,
+            ),
+            (
+                FrozenIntentAction::ExtendLogicalVolume {
+                    lv_uuid: "lv-test".into(),
+                    additional_extents: 4,
+                    expected_lv_size_bytes: 16 * 1024 * 1024,
+                },
+                NativeOperationKind::ExtendLogicalVolume,
+            ),
+            (
+                FrozenIntentAction::GrowFilesystem {
+                    fs_type: "ext4".into(),
+                    mountpoint: "/mnt/test".into(),
+                },
+                NativeOperationKind::GrowFilesystem,
+            ),
+            (
+                FrozenIntentAction::RediscoverAndVerify,
+                NativeOperationKind::RediscoverAndVerify,
+            ),
+        ];
+
+        for (action, expected) in cases {
+            assert_eq!(classify_frozen_intent_action(&action), expected);
         }
     }
 }
