@@ -49,9 +49,7 @@ pub fn classify_frozen_intent_action(action: &FrozenIntentAction) -> NativeOpera
             NativeOperationKind::BackupPartitionTableMetadata
         }
         FrozenIntentAction::ExtendPartition { .. } => NativeOperationKind::ExtendPartition,
-        FrozenIntentAction::ExtendLogicalVolume { .. } => {
-            NativeOperationKind::ExtendLogicalVolume
-        }
+        FrozenIntentAction::ExtendLogicalVolume { .. } => NativeOperationKind::ExtendLogicalVolume,
         FrozenIntentAction::GrowFilesystem { .. } => NativeOperationKind::GrowFilesystem,
         FrozenIntentAction::RediscoverAndVerify => NativeOperationKind::RediscoverAndVerify,
     }
