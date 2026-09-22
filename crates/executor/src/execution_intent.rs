@@ -588,6 +588,18 @@ mod tests {
     }
 
     #[test]
+    fn durable_session_errors_have_stable_m1b13_variants() {
+        assert!(matches!(
+            map_session_error(LockedSessionError::DurableJournalRequired),
+            ExecutionIntentError::DurableJournalRequired
+        ));
+        assert!(matches!(
+            map_session_error(LockedSessionError::DurableJournalMismatch),
+            ExecutionIntentError::DurableJournalMismatch
+        ));
+    }
+
+    #[test]
     fn duplicate_step_id_is_rejected() {
         let steps = vec![graph_step(1, vec![]), graph_step(1, vec![])];
         assert!(matches!(
