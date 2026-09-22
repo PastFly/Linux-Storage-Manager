@@ -981,6 +981,31 @@ mod tests {
     }
 
     #[test]
+    fn partition_end_overflow_is_rejected() {
+        let mut identity = semantic_identity();
+        identity.partitions[0].start_sector = Some(u64::MAX - 5000);
+        identity.partitions[0].size_sectors = Some(4096);
+        identity.partitions[0].sector_size_bytes = Some(512);
+        let step = PlanStep {
+            id: 4,
+            depends_on: vec![],
+            operation: Operation::ExtendPartition {
+                partition: "/dev/vda1".into(),
+                start_sector: u64::MAX - 5000,
+                old_size_sectors: 4096,
+                new_size_sectors: 8192,
+                sector_size_bytes: 512,
+            },
+            reversibility: Reversibility::Irreversible,
+        };
+
+        assert!(matches!(
+            validate_step_semantics(&step, &identity, &semantic_decision()),
+            Err(ExecutionIntentError::FrozenIdentityMismatch(_))
+        ));
+    }
+
+    #[test]
     fn mapping_preserves_every_source_step_exactly_once() {
         let source = vec![
             PlanStep {
