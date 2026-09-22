@@ -373,6 +373,7 @@ fn validate_step_semantics(
                 return Err(mismatch("filesystem identity is absent"));
             };
             if filesystem.fs_type != *fs_type
+                || decision.device.as_deref() != Some(filesystem.device.as_str())
                 || decision.fs_type.as_deref() != Some(fs_type.as_str())
                 || decision.mountpoint.as_deref() != Some(mountpoint.as_str())
                 || decision.state != lsm_planner::FilesystemDecisionState::ReadyOnlineGrow
