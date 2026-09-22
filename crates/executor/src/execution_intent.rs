@@ -803,6 +803,26 @@ mod tests {
     }
 
     #[test]
+    fn filesystem_decision_target_mismatch_is_rejected() {
+        let mut decision = semantic_decision();
+        decision.target = "/other".into();
+        let step = PlanStep {
+            id: 6,
+            depends_on: vec![],
+            operation: Operation::GrowFilesystem {
+                fs_type: "ext4".into(),
+                mountpoint: "/".into(),
+            },
+            reversibility: Reversibility::Irreversible,
+        };
+
+        assert!(matches!(
+            validate_step_semantics(&step, &semantic_identity(), &decision),
+            Err(ExecutionIntentError::FrozenIdentityMismatch(_))
+        ));
+    }
+
+    #[test]
     fn filesystem_decision_device_mismatch_is_rejected() {
         let mut decision = semantic_decision();
         decision.device = Some("/dev/mapper/other".into());
