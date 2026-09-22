@@ -193,7 +193,10 @@ mod tests {
         let compiled = compile_native_steps(&steps);
 
         assert_eq!(
-            compiled.iter().map(|step| step.plan_step_id).collect::<Vec<_>>(),
+            compiled
+                .iter()
+                .map(|step| step.plan_step_id)
+                .collect::<Vec<_>>(),
             vec![10, 11]
         );
         assert_eq!(compiled[1].depends_on, vec![10]);
