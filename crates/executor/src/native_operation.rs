@@ -1,6 +1,7 @@
+use lsm_planner::Reversibility;
 use serde::Serialize;
 
-use crate::FrozenIntentAction;
+use crate::{FrozenIntentAction, FrozenIntentRole, FrozenIntentStep};
 
 /// Typed, non-executable operation classes for the future native executor.
 ///
@@ -143,9 +144,58 @@ pub fn build_native_operation_spec(action: &FrozenIntentAction) -> NativeOperati
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeCompiledStep {
+    pub plan_step_id: u32,
+    pub depends_on: Vec<u32>,
+    pub reversibility: Reversibility,
+    pub role: FrozenIntentRole,
+    pub operation: NativeOperationSpec,
+}
+
+pub fn compile_native_step(step: &FrozenIntentStep) -> NativeCompiledStep {
+    NativeCompiledStep {
+        plan_step_id: step.plan_step_id,
+        depends_on: step.depends_on.clone(),
+        reversibility: step.reversibility,
+        role: step.role,
+        operation: build_native_operation_spec(&step.action),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_step_compiler_preserves_frozen_step_semantics() {
+        let step = FrozenIntentStep {
+            plan_step_id: 42,
+            depends_on: vec![3, 9],
+            reversibility: Reversibility::Irreversible,
+            role: FrozenIntentRole::MutationCandidate,
+            action: FrozenIntentAction::ExtendLogicalVolume {
+                lv_uuid: "lv-step-test".into(),
+                additional_extents: 11,
+                expected_lv_size_bytes: 128 * 1024 * 1024,
+            },
+        };
+
+        assert_eq!(
+            compile_native_step(&step),
+            NativeCompiledStep {
+                plan_step_id: 42,
+                depends_on: vec![3, 9],
+                reversibility: Reversibility::Irreversible,
+                role: FrozenIntentRole::MutationCandidate,
+                operation: NativeOperationSpec::ExtendLogicalVolume {
+                    lv_uuid: "lv-step-test".into(),
+                    additional_extents: 11,
+                    expected_lv_size_bytes: 128 * 1024 * 1024,
+                },
+            }
+        );
+    }
 
     #[test]
     fn native_operation_allowlist_is_exact() {
