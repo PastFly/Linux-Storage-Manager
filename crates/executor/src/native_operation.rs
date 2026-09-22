@@ -1,4 +1,5 @@
 use serde::Serialize;
+
 use crate::FrozenIntentAction;
 
 /// Typed, non-executable operation classes for the future native executor.
@@ -95,9 +96,11 @@ pub enum NativeOperationSpec {
 pub fn build_native_operation_spec(action: &FrozenIntentAction) -> NativeOperationSpec {
     match action {
         FrozenIntentAction::RevalidateSnapshot => NativeOperationSpec::RevalidateSnapshot,
-        FrozenIntentAction::BackupLvmMetadata { vg_uuid } => NativeOperationSpec::BackupLvmMetadata {
-            vg_uuid: vg_uuid.clone(),
-        },
+        FrozenIntentAction::BackupLvmMetadata { vg_uuid } => {
+            NativeOperationSpec::BackupLvmMetadata {
+                vg_uuid: vg_uuid.clone(),
+            }
+        }
         FrozenIntentAction::BackupPartitionTableMetadata {
             disk,
             table_label,
