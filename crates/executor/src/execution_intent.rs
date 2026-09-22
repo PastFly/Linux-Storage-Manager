@@ -372,7 +372,8 @@ fn validate_step_semantics(
             let Some(filesystem) = identity.filesystem.as_ref() else {
                 return Err(mismatch("filesystem identity is absent"));
             };
-            if filesystem.fs_type != *fs_type
+            if decision.target != identity.target
+                || filesystem.fs_type != *fs_type
                 || decision.device.as_deref() != Some(filesystem.device.as_str())
                 || decision.fs_type.as_deref() != Some(fs_type.as_str())
                 || decision.mountpoint.as_deref() != Some(mountpoint.as_str())
