@@ -330,6 +330,10 @@ fn validate_step_semantics(
                 || new_size_sectors <= old_size_sectors
                 || old_size_sectors.checked_mul(*sector_size_bytes).is_none()
                 || new_size_sectors.checked_mul(*sector_size_bytes).is_none()
+                || new_size_sectors
+                    .checked_sub(1)
+                    .and_then(|last_offset| start_sector.checked_add(last_offset))
+                    .is_none()
             {
                 return Err(mismatch("partition growth geometry is invalid"));
             }
