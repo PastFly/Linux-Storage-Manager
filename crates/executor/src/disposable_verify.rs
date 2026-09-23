@@ -322,8 +322,7 @@ pub fn verify_and_complete_disposable_execution(
         .cloned()
         .ok_or(DisposableBoundaryVerificationError::VerifiedBoundaryMissing)?;
     let ordered_pair = execution.mutation_step_ids.windows(2).any(|pair| {
-        pair[0] == verified_boundary.completed_step_id
-            && pair[1] == verified_boundary.next_step_id
+        pair[0] == verified_boundary.completed_step_id && pair[1] == verified_boundary.next_step_id
     });
     if !verified_boundary.integrity_matches().unwrap_or(false)
         || verified_boundary.execution_id != execution.execution_id
