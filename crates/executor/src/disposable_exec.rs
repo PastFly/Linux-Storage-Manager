@@ -301,6 +301,7 @@ mod tests {
             ))
         ));
 
+        let mut permissions = fs::metadata(&lvextend).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&lvextend, permissions).unwrap();
         let target = root.join("lvm");
