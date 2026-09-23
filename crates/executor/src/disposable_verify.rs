@@ -3,9 +3,7 @@ use lsm_planner::{
 };
 use thiserror::Error;
 
-use crate::{
-    LockedExecutionSession, NativeOperationSpec, ValidatedNativeManifest,
-};
+use crate::{LockedExecutionSession, NativeOperationSpec, ValidatedNativeManifest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisposableVerifiedBoundary {
