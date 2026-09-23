@@ -461,6 +461,10 @@ fn validate_verified_boundary_binding(journal: &OperationJournal) -> Result<(), 
         .events
         .iter()
         .any(|event| event.code == "verification-passed-continue");
+    let has_terminal_completion = journal
+        .events
+        .iter()
+        .any(|event| event.code == "verification-passed-complete");
 
     match (&journal.verified_boundary, has_continuation) {
         (None, false) => Ok(()),
@@ -522,6 +526,49 @@ fn validate_verified_boundary_binding(journal: &OperationJournal) -> Result<(), 
                     "verified boundary fingerprint does not match its contents".to_owned(),
                 ));
             }
+
+            match (
+                binding.final_step_id,
+                binding.final_identity_digest.as_deref(),
+            ) {
+                (None, None) => {
+                    if has_terminal_completion
+                        || (journal.phase == JournalPhase::Completed
+                            && execution.mutation_step_ids.len() > 1)
+                    {
+                        return Err(JournalStoreError::InvalidRecord(
+                            "completed multi-step execution is missing durable terminal verification"
+                                .to_owned(),
+                        ));
+                    }
+                }
+                (Some(final_step_id), Some(final_identity_digest)) => {
+                    if !has_terminal_completion || journal.phase != JournalPhase::Completed {
+                        return Err(JournalStoreError::InvalidRecord(
+                            "terminal verification binding exists without terminal completion"
+                                .to_owned(),
+                        ));
+                    }
+                    validate_hex_digest(
+                        final_identity_digest,
+                        "terminal verification fresh identity digest",
+                    )?;
+                    if execution.mutation_step_ids.last().copied() != Some(final_step_id)
+                        || binding.next_step_id != final_step_id
+                    {
+                        return Err(JournalStoreError::InvalidRecord(
+                            "terminal verification step does not match the final durable mutation step"
+                                .to_owned(),
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(JournalStoreError::InvalidRecord(
+                        "terminal verification binding is incomplete".to_owned(),
+                    ));
+                }
+            }
+
             if !matches!(
                 journal.phase,
                 JournalPhase::Executing
