@@ -43,6 +43,10 @@ pub enum FrozenIntentAction {
         new_size_sectors: u64,
         sector_size_bytes: u64,
     },
+    ResizePhysicalVolume {
+        pv_uuid: String,
+        expected_pv_size_bytes: u64,
+    },
     ExtendLogicalVolume {
         lv_uuid: String,
         additional_extents: u64,
@@ -381,6 +385,29 @@ fn validate_step_semantics(
             }
             Ok(())
         }
+        Operation::ResizePhysicalVolume {
+            pv_uuid,
+            expected_pv_size_bytes,
+        } => {
+            if pv_uuid.is_empty() || *expected_pv_size_bytes == 0 {
+                return Err(mismatch("physical-volume growth values are invalid"));
+            }
+            let matches = identity
+                .lvm
+                .iter()
+                .filter(|entry| {
+                    entry.kind == lsm_planner::LvmIdentityKind::PhysicalVolume
+                        && entry.uuid.as_deref() == Some(pv_uuid.as_str())
+                })
+                .collect::<Vec<_>>();
+            if matches.len() != 1 {
+                return Err(mismatch("physical-volume identity is not unique"));
+            }
+            if *expected_pv_size_bytes <= matches[0].size_bytes {
+                return Err(mismatch("physical-volume expected size does not grow"));
+            }
+            Ok(())
+        }
         Operation::ExtendLogicalVolume {
             lv_uuid,
             additional_extents,
@@ -480,6 +507,16 @@ fn translate_step(step: &lsm_planner::PlanStep) -> Result<FrozenIntentStep, Exec
                 old_size_sectors: *old_size_sectors,
                 new_size_sectors: *new_size_sectors,
                 sector_size_bytes: *sector_size_bytes,
+            },
+        ),
+        Operation::ResizePhysicalVolume {
+            pv_uuid,
+            expected_pv_size_bytes,
+        } => (
+            FrozenIntentRole::MutationCandidate,
+            FrozenIntentAction::ResizePhysicalVolume {
+                pv_uuid: pv_uuid.clone(),
+                expected_pv_size_bytes: *expected_pv_size_bytes,
             },
         ),
         Operation::ExtendLogicalVolume {
@@ -770,6 +807,58 @@ mod tests {
             reasons: vec![],
             required_actions: vec![],
         }
+    }
+
+    #[test]
+    fn physical_volume_resize_requires_exact_identity_and_growth() {
+        let mut identity = semantic_identity();
+        identity.lvm.push(lsm_planner::LvmIdentity {
+            kind: lsm_planner::LvmIdentityKind::PhysicalVolume,
+            name: "/dev/vda1".into(),
+            uuid: Some("pv-1".into()),
+            size_bytes: 8 * 1024 * 1024 * 1024,
+            free_bytes: None,
+            extent_size_bytes: None,
+            free_extent_count: None,
+            pv_count: None,
+            lv_count: None,
+            attributes: Some("a--".into()),
+            layout: None,
+            role: None,
+        });
+        let step = PlanStep {
+            id: 4,
+            depends_on: vec![3],
+            operation: Operation::ResizePhysicalVolume {
+                pv_uuid: "pv-1".into(),
+                expected_pv_size_bytes: 12 * 1024 * 1024 * 1024,
+            },
+            reversibility: Reversibility::Irreversible,
+        };
+
+        validate_step_semantics(&step, &identity, &semantic_decision()).unwrap();
+        let translated = translate_step(&step).unwrap();
+        assert!(matches!(
+            translated.action,
+            FrozenIntentAction::ResizePhysicalVolume {
+                ref pv_uuid,
+                expected_pv_size_bytes,
+            } if pv_uuid == "pv-1" && expected_pv_size_bytes == 12 * 1024 * 1024 * 1024
+        ));
+
+        let stale = PlanStep {
+            id: 4,
+            depends_on: vec![3],
+            operation: Operation::ResizePhysicalVolume {
+                pv_uuid: "pv-1".into(),
+                expected_pv_size_bytes: 8 * 1024 * 1024 * 1024,
+            },
+            reversibility: Reversibility::Irreversible,
+        };
+        assert!(matches!(
+            validate_step_semantics(&stale, &identity, &semantic_decision()),
+            Err(ExecutionIntentError::FrozenIdentityMismatch(_))
+        ));
     }
 
     #[test]
