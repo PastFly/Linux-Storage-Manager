@@ -9,8 +9,9 @@ use thiserror::Error;
 
 use crate::{
     revalidate_disposable_loop_ownership, DisposableCommandSpec, DisposableExecutionPermit,
-    DisposableOwnershipError, DisposableProgram,
+    DisposableOwnershipError, DisposableProgram, LockedExecutionSession,
 };
+use lsm_planner::JournalPhase;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisposableToolPaths {
@@ -55,6 +56,8 @@ pub enum DisposableExecutionError {
     LoopMajorMismatch,
     #[error("live loop backing file does not match the owned backing file")]
     LoopBackingMismatch,
+    #[error("durable executing journal does not match this one-shot permit")]
+    DurableExecutionStateMismatch,
     #[error("selected disposable tool path is unsafe for {0:?}")]
     UnsafeToolPath(DisposableProgram),
     #[error("disposable execution I/O failed: {0}")]
@@ -81,6 +84,27 @@ fn loop_device_name(path: &str) -> Option<&str> {
         return None;
     }
     Some(path.trim_start_matches("/dev/"))
+}
+
+fn validate_durable_execution_state(
+    permit: &DisposableExecutionPermit,
+    session: &LockedExecutionSession<'_>,
+) -> Result<(), DisposableExecutionError> {
+    session
+        .require_current_durable_journal()
+        .map_err(|_| DisposableExecutionError::DurableExecutionStateMismatch)?;
+    let journal = session.journal();
+    let Some(binding) = journal.execution.as_ref() else {
+        return Err(DisposableExecutionError::DurableExecutionStateMismatch);
+    };
+    if journal.phase != JournalPhase::Executing
+        || !journal.mutation_may_have_started
+        || binding.execution_id != permit.execution_id()
+        || !binding.integrity_matches().unwrap_or(false)
+    {
+        return Err(DisposableExecutionError::DurableExecutionStateMismatch);
+    }
+    Ok(())
 }
 
 fn validate_live_loop(permit: &DisposableExecutionPermit) -> Result<(), DisposableExecutionError> {
@@ -156,8 +180,10 @@ fn stderr_summary(stderr: &[u8]) -> String {
 /// ownership/association/fresh-identity proof and a new permit.
 pub fn execute_disposable_command(
     permit: DisposableExecutionPermit,
+    session: &LockedExecutionSession<'_>,
     tools: &DisposableToolPaths,
 ) -> Result<DisposableCommandOutcome, DisposableExecutionError> {
+    validate_durable_execution_state(&permit, session)?;
     validate_live_loop(&permit)?;
 
     let command: &DisposableCommandSpec = permit.command();
