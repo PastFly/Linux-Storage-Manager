@@ -1,4 +1,4 @@
-use lsm_planner::{LvmIdentityKind, TargetIdentityManifest};
+use lsm_planner::{ExecutionStartBinding, LvmIdentityKind, TargetIdentityManifest};
 use thiserror::Error;
 
 use crate::{
@@ -11,6 +11,7 @@ pub struct DisposableExecutionPermit {
     source_manifest_id: String,
     native_manifest_digest: String,
     fresh_identity_digest: String,
+    execution_id: String,
     loop_device: String,
     command: DisposableCommandSpec,
     #[cfg(feature = "disposable-executor")]
@@ -28,6 +29,10 @@ impl DisposableExecutionPermit {
 
     pub fn fresh_identity_digest(&self) -> &str {
         &self.fresh_identity_digest
+    }
+
+    pub fn execution_id(&self) -> &str {
+        &self.execution_id
     }
 
     pub fn loop_device(&self) -> &str {
@@ -52,6 +57,12 @@ pub enum DisposablePermitError {
     AssociationOwnershipMismatch,
     #[error("fresh target identity is not rooted exclusively in the owned loop device")]
     TargetNotOwnedByLoop,
+    #[error("durable execution binding does not match the disposable command plan")]
+    ExecutionBindingMismatch,
+    #[error("durable execution binding integrity check failed")]
+    ExecutionBindingIntegrityMismatch,
+    #[error("disposable plan step {0} is not authorized by the durable execution binding")]
+    ExecutionStepNotAuthorized(u32),
     #[error("requested disposable plan step {0} did not resolve to exactly one command")]
     CommandStepNotUnique(u32),
     #[error("disposable ownership proof is no longer valid: {0}")]
@@ -107,6 +118,7 @@ pub fn bind_disposable_execution_permit(
     fresh_identity: &TargetIdentityManifest,
     ownership: &DisposableLoopOwnershipProof,
     association: &DisposableLoopAssociation,
+    execution: &ExecutionStartBinding,
     plan_step_id: u32,
 ) -> Result<DisposableExecutionPermit, DisposablePermitError> {
     revalidate_disposable_loop_ownership(ownership)?;
@@ -123,6 +135,23 @@ pub fn bind_disposable_execution_permit(
 
     verify_target_owned_by_loop(fresh_identity, ownership.loop_device())?;
 
+    if execution.schema_version != 1
+        || !execution
+            .integrity_matches()
+            .unwrap_or(false)
+    {
+        return Err(DisposablePermitError::ExecutionBindingIntegrityMismatch);
+    }
+    if execution.source_manifest_id != plan.source_manifest_id()
+        || execution.native_manifest_digest != plan.native_manifest_digest()
+        || execution.fresh_identity_digest != plan.fresh_identity_digest()
+    {
+        return Err(DisposablePermitError::ExecutionBindingMismatch);
+    }
+    if !execution.mutation_step_ids.contains(&plan_step_id) {
+        return Err(DisposablePermitError::ExecutionStepNotAuthorized(plan_step_id));
+    }
+
     let commands = plan
         .commands()
         .iter()
@@ -136,6 +165,7 @@ pub fn bind_disposable_execution_permit(
         source_manifest_id: plan.source_manifest_id().to_owned(),
         native_manifest_digest: plan.native_manifest_digest().to_owned(),
         fresh_identity_digest: plan.fresh_identity_digest().to_owned(),
+        execution_id: execution.execution_id.clone(),
         loop_device: ownership.loop_device().to_owned(),
         command: commands[0].clone(),
         #[cfg(feature = "disposable-executor")]
@@ -305,14 +335,39 @@ mod tests {
         (root, ownership, association, plan, identity)
     }
 
+    fn execution(plan: &DisposableCommandPlan) -> ExecutionStartBinding {
+        let mut binding = ExecutionStartBinding {
+            schema_version: 1,
+            execution_id: String::new(),
+            journal_id: "journal".into(),
+            plan_id: "plan".into(),
+            approval_id: "approval".into(),
+            source_manifest_id: plan.source_manifest_id().to_owned(),
+            native_manifest_digest: plan.native_manifest_digest().to_owned(),
+            fresh_identity_digest: plan.fresh_identity_digest().to_owned(),
+            mutation_step_ids: vec![3, 4],
+            approved_journal_digest: "approved-journal".into(),
+        };
+        binding.execution_id = binding.expected_execution_id().unwrap();
+        binding
+    }
+
     #[test]
     fn binds_one_exact_command_to_owned_loop_and_fresh_identity() {
         let (root, ownership, association, plan, identity) = setup();
 
-        let permit =
-            bind_disposable_execution_permit(&plan, &identity, &ownership, &association, 3)
-                .unwrap();
+        let execution = execution(&plan);
+        let permit = bind_disposable_execution_permit(
+            &plan,
+            &identity,
+            &ownership,
+            &association,
+            &execution,
+            3,
+        )
+        .unwrap();
 
+        assert_eq!(permit.execution_id(), execution.execution_id);
         assert_eq!(permit.loop_device(), "/dev/loop7");
         assert_eq!(permit.command().plan_step_id(), 3);
         assert_eq!(
@@ -333,7 +388,14 @@ mod tests {
         .unwrap();
 
         assert!(matches!(
-            bind_disposable_execution_permit(&plan, &identity, &ownership, &other, 3),
+            bind_disposable_execution_permit(
+                &plan,
+                &identity,
+                &ownership,
+                &other,
+                &execution(&plan),
+                3,
+            ),
             Err(DisposablePermitError::AssociationOwnershipMismatch)
         ));
 
@@ -345,8 +407,50 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            bind_disposable_execution_permit(&plan, &identity, &ownership, &association, 3),
+            bind_disposable_execution_permit(
+                &plan,
+                &identity,
+                &ownership,
+                &association,
+                &execution(&plan),
+                3,
+            ),
             Err(DisposablePermitError::FreshIdentityBindingMismatch)
+        ));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn wrong_execution_binding_or_step_fails_closed() {
+        let (root, ownership, association, plan, identity) = setup();
+        let mut binding = execution(&plan);
+        binding.native_manifest_digest = "different".into();
+        binding.execution_id = binding.expected_execution_id().unwrap();
+
+        assert!(matches!(
+            bind_disposable_execution_permit(
+                &plan,
+                &identity,
+                &ownership,
+                &association,
+                &binding,
+                3,
+            ),
+            Err(DisposablePermitError::ExecutionBindingMismatch)
+        ));
+
+        let binding = execution(&plan);
+        assert!(matches!(
+            bind_disposable_execution_permit(
+                &plan,
+                &identity,
+                &ownership,
+                &association,
+                &binding,
+                99,
+            ),
+            Err(DisposablePermitError::ExecutionStepNotAuthorized(99))
         ));
 
         fs::remove_dir_all(root).unwrap();
