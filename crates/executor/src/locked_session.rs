@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use lsm_core::{HostCapabilities, HostSnapshot};
 use lsm_planner::{
-    revalidate_target_identity, ExactApprovalBinding, ExecutionHandoffStatus, ExecutionStartBinding,
-    FrozenExecutionHandoff, IdentityRevalidation, JournalError, JournalPhase, JournalTransition,
-    OperationJournal, PlannerError,
+    revalidate_target_identity, ExactApprovalBinding, ExecutionHandoffStatus,
+    ExecutionStartBinding, FrozenExecutionHandoff, IdentityRevalidation, JournalError,
+    JournalPhase, JournalTransition, OperationJournal, PlannerError,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -231,7 +231,7 @@ impl<'a> LockedExecutionSession<'a> {
         Ok(())
     }
 
-    pub(crate) fn persist_execution_started(
+    pub fn persist_execution_started(
         &mut self,
         binding: &ExecutionStartBinding,
     ) -> Result<(), LockedSessionError> {
