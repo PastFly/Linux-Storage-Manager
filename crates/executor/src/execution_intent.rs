@@ -823,6 +823,7 @@ mod tests {
 
         let frozen = translate_step(&step).unwrap();
 
+        assert_eq!(frozen.plan_step_id, 44);
         assert_eq!(frozen.depends_on, vec![43]);
         assert_eq!(frozen.reversibility, Reversibility::Irreversible);
         assert_eq!(frozen.role, FrozenIntentRole::MutationCandidate);
