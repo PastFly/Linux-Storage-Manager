@@ -669,9 +669,8 @@ impl OperationJournal {
                     next_step_id,
                     fresh_identity_digest: fresh_identity_digest.to_owned(),
                 };
-                verified_boundary.boundary_id = verified_boundary
-                    .expected_boundary_id()
-                    .map_err(|error| {
+                verified_boundary.boundary_id =
+                    verified_boundary.expected_boundary_id().map_err(|error| {
                         JournalError::VerificationBoundarySerialization(error.to_string())
                     })?;
 
@@ -698,11 +697,12 @@ impl OperationJournal {
                     .ok_or(JournalError::VerificationExecutionBindingMissing)?;
                 if execution.mutation_step_ids.len() > 1 {
                     let final_step_id = execution.mutation_step_ids.last().copied();
-                    let boundary_matches = self.verified_boundary.as_ref().is_some_and(|boundary| {
-                        boundary.execution_id == execution.execution_id
-                            && Some(boundary.next_step_id) == final_step_id
-                            && boundary.integrity_matches().unwrap_or(false)
-                    });
+                    let boundary_matches =
+                        self.verified_boundary.as_ref().is_some_and(|boundary| {
+                            boundary.execution_id == execution.execution_id
+                                && Some(boundary.next_step_id) == final_step_id
+                                && boundary.integrity_matches().unwrap_or(false)
+                        });
                     if !boundary_matches {
                         return Err(JournalError::CompletionVerifiedBoundaryMismatch);
                     }
