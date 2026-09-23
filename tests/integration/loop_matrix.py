@@ -615,9 +615,11 @@ def check_preview(plan: Any, expected_status: str) -> None:
             raise SafetyError("preview must contain a size change and no blockers")
         if has_lvm_change and has_partition_change:
             operations = [
-                step.get("operation")
+                operation.get("operation")
                 for step in plan["steps"]
                 if isinstance(step, dict)
+                for operation in [step.get("operation")]
+                if isinstance(operation, dict)
             ]
             required = [
                 "extend_partition",
