@@ -110,8 +110,7 @@ fn validate_live_loop(permit: &DisposableExecutionPermit) -> Result<(), Disposab
     if !live_backing.is_absolute() {
         return Err(DisposableExecutionError::LoopBackingMismatch);
     }
-    let live_backing =
-        fs::canonicalize(live_backing).map_err(DisposableExecutionError::Io)?;
+    let live_backing = fs::canonicalize(live_backing).map_err(DisposableExecutionError::Io)?;
     let expected = fs::canonicalize(permit.ownership().backing_file())
         .map_err(DisposableExecutionError::Io)?;
     if live_backing != expected {
@@ -204,10 +203,7 @@ mod tests {
 
     fn root() -> PathBuf {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "lsm-disposable-exec-{}-{id}",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("lsm-disposable-exec-{}-{id}", std::process::id()))
     }
 
     #[test]
