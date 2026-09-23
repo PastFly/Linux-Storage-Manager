@@ -239,20 +239,16 @@ fn verify_terminal_filesystem_state(
         .mounts
         .iter()
         .filter(|mount| {
-            mount.target == *mountpoint
-                && mount.fs_type.as_deref() == Some(fs_type.as_str())
-                && mount.source.as_deref() == Some(before_filesystem.device.as_str())
+            mount.target == *mountpoint && mount.fs_type.as_deref() == Some(fs_type.as_str())
         })
-        .count();
+        .collect::<Vec<_>>();
     let fresh_mounts = fresh_identity
         .mounts
         .iter()
         .filter(|mount| {
-            mount.target == *mountpoint
-                && mount.fs_type.as_deref() == Some(fs_type.as_str())
-                && mount.source.as_deref() == Some(fresh_filesystem.device.as_str())
+            mount.target == *mountpoint && mount.fs_type.as_deref() == Some(fs_type.as_str())
         })
-        .count();
+        .collect::<Vec<_>>();
 
     if before_growth.target != fresh_identity.target
         || before_growth.resolved_device != fresh_identity.resolved_device
@@ -265,8 +261,10 @@ fn verify_terminal_filesystem_state(
         || before_filesystem.uuid.is_none()
         || before_filesystem.uuid != fresh_filesystem.uuid
         || before_filesystem.backing_device_size_bytes != fresh_filesystem.backing_device_size_bytes
-        || before_mounts != 1
-        || fresh_mounts != 1
+        || before_mounts.len() != 1
+        || fresh_mounts.len() != 1
+        || before_mounts[0].source.is_none()
+        || before_mounts[0] != fresh_mounts[0]
     {
         return Err(DisposableBoundaryVerificationError::FilesystemIdentityMismatch);
     }
