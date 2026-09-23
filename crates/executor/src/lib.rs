@@ -10,6 +10,7 @@ mod disposable_permit;
 mod disposable_start;
 mod disposable_verify;
 mod execution_intent;
+mod filesystem_health;
 mod journal_store;
 mod locked_session;
 mod native_operation;
@@ -61,6 +62,11 @@ pub use execution_intent::{
     FrozenExecutionIntentManifest, FrozenIntentAction, FrozenIntentRole, FrozenIntentStep,
     VerificationBarrierSpec,
 };
+pub use filesystem_health::{
+    ExplicitFilesystemHealthError, ExplicitFilesystemHealthReceipt,
+};
+#[cfg(feature = "disposable-loop-harness")]
+pub use filesystem_health::execute_explicit_filesystem_health_check;
 pub use journal_store::{DurableJournalStore, JournalStoreError};
 pub use locked_session::{
     LockedExecutionSession, LockedRevalidation, LockedRevalidationStatus, LockedSessionError,
