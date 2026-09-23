@@ -13,6 +13,7 @@ pub struct DisposableExecutionPermit {
     fresh_identity_digest: String,
     loop_device: String,
     command: DisposableCommandSpec,
+    ownership: DisposableLoopOwnershipProof,
 }
 
 impl DisposableExecutionPermit {
@@ -34,6 +35,10 @@ impl DisposableExecutionPermit {
 
     pub fn command(&self) -> &DisposableCommandSpec {
         &self.command
+    }
+
+    pub(crate) fn ownership(&self) -> &DisposableLoopOwnershipProof {
+        &self.ownership
     }
 }
 
@@ -131,6 +136,7 @@ pub fn bind_disposable_execution_permit(
         fresh_identity_digest: plan.fresh_identity_digest().to_owned(),
         loop_device: ownership.loop_device().to_owned(),
         command: commands[0].clone(),
+        ownership: ownership.clone(),
     })
 }
 
