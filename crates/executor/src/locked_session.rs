@@ -799,11 +799,19 @@ mod tests {
         let frozen = crate::freeze_execution_intent(&session, &approval).unwrap();
         let compiled = crate::compile_native_manifest(&frozen);
         let validated = crate::validate_and_bind_native_manifest(compiled).unwrap();
+        let mutation_step_ids = validated
+            .manifest()
+            .steps
+            .iter()
+            .filter(|step| step.role == crate::FrozenIntentRole::MutationCandidate)
+            .map(|step| step.plan_step_id)
+            .collect::<Vec<_>>();
         let binding = build_execution_start_binding(
             session.journal(),
             frozen.manifest_id(),
             validated.digest(),
             &handoff.target_identity().manifest_digest,
+            &mutation_step_ids,
         )
         .unwrap();
 
