@@ -616,7 +616,14 @@ mod tests {
         assert_eq!(validate_native_layer_order(&valid), Ok(()));
 
         let mut transitive = valid.clone();
-        transitive[3].depends_on = vec![2];
+        transitive.push(NativeCompiledStep {
+            plan_step_id: 5,
+            depends_on: vec![3],
+            reversibility: Reversibility::NotApplicable,
+            role: FrozenIntentRole::Verification,
+            operation: NativeOperationSpec::RediscoverAndVerify,
+        });
+        transitive[3].depends_on = vec![5];
         assert_eq!(validate_native_layer_order(&transitive), Ok(()));
 
         let mut invalid = valid;
