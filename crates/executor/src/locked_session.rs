@@ -247,6 +247,42 @@ impl<'a> LockedExecutionSession<'a> {
         Ok(())
     }
 
+    pub fn persist_verification_started(
+        &mut self,
+        plan_step_id: u32,
+    ) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::VerificationStarted { plan_step_id })?;
+        store.persist(&next)?;
+        self.journal = next;
+        Ok(())
+    }
+
+    pub fn persist_verification_passed(
+        &mut self,
+        plan_step_id: u32,
+        fresh_identity_digest: &str,
+    ) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::VerificationPassed {
+            plan_step_id,
+            fresh_identity_digest,
+        })?;
+        store.persist(&next)?;
+        self.journal = next;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn begin_at_path(
         handoff: &'a FrozenExecutionHandoff,
