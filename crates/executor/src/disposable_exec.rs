@@ -166,42 +166,52 @@ fn root_owned_non_writable_directory_chain(path: &Path) -> bool {
     true
 }
 
-fn validate_tool_path(
-    program: DisposableProgram,
-    paths: &DisposableToolPaths,
-) -> Result<PathBuf, DisposableExecutionError> {
-    let path = paths.path_for(program);
+pub(crate) fn exact_safe_system_tool_path(
+    path: &Path,
+    expected_name: &str,
+) -> Result<bool, io::Error> {
     if !path.is_absolute()
-        || path.file_name().and_then(|name| name.to_str()) != Some(program.as_str())
+        || path.file_name().and_then(|name| name.to_str()) != Some(expected_name)
     {
-        return Err(DisposableExecutionError::UnsafeToolPath(program));
+        return Ok(false);
     }
 
-    let path_metadata = fs::symlink_metadata(path).map_err(DisposableExecutionError::Io)?;
-    let metadata = fs::metadata(path).map_err(DisposableExecutionError::Io)?;
+    let path_metadata = fs::symlink_metadata(path)?;
+    let metadata = fs::metadata(path)?;
     let mode = metadata.permissions().mode();
     if !metadata.is_file() || mode & 0o111 == 0 || mode & 0o022 != 0 {
-        return Err(DisposableExecutionError::UnsafeToolPath(program));
+        return Ok(false);
     }
 
     if path_metadata.file_type().is_symlink() {
-        let parent = path
-            .parent()
-            .ok_or(DisposableExecutionError::UnsafeToolPath(program))?;
-        let canonical = fs::canonicalize(path).map_err(DisposableExecutionError::Io)?;
-        let canonical_parent = canonical
-            .parent()
-            .ok_or(DisposableExecutionError::UnsafeToolPath(program))?;
-        let canonical_metadata =
-            fs::symlink_metadata(&canonical).map_err(DisposableExecutionError::Io)?;
+        let Some(parent) = path.parent() else {
+            return Ok(false);
+        };
+        let canonical = fs::canonicalize(path)?;
+        let Some(canonical_parent) = canonical.parent() else {
+            return Ok(false);
+        };
+        let canonical_metadata = fs::symlink_metadata(&canonical)?;
         if path_metadata.uid() != 0
             || canonical_metadata.file_type().is_symlink()
             || canonical_metadata.uid() != 0
             || !root_owned_non_writable_directory_chain(parent)
             || !root_owned_non_writable_directory_chain(canonical_parent)
         {
-            return Err(DisposableExecutionError::UnsafeToolPath(program));
+            return Ok(false);
         }
+    }
+
+    Ok(true)
+}
+
+fn validate_tool_path(
+    program: DisposableProgram,
+    paths: &DisposableToolPaths,
+) -> Result<PathBuf, DisposableExecutionError> {
+    let path = paths.path_for(program);
+    if !exact_safe_system_tool_path(path, program.as_str()).map_err(DisposableExecutionError::Io)? {
+        return Err(DisposableExecutionError::UnsafeToolPath(program));
     }
 
     Ok(path.to_path_buf())
