@@ -95,6 +95,8 @@ pub enum DisposableBoundaryVerificationError {
     UnsupportedFinalMutation,
     #[error("fresh filesystem identity does not match the identity that authorized growth")]
     FilesystemIdentityMismatch,
+    #[error("fresh storage-tool capability inventory no longer matches the frozen handoff")]
+    CapabilityInventoryMismatch,
     #[error("fresh filesystem size did not increase within the verified backing device")]
     FilesystemSizeDidNotGrow,
     #[error("durable verified mutation boundary is missing")]
