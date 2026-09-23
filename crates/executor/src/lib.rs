@@ -30,7 +30,7 @@ pub use native_operation::{
     build_native_operation_spec, classify_frozen_intent_action, compile_native_manifest,
     compile_native_manifest_parts, compile_native_step, compile_native_steps,
     compile_native_verification_barrier, compile_native_verification_barriers,
-    validate_native_manifest, NativeCompiledManifest, NativeCompiledStep,
+    native_manifest_digest, validate_native_manifest, NativeCompiledManifest, NativeCompiledStep,
     NativeManifestValidationError, NativeOperationKind, NativeOperationSpec,
     NativeVerificationBarrier, NATIVE_OPERATION_ALLOWLIST,
 };

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use lsm_planner::Reversibility;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
@@ -244,6 +245,8 @@ pub enum NativeManifestValidationError {
     SelfDependency(u32),
     #[error("native dependency graph contains a cycle")]
     DependencyCycle,
+    #[error("native step {0} role does not match its operation")]
+    RoleOperationMismatch(u32),
     #[error("mutation step {0} is missing a verification barrier")]
     MissingVerificationBarrier(u32),
     #[error("mutation step {0} has multiple verification barriers")]
@@ -261,6 +264,31 @@ fn is_mutation_operation(operation: &NativeOperationSpec) -> bool {
             | NativeOperationSpec::ExtendLogicalVolume { .. }
             | NativeOperationSpec::GrowFilesystem { .. }
     )
+}
+
+fn expected_role(operation: &NativeOperationSpec) -> FrozenIntentRole {
+    match operation {
+        NativeOperationSpec::RevalidateSnapshot
+        | NativeOperationSpec::BackupLvmMetadata { .. }
+        | NativeOperationSpec::BackupPartitionTableMetadata { .. } => {
+            FrozenIntentRole::PreExecutionEvidence
+        }
+        NativeOperationSpec::ExtendPartition { .. }
+        | NativeOperationSpec::ExtendLogicalVolume { .. }
+        | NativeOperationSpec::GrowFilesystem { .. } => FrozenIntentRole::MutationCandidate,
+        NativeOperationSpec::RediscoverAndVerify => FrozenIntentRole::Verification,
+    }
+}
+
+pub fn native_manifest_digest(
+    manifest: &NativeCompiledManifest,
+) -> Result<String, serde_json::Error> {
+    let bytes = serde_json::to_vec(&(
+        &manifest.source_manifest_id,
+        &manifest.steps,
+        &manifest.verification_barriers,
+    ))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 fn validate_native_dependency_graph(
@@ -326,6 +354,14 @@ pub fn validate_native_manifest(
     manifest: &NativeCompiledManifest,
 ) -> Result<(), NativeManifestValidationError> {
     validate_native_dependency_graph(&manifest.steps)?;
+
+    for step in &manifest.steps {
+        if step.role != expected_role(&step.operation) {
+            return Err(NativeManifestValidationError::RoleOperationMismatch(
+                step.plan_step_id,
+            ));
+        }
+    }
 
     for barrier in &manifest.verification_barriers {
         let Some(step) = manifest
@@ -400,6 +436,63 @@ mod tests {
             role: FrozenIntentRole::PreExecutionEvidence,
             operation: NativeOperationSpec::RevalidateSnapshot,
         }
+    }
+
+    #[test]
+    fn native_manifest_role_operation_validation_fails_closed() {
+        let valid = NativeCompiledManifest {
+            source_manifest_id: "role-test".into(),
+            steps: vec![
+                NativeCompiledStep {
+                    plan_step_id: 1,
+                    depends_on: vec![],
+                    reversibility: Reversibility::NotApplicable,
+                    role: FrozenIntentRole::PreExecutionEvidence,
+                    operation: NativeOperationSpec::RevalidateSnapshot,
+                },
+                NativeCompiledStep {
+                    plan_step_id: 2,
+                    depends_on: vec![1],
+                    reversibility: Reversibility::NotApplicable,
+                    role: FrozenIntentRole::Verification,
+                    operation: NativeOperationSpec::RediscoverAndVerify,
+                },
+            ],
+            verification_barriers: vec![],
+        };
+
+        assert_eq!(validate_native_manifest(&valid), Ok(()));
+
+        let mut invalid = valid.clone();
+        invalid.steps[1].role = FrozenIntentRole::MutationCandidate;
+        assert_eq!(
+            validate_native_manifest(&invalid),
+            Err(NativeManifestValidationError::RoleOperationMismatch(2))
+        );
+    }
+
+    #[test]
+    fn native_manifest_digest_is_deterministic_and_content_sensitive() {
+        let manifest = NativeCompiledManifest {
+            source_manifest_id: "digest-source".into(),
+            steps: vec![NativeCompiledStep {
+                plan_step_id: 1,
+                depends_on: vec![],
+                reversibility: Reversibility::NotApplicable,
+                role: FrozenIntentRole::PreExecutionEvidence,
+                operation: NativeOperationSpec::RevalidateSnapshot,
+            }],
+            verification_barriers: vec![],
+        };
+
+        let first = native_manifest_digest(&manifest).unwrap();
+        let second = native_manifest_digest(&manifest).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 64);
+
+        let mut changed = manifest.clone();
+        changed.source_manifest_id = "digest-source-changed".into();
+        assert_ne!(first, native_manifest_digest(&changed).unwrap());
     }
 
     #[test]
@@ -498,6 +591,7 @@ mod tests {
         );
 
         let mut unexpected = valid.clone();
+        unexpected.steps[0].role = FrozenIntentRole::PreExecutionEvidence;
         unexpected.steps[0].operation = NativeOperationSpec::RevalidateSnapshot;
         assert_eq!(
             validate_native_manifest(&unexpected),
