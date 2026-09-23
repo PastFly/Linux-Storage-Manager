@@ -1,6 +1,6 @@
 use std::fs;
 use std::io;
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -144,6 +144,28 @@ fn validate_live_loop(permit: &DisposableExecutionPermit) -> Result<(), Disposab
     Ok(())
 }
 
+fn root_owned_non_writable_directory_chain(path: &Path) -> bool {
+    if !path.is_absolute() {
+        return false;
+    }
+
+    let mut current = PathBuf::from("/");
+    for component in path.components().skip(1) {
+        current.push(component.as_os_str());
+        let Ok(metadata) = fs::symlink_metadata(&current) else {
+            return false;
+        };
+        if metadata.file_type().is_symlink()
+            || !metadata.is_dir()
+            || metadata.uid() != 0
+            || metadata.permissions().mode() & 0o022 != 0
+        {
+            return false;
+        }
+    }
+    true
+}
+
 fn validate_tool_path(
     program: DisposableProgram,
     paths: &DisposableToolPaths,
@@ -155,14 +177,31 @@ fn validate_tool_path(
         return Err(DisposableExecutionError::UnsafeToolPath(program));
     }
 
-    let symlink_metadata = fs::symlink_metadata(path).map_err(DisposableExecutionError::Io)?;
-    if symlink_metadata.file_type().is_symlink() {
-        return Err(DisposableExecutionError::UnsafeToolPath(program));
-    }
+    let path_metadata = fs::symlink_metadata(path).map_err(DisposableExecutionError::Io)?;
     let metadata = fs::metadata(path).map_err(DisposableExecutionError::Io)?;
     let mode = metadata.permissions().mode();
     if !metadata.is_file() || mode & 0o111 == 0 || mode & 0o022 != 0 {
         return Err(DisposableExecutionError::UnsafeToolPath(program));
+    }
+
+    if path_metadata.file_type().is_symlink() {
+        let parent = path
+            .parent()
+            .ok_or(DisposableExecutionError::UnsafeToolPath(program))?;
+        let canonical = fs::canonicalize(path).map_err(DisposableExecutionError::Io)?;
+        let canonical_parent = canonical
+            .parent()
+            .ok_or(DisposableExecutionError::UnsafeToolPath(program))?;
+        let canonical_metadata =
+            fs::symlink_metadata(&canonical).map_err(DisposableExecutionError::Io)?;
+        if path_metadata.uid() != 0
+            || canonical_metadata.file_type().is_symlink()
+            || canonical_metadata.uid() != 0
+            || !root_owned_non_writable_directory_chain(parent)
+            || !root_owned_non_writable_directory_chain(canonical_parent)
+        {
+            return Err(DisposableExecutionError::UnsafeToolPath(program));
+        }
     }
 
     Ok(path.to_path_buf())
@@ -255,6 +294,22 @@ mod tests {
         let mut permissions = fs::metadata(&lvextend).unwrap().permissions();
         permissions.set_mode(0o777);
         fs::set_permissions(&lvextend, permissions).unwrap();
+        assert!(matches!(
+            validate_tool_path(DisposableProgram::Lvextend, &paths),
+            Err(DisposableExecutionError::UnsafeToolPath(
+                DisposableProgram::Lvextend
+            ))
+        ));
+
+        permissions.set_mode(0o755);
+        fs::set_permissions(&lvextend, permissions).unwrap();
+        let target = root.join("lvm");
+        File::create(&target).unwrap();
+        let mut target_permissions = fs::metadata(&target).unwrap().permissions();
+        target_permissions.set_mode(0o755);
+        fs::set_permissions(&target, target_permissions).unwrap();
+        fs::remove_file(&lvextend).unwrap();
+        std::os::unix::fs::symlink(&target, &lvextend).unwrap();
         assert!(matches!(
             validate_tool_path(DisposableProgram::Lvextend, &paths),
             Err(DisposableExecutionError::UnsafeToolPath(
