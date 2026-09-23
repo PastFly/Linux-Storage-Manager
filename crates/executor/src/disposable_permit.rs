@@ -61,8 +61,8 @@ pub enum DisposablePermitError {
     ExecutionBindingMismatch,
     #[error("durable execution binding integrity check failed")]
     ExecutionBindingIntegrityMismatch,
-    #[error("disposable plan step {0} is not authorized by the durable execution binding")]
-    ExecutionStepNotAuthorized(u32),
+    #[error("disposable plan step {0} is not the next authorized mutation boundary")]
+    ExecutionStepNotNext(u32),
     #[error("requested disposable plan step {0} did not resolve to exactly one command")]
     CommandStepNotUnique(u32),
     #[error("disposable ownership proof is no longer valid: {0}")]
@@ -144,10 +144,8 @@ pub fn bind_disposable_execution_permit(
     {
         return Err(DisposablePermitError::ExecutionBindingMismatch);
     }
-    if !execution.mutation_step_ids.contains(&plan_step_id) {
-        return Err(DisposablePermitError::ExecutionStepNotAuthorized(
-            plan_step_id,
-        ));
+    if execution.mutation_step_ids.first().copied() != Some(plan_step_id) {
+        return Err(DisposablePermitError::ExecutionStepNotNext(plan_step_id));
     }
 
     let commands = plan
@@ -448,7 +446,18 @@ mod tests {
                 &binding,
                 99,
             ),
-            Err(DisposablePermitError::ExecutionStepNotAuthorized(99))
+            Err(DisposablePermitError::ExecutionStepNotNext(99))
+        ));
+        assert!(matches!(
+            bind_disposable_execution_permit(
+                &plan,
+                &identity,
+                &ownership,
+                &association,
+                &binding,
+                4,
+            ),
+            Err(DisposablePermitError::ExecutionStepNotNext(4))
         ));
 
         fs::remove_dir_all(root).unwrap();
