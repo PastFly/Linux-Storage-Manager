@@ -282,6 +282,26 @@ impl<'a> LockedExecutionSession<'a> {
         Ok(())
     }
 
+    pub fn persist_verified_completed(
+        &mut self,
+        completed_step_id: u32,
+        fresh_identity_digest: &str,
+    ) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::VerificationPassedComplete {
+            completed_step_id,
+            fresh_identity_digest,
+        })?;
+        store.persist(&next)?;
+        self.journal = next;
+        Ok(())
+    }
+
     pub fn persist_completed(&mut self) -> Result<(), LockedSessionError> {
         self.require_current_durable_journal()?;
         let store = self
@@ -929,9 +949,18 @@ mod tests {
             *session.journal()
         );
 
-        session.persist_completed().unwrap();
+        let final_identity_digest = "8".repeat(64);
+        session
+            .persist_verified_completed(mutation_step_ids[1], &final_identity_digest)
+            .unwrap();
         assert_eq!(session.journal().phase, JournalPhase::Completed);
         assert!(session.journal().mutation_may_have_started);
+        let verified_boundary = session.journal().verified_boundary.as_ref().unwrap();
+        assert_eq!(verified_boundary.final_step_id, Some(mutation_step_ids[1]));
+        assert_eq!(
+            verified_boundary.final_identity_digest.as_deref(),
+            Some(final_identity_digest.as_str())
+        );
         assert_eq!(
             store.load(&session.journal().journal_id).unwrap(),
             *session.journal()
@@ -1073,6 +1102,12 @@ mod tests {
         assert_eq!(completion.completed_step_id(), mutation_step_ids[1]);
         assert_eq!(completion.fresh_identity_digest(), fresh.manifest_digest);
         assert_eq!(session.journal().phase, JournalPhase::Completed);
+        let verified_boundary = session.journal().verified_boundary.as_ref().unwrap();
+        assert_eq!(verified_boundary.final_step_id, Some(mutation_step_ids[1]));
+        assert_eq!(
+            verified_boundary.final_identity_digest.as_deref(),
+            Some(fresh.manifest_digest.as_str())
+        );
         assert_eq!(
             store.load(&session.journal().journal_id).unwrap(),
             *session.journal()

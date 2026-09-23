@@ -342,7 +342,7 @@ pub fn verify_and_complete_disposable_execution(
     )?;
 
     session
-        .persist_completed()
+        .persist_verified_completed(completed_step_id, &fresh_identity_digest)
         .map_err(|_| DisposableBoundaryVerificationError::PersistenceFailed)?;
 
     Ok(DisposableVerifiedCompletion {
