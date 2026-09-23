@@ -266,6 +266,10 @@ pub enum NativeManifestValidationError {
     DependencyCycle,
     #[error("native step {0} role does not match its operation")]
     RoleOperationMismatch(u32),
+    #[error(
+        "native mutation step {after} is not ordered after required lower-layer step {before}"
+    )]
+    UnsafeLayerOrder { before: u32, after: u32 },
     #[error("mutation step {0} is missing a verification barrier")]
     MissingVerificationBarrier(u32),
     #[error("mutation step {0} has multiple verification barriers")]
@@ -323,6 +327,54 @@ fn expected_role(operation: &NativeOperationSpec) -> FrozenIntentRole {
         | NativeOperationSpec::GrowFilesystem { .. } => FrozenIntentRole::MutationCandidate,
         NativeOperationSpec::RediscoverAndVerify => FrozenIntentRole::Verification,
     }
+}
+
+fn mutation_layer_rank(operation: &NativeOperationSpec) -> Option<u8> {
+    match operation {
+        NativeOperationSpec::ExtendPartition { .. } => Some(1),
+        NativeOperationSpec::ResizePhysicalVolume { .. } => Some(2),
+        NativeOperationSpec::ExtendLogicalVolume { .. } => Some(3),
+        NativeOperationSpec::GrowFilesystem { .. } => Some(4),
+        _ => None,
+    }
+}
+
+fn validate_native_layer_order(
+    steps: &[NativeCompiledStep],
+) -> Result<(), NativeManifestValidationError> {
+    let by_id = steps
+        .iter()
+        .map(|step| (step.plan_step_id, step))
+        .collect::<BTreeMap<_, _>>();
+
+    fn depends_on(current: u32, required: u32, by_id: &BTreeMap<u32, &NativeCompiledStep>) -> bool {
+        let Some(step) = by_id.get(&current) else {
+            return false;
+        };
+        step.depends_on
+            .iter()
+            .any(|dependency| *dependency == required || depends_on(*dependency, required, by_id))
+    }
+
+    let mutations = steps
+        .iter()
+        .filter_map(|step| mutation_layer_rank(&step.operation).map(|rank| (step, rank)))
+        .collect::<Vec<_>>();
+
+    for (earlier, earlier_rank) in &mutations {
+        for (later, later_rank) in &mutations {
+            if earlier_rank < later_rank
+                && !depends_on(later.plan_step_id, earlier.plan_step_id, &by_id)
+            {
+                return Err(NativeManifestValidationError::UnsafeLayerOrder {
+                    before: earlier.plan_step_id,
+                    after: later.plan_step_id,
+                });
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub fn native_manifest_digest(
@@ -399,6 +451,7 @@ pub fn validate_native_manifest(
     manifest: &NativeCompiledManifest,
 ) -> Result<(), NativeManifestValidationError> {
     validate_native_dependency_graph(&manifest.steps)?;
+    validate_native_layer_order(&manifest.steps)?;
 
     for step in &manifest.steps {
         if step.role != expected_role(&step.operation) {
@@ -509,6 +562,79 @@ mod tests {
                 NativeManifestValidationError::RoleOperationMismatch(1)
             ))
         ));
+    }
+
+    #[test]
+    fn native_mutation_layers_require_dependency_order() {
+        let mutation_step = |plan_step_id, depends_on, operation| NativeCompiledStep {
+            plan_step_id,
+            depends_on,
+            reversibility: Reversibility::Irreversible,
+            role: FrozenIntentRole::MutationCandidate,
+            operation,
+        };
+
+        let valid = vec![
+            mutation_step(
+                1,
+                vec![],
+                NativeOperationSpec::ExtendPartition {
+                    partition: "/dev/test1".into(),
+                    start_sector: 2048,
+                    old_size_sectors: 4096,
+                    new_size_sectors: 8192,
+                    sector_size_bytes: 512,
+                },
+            ),
+            mutation_step(
+                2,
+                vec![1],
+                NativeOperationSpec::ResizePhysicalVolume {
+                    pv_uuid: "pv-test".into(),
+                    expected_pv_size_bytes: 8 * 1024 * 1024,
+                },
+            ),
+            mutation_step(
+                3,
+                vec![2],
+                NativeOperationSpec::ExtendLogicalVolume {
+                    lv_uuid: "lv-test".into(),
+                    additional_extents: 1,
+                    expected_lv_size_bytes: 12 * 1024 * 1024,
+                },
+            ),
+            mutation_step(
+                4,
+                vec![3],
+                NativeOperationSpec::GrowFilesystem {
+                    fs_type: "ext4".into(),
+                    mountpoint: "/".into(),
+                },
+            ),
+        ];
+
+        assert_eq!(validate_native_layer_order(&valid), Ok(()));
+
+        let mut transitive = valid.clone();
+        transitive.push(NativeCompiledStep {
+            plan_step_id: 5,
+            depends_on: vec![3],
+            reversibility: Reversibility::NotApplicable,
+            role: FrozenIntentRole::Verification,
+            operation: NativeOperationSpec::RediscoverAndVerify,
+        });
+        transitive[3].depends_on = vec![5];
+        assert_eq!(validate_native_layer_order(&transitive), Ok(()));
+
+        let mut invalid = valid;
+        invalid[2].depends_on = vec![1];
+        assert_eq!(
+            validate_native_layer_order(&invalid),
+            Err(NativeManifestValidationError::UnsafeLayerOrder {
+                before: 2,
+                after: 3,
+            })
+        );
     }
 
     fn graph_step(plan_step_id: u32, depends_on: Vec<u32>) -> NativeCompiledStep {
