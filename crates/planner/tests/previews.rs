@@ -545,12 +545,26 @@ fn chained_lvm_route_uses_partition_tail_when_vg_free_is_insufficient() {
         .any(|step| step.contains("resize LVM PV")));
 
     let plan = plan_extend(&snapshot, &caps, request).unwrap();
-    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert_eq!(plan.status(), PlanStatus::Preview);
     assert_eq!(plan.growth_route_alternatives().len(), 1);
+    assert!(plan.blockers().is_empty());
+    assert!(plan.partition_size_change().is_some());
     assert!(plan
-        .blockers()
+        .steps()
         .iter()
-        .any(|blocker| blocker.code == "insufficient-capacity"));
+        .any(|step| matches!(step.operation, Operation::ExtendPartition { .. })));
+    assert!(plan
+        .steps()
+        .iter()
+        .any(|step| matches!(step.operation, Operation::ResizePhysicalVolume { .. })));
+    assert!(plan
+        .steps()
+        .iter()
+        .any(|step| matches!(step.operation, Operation::ExtendLogicalVolume { .. })));
+    assert!(plan
+        .steps()
+        .iter()
+        .any(|step| matches!(step.operation, Operation::GrowFilesystem { .. })));
 }
 
 #[test]
@@ -565,8 +579,11 @@ fn max_target_catalog_includes_verified_lvm_underlying_route_capacity() {
         targets[0].availability,
         ExtendTargetAvailability::PreviewReady
     );
-    assert_eq!(targets[0].verified_growth_bytes, Some(8 * GIB));
-    assert!(targets[0].layout_growth_bytes.unwrap() > 8 * GIB);
+    let verified = targets[0]
+        .verified_growth_bytes
+        .expect("underlying LVM route should now be an exact preview");
+    assert!(verified > 8 * GIB);
+    assert_eq!(targets[0].layout_growth_bytes, Some(verified));
 }
 
 #[test]
@@ -604,8 +621,18 @@ fn chained_lvm_route_handles_pv_directly_on_an_enlarged_disk() {
     assert_eq!(route.code, "grow-pv-lv-filesystem");
 
     let plan = plan_extend(&snapshot, &caps, request).unwrap();
-    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert_eq!(plan.status(), PlanStatus::Preview);
     assert_eq!(plan.growth_route_alternatives().len(), 1);
+    assert!(plan.blockers().is_empty());
+    assert!(plan.partition_size_change().is_none());
+    assert!(plan
+        .steps()
+        .iter()
+        .any(|step| matches!(step.operation, Operation::ResizePhysicalVolume { .. })));
+    assert!(!plan
+        .steps()
+        .iter()
+        .any(|step| matches!(step.operation, Operation::ExtendPartition { .. })));
 }
 
 #[test]
