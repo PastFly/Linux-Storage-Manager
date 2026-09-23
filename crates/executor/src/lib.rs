@@ -27,11 +27,11 @@ pub use locked_session::{
     LockedExecutionSession, LockedRevalidation, LockedRevalidationStatus, LockedSessionError,
 };
 pub use native_operation::{
-    build_native_operation_spec, classify_frozen_intent_action, compile_native_manifest_parts,
-    compile_native_step, compile_native_steps, compile_native_verification_barrier,
-    compile_native_verification_barriers, NativeCompiledManifest, NativeCompiledStep,
-    NativeOperationKind, NativeOperationSpec, NativeVerificationBarrier,
-    NATIVE_OPERATION_ALLOWLIST,
+    build_native_operation_spec, classify_frozen_intent_action, compile_native_manifest,
+    compile_native_manifest_parts, compile_native_step, compile_native_steps,
+    compile_native_verification_barrier, compile_native_verification_barriers,
+    NativeCompiledManifest, NativeCompiledStep, NativeOperationKind, NativeOperationSpec,
+    NativeVerificationBarrier, NATIVE_OPERATION_ALLOWLIST,
 };
 pub use precondition_evidence::{
     build_pre_mutation_evidence, PreMutationEvidenceBundle, PreMutationEvidenceError,

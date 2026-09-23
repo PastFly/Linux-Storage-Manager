@@ -175,6 +175,33 @@ impl FrozenExecutionIntentManifest {
         ))?;
         Ok(format!("{:x}", Sha256::digest(bytes)))
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_for_native_compiler(
+        steps: Vec<FrozenIntentStep>,
+        verification_barriers: Vec<VerificationBarrierSpec>,
+    ) -> Result<Self, serde_json::Error> {
+        let mut manifest = Self {
+            schema_version: 1,
+            manifest_id: String::new(),
+            approval_id: "approval-test".into(),
+            approved_journal_id: "journal-test".into(),
+            approved_journal_digest: "journal-digest-test".into(),
+            plan_id: "plan-test".into(),
+            evidence_bundle_id: "evidence-test".into(),
+            target_manifest_digest: "target-test".into(),
+            locked_session_id: "session-test".into(),
+            status: ExecutionIntentManifestStatus::FrozenNonExecutable,
+            mutation_enabled: false,
+            owner_acceptance_required: true,
+            steps,
+            verification_barriers,
+            blockers: Vec::new(),
+            future_gates: Vec::new(),
+        };
+        manifest.manifest_id = manifest.compute_manifest_id()?;
+        Ok(manifest)
+    }
 }
 
 #[derive(Debug, Error)]

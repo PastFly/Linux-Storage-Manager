@@ -1,7 +1,10 @@
 use lsm_planner::Reversibility;
 use serde::Serialize;
 
-use crate::{FrozenIntentAction, FrozenIntentRole, FrozenIntentStep, VerificationBarrierSpec};
+use crate::{
+    FrozenExecutionIntentManifest, FrozenIntentAction, FrozenIntentRole, FrozenIntentStep,
+    VerificationBarrierSpec,
+};
 
 /// Typed, non-executable operation classes for the future native executor.
 ///
@@ -218,9 +221,50 @@ pub fn compile_native_manifest_parts(
     }
 }
 
+pub fn compile_native_manifest(manifest: &FrozenExecutionIntentManifest) -> NativeCompiledManifest {
+    compile_native_manifest_parts(
+        manifest.manifest_id(),
+        manifest.steps(),
+        manifest.verification_barriers(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_manifest_compiler_binds_exact_frozen_manifest() {
+        let source = FrozenExecutionIntentManifest::test_for_native_compiler(
+            vec![FrozenIntentStep {
+                plan_step_id: 21,
+                depends_on: vec![],
+                reversibility: Reversibility::NotApplicable,
+                role: FrozenIntentRole::PreExecutionEvidence,
+                action: FrozenIntentAction::RevalidateSnapshot,
+            }],
+            vec![VerificationBarrierSpec {
+                after_plan_step_id: 21,
+                before_next_mutation: true,
+                require_fresh_target_identity: true,
+                require_fresh_capabilities: true,
+                require_expected_state_check: true,
+                stop_on_mismatch: true,
+            }],
+        )
+        .unwrap();
+
+        let compiled = compile_native_manifest(&source);
+
+        assert_eq!(compiled.source_manifest_id, source.manifest_id());
+        assert_eq!(compiled.steps.len(), source.steps().len());
+        assert_eq!(
+            compiled.verification_barriers.len(),
+            source.verification_barriers().len()
+        );
+        assert_eq!(compiled.steps[0].plan_step_id, 21);
+        assert_eq!(compiled.verification_barriers[0].after_plan_step_id, 21);
+    }
 
     #[test]
     fn native_manifest_parts_combine_steps_and_barriers_without_reordering() {
