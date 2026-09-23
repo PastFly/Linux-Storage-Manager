@@ -650,6 +650,73 @@ def check_preview(plan: Any, expected_status: str) -> None:
                 raise SafetyError("inconsistent partition preview size arithmetic")
 
 
+def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loop,
+                                 source: str, target: Path, vg: str,
+                                 filesystem: str) -> None:
+    resources.check_loop(loop)
+    if source != f"/dev/{vg}/data":
+        raise SafetyError("unexpected disposable LV path")
+    if filesystem not in ("ext4", "xfs"):
+        raise SafetyError("unsupported disposable filesystem growth drill")
+
+    before = ready_snapshot(binary, loop.device, vg)
+    lvm = before.get("lvm")
+    if not isinstance(lvm, dict):
+        raise SafetyError("LVM inventory missing before mutation drill")
+    lvs = [row for row in lvm.get("logical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg and row.get("path") == source]
+    vgs = [row for row in lvm.get("volume_groups", [])
+           if isinstance(row, dict) and row.get("name") == vg]
+    if len(lvs) != 1 or len(vgs) != 1:
+        raise SafetyError("disposable LV/VG identity is ambiguous before mutation")
+
+    current_lv_size = lvs[0].get("size_bytes")
+    extent = vgs[0].get("extent_size_bytes")
+    free_extents = vgs[0].get("free_extent_count")
+    if (type(current_lv_size) is not int or type(extent) is not int
+            or type(free_extents) is not int or extent <= 0 or free_extents < 8):
+        raise SafetyError("insufficient exact LVM extent evidence for mutation drill")
+
+    growth_extents = 8
+    expected_lv_size = current_lv_size + growth_extents * extent
+    sentinel = (target / "readonly-sentinel").read_bytes()
+    before_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+
+    backup_path = resources.root / f"{vg}-growth.vgcfg"
+    binary.run("vgcfgbackup", "--file", str(backup_path), vg)
+    resources.track_artifact(backup_path)
+
+    # From this point a tool may have changed storage. Any failure retains evidence/resources.
+    resources.uncertain = True
+    binary.run("lvextend", "--extents", f"+{growth_extents}", "--", source)
+
+    refresh_fixture_udev(binary, Path(source).resolve(strict=True).name)
+    after_lv = ready_snapshot(binary, loop.device, vg)
+    after_lvs = [row for row in after_lv["lvm"]["logical_volumes"]
+                 if row.get("vg_name") == vg and row.get("path") == source]
+    if len(after_lvs) != 1 or after_lvs[0].get("size_bytes") != expected_lv_size:
+        raise SafetyError("LV size did not match the exact expected post-lvextend size")
+
+    if filesystem == "ext4":
+        binary.run("resize2fs", source)
+    else:
+        binary.run("xfs_growfs", "-d", str(target))
+
+    after_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    if after_fs_bytes <= before_fs_bytes:
+        raise SafetyError("filesystem capacity did not increase after growth")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("filesystem sentinel changed during disposable growth drill")
+
+    final = ready_snapshot(binary, loop.device, vg)
+    final_lvs = [row for row in final["lvm"]["logical_volumes"]
+                 if row.get("vg_name") == vg and row.get("path") == source]
+    if len(final_lvs) != 1 or final_lvs[0].get("size_bytes") != expected_lv_size:
+        raise SafetyError("final rediscovery lost the expected LV size")
+
+    resources.uncertain = False
+
+
 def storage_facts(snapshot: dict[str, Any], loop: str, vg: str | None) -> Any:
     """Compare only the owned fixture's geometry/identity, not volatile host usage."""
     tables = [table for table in snapshot["partition_tables"] if table["device"] == loop]
@@ -842,6 +909,11 @@ def main(argv: list[str] | None = None) -> int:
             refresh_fixture_udev(runner, canonical_source.name)
             target = resources.mount(source, label + "-mount")
             exercise(resources, runner, loop, target, vg)
+            if vg is not None:
+                print(f"==> {label}-growth-mutation", flush=True)
+                exercise_lvm_growth_mutation(
+                    resources, runner, loop, source, target, vg, filesystem
+                )
         for table_label in ("gpt", "dos"):
             print(f"==> partition-recovery-{table_label}", flush=True)
             exercise_partition_table_recovery(resources, runner, table_label)
@@ -857,7 +929,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-growth,lvm-xfs-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
     return int(failed)
 
 
