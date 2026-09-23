@@ -5,7 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use lsm_planner::{
-    ExactApprovalBinding, JournalEvent, JournalPhase, OperationJournal, JOURNAL_DIRECTORY,
+    ExactApprovalBinding, ExecutionStartBinding, JournalEvent, JournalPhase, OperationJournal,
+    JOURNAL_DIRECTORY,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -53,6 +54,8 @@ struct JournalWire {
     mutation_may_have_started: bool,
     #[serde(default)]
     approval: Option<ExactApprovalBinding>,
+    #[serde(default)]
+    execution: Option<ExecutionStartBinding>,
     events: Vec<JournalEvent>,
 }
 
@@ -170,6 +173,7 @@ impl DurableJournalStore {
             phase: wire.phase,
             mutation_may_have_started: wire.mutation_may_have_started,
             approval: wire.approval,
+            execution: wire.execution,
             events: wire.events,
         };
         validate_journal(&journal)?;
@@ -257,6 +261,7 @@ fn validate_journal(journal: &OperationJournal) -> Result<(), JournalStoreError>
     }
 
     validate_approval_binding(journal)?;
+    validate_execution_binding(journal)?;
 
     Ok(())
 }
@@ -325,12 +330,108 @@ fn validate_approval_binding(journal: &OperationJournal) -> Result<(), JournalSt
             preconditions.phase = JournalPhase::PreconditionsVerified;
             preconditions.mutation_may_have_started = false;
             preconditions.approval = None;
+            preconditions.execution = None;
             preconditions.events.truncate(approval_index);
             let expected_digest = crate::preconditions::journal_digest(&preconditions)?;
             if binding.preconditions_journal_digest != expected_digest {
                 return Err(JournalStoreError::InvalidRecord(
                     "approval binding does not match the exact preconditions journal state"
                         .to_owned(),
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_execution_binding(journal: &OperationJournal) -> Result<(), JournalStoreError> {
+    let execution_transition_index = journal
+        .events
+        .iter()
+        .position(|event| event.from == JournalPhase::Approved && event.to == JournalPhase::Executing);
+
+    match (&journal.execution, execution_transition_index) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(JournalStoreError::InvalidRecord(
+            "executing journal is missing the exact execution binding".to_owned(),
+        )),
+        (Some(_), None) => Err(JournalStoreError::InvalidRecord(
+            "journal contains an execution binding without an execution transition".to_owned(),
+        )),
+        (Some(binding), Some(execution_index)) => {
+            if binding.schema_version != 1 {
+                return Err(JournalStoreError::InvalidRecord(format!(
+                    "unsupported execution binding schema version {}",
+                    binding.schema_version
+                )));
+            }
+
+            for (value, label) in [
+                (binding.execution_id.as_str(), "execution ID"),
+                (binding.journal_id.as_str(), "execution journal ID"),
+                (binding.plan_id.as_str(), "execution plan ID"),
+                (binding.approval_id.as_str(), "execution approval ID"),
+                (
+                    binding.source_manifest_id.as_str(),
+                    "execution source manifest ID",
+                ),
+                (
+                    binding.native_manifest_digest.as_str(),
+                    "execution native manifest digest",
+                ),
+                (
+                    binding.fresh_identity_digest.as_str(),
+                    "execution fresh identity digest",
+                ),
+                (
+                    binding.approved_journal_digest.as_str(),
+                    "execution approved journal digest",
+                ),
+            ] {
+                validate_hex_digest(value, label)?;
+            }
+
+            if binding.journal_id != journal.journal_id {
+                return Err(JournalStoreError::InvalidRecord(
+                    "execution binding journal ID does not match the journal".to_owned(),
+                ));
+            }
+            if binding.plan_id != journal.plan_id {
+                return Err(JournalStoreError::InvalidRecord(
+                    "execution binding plan ID does not match the journal".to_owned(),
+                ));
+            }
+            let Some(approval) = journal.approval.as_ref() else {
+                return Err(JournalStoreError::InvalidRecord(
+                    "execution binding exists without an approval binding".to_owned(),
+                ));
+            };
+            if binding.approval_id != approval.approval_id {
+                return Err(JournalStoreError::InvalidRecord(
+                    "execution binding approval ID does not match the journal".to_owned(),
+                ));
+            }
+            if binding.fresh_identity_digest != journal.baseline_manifest_digest {
+                return Err(JournalStoreError::InvalidRecord(
+                    "execution binding fresh identity does not match the journal baseline"
+                        .to_owned(),
+                ));
+            }
+            if !binding.integrity_matches()? {
+                return Err(JournalStoreError::InvalidRecord(
+                    "execution binding fingerprint does not match its contents".to_owned(),
+                ));
+            }
+
+            let mut approved = journal.clone();
+            approved.phase = JournalPhase::Approved;
+            approved.mutation_may_have_started = false;
+            approved.execution = None;
+            approved.events.truncate(execution_index);
+            let expected_digest = crate::preconditions::journal_digest(&approved)?;
+            if binding.approved_journal_digest != expected_digest {
+                return Err(JournalStoreError::InvalidRecord(
+                    "execution binding does not match the exact approved journal state".to_owned(),
                 ));
             }
             Ok(())
@@ -466,6 +567,7 @@ mod tests {
             phase: JournalPhase::Planned,
             mutation_may_have_started: false,
             approval: None,
+            execution: None,
             events: Vec::new(),
         }
     }
