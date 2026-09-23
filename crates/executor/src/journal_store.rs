@@ -391,7 +391,7 @@ fn validate_execution_binding(journal: &OperationJournal) -> Result<(), JournalS
             }
 
             if binding.mutation_step_ids.is_empty()
-                || binding.mutation_step_ids.iter().any(|step_id| *step_id == 0)
+                || binding.mutation_step_ids.contains(&0)
                 || {
                     let mut seen = std::collections::BTreeSet::new();
                     binding
