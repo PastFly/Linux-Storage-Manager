@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use lsm_core::{HostCapabilities, HostSnapshot};
 use lsm_planner::{
-    revalidate_target_identity, ExactApprovalBinding, ExecutionHandoffStatus,
+    revalidate_target_identity, ExactApprovalBinding, ExecutionHandoffStatus, ExecutionStartBinding,
     FrozenExecutionHandoff, IdentityRevalidation, JournalError, JournalPhase, JournalTransition,
     OperationJournal, PlannerError,
 };
@@ -226,6 +226,22 @@ impl<'a> LockedExecutionSession<'a> {
             approved_plan_id,
             approval,
         })?;
+        store.persist(&next)?;
+        self.journal = next;
+        Ok(())
+    }
+
+    pub(crate) fn persist_execution_started(
+        &mut self,
+        binding: &ExecutionStartBinding,
+    ) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::ExecutionStarted { binding })?;
         store.persist(&next)?;
         self.journal = next;
         Ok(())
