@@ -2,9 +2,7 @@ use lsm_planner::{LvmIdentityKind, TargetIdentityManifest};
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::{
-    FrozenIntentRole, NativeOperationKind, NativeOperationSpec, ValidatedNativeManifest,
-};
+use crate::{FrozenIntentRole, NativeOperationKind, NativeOperationSpec, ValidatedNativeManifest};
 
 /// Narrow executable program allowlist for the first disposable-only profile.
 ///
@@ -86,8 +84,7 @@ fn compile_lvextend(
         .lvm
         .iter()
         .filter(|entry| {
-            entry.kind == LvmIdentityKind::LogicalVolume
-                && entry.uuid.as_deref() == Some(lv_uuid)
+            entry.kind == LvmIdentityKind::LogicalVolume && entry.uuid.as_deref() == Some(lv_uuid)
         })
         .collect::<Vec<_>>();
     if matches.len() != 1 {
@@ -146,9 +143,7 @@ fn compile_filesystem_grow(
     let mount_matches = identity
         .mounts
         .iter()
-        .filter(|mount| {
-            mount.target == mountpoint && mount.fs_type.as_deref() == Some(fs_type)
-        })
+        .filter(|mount| mount.target == mountpoint && mount.fs_type.as_deref() == Some(fs_type))
         .count();
     if mount_matches != 1 {
         return Err(DisposableArgvError::FilesystemMountNotUnique);
@@ -165,9 +160,7 @@ fn compile_filesystem_grow(
             program: DisposableProgram::XfsGrowfs,
             args: vec!["-d".to_owned(), mountpoint.to_owned()],
         }),
-        other => Err(DisposableArgvError::UnsupportedFilesystem(
-            other.to_owned(),
-        )),
+        other => Err(DisposableArgvError::UnsupportedFilesystem(other.to_owned())),
     }
 }
 
@@ -376,11 +369,9 @@ mod tests {
     #[test]
     fn xfs_profile_compiles_exact_mountpoint_argv() {
         let validated = validated_manifest("xfs", "/srv/data");
-        let plan = compile_disposable_lvm_growth_commands(
-            &validated,
-            &identity("xfs", "/srv/data"),
-        )
-        .unwrap();
+        let plan =
+            compile_disposable_lvm_growth_commands(&validated, &identity("xfs", "/srv/data"))
+                .unwrap();
 
         assert_eq!(plan.commands[1].program, DisposableProgram::XfsGrowfs);
         assert_eq!(plan.commands[1].args, vec!["-d", "/srv/data"]);
@@ -421,10 +412,7 @@ mod tests {
             .unwrap();
 
             assert_eq!(
-                compile_disposable_lvm_growth_commands(
-                    &validated,
-                    &identity("ext4", "/")
-                ),
+                compile_disposable_lvm_growth_commands(&validated, &identity("ext4", "/")),
                 Err(DisposableArgvError::UnsupportedMutation(expected))
             );
         }
