@@ -653,6 +653,7 @@ mod tests {
         );
 
         let mut unexpected = valid.clone();
+        unexpected.steps[0].role = FrozenIntentRole::PreExecutionEvidence;
         unexpected.steps[0].operation = NativeOperationSpec::RevalidateSnapshot;
         assert_eq!(
             validate_native_manifest(&unexpected),
