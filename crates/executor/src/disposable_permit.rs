@@ -156,10 +156,7 @@ mod tests {
 
     fn root() -> PathBuf {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "lsm-disposable-permit-{}-{id}",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("lsm-disposable-permit-{}-{id}", std::process::id()))
     }
 
     fn barrier(after_plan_step_id: u32) -> NativeVerificationBarrier {
@@ -285,8 +282,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let image = root.join("owned.img");
         File::create(&image).unwrap();
-        let ownership =
-            capture_disposable_loop_ownership("/dev/loop7", &image, &root).unwrap();
+        let ownership = capture_disposable_loop_ownership("/dev/loop7", &image, &root).unwrap();
         let association = verify_disposable_loop_association_row(
             "/dev/loop7",
             &image,
@@ -296,8 +292,7 @@ mod tests {
         let identity = identity("/dev/loop7");
         let mut command_identity = identity.clone();
         command_identity.manifest_digest = "fresh-id".into();
-        let plan =
-            compile_disposable_lvm_growth_commands(&validated(), &command_identity).unwrap();
+        let plan = compile_disposable_lvm_growth_commands(&validated(), &command_identity).unwrap();
         (root, ownership, association, plan, identity)
     }
 
@@ -305,18 +300,16 @@ mod tests {
     fn binds_one_exact_command_to_owned_loop_and_fresh_identity() {
         let (root, ownership, association, plan, identity) = setup();
 
-        let permit = bind_disposable_execution_permit(
-            &plan,
-            &identity,
-            &ownership,
-            &association,
-            3,
-        )
-        .unwrap();
+        let permit =
+            bind_disposable_execution_permit(&plan, &identity, &ownership, &association, 3)
+                .unwrap();
 
         assert_eq!(permit.loop_device(), "/dev/loop7");
         assert_eq!(permit.command().plan_step_id(), 3);
-        assert_eq!(permit.native_manifest_digest(), plan.native_manifest_digest());
+        assert_eq!(
+            permit.native_manifest_digest(),
+            plan.native_manifest_digest()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -330,10 +323,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
+        assert!(matches!(
             bind_disposable_execution_permit(&plan, &identity, &ownership, &other, 3),
             Err(DisposablePermitError::AssociationOwnershipMismatch)
-        );
+        ));
 
         identity.manifest_digest = "different".into();
         let association = verify_disposable_loop_association_row(
@@ -342,10 +335,10 @@ mod tests {
             &format!("/dev/loop7 {}", ownership.backing_file().display()),
         )
         .unwrap();
-        assert_eq!(
+        assert!(matches!(
             bind_disposable_execution_permit(&plan, &identity, &ownership, &association, 3),
             Err(DisposablePermitError::FreshIdentityBindingMismatch)
-        );
+        ));
 
         fs::remove_dir_all(root).unwrap();
     }
