@@ -354,13 +354,12 @@ pub fn build_execution_start_binding(
     if fresh_identity_digest != journal.baseline_manifest_digest {
         return Err(ExecutionStartBindingError::FreshIdentityMismatch);
     }
-    if mutation_step_ids.is_empty()
-        || mutation_step_ids.contains(&0)
-        || {
-            let mut seen = std::collections::BTreeSet::new();
-            mutation_step_ids.iter().any(|step_id| !seen.insert(*step_id))
-        }
-    {
+    if mutation_step_ids.is_empty() || mutation_step_ids.contains(&0) || {
+        let mut seen = std::collections::BTreeSet::new();
+        mutation_step_ids
+            .iter()
+            .any(|step_id| !seen.insert(*step_id))
+    } {
         return Err(ExecutionStartBindingError::InvalidMutationStepSequence);
     }
 
