@@ -2,6 +2,8 @@ mod approval;
 mod backup_capture;
 mod backup_manifest;
 mod disposable_argv;
+#[cfg(feature = "disposable-executor")]
+mod disposable_exec;
 mod disposable_loop_association;
 mod disposable_ownership;
 mod disposable_permit;
@@ -24,6 +26,11 @@ pub use backup_manifest::{
 pub use disposable_argv::{
     compile_disposable_lvm_growth_commands, DisposableArgvError, DisposableCommandPlan,
     DisposableCommandSpec, DisposableProgram,
+};
+#[cfg(feature = "disposable-executor")]
+pub use disposable_exec::{
+    execute_disposable_command, DisposableCommandOutcome, DisposableExecutionError,
+    DisposableToolPaths,
 };
 pub use disposable_loop_association::{
     verify_disposable_loop_association_row, DisposableLoopAssociation,
