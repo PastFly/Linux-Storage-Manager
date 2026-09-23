@@ -5,9 +5,9 @@ executor. It remains fail-closed and capability/topology driven.
 
 Verified master baseline on 2026-09-23:
 
-`d88839eb30fccd2dc737e6f647c271528125d642`
+`fc2084ca9f241f183a36b219cc2be67b0aacd484`
 
-That master contains M1B0 through M1B14.17. M1B14 remains strictly non-executing and keeps `MUTATION_ENABLED=false`. The current in-flight increment is M1B14.18 native dependency-graph validation.
+That master contains M1B0 through the complete M1B15 non-executable planning/safety package. `MUTATION_ENABLED=false` remains unchanged. M1B16 has started with a reviewed disposable-only executor design; the first code increment is an exact non-shell argv compiler for the narrow `LV -> filesystem` disposable profile.
 
 ## Non-negotiable boundary
 
@@ -79,7 +79,15 @@ M1B13 freezes the exact approved `PlanStep` graph into typed semantic intent plu
 
 ### M1B14 — typed native pre-executor manifest
 
-M1B14.1-M1B14.17 are merged on the verified baseline above. They add a typed native operation allowlist, exact non-executable payloads for every current M1B13 action, native step/barrier compilation, direct frozen-manifest binding, and fail-closed verification-barrier validation. The current M1B14.18 increment adds native dependency-graph validation. No apply command, privileged helper, storage-changing syscall/tool invocation, or `Executing` transition exists.
+Complete. M1B14 adds a typed native operation allowlist, exact non-executable payloads, native step/barrier compilation, direct frozen-manifest binding, dependency-graph validation, role/operation validation, mutation-layer ordering, deterministic SHA-256 identity and immutable validated-manifest binding.
+
+### M1B15 — exact chained LVM preview
+
+Complete at the verified master baseline above. M1B15 adds `ResizePhysicalVolume { pv_uuid, expected_pv_size_bytes }` across planner/frozen/native layers and promotes previously advisory single-PV underlying growth routes into exact non-executable previews. Proven routes now include `PV -> LV -> filesystem` when the PV backing device is already larger, and `partition -> PV -> LV -> filesystem` when adjacent partition capacity is authoritatively verified. `--max` selects the maximum proven route. Loop integration verifies the combined preview contract without performing the resize.
+
+### M1B16 — disposable-only executor
+
+Design is merged in `docs/M1B16_DISPOSABLE_EXECUTOR.md`. The first implementation increment compiles only `ExtendLogicalVolume -> GrowFilesystem` into typed non-shell argv bound to a fresh target identity. Partition/PV execution remains rejected. No production apply command, privileged helper, storage-changing production API, or `Executing` transition exists.
 
 ## ExactApprovalBinding
 
