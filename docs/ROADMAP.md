@@ -105,6 +105,10 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Durably verify exact current-session pre-mutation evidence and advance only `IdentityRevalidated -> PreconditionsVerified` while mutation remains disabled.
 - [x] Bind explicit operator approval to the exact plan/evidence/current target and exact `PreconditionsVerified` journal state, and durably advance only `PreconditionsVerified -> Approved` while mutation remains disabled.
 - [x] Freeze the exact approved semantic `PlanStep` graph into a deterministic non-executable execution-intent manifest with per-mutation verification barriers, while leaving the durable journal at `Approved` and mutation disabled.
+- [x] Compile the frozen execution intent into a typed non-executable native manifest with exact operation payloads, preserved step order/dependencies and preserved verification barriers.
+- [x] Fail closed when a native mutation step is missing its verification barrier, has duplicate barriers, references a non-mutation step, or weakens any required barrier flag.
+- [ ] Complete native dependency-graph validation and role/operation consistency checks before defining any executor boundary.
+- [ ] Add deterministic native-manifest identity/binding so a future executor can only consume the exact validated manifest.
 - [x] Add partition-table metadata backup plus a recovery drill.
 - [x] Add LVM metadata backup plus a recovery drill.
 - [ ] Grow GPT/MBR partitions where safe without moving a partition start.

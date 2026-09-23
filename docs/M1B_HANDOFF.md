@@ -3,11 +3,11 @@
 M1B is the safety foundation between read-only planning and any future mutation-capable
 executor. It remains fail-closed and capability/topology driven.
 
-Verified master baseline on 2026-09-21:
+Verified master baseline on 2026-09-23:
 
-`e4c34bf952b942a37b4ea7c79effd2f18162fc03`
+`d88839eb30fccd2dc737e6f647c271528125d642`
 
-That master contains M1B0 through M1B12 and passed post-merge CI #512 and Portable Linux #391. Portable Linux #391 x86_64 succeeded on attempt #2 after attempt #1 hit an external Docker Hub connection reset while pulling `almalinux:9`.
+That master contains M1B0 through M1B14.17. M1B14 remains strictly non-executing and keeps `MUTATION_ENABLED=false`. The current in-flight increment is M1B14.18 native dependency-graph validation.
 
 ## Non-negotiable boundary
 
@@ -73,10 +73,13 @@ The exact schema-v1 approval binding remains part of the durable journal. It doe
 
 ### M1B13 — frozen execution intent
 
-Current branch: `feature/m1b13-frozen-execution-intent`.
-Current PR: **#27**.
+Merged as PR #27.
 
 M1B13 freezes the exact approved `PlanStep` graph into typed semantic intent plus mandatory read-only verification barriers. It adds no journal transition and keeps `MUTATION_ENABLED=false`.
+
+### M1B14 — typed native pre-executor manifest
+
+M1B14.1-M1B14.17 are merged on the verified baseline above. They add a typed native operation allowlist, exact non-executable payloads for every current M1B13 action, native step/barrier compilation, direct frozen-manifest binding, and fail-closed verification-barrier validation. The current M1B14.18 increment adds native dependency-graph validation. No apply command, privileged helper, storage-changing syscall/tool invocation, or `Executing` transition exists.
 
 ## ExactApprovalBinding
 
