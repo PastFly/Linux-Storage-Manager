@@ -2201,6 +2201,7 @@ fn operation_summary(operation: &Operation) -> String {
         Operation::ExtendPartition { partition, .. } => {
             format!("Extend partition {partition}")
         }
+        Operation::ResizePhysicalVolume { .. } => "Resize LVM physical volume".to_owned(),
         Operation::ExtendLogicalVolume {
             additional_extents, ..
         } => format!("Extend logical volume by {additional_extents} extents"),
