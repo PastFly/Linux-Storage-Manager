@@ -198,7 +198,10 @@ mod tests {
         let binding = build_binding(&approved_journal(&plan), &plan).unwrap();
 
         assert_eq!(binding.source_manifest_id, plan.source_manifest_id());
-        assert_eq!(binding.native_manifest_digest, plan.native_manifest_digest());
+        assert_eq!(
+            binding.native_manifest_digest,
+            plan.native_manifest_digest()
+        );
         assert_eq!(binding.fresh_identity_digest, plan.fresh_identity_digest());
         assert_eq!(binding.mutation_step_ids, vec![3, 4]);
         assert!(binding.integrity_matches().unwrap());
