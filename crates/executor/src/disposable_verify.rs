@@ -243,8 +243,7 @@ fn verify_terminal_filesystem_state(
         || before_filesystem.fs_version != fresh_filesystem.fs_version
         || before_filesystem.uuid.is_none()
         || before_filesystem.uuid != fresh_filesystem.uuid
-        || before_filesystem.backing_device_size_bytes
-            != fresh_filesystem.backing_device_size_bytes
+        || before_filesystem.backing_device_size_bytes != fresh_filesystem.backing_device_size_bytes
         || before_mounts != 1
         || fresh_mounts != 1
     {
