@@ -456,9 +456,7 @@ fn validate_execution_binding(journal: &OperationJournal) -> Result<(), JournalS
     }
 }
 
-fn validate_verified_boundary_binding(
-    journal: &OperationJournal,
-) -> Result<(), JournalStoreError> {
+fn validate_verified_boundary_binding(journal: &OperationJournal) -> Result<(), JournalStoreError> {
     let has_continuation = journal
         .events
         .iter()
@@ -481,7 +479,10 @@ fn validate_verified_boundary_binding(
             }
             for (value, label) in [
                 (binding.boundary_id.as_str(), "verified boundary ID"),
-                (binding.execution_id.as_str(), "verified boundary execution ID"),
+                (
+                    binding.execution_id.as_str(),
+                    "verified boundary execution ID",
+                ),
                 (
                     binding.fresh_identity_digest.as_str(),
                     "verified boundary fresh identity digest",
@@ -512,7 +513,8 @@ fn validate_verified_boundary_binding(
             });
             if !ordered_pair {
                 return Err(JournalStoreError::InvalidRecord(
-                    "verified boundary steps do not match the durable execution sequence".to_owned(),
+                    "verified boundary steps do not match the durable execution sequence"
+                        .to_owned(),
                 ));
             }
             if !binding.integrity_matches()? {
