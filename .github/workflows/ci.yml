@@ -53,6 +53,9 @@ jobs:
       - name: Test
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked --workspace
+      - name: Test disposable executor feature boundary
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo test --locked -p lsm-executor --features disposable-executor --lib
       # Preserve generated formatting and dependency evidence for review.
       # This runs AFTER checks and cannot turn failed checks into success.
       - name: Collect source and formatting diagnostics
