@@ -23,7 +23,7 @@ pub use execution_guard::{
     ExecutionGuardError, ExecutionGuardPlan, ExecutionStartBinding, ExecutionStartBindingError,
     GuardGate, GuardGateKind, GuardPlanStatus, JournalError, JournalEvent, JournalPhase,
     JournalTransition, LockScope, OperationJournal, OperationLockPlan, ResumeDisposition,
-    HOST_STORAGE_LOCK_PATH, JOURNAL_DIRECTORY,
+    VerifiedMutationBoundaryBinding, HOST_STORAGE_LOCK_PATH, JOURNAL_DIRECTORY,
 };
 
 pub use execution_handoff::{
