@@ -476,7 +476,6 @@ mod tests {
         assert_eq!(plan.commands()[1].args(), ["-d", "/srv/data"]);
     }
 
-
     #[test]
     fn verified_post_lv_identity_compiles_only_filesystem_command() {
         let validated = validated_manifest("ext4", "/");
@@ -487,17 +486,13 @@ mod tests {
         filesystem.backing_device_size_bytes = 9 * 1024 * 1024 * 1024;
         filesystem.observed_filesystem_size_bytes = Some(8 * 1024 * 1024 * 1024);
 
-        let plan =
-            compile_verified_disposable_next_command(&validated, &fresh, 4).unwrap();
+        let plan = compile_verified_disposable_next_command(&validated, &fresh, 4).unwrap();
 
         assert_eq!(plan.fresh_identity_digest(), "post-lv-identity");
         assert_eq!(plan.commands().len(), 1);
         assert_eq!(plan.commands()[0].plan_step_id(), 4);
         assert_eq!(plan.commands()[0].program(), DisposableProgram::Resize2fs);
-        assert_eq!(
-            plan.commands()[0].args(),
-            ["/dev/mapper/vg0-root"]
-        );
+        assert_eq!(plan.commands()[0].args(), ["/dev/mapper/vg0-root"]);
     }
 
     #[test]
