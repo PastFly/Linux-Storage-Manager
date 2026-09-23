@@ -287,6 +287,32 @@ impl ExecutionStartBinding {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifiedMutationBoundaryBinding {
+    pub schema_version: u32,
+    pub boundary_id: String,
+    pub execution_id: String,
+    pub completed_step_id: u32,
+    pub next_step_id: u32,
+    pub fresh_identity_digest: String,
+}
+
+impl VerifiedMutationBoundaryBinding {
+    pub fn expected_boundary_id(&self) -> Result<String, serde_json::Error> {
+        fingerprint(&(
+            self.schema_version,
+            &self.execution_id,
+            self.completed_step_id,
+            self.next_step_id,
+            &self.fresh_identity_digest,
+        ))
+    }
+
+    pub fn integrity_matches(&self) -> Result<bool, serde_json::Error> {
+        Ok(self.boundary_id == self.expected_boundary_id()?)
+    }
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ExecutionStartBindingError {
     #[error("execution start binding requires an approved journal")]
@@ -318,6 +344,8 @@ pub struct OperationJournal {
     pub mutation_may_have_started: bool,
     pub approval: Option<ExactApprovalBinding>,
     pub execution: Option<ExecutionStartBinding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_boundary: Option<VerifiedMutationBoundaryBinding>,
     pub events: Vec<JournalEvent>,
 }
 
@@ -338,7 +366,10 @@ pub fn build_execution_start_binding(
     if journal.phase != JournalPhase::Approved {
         return Err(ExecutionStartBindingError::JournalNotApproved);
     }
-    if journal.mutation_may_have_started || journal.execution.is_some() {
+    if journal.mutation_may_have_started
+        || journal.execution.is_some()
+        || journal.verified_boundary.is_some()
+    {
         return Err(ExecutionStartBindingError::MutationAlreadyStarted);
     }
     let approval = journal
@@ -401,6 +432,7 @@ pub enum JournalTransition<'a> {
     VerificationPassedContinue {
         completed_step_id: u32,
         next_step_id: u32,
+        fresh_identity_digest: &'a str,
     },
     Completed,
     Interrupted {
@@ -452,6 +484,12 @@ pub enum JournalError {
     VerificationExecutionBindingMissing,
     #[error("verified mutation boundary does not match the ordered execution step sequence")]
     VerificationSequenceMismatch,
+    #[error("verified mutation boundary identity digest is not a SHA-256 digest")]
+    VerificationIdentityDigestInvalid,
+    #[error("could not bind verified mutation boundary: {0}")]
+    VerificationBoundarySerialization(String),
+    #[error("completion requires the durable verified boundary for the final mutation step")]
+    CompletionVerifiedBoundaryMismatch,
     #[error("journal is terminal and cannot advance")]
     Terminal,
 }
@@ -468,6 +506,7 @@ impl OperationJournal {
             mutation_may_have_started: false,
             approval: None,
             execution: None,
+            verified_boundary: None,
             events: Vec::new(),
         }
     }
@@ -598,6 +637,7 @@ impl OperationJournal {
             JournalTransition::VerificationPassedContinue {
                 completed_step_id,
                 next_step_id,
+                fresh_identity_digest,
             } => {
                 if self.phase != JournalPhase::Verifying {
                     return Err(self.invalid("verification_passed_continue"));
@@ -617,9 +657,27 @@ impl OperationJournal {
                 {
                     return Err(JournalError::VerificationSequenceMismatch);
                 }
+                if !is_sha256_hex(fresh_identity_digest) {
+                    return Err(JournalError::VerificationIdentityDigestInvalid);
+                }
+
+                let mut verified_boundary = VerifiedMutationBoundaryBinding {
+                    schema_version: 1,
+                    boundary_id: String::new(),
+                    execution_id: execution.execution_id.clone(),
+                    completed_step_id,
+                    next_step_id,
+                    fresh_identity_digest: fresh_identity_digest.to_owned(),
+                };
+                verified_boundary.boundary_id = verified_boundary
+                    .expected_boundary_id()
+                    .map_err(|error| {
+                        JournalError::VerificationBoundarySerialization(error.to_string())
+                    })?;
 
                 let from = self.phase;
                 self.phase = JournalPhase::Executing;
+                self.verified_boundary = Some(verified_boundary);
                 self.push_event(
                     from,
                     JournalPhase::Executing,
@@ -630,12 +688,32 @@ impl OperationJournal {
                 );
                 Ok(())
             }
-            JournalTransition::Completed => self.advance(
-                JournalPhase::Verifying,
-                JournalPhase::Completed,
-                "completed",
-                "final topology and expected invariants verified",
-            ),
+            JournalTransition::Completed => {
+                if self.phase != JournalPhase::Verifying {
+                    return Err(self.invalid("completed"));
+                }
+                let execution = self
+                    .execution
+                    .as_ref()
+                    .ok_or(JournalError::VerificationExecutionBindingMissing)?;
+                if execution.mutation_step_ids.len() > 1 {
+                    let final_step_id = execution.mutation_step_ids.last().copied();
+                    let boundary_matches = self.verified_boundary.as_ref().is_some_and(|boundary| {
+                        boundary.execution_id == execution.execution_id
+                            && Some(boundary.next_step_id) == final_step_id
+                            && boundary.integrity_matches().unwrap_or(false)
+                    });
+                    if !boundary_matches {
+                        return Err(JournalError::CompletionVerifiedBoundaryMismatch);
+                    }
+                }
+                self.advance(
+                    JournalPhase::Verifying,
+                    JournalPhase::Completed,
+                    "completed",
+                    "final topology and expected invariants verified",
+                )
+            }
             JournalTransition::Interrupted { reason } => {
                 let from = self.phase;
                 if self.mutation_may_have_started
