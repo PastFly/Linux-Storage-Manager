@@ -260,15 +260,19 @@ pub fn validate_native_manifest(
             .iter()
             .find(|step| step.plan_step_id == barrier.after_plan_step_id)
         else {
-            return Err(NativeManifestValidationError::UnexpectedVerificationBarrier(
-                barrier.after_plan_step_id,
-            ));
+            return Err(
+                NativeManifestValidationError::UnexpectedVerificationBarrier(
+                    barrier.after_plan_step_id,
+                ),
+            );
         };
 
         if !is_mutation_operation(&step.operation) {
-            return Err(NativeManifestValidationError::UnexpectedVerificationBarrier(
-                barrier.after_plan_step_id,
-            ));
+            return Err(
+                NativeManifestValidationError::UnexpectedVerificationBarrier(
+                    barrier.after_plan_step_id,
+                ),
+            );
         }
 
         if !(barrier.before_next_mutation
@@ -348,7 +352,9 @@ mod tests {
         missing.verification_barriers.clear();
         assert_eq!(
             validate_native_manifest(&missing),
-            Err(NativeManifestValidationError::MissingVerificationBarrier(31))
+            Err(NativeManifestValidationError::MissingVerificationBarrier(
+                31
+            ))
         );
 
         let mut duplicate = valid.clone();
@@ -357,7 +363,9 @@ mod tests {
             .push(duplicate.verification_barriers[0].clone());
         assert_eq!(
             validate_native_manifest(&duplicate),
-            Err(NativeManifestValidationError::DuplicateVerificationBarrier(31))
+            Err(NativeManifestValidationError::DuplicateVerificationBarrier(
+                31
+            ))
         );
 
         let mut unexpected = valid.clone();
