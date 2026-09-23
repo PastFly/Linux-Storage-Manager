@@ -48,8 +48,8 @@ pub use disposable_permit::{
 };
 pub use disposable_start::{persist_disposable_execution_start, DisposableExecutionStartError};
 pub use disposable_verify::{
-    verify_and_continue_disposable_boundary, DisposableBoundaryVerificationError,
-    DisposableVerifiedBoundary,
+    verify_and_complete_disposable_execution, verify_and_continue_disposable_boundary,
+    DisposableBoundaryVerificationError, DisposableVerifiedBoundary, DisposableVerifiedCompletion,
 };
 pub use execution_intent::{
     freeze_execution_intent, ExecutionIntentError, ExecutionIntentManifestStatus,
