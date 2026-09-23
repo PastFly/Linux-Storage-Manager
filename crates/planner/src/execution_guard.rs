@@ -253,6 +253,56 @@ impl ExactApprovalBinding {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionStartBinding {
+    pub schema_version: u32,
+    pub execution_id: String,
+    pub journal_id: String,
+    pub plan_id: String,
+    pub approval_id: String,
+    pub source_manifest_id: String,
+    pub native_manifest_digest: String,
+    pub fresh_identity_digest: String,
+    pub approved_journal_digest: String,
+}
+
+impl ExecutionStartBinding {
+    pub fn expected_execution_id(&self) -> Result<String, serde_json::Error> {
+        fingerprint(&(
+            self.schema_version,
+            &self.journal_id,
+            &self.plan_id,
+            &self.approval_id,
+            &self.source_manifest_id,
+            &self.native_manifest_digest,
+            &self.fresh_identity_digest,
+            &self.approved_journal_digest,
+        ))
+    }
+
+    pub fn integrity_matches(&self) -> Result<bool, serde_json::Error> {
+        Ok(self.execution_id == self.expected_execution_id()?)
+    }
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum ExecutionStartBindingError {
+    #[error("execution start binding requires an approved journal")]
+    JournalNotApproved,
+    #[error("execution start binding cannot be built after mutation may have started")]
+    MutationAlreadyStarted,
+    #[error("approved journal is missing its exact approval binding")]
+    ApprovalMissing,
+    #[error("source execution-intent manifest ID is not a SHA-256 digest")]
+    InvalidSourceManifestId,
+    #[error("native manifest digest is not a SHA-256 digest")]
+    InvalidNativeManifestDigest,
+    #[error("fresh identity digest does not match the approved journal baseline")]
+    FreshIdentityMismatch,
+    #[error("could not serialize execution start binding: {0}")]
+    Serialization(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OperationJournal {
     pub schema_version: u32,
@@ -263,7 +313,60 @@ pub struct OperationJournal {
     pub phase: JournalPhase,
     pub mutation_may_have_started: bool,
     pub approval: Option<ExactApprovalBinding>,
+    pub execution: Option<ExecutionStartBinding>,
     pub events: Vec<JournalEvent>,
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+pub fn build_execution_start_binding(
+    journal: &OperationJournal,
+    source_manifest_id: &str,
+    native_manifest_digest: &str,
+    fresh_identity_digest: &str,
+) -> Result<ExecutionStartBinding, ExecutionStartBindingError> {
+    if journal.phase != JournalPhase::Approved {
+        return Err(ExecutionStartBindingError::JournalNotApproved);
+    }
+    if journal.mutation_may_have_started || journal.execution.is_some() {
+        return Err(ExecutionStartBindingError::MutationAlreadyStarted);
+    }
+    let approval = journal
+        .approval
+        .as_ref()
+        .ok_or(ExecutionStartBindingError::ApprovalMissing)?;
+    if !is_sha256_hex(source_manifest_id) {
+        return Err(ExecutionStartBindingError::InvalidSourceManifestId);
+    }
+    if !is_sha256_hex(native_manifest_digest) {
+        return Err(ExecutionStartBindingError::InvalidNativeManifestDigest);
+    }
+    if fresh_identity_digest != journal.baseline_manifest_digest {
+        return Err(ExecutionStartBindingError::FreshIdentityMismatch);
+    }
+
+    let approved_journal_digest = fingerprint(journal)
+        .map_err(|error| ExecutionStartBindingError::Serialization(error.to_string()))?;
+    let mut binding = ExecutionStartBinding {
+        schema_version: 1,
+        execution_id: String::new(),
+        journal_id: journal.journal_id.clone(),
+        plan_id: journal.plan_id.clone(),
+        approval_id: approval.approval_id.clone(),
+        source_manifest_id: source_manifest_id.to_owned(),
+        native_manifest_digest: native_manifest_digest.to_owned(),
+        fresh_identity_digest: fresh_identity_digest.to_owned(),
+        approved_journal_digest,
+    };
+    binding.execution_id = binding
+        .expected_execution_id()
+        .map_err(|error| ExecutionStartBindingError::Serialization(error.to_string()))?;
+    Ok(binding)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,7 +380,9 @@ pub enum JournalTransition<'a> {
         approved_plan_id: &'a str,
         approval: &'a ExactApprovalBinding,
     },
-    ExecutionStarted,
+    ExecutionStarted {
+        binding: &'a ExecutionStartBinding,
+    },
     VerificationStarted,
     Completed,
     Interrupted {
@@ -309,6 +414,22 @@ pub enum JournalError {
     ApprovalBindingIntegrityMismatch,
     #[error("approval binding does not match the exact preconditions journal state")]
     ApprovalBindingJournalMismatch,
+    #[error("execution binding schema is not supported")]
+    ExecutionBindingSchemaMismatch,
+    #[error("execution binding does not match the journal ID")]
+    ExecutionBindingJournalIdMismatch,
+    #[error("execution binding does not match the journal plan ID")]
+    ExecutionBindingPlanMismatch,
+    #[error("execution binding does not match the exact approval")]
+    ExecutionBindingApprovalMismatch,
+    #[error("execution binding fresh identity does not match the journal baseline")]
+    ExecutionBindingIdentityMismatch,
+    #[error("execution binding fingerprint does not match its contents")]
+    ExecutionBindingIntegrityMismatch,
+    #[error("execution binding does not match the exact approved journal state")]
+    ExecutionBindingApprovedJournalMismatch,
+    #[error("execution start requires an exact approval binding")]
+    ExecutionBindingApprovalMissing,
     #[error("journal is terminal and cannot advance")]
     Terminal,
 }
@@ -324,6 +445,7 @@ impl OperationJournal {
             phase: JournalPhase::Planned,
             mutation_may_have_started: false,
             approval: None,
+            execution: None,
             events: Vec::new(),
         }
     }
@@ -401,19 +523,49 @@ impl OperationJournal {
                 self.approval = Some(approval.clone());
                 Ok(())
             }
-            JournalTransition::ExecutionStarted => {
+            JournalTransition::ExecutionStarted { binding } => {
                 if self.phase != JournalPhase::Approved {
                     return Err(self.invalid("execution_started"));
                 }
-                // From this point a crash can occur after a mutating syscall/tool starts but before
-                // the next journal write. Therefore interruption must require reconciliation.
-                self.mutation_may_have_started = true;
+                let approval = self
+                    .approval
+                    .as_ref()
+                    .ok_or(JournalError::ExecutionBindingApprovalMissing)?;
+                if binding.schema_version != 1 {
+                    return Err(JournalError::ExecutionBindingSchemaMismatch);
+                }
+                if binding.journal_id != self.journal_id {
+                    return Err(JournalError::ExecutionBindingJournalIdMismatch);
+                }
+                if binding.plan_id != self.plan_id {
+                    return Err(JournalError::ExecutionBindingPlanMismatch);
+                }
+                if binding.approval_id != approval.approval_id {
+                    return Err(JournalError::ExecutionBindingApprovalMismatch);
+                }
+                if binding.fresh_identity_digest != self.baseline_manifest_digest {
+                    return Err(JournalError::ExecutionBindingIdentityMismatch);
+                }
+                if !binding.integrity_matches().unwrap_or(false) {
+                    return Err(JournalError::ExecutionBindingIntegrityMismatch);
+                }
+                if fingerprint(self).ok().as_deref()
+                    != Some(binding.approved_journal_digest.as_str())
+                {
+                    return Err(JournalError::ExecutionBindingApprovedJournalMismatch);
+                }
+
                 self.advance(
                     JournalPhase::Approved,
                     JournalPhase::Executing,
                     "execution-started",
-                    "mutating execution boundary entered; blind replay is no longer allowed",
-                )
+                    "exact native manifest entered mutating execution; blind replay is no longer allowed",
+                )?;
+                // From this point a crash can occur after a mutating syscall/tool starts but before
+                // the next journal write. Therefore interruption must require reconciliation.
+                self.mutation_may_have_started = true;
+                self.execution = Some(binding.clone());
+                Ok(())
             }
             JournalTransition::VerificationStarted => self.advance(
                 JournalPhase::Executing,
