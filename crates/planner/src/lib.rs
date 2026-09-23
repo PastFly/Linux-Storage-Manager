@@ -1863,6 +1863,25 @@ fn apply_partition_outcome(
     }
 }
 
+fn apply_lvm_underlying_preview(
+    plan: &mut PlanPreview,
+    candidate: (
+        GrowthRouteAlternative,
+        SizeChange,
+        Option<PartitionSizeChange>,
+        Vec<PlanStep>,
+    ),
+) {
+    let (route, size, partition_size, steps) = candidate;
+    let grows_partition = partition_size.is_some();
+    plan.status = PlanStatus::Preview;
+    plan.size_change = Some(size);
+    plan.partition_size_change = partition_size;
+    plan.preflight_checks = lvm_underlying_preflight_checks(grows_partition);
+    plan.steps = steps;
+    plan.growth_route_alternatives.push(route);
+}
+
 fn apply_lvm_outcome(
     plan: &mut PlanPreview,
     snapshot: &HostSnapshot,
@@ -1877,6 +1896,12 @@ fn apply_lvm_outcome(
         }
         Err(blocker) => {
             if matches!(blocker.code.as_str(), "insufficient-capacity" | "no-growth") {
+                if let Some(candidate) =
+                    build_lvm_underlying_growth_candidate(snapshot, &plan.request)
+                {
+                    apply_lvm_underlying_preview(plan, candidate);
+                    return;
+                }
                 if let Some(route) = analyze_lvm_underlying_growth(snapshot, &plan.request) {
                     plan.growth_route_alternatives.push(route);
                 }
@@ -2209,8 +2234,19 @@ pub fn plan_extend(
             }
         }
         ExtendPlannerProfile::Lvm => {
-            let lvm = build_candidate(snapshot, capabilities, &plan.request);
-            apply_lvm_outcome(&mut plan, snapshot, lvm);
+            if matches!(plan.request.growth, Growth::MaxFree) {
+                if let Some(candidate) =
+                    build_lvm_underlying_growth_candidate(snapshot, &plan.request)
+                {
+                    apply_lvm_underlying_preview(&mut plan, candidate);
+                } else {
+                    let lvm = build_candidate(snapshot, capabilities, &plan.request);
+                    apply_lvm_outcome(&mut plan, snapshot, lvm);
+                }
+            } else {
+                let lvm = build_candidate(snapshot, capabilities, &plan.request);
+                apply_lvm_outcome(&mut plan, snapshot, lvm);
+            }
         }
         ExtendPlannerProfile::WholeBlockFilesystem => {
             let filesystem =
@@ -2363,6 +2399,43 @@ fn lvm_preflight_checks() -> Vec<PreflightCheck> {
             "requested growth fits verified free VG extents",
         ),
     ]);
+    checks.extend(future_execution_gates());
+    checks
+}
+
+fn lvm_underlying_preflight_checks(grows_partition: bool) -> Vec<PreflightCheck> {
+    let mut checks = common_verified_preflight();
+    checks.extend([
+        preflight_check(
+            "lvm-identity-consistent",
+            PreflightState::Verified,
+            "PV, VG, LV and filesystem identities are internally consistent",
+        ),
+        preflight_check(
+            "lvm-layout-supported",
+            PreflightState::Verified,
+            "LV and VG layout is within the supported linear single-PV preview profile",
+        ),
+        preflight_check(
+            "underlying-capacity-verified",
+            PreflightState::Verified,
+            "requested growth fits verified PV backing-device capacity and extent geometry",
+        ),
+    ]);
+    if grows_partition {
+        checks.extend([
+            preflight_check(
+                "partition-geometry-consistent",
+                PreflightState::Verified,
+                "partition-table sector/start/size evidence is consistent",
+            ),
+            preflight_check(
+                "adjacent-capacity-verified",
+                PreflightState::Verified,
+                "required partition growth fits verified adjacent free sectors",
+            ),
+        ]);
+    }
     checks.extend(future_execution_gates());
     checks
 }
@@ -3393,6 +3466,203 @@ pub fn analyze_lvm_underlying_growth(
         required_partition_growth_bytes,
         steps,
     })
+}
+
+fn build_lvm_underlying_growth_candidate(
+    snapshot: &HostSnapshot,
+    request: &ExtendRequest,
+) -> Option<(
+    GrowthRouteAlternative,
+    SizeChange,
+    Option<PartitionSizeChange>,
+    Vec<PlanStep>,
+)> {
+    let route = analyze_lvm_underlying_growth(snapshot, request)?;
+    let lvm = snapshot.lvm.as_ref()?;
+    let pv = unique(
+        lvm.physical_volumes
+            .iter()
+            .filter(|pv| pv.name == route.physical_volume),
+        "ambiguous-pv",
+    )
+    .ok()?;
+    let vg = unique(
+        lvm.volume_groups
+            .iter()
+            .filter(|vg| vg.name == route.volume_group),
+        "ambiguous-vg",
+    )
+    .ok()?;
+    let lv = unique(
+        lvm.logical_volumes
+            .iter()
+            .filter(|lv| lv_alias(lv, &route.logical_volume)),
+        "ambiguous-lv",
+    )
+    .ok()?;
+
+    let extent = route.extent_size_bytes;
+    if extent == 0 || route.existing_vg_free_bytes % extent != 0 {
+        return None;
+    }
+    let existing_free_extents = route.existing_vg_free_bytes / extent;
+    let requested_extents = route.requested_growth_bytes / extent
+        + u64::from(route.requested_growth_bytes % extent != 0);
+    let additional_pv_extents = requested_extents.checked_sub(existing_free_extents)?;
+    if additional_pv_extents == 0 {
+        return None;
+    }
+    let pv_growth_bytes = additional_pv_extents.checked_mul(extent)?;
+    let expected_pv_size_bytes = pv.size_bytes.checked_add(pv_growth_bytes)?;
+    let rounded_growth_bytes = requested_extents.checked_mul(extent)?;
+    let expected_lv_size_bytes = lv.size_bytes.checked_add(rounded_growth_bytes)?;
+
+    let adapter = resolve_extend_route_adapter(snapshot, &request.target);
+    let resolved_device = adapter.resolved_device.as_deref()?;
+    let nodes = flatten(&snapshot.storage.block_devices);
+    let lv_device = unique(
+        nodes
+            .iter()
+            .copied()
+            .filter(|device| node_alias(device, resolved_device)),
+        "ambiguous-device",
+    )
+    .ok()?;
+    let fs = lv_device.filesystem.as_ref()?;
+    let mountpoint = adapter.mountpoint?;
+
+    let size = SizeChange {
+        device: route.logical_volume.clone(),
+        current_lv_size_bytes: lv.size_bytes,
+        requested_growth_bytes: route.requested_growth_bytes,
+        rounded_growth_bytes,
+        expected_lv_size_bytes,
+        extent_size_bytes: extent,
+        remaining_vg_free_bytes: 0,
+    };
+
+    let mut next_id = 1_u32;
+    let mut steps = vec![step(
+        next_id,
+        Operation::RevalidateSnapshot,
+        Reversibility::NotApplicable,
+    )];
+    next_id += 1;
+    steps.push(step(
+        next_id,
+        Operation::BackupLvmMetadata {
+            vg_uuid: vg.uuid.clone()?,
+        },
+        Reversibility::Reversible,
+    ));
+    next_id += 1;
+
+    let partition_size_change = if route.required_partition_growth_bytes > 0 {
+        let partition = route.partition.as_deref()?;
+        let table = unique(
+            snapshot
+                .partition_tables
+                .iter()
+                .filter(|table| table.device == route.disk),
+            "partition-table-not-unique",
+        )
+        .ok()?;
+        let label = table.label.clone()?;
+        let sector = table.sector_size_bytes?;
+        if sector != route.sector_size_bytes || route.required_partition_growth_bytes % sector != 0
+        {
+            return None;
+        }
+        let record = unique(
+            table
+                .partitions
+                .iter()
+                .filter(|record| record.node == partition),
+            "partition-record-not-unique",
+        )
+        .ok()?;
+        ensure_partition_role_is_growable(table, record).ok()?;
+
+        let growth_sectors = route.required_partition_growth_bytes / sector;
+        let new_size_sectors = record.size_sectors.checked_add(growth_sectors)?;
+        let current_partition_size_bytes = record.size_sectors.checked_mul(sector)?;
+        let expected_partition_size_bytes = new_size_sectors.checked_mul(sector)?;
+        let remaining_adjacent_free_bytes = route
+            .adjacent_partition_free_bytes
+            .checked_sub(route.required_partition_growth_bytes)?;
+
+        steps.push(step(
+            next_id,
+            Operation::BackupPartitionTableMetadata {
+                disk: route.disk.clone(),
+                table_label: label,
+                table_id: table.id.clone(),
+            },
+            Reversibility::Reversible,
+        ));
+        next_id += 1;
+        steps.push(step(
+            next_id,
+            Operation::ExtendPartition {
+                partition: partition.to_owned(),
+                start_sector: record.start_sector,
+                old_size_sectors: record.size_sectors,
+                new_size_sectors,
+                sector_size_bytes: sector,
+            },
+            Reversibility::Irreversible,
+        ));
+        next_id += 1;
+
+        Some(PartitionSizeChange {
+            device: partition.to_owned(),
+            disk: route.disk.clone(),
+            current_partition_size_bytes,
+            requested_growth_bytes: route.required_partition_growth_bytes,
+            rounded_growth_bytes: route.required_partition_growth_bytes,
+            expected_partition_size_bytes,
+            sector_size_bytes: sector,
+            remaining_adjacent_free_bytes,
+        })
+    } else {
+        None
+    };
+
+    steps.push(step(
+        next_id,
+        Operation::ResizePhysicalVolume {
+            pv_uuid: pv.uuid.clone()?,
+            expected_pv_size_bytes,
+        },
+        Reversibility::Irreversible,
+    ));
+    next_id += 1;
+    steps.push(step(
+        next_id,
+        Operation::ExtendLogicalVolume {
+            lv_uuid: lv.uuid.clone()?,
+            additional_extents: requested_extents,
+            expected_lv_size_bytes,
+        },
+        Reversibility::Irreversible,
+    ));
+    next_id += 1;
+    steps.push(step(
+        next_id,
+        Operation::GrowFilesystem {
+            fs_type: fs.fs_type.clone(),
+            mountpoint,
+        },
+        Reversibility::Irreversible,
+    ));
+    next_id += 1;
+    steps.push(step(
+        next_id,
+        Operation::RediscoverAndVerify,
+        Reversibility::NotApplicable,
+    ));
+
+    Some((route, size, partition_size_change, steps))
 }
 
 fn adjacent_free_sectors(
