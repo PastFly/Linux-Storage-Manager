@@ -135,11 +135,7 @@ pub fn bind_disposable_execution_permit(
 
     verify_target_owned_by_loop(fresh_identity, ownership.loop_device())?;
 
-    if execution.schema_version != 1
-        || !execution
-            .integrity_matches()
-            .unwrap_or(false)
-    {
+    if execution.schema_version != 1 || !execution.integrity_matches().unwrap_or(false) {
         return Err(DisposablePermitError::ExecutionBindingIntegrityMismatch);
     }
     if execution.source_manifest_id != plan.source_manifest_id()
@@ -149,7 +145,9 @@ pub fn bind_disposable_execution_permit(
         return Err(DisposablePermitError::ExecutionBindingMismatch);
     }
     if !execution.mutation_step_ids.contains(&plan_step_id) {
-        return Err(DisposablePermitError::ExecutionStepNotAuthorized(plan_step_id));
+        return Err(DisposablePermitError::ExecutionStepNotAuthorized(
+            plan_step_id,
+        ));
     }
 
     let commands = plan
