@@ -43,7 +43,8 @@ pub use disposable_ownership::{
     DisposableLoopOwnershipProof, DisposableOwnershipError,
 };
 pub use disposable_permit::{
-    bind_disposable_execution_permit, DisposableExecutionPermit, DisposablePermitError,
+    bind_disposable_execution_permit, bind_verified_disposable_execution_permit,
+    DisposableExecutionPermit, DisposablePermitError,
 };
 pub use disposable_start::{persist_disposable_execution_start, DisposableExecutionStartError};
 pub use disposable_verify::{
