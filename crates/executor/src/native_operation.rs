@@ -21,6 +21,7 @@ pub enum NativeOperationKind {
     BackupLvmMetadata,
     BackupPartitionTableMetadata,
     ExtendPartition,
+    ResizePhysicalVolume,
     ExtendLogicalVolume,
     GrowFilesystem,
     RediscoverAndVerify,
@@ -31,6 +32,7 @@ pub const NATIVE_OPERATION_ALLOWLIST: &[NativeOperationKind] = &[
     NativeOperationKind::BackupLvmMetadata,
     NativeOperationKind::BackupPartitionTableMetadata,
     NativeOperationKind::ExtendPartition,
+    NativeOperationKind::ResizePhysicalVolume,
     NativeOperationKind::ExtendLogicalVolume,
     NativeOperationKind::GrowFilesystem,
     NativeOperationKind::RediscoverAndVerify,
@@ -40,7 +42,10 @@ impl NativeOperationKind {
     pub const fn is_mutation_candidate(self) -> bool {
         matches!(
             self,
-            Self::ExtendPartition | Self::ExtendLogicalVolume | Self::GrowFilesystem
+            Self::ExtendPartition
+                | Self::ResizePhysicalVolume
+                | Self::ExtendLogicalVolume
+                | Self::GrowFilesystem
         )
     }
 }
@@ -57,6 +62,7 @@ pub fn classify_frozen_intent_action(action: &FrozenIntentAction) -> NativeOpera
             NativeOperationKind::BackupPartitionTableMetadata
         }
         FrozenIntentAction::ExtendPartition { .. } => NativeOperationKind::ExtendPartition,
+        FrozenIntentAction::ResizePhysicalVolume { .. } => NativeOperationKind::ResizePhysicalVolume,
         FrozenIntentAction::ExtendLogicalVolume { .. } => NativeOperationKind::ExtendLogicalVolume,
         FrozenIntentAction::GrowFilesystem { .. } => NativeOperationKind::GrowFilesystem,
         FrozenIntentAction::RediscoverAndVerify => NativeOperationKind::RediscoverAndVerify,
@@ -81,6 +87,10 @@ pub enum NativeOperationSpec {
         old_size_sectors: u64,
         new_size_sectors: u64,
         sector_size_bytes: u64,
+    },
+    ResizePhysicalVolume {
+        pv_uuid: String,
+        expected_pv_size_bytes: u64,
     },
     ExtendLogicalVolume {
         lv_uuid: String,
@@ -130,6 +140,13 @@ pub fn build_native_operation_spec(action: &FrozenIntentAction) -> NativeOperati
             old_size_sectors: *old_size_sectors,
             new_size_sectors: *new_size_sectors,
             sector_size_bytes: *sector_size_bytes,
+        },
+        FrozenIntentAction::ResizePhysicalVolume {
+            pv_uuid,
+            expected_pv_size_bytes,
+        } => NativeOperationSpec::ResizePhysicalVolume {
+            pv_uuid: pv_uuid.clone(),
+            expected_pv_size_bytes: *expected_pv_size_bytes,
         },
         FrozenIntentAction::ExtendLogicalVolume {
             lv_uuid,
@@ -285,6 +302,7 @@ fn is_mutation_operation(operation: &NativeOperationSpec) -> bool {
     matches!(
         operation,
         NativeOperationSpec::ExtendPartition { .. }
+            | NativeOperationSpec::ResizePhysicalVolume { .. }
             | NativeOperationSpec::ExtendLogicalVolume { .. }
             | NativeOperationSpec::GrowFilesystem { .. }
     )
@@ -298,6 +316,7 @@ fn expected_role(operation: &NativeOperationSpec) -> FrozenIntentRole {
             FrozenIntentRole::PreExecutionEvidence
         }
         NativeOperationSpec::ExtendPartition { .. }
+        | NativeOperationSpec::ResizePhysicalVolume { .. }
         | NativeOperationSpec::ExtendLogicalVolume { .. }
         | NativeOperationSpec::GrowFilesystem { .. } => FrozenIntentRole::MutationCandidate,
         NativeOperationSpec::RediscoverAndVerify => FrozenIntentRole::Verification,
@@ -863,6 +882,7 @@ mod tests {
                 NativeOperationKind::BackupLvmMetadata,
                 NativeOperationKind::BackupPartitionTableMetadata,
                 NativeOperationKind::ExtendPartition,
+                NativeOperationKind::ResizePhysicalVolume,
                 NativeOperationKind::ExtendLogicalVolume,
                 NativeOperationKind::GrowFilesystem,
                 NativeOperationKind::RediscoverAndVerify,
@@ -876,6 +896,7 @@ mod tests {
             let expected = matches!(
                 operation,
                 NativeOperationKind::ExtendPartition
+                    | NativeOperationKind::ResizePhysicalVolume
                     | NativeOperationKind::ExtendLogicalVolume
                     | NativeOperationKind::GrowFilesystem
             );
@@ -933,6 +954,22 @@ mod tests {
                 old_size_sectors: 4096,
                 new_size_sectors: 8192,
                 sector_size_bytes: 4096,
+            }
+        );
+    }
+
+    #[test]
+    fn native_pv_resize_spec_preserves_exact_identity_and_growth() {
+        let action = FrozenIntentAction::ResizePhysicalVolume {
+            pv_uuid: "pv-test".into(),
+            expected_pv_size_bytes: 12 * 1024 * 1024 * 1024,
+        };
+
+        assert_eq!(
+            build_native_operation_spec(&action),
+            NativeOperationSpec::ResizePhysicalVolume {
+                pv_uuid: "pv-test".into(),
+                expected_pv_size_bytes: 12 * 1024 * 1024 * 1024,
             }
         );
     }
@@ -1009,6 +1046,13 @@ mod tests {
                     sector_size_bytes: 512,
                 },
                 NativeOperationKind::ExtendPartition,
+            ),
+            (
+                FrozenIntentAction::ResizePhysicalVolume {
+                    pv_uuid: "pv-test".into(),
+                    expected_pv_size_bytes: 12 * 1024 * 1024 * 1024,
+                },
+                NativeOperationKind::ResizePhysicalVolume,
             ),
             (
                 FrozenIntentAction::ExtendLogicalVolume {
