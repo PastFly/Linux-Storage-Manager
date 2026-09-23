@@ -959,9 +959,21 @@ mod tests {
         .unwrap();
         session.persist_execution_started(&binding).unwrap();
         session.persist_verification_started().unwrap();
+        let verified_identity_digest = "b".repeat(64);
         session
-            .persist_verification_passed_continue(mutation_step_ids[0], mutation_step_ids[1])
+            .persist_verification_passed_continue(
+                mutation_step_ids[0],
+                mutation_step_ids[1],
+                &verified_identity_digest,
+            )
             .unwrap();
+        let verified_boundary = session.journal().verified_boundary.as_ref().unwrap();
+        assert_eq!(verified_boundary.completed_step_id, mutation_step_ids[0]);
+        assert_eq!(verified_boundary.next_step_id, mutation_step_ids[1]);
+        assert_eq!(
+            verified_boundary.fresh_identity_digest,
+            verified_identity_digest
+        );
         session.persist_verification_started().unwrap();
         assert_eq!(session.journal().phase, JournalPhase::Verifying);
 
@@ -979,7 +991,7 @@ mod tests {
             .unwrap();
 
         let mut before_growth = handoff.target_identity().clone();
-        before_growth.manifest_digest = "b".repeat(64);
+        before_growth.manifest_digest = verified_identity_digest.clone();
         for entry in &mut before_growth.lvm {
             if entry.kind == lsm_planner::LvmIdentityKind::LogicalVolume {
                 entry.size_bytes = expected_lv_size;
@@ -1016,6 +1028,22 @@ mod tests {
             .as_mut()
             .unwrap()
             .observed_filesystem_size_bytes = Some(grown_filesystem_size);
+
+        let mut forged_before_growth = before_growth.clone();
+        forged_before_growth.manifest_digest = "d".repeat(64);
+        let forged = crate::verify_and_complete_disposable_execution(
+            &mut session,
+            &validated,
+            &forged_before_growth,
+            &fresh,
+            mutation_step_ids[1],
+        );
+        assert!(matches!(
+            forged,
+            Err(crate::DisposableBoundaryVerificationError::VerifiedBoundaryIdentityMismatch)
+        ));
+        assert_eq!(session.journal().phase, JournalPhase::Verifying);
+
         let completion = crate::verify_and_complete_disposable_execution(
             &mut session,
             &validated,
