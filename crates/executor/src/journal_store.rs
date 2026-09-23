@@ -1063,6 +1063,86 @@ mod tests {
     }
 
     #[test]
+    fn tampered_terminal_verification_is_rejected_on_reload() {
+        let root = root("terminal-verification-tamper");
+        let store = DurableJournalStore::at(&root);
+        let mut journal = journal();
+        journal.apply(JournalTransition::HostLockAcquired).unwrap();
+        let baseline = journal.baseline_manifest_digest.clone();
+        journal
+            .apply(JournalTransition::IdentityRevalidated {
+                fresh_manifest_digest: &baseline,
+            })
+            .unwrap();
+        journal
+            .apply(JournalTransition::PreconditionsVerified)
+            .unwrap();
+
+        let plan_id = journal.plan_id.clone();
+        let mut approval = ExactApprovalBinding {
+            schema_version: 1,
+            approval_id: String::new(),
+            plan_id: plan_id.clone(),
+            evidence_bundle_id: digest('d'),
+            target_manifest_digest: journal.baseline_manifest_digest.clone(),
+            locked_session_id: digest('e'),
+            preconditions_journal_digest: crate::preconditions::journal_digest(&journal).unwrap(),
+        };
+        approval.approval_id = approval.expected_approval_id().unwrap();
+        journal
+            .apply(JournalTransition::ExactPlanApproved {
+                approved_plan_id: &plan_id,
+                approval: &approval,
+            })
+            .unwrap();
+
+        let execution = build_execution_start_binding(
+            &journal,
+            &digest('f'),
+            &digest('1'),
+            &journal.baseline_manifest_digest,
+            &[5, 6],
+        )
+        .unwrap();
+        journal
+            .apply(JournalTransition::ExecutionStarted {
+                binding: &execution,
+            })
+            .unwrap();
+        journal
+            .apply(JournalTransition::VerificationStarted)
+            .unwrap();
+        journal
+            .apply(JournalTransition::VerificationPassedContinue {
+                completed_step_id: 5,
+                next_step_id: 6,
+                fresh_identity_digest: &digest('2'),
+            })
+            .unwrap();
+        journal
+            .apply(JournalTransition::VerificationStarted)
+            .unwrap();
+        journal
+            .apply(JournalTransition::VerificationPassedComplete {
+                completed_step_id: 6,
+                fresh_identity_digest: &digest('3'),
+            })
+            .unwrap();
+        store.persist(&journal).unwrap();
+
+        let path = store.path_for(&journal.journal_id).unwrap();
+        let mut value = serde_json::to_value(&journal).unwrap();
+        value["verified_boundary"]["final_identity_digest"] = json!(digest('4'));
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        assert!(matches!(
+            store.load(&journal.journal_id),
+            Err(JournalStoreError::InvalidRecord(_))
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn mutation_boundary_requires_recovery_after_reload() {
         let root = root("recovery");
         let store = DurableJournalStore::at(&root);
