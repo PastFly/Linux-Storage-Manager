@@ -155,6 +155,25 @@ fn journal_happy_path_requires_exact_order_and_exact_identity() {
     journal
         .apply(JournalTransition::VerificationStarted)
         .unwrap();
+    let verified_identity_digest = "c".repeat(64);
+    journal
+        .apply(JournalTransition::VerificationPassedContinue {
+            completed_step_id: 5,
+            next_step_id: 6,
+            fresh_identity_digest: &verified_identity_digest,
+        })
+        .unwrap();
+    assert_eq!(
+        journal
+            .verified_boundary
+            .as_ref()
+            .unwrap()
+            .fresh_identity_digest,
+        verified_identity_digest
+    );
+    journal
+        .apply(JournalTransition::VerificationStarted)
+        .unwrap();
     journal.apply(JournalTransition::Completed).unwrap();
 
     assert_eq!(journal.phase, JournalPhase::Completed);
@@ -165,7 +184,7 @@ fn journal_happy_path_requires_exact_order_and_exact_identity() {
             .iter()
             .map(|event| event.sequence)
             .collect::<Vec<_>>(),
-        vec![1, 2, 3, 4, 5, 6, 7]
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9]
     );
 }
 

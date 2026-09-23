@@ -264,6 +264,7 @@ impl<'a> LockedExecutionSession<'a> {
         &mut self,
         completed_step_id: u32,
         next_step_id: u32,
+        fresh_identity_digest: &str,
     ) -> Result<(), LockedSessionError> {
         self.require_current_durable_journal()?;
         let store = self
@@ -274,6 +275,7 @@ impl<'a> LockedExecutionSession<'a> {
         next.apply(JournalTransition::VerificationPassedContinue {
             completed_step_id,
             next_step_id,
+            fresh_identity_digest,
         })?;
         store.persist(&next)?;
         self.journal = next;
@@ -896,10 +898,24 @@ mod tests {
             *session.journal()
         );
 
+        let verified_identity_digest = "7".repeat(64);
         session
-            .persist_verification_passed_continue(mutation_step_ids[0], mutation_step_ids[1])
+            .persist_verification_passed_continue(
+                mutation_step_ids[0],
+                mutation_step_ids[1],
+                &verified_identity_digest,
+            )
             .unwrap();
         assert_eq!(session.journal().phase, JournalPhase::Executing);
+        assert_eq!(
+            session
+                .journal()
+                .verified_boundary
+                .as_ref()
+                .unwrap()
+                .fresh_identity_digest,
+            verified_identity_digest
+        );
         assert!(session.journal().mutation_may_have_started);
         assert_eq!(
             store.load(&session.journal().journal_id).unwrap(),
@@ -959,9 +975,21 @@ mod tests {
         .unwrap();
         session.persist_execution_started(&binding).unwrap();
         session.persist_verification_started().unwrap();
+        let verified_identity_digest = "b".repeat(64);
         session
-            .persist_verification_passed_continue(mutation_step_ids[0], mutation_step_ids[1])
+            .persist_verification_passed_continue(
+                mutation_step_ids[0],
+                mutation_step_ids[1],
+                &verified_identity_digest,
+            )
             .unwrap();
+        let verified_boundary = session.journal().verified_boundary.as_ref().unwrap();
+        assert_eq!(verified_boundary.completed_step_id, mutation_step_ids[0]);
+        assert_eq!(verified_boundary.next_step_id, mutation_step_ids[1]);
+        assert_eq!(
+            verified_boundary.fresh_identity_digest,
+            verified_identity_digest
+        );
         session.persist_verification_started().unwrap();
         assert_eq!(session.journal().phase, JournalPhase::Verifying);
 
@@ -979,7 +1007,7 @@ mod tests {
             .unwrap();
 
         let mut before_growth = handoff.target_identity().clone();
-        before_growth.manifest_digest = "b".repeat(64);
+        before_growth.manifest_digest = verified_identity_digest.clone();
         for entry in &mut before_growth.lvm {
             if entry.kind == lsm_planner::LvmIdentityKind::LogicalVolume {
                 entry.size_bytes = expected_lv_size;
@@ -1016,6 +1044,22 @@ mod tests {
             .as_mut()
             .unwrap()
             .observed_filesystem_size_bytes = Some(grown_filesystem_size);
+
+        let mut forged_before_growth = before_growth.clone();
+        forged_before_growth.manifest_digest = "d".repeat(64);
+        let forged = crate::verify_and_complete_disposable_execution(
+            &mut session,
+            &validated,
+            &forged_before_growth,
+            &fresh,
+            mutation_step_ids[1],
+        );
+        assert!(matches!(
+            forged,
+            Err(crate::DisposableBoundaryVerificationError::VerifiedBoundaryIdentityMismatch)
+        ));
+        assert_eq!(session.journal().phase, JournalPhase::Verifying);
+
         let completion = crate::verify_and_complete_disposable_execution(
             &mut session,
             &validated,

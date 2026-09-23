@@ -96,6 +96,10 @@ pub enum DisposableBoundaryVerificationError {
     FilesystemIdentityMismatch,
     #[error("fresh filesystem size did not increase within the verified backing device")]
     FilesystemSizeDidNotGrow,
+    #[error("durable verified mutation boundary is missing")]
+    VerifiedBoundaryMissing,
+    #[error("pre-growth identity does not match the durable verified mutation boundary")]
+    VerifiedBoundaryIdentityMismatch,
     #[error("durable verification transition could not be persisted")]
     PersistenceFailed,
 }
@@ -311,6 +315,23 @@ pub fn verify_and_complete_disposable_execution(
         .as_ref()
         .cloned()
         .ok_or(DisposableBoundaryVerificationError::ExecutionBindingInvalid)?;
+    let verified_boundary = session
+        .journal()
+        .verified_boundary
+        .as_ref()
+        .cloned()
+        .ok_or(DisposableBoundaryVerificationError::VerifiedBoundaryMissing)?;
+    let ordered_pair = execution.mutation_step_ids.windows(2).any(|pair| {
+        pair[0] == verified_boundary.completed_step_id && pair[1] == verified_boundary.next_step_id
+    });
+    if !verified_boundary.integrity_matches().unwrap_or(false)
+        || verified_boundary.execution_id != execution.execution_id
+        || verified_boundary.next_step_id != completed_step_id
+        || verified_boundary.fresh_identity_digest != before_growth.manifest_digest
+        || !ordered_pair
+    {
+        return Err(DisposableBoundaryVerificationError::VerifiedBoundaryIdentityMismatch);
+    }
 
     let fresh_identity_digest = verify_terminal_filesystem_state(
         &execution,
@@ -358,7 +379,11 @@ pub fn verify_and_continue_disposable_boundary(
         verify_boundary_state(&execution, validated, fresh_identity, completed_step_id)?;
 
     session
-        .persist_verification_passed_continue(completed_step_id, next_step_id)
+        .persist_verification_passed_continue(
+            completed_step_id,
+            next_step_id,
+            &fresh_identity_digest,
+        )
         .map_err(|_| DisposableBoundaryVerificationError::PersistenceFailed)?;
 
     Ok(DisposableVerifiedBoundary::new(
