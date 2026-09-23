@@ -345,10 +345,9 @@ fn validate_approval_binding(journal: &OperationJournal) -> Result<(), JournalSt
 }
 
 fn validate_execution_binding(journal: &OperationJournal) -> Result<(), JournalStoreError> {
-    let execution_transition_index = journal
-        .events
-        .iter()
-        .position(|event| event.from == JournalPhase::Approved && event.to == JournalPhase::Executing);
+    let execution_transition_index = journal.events.iter().position(|event| {
+        event.from == JournalPhase::Approved && event.to == JournalPhase::Executing
+    });
 
     match (&journal.execution, execution_transition_index) {
         (None, None) => Ok(()),
