@@ -174,9 +174,21 @@ fn journal_happy_path_requires_exact_order_and_exact_identity() {
     journal
         .apply(JournalTransition::VerificationStarted)
         .unwrap();
-    journal.apply(JournalTransition::Completed).unwrap();
+    let final_identity_digest = "d".repeat(64);
+    journal
+        .apply(JournalTransition::VerificationPassedComplete {
+            completed_step_id: 6,
+            fresh_identity_digest: &final_identity_digest,
+        })
+        .unwrap();
 
     assert_eq!(journal.phase, JournalPhase::Completed);
+    let verified_boundary = journal.verified_boundary.as_ref().unwrap();
+    assert_eq!(verified_boundary.final_step_id, Some(6));
+    assert_eq!(
+        verified_boundary.final_identity_digest.as_deref(),
+        Some(final_identity_digest.as_str())
+    );
     assert_eq!(journal.resume_disposition(), ResumeDisposition::Complete);
     assert_eq!(
         journal
