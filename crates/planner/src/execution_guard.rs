@@ -263,6 +263,7 @@ pub struct ExecutionStartBinding {
     pub source_manifest_id: String,
     pub native_manifest_digest: String,
     pub fresh_identity_digest: String,
+    pub mutation_step_ids: Vec<u32>,
     pub approved_journal_digest: String,
 }
 
@@ -276,6 +277,7 @@ impl ExecutionStartBinding {
             &self.source_manifest_id,
             &self.native_manifest_digest,
             &self.fresh_identity_digest,
+            &self.mutation_step_ids,
             &self.approved_journal_digest,
         ))
     }
@@ -299,6 +301,8 @@ pub enum ExecutionStartBindingError {
     InvalidNativeManifestDigest,
     #[error("fresh identity digest does not match the approved journal baseline")]
     FreshIdentityMismatch,
+    #[error("mutation step sequence must be nonempty, nonzero and unique")]
+    InvalidMutationStepSequence,
     #[error("could not serialize execution start binding: {0}")]
     Serialization(String),
 }
@@ -329,6 +333,7 @@ pub fn build_execution_start_binding(
     source_manifest_id: &str,
     native_manifest_digest: &str,
     fresh_identity_digest: &str,
+    mutation_step_ids: &[u32],
 ) -> Result<ExecutionStartBinding, ExecutionStartBindingError> {
     if journal.phase != JournalPhase::Approved {
         return Err(ExecutionStartBindingError::JournalNotApproved);
@@ -349,6 +354,15 @@ pub fn build_execution_start_binding(
     if fresh_identity_digest != journal.baseline_manifest_digest {
         return Err(ExecutionStartBindingError::FreshIdentityMismatch);
     }
+    if mutation_step_ids.is_empty()
+        || mutation_step_ids.iter().any(|step_id| *step_id == 0)
+        || {
+            let mut seen = std::collections::BTreeSet::new();
+            mutation_step_ids.iter().any(|step_id| !seen.insert(*step_id))
+        }
+    {
+        return Err(ExecutionStartBindingError::InvalidMutationStepSequence);
+    }
 
     let approved_journal_digest = fingerprint(journal)
         .map_err(|error| ExecutionStartBindingError::Serialization(error.to_string()))?;
@@ -361,6 +375,7 @@ pub fn build_execution_start_binding(
         source_manifest_id: source_manifest_id.to_owned(),
         native_manifest_digest: native_manifest_digest.to_owned(),
         fresh_identity_digest: fresh_identity_digest.to_owned(),
+        mutation_step_ids: mutation_step_ids.to_vec(),
         approved_journal_digest,
     };
     binding.execution_id = binding
