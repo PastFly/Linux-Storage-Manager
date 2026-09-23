@@ -498,7 +498,7 @@ mod tests {
             4,
             "stale-post-lv-id".into(),
         );
-        assert_eq!(
+        assert!(matches!(
             bind_verified_disposable_execution_permit(
                 &validated(),
                 &identity,
@@ -508,7 +508,7 @@ mod tests {
                 stale,
             ),
             Err(DisposablePermitError::VerifiedBoundaryMismatch)
-        );
+        ));
 
         let reordered = DisposableVerifiedBoundary::new(
             execution.execution_id.clone(),
@@ -516,7 +516,7 @@ mod tests {
             3,
             identity.manifest_digest.clone(),
         );
-        assert_eq!(
+        assert!(matches!(
             bind_verified_disposable_execution_permit(
                 &validated(),
                 &identity,
@@ -526,7 +526,7 @@ mod tests {
                 reordered,
             ),
             Err(DisposablePermitError::VerifiedBoundaryMismatch)
-        );
+        ));
 
         fs::remove_dir_all(root).unwrap();
     }
