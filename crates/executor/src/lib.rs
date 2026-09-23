@@ -1,8 +1,8 @@
 mod approval;
 mod backup_capture;
 mod backup_manifest;
-mod execution_intent;
 mod disposable_argv;
+mod execution_intent;
 mod journal_store;
 mod locked_session;
 mod native_operation;
@@ -18,14 +18,14 @@ pub use backup_manifest::{
     build_metadata_backup_manifest, BackupCommandSpec, BackupExpectedIdentity, BackupManifestError,
     MetadataBackupKind, MetadataBackupManifest, MetadataBackupRequirement, BACKUP_DIRECTORY,
 };
+pub use disposable_argv::{
+    compile_disposable_lvm_growth_commands, DisposableArgvError, DisposableCommandPlan,
+    DisposableCommandSpec, DisposableProgram,
+};
 pub use execution_intent::{
     freeze_execution_intent, ExecutionIntentError, ExecutionIntentManifestStatus,
     FrozenExecutionIntentManifest, FrozenIntentAction, FrozenIntentRole, FrozenIntentStep,
     VerificationBarrierSpec,
-};
-pub use disposable_argv::{
-    compile_disposable_lvm_growth_commands, DisposableArgvError, DisposableCommandPlan,
-    DisposableCommandSpec, DisposableProgram,
 };
 pub use journal_store::{DurableJournalStore, JournalStoreError};
 pub use locked_session::{
