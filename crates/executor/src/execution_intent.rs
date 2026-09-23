@@ -810,6 +810,31 @@ mod tests {
     }
 
     #[test]
+    fn physical_volume_resize_translates_to_mutation_candidate_for_barrier_generation() {
+        let step = PlanStep {
+            id: 44,
+            depends_on: vec![43],
+            operation: Operation::ResizePhysicalVolume {
+                pv_uuid: "pv-barrier-test".into(),
+                expected_pv_size_bytes: 16 * 1024 * 1024 * 1024,
+            },
+            reversibility: Reversibility::Irreversible,
+        };
+
+        let frozen = translate_step(&step).unwrap();
+
+        assert_eq!(frozen.role, FrozenIntentRole::MutationCandidate);
+        assert!(matches!(
+            frozen.action,
+            FrozenIntentAction::ResizePhysicalVolume {
+                ref pv_uuid,
+                expected_pv_size_bytes,
+            } if pv_uuid == "pv-barrier-test"
+                && expected_pv_size_bytes == 16 * 1024 * 1024 * 1024
+        ));
+    }
+
+    #[test]
     fn physical_volume_resize_requires_exact_identity_and_growth() {
         let mut identity = semantic_identity();
         identity.lvm.push(lsm_planner::LvmIdentity {
