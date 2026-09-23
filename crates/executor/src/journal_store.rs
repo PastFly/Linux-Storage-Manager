@@ -475,7 +475,7 @@ fn validate_verified_boundary_binding(journal: &OperationJournal) -> Result<(), 
             "verified boundary binding exists without a verification continuation".to_owned(),
         )),
         (Some(binding), true) => {
-            if binding.schema_version != 1 {
+            if !matches!(binding.schema_version, 1 | 2) {
                 return Err(JournalStoreError::InvalidRecord(format!(
                     "unsupported verified boundary binding schema version {}",
                     binding.schema_version
@@ -532,7 +532,8 @@ fn validate_verified_boundary_binding(journal: &OperationJournal) -> Result<(), 
                 binding.final_identity_digest.as_deref(),
             ) {
                 (None, None) => {
-                    if has_terminal_completion
+                    if binding.schema_version != 1
+                        || has_terminal_completion
                         || (journal.phase == JournalPhase::Completed
                             && execution.mutation_step_ids.len() > 1)
                     {
@@ -543,7 +544,10 @@ fn validate_verified_boundary_binding(journal: &OperationJournal) -> Result<(), 
                     }
                 }
                 (Some(final_step_id), Some(final_identity_digest)) => {
-                    if !has_terminal_completion || journal.phase != JournalPhase::Completed {
+                    if binding.schema_version != 2
+                        || !has_terminal_completion
+                        || journal.phase != JournalPhase::Completed
+                    {
                         return Err(JournalStoreError::InvalidRecord(
                             "terminal verification binding exists without terminal completion"
                                 .to_owned(),
