@@ -282,6 +282,26 @@ impl<'a> LockedExecutionSession<'a> {
         Ok(())
     }
 
+    pub fn persist_verified_completed(
+        &mut self,
+        completed_step_id: u32,
+        fresh_identity_digest: &str,
+    ) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::VerificationPassedComplete {
+            completed_step_id,
+            fresh_identity_digest,
+        })?;
+        store.persist(&next)?;
+        self.journal = next;
+        Ok(())
+    }
+
     pub fn persist_completed(&mut self) -> Result<(), LockedSessionError> {
         self.require_current_durable_journal()?;
         let store = self
