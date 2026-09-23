@@ -188,6 +188,7 @@ mod tests {
             mutation_may_have_started: false,
             approval: Some(approval),
             execution: None,
+            verified_boundary: None,
             events: vec![],
         }
     }
