@@ -579,8 +579,11 @@ fn max_target_catalog_includes_verified_lvm_underlying_route_capacity() {
         targets[0].availability,
         ExtendTargetAvailability::PreviewReady
     );
-    assert_eq!(targets[0].verified_growth_bytes, Some(8 * GIB));
-    assert!(targets[0].layout_growth_bytes.unwrap() > 8 * GIB);
+    let verified = targets[0]
+        .verified_growth_bytes
+        .expect("underlying LVM route should now be an exact preview");
+    assert!(verified > 8 * GIB);
+    assert_eq!(targets[0].layout_growth_bytes, Some(verified));
 }
 
 #[test]
