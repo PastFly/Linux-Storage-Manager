@@ -67,6 +67,14 @@ pub enum DisposableBoundaryVerificationError {
     LogicalVolumeSizeMismatch,
     #[error("fresh filesystem backing size does not equal the verified logical volume size")]
     FilesystemBackingSizeMismatch,
+    #[error("completed mutation step is not the final durable mutation step")]
+    FinalStepNotLast,
+    #[error("final disposable verification only supports filesystem growth")]
+    UnsupportedFinalMutation,
+    #[error("fresh filesystem identity does not match the identity that authorized growth")]
+    FilesystemIdentityMismatch,
+    #[error("fresh filesystem size did not increase within the verified backing device")]
+    FilesystemSizeDidNotGrow,
     #[error("durable verification continuation could not be persisted")]
     PersistenceFailed,
 }
@@ -143,6 +151,121 @@ fn verify_boundary_state(
     }
 
     Ok((next_step_id, fresh_identity.manifest_digest.clone()))
+}
+
+fn verify_terminal_filesystem_state(
+    execution: &ExecutionStartBinding,
+    validated: &ValidatedNativeManifest,
+    before_growth: &TargetIdentityManifest,
+    fresh_identity: &TargetIdentityManifest,
+    completed_step_id: u32,
+) -> Result<String, DisposableBoundaryVerificationError> {
+    if execution.schema_version != 1 || !execution.integrity_matches().unwrap_or(false) {
+        return Err(DisposableBoundaryVerificationError::ExecutionBindingInvalid);
+    }
+    if execution.source_manifest_id != validated.manifest().source_manifest_id
+        || execution.native_manifest_digest != validated.digest()
+    {
+        return Err(DisposableBoundaryVerificationError::ManifestBindingMismatch);
+    }
+    if execution.mutation_step_ids.last().copied() != Some(completed_step_id) {
+        return Err(DisposableBoundaryVerificationError::FinalStepNotLast);
+    }
+
+    let completed_step = validated
+        .manifest()
+        .steps
+        .iter()
+        .find(|step| step.plan_step_id == completed_step_id)
+        .ok_or(DisposableBoundaryVerificationError::CompletedStepNotAuthorized)?;
+    let NativeOperationSpec::GrowFilesystem {
+        fs_type,
+        mountpoint,
+    } = &completed_step.operation
+    else {
+        return Err(DisposableBoundaryVerificationError::UnsupportedFinalMutation);
+    };
+
+    let previous_step_id = execution
+        .mutation_step_ids
+        .iter()
+        .rev()
+        .nth(1)
+        .copied()
+        .ok_or(DisposableBoundaryVerificationError::UnsupportedFinalMutation)?;
+    let (next_step_id, _) =
+        verify_boundary_state(execution, validated, fresh_identity, previous_step_id)?;
+    if next_step_id != completed_step_id {
+        return Err(DisposableBoundaryVerificationError::FinalStepNotLast);
+    }
+
+    if before_growth.route_status != LayerRouteStatus::SupportedProfile
+        || fresh_identity.route_status != LayerRouteStatus::SupportedProfile
+    {
+        return Err(DisposableBoundaryVerificationError::UnsupportedFreshRoute);
+    }
+
+    let before_filesystem = before_growth
+        .filesystem
+        .as_ref()
+        .ok_or(DisposableBoundaryVerificationError::FilesystemIdentityMismatch)?;
+    let fresh_filesystem = fresh_identity
+        .filesystem
+        .as_ref()
+        .ok_or(DisposableBoundaryVerificationError::FilesystemIdentityMismatch)?;
+
+    let before_mounts = before_growth
+        .mounts
+        .iter()
+        .filter(|mount| {
+            mount.target == *mountpoint
+                && mount.fs_type.as_deref() == Some(fs_type.as_str())
+                && mount.source.as_deref() == Some(before_filesystem.device.as_str())
+        })
+        .count();
+    let fresh_mounts = fresh_identity
+        .mounts
+        .iter()
+        .filter(|mount| {
+            mount.target == *mountpoint
+                && mount.fs_type.as_deref() == Some(fs_type.as_str())
+                && mount.source.as_deref() == Some(fresh_filesystem.device.as_str())
+        })
+        .count();
+
+    if before_growth.target != fresh_identity.target
+        || before_growth.resolved_device != fresh_identity.resolved_device
+        || before_filesystem.device != before_growth.resolved_device
+        || fresh_filesystem.device != fresh_identity.resolved_device
+        || before_filesystem.device != fresh_filesystem.device
+        || before_filesystem.fs_type != *fs_type
+        || fresh_filesystem.fs_type != *fs_type
+        || before_filesystem.fs_version != fresh_filesystem.fs_version
+        || before_filesystem.uuid.is_none()
+        || before_filesystem.uuid != fresh_filesystem.uuid
+        || before_filesystem.backing_device_size_bytes
+            != fresh_filesystem.backing_device_size_bytes
+        || before_mounts != 1
+        || fresh_mounts != 1
+    {
+        return Err(DisposableBoundaryVerificationError::FilesystemIdentityMismatch);
+    }
+
+    let before_size = before_filesystem
+        .observed_filesystem_size_bytes
+        .ok_or(DisposableBoundaryVerificationError::FilesystemSizeDidNotGrow)?;
+    let fresh_size = fresh_filesystem
+        .observed_filesystem_size_bytes
+        .ok_or(DisposableBoundaryVerificationError::FilesystemSizeDidNotGrow)?;
+    if before_size == 0
+        || before_filesystem.backing_device_size_bytes <= before_size
+        || fresh_size <= before_size
+        || fresh_size > fresh_filesystem.backing_device_size_bytes
+    {
+        return Err(DisposableBoundaryVerificationError::FilesystemSizeDidNotGrow);
+    }
+
+    Ok(fresh_identity.manifest_digest.clone())
 }
 
 /// Verify the completed destructive layer against a fresh target identity and durably
