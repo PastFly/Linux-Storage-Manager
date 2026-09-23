@@ -615,6 +615,10 @@ mod tests {
 
         assert_eq!(validate_native_layer_order(&valid), Ok(()));
 
+        let mut transitive = valid.clone();
+        transitive[3].depends_on = vec![2];
+        assert_eq!(validate_native_layer_order(&transitive), Ok(()));
+
         let mut invalid = valid;
         invalid[2].depends_on = vec![1];
         assert_eq!(
