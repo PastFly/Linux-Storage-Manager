@@ -27,17 +27,49 @@ impl DisposableProgram {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DisposableCommandSpec {
-    pub plan_step_id: u32,
-    pub program: DisposableProgram,
-    pub args: Vec<String>,
+    plan_step_id: u32,
+    program: DisposableProgram,
+    args: Vec<String>,
+}
+
+impl DisposableCommandSpec {
+    pub fn plan_step_id(&self) -> u32 {
+        self.plan_step_id
+    }
+
+    pub fn program(&self) -> DisposableProgram {
+        self.program
+    }
+
+    pub fn args(&self) -> &[String] {
+        &self.args
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DisposableCommandPlan {
-    pub source_manifest_id: String,
-    pub native_manifest_digest: String,
-    pub fresh_identity_digest: String,
-    pub commands: Vec<DisposableCommandSpec>,
+    source_manifest_id: String,
+    native_manifest_digest: String,
+    fresh_identity_digest: String,
+    commands: Vec<DisposableCommandSpec>,
+}
+
+impl DisposableCommandPlan {
+    pub fn source_manifest_id(&self) -> &str {
+        &self.source_manifest_id
+    }
+
+    pub fn native_manifest_digest(&self) -> &str {
+        &self.native_manifest_digest
+    }
+
+    pub fn fresh_identity_digest(&self) -> &str {
+        &self.fresh_identity_digest
+    }
+
+    pub fn commands(&self) -> &[DisposableCommandSpec] {
+        &self.commands
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -345,10 +377,10 @@ mod tests {
         let plan =
             compile_disposable_lvm_growth_commands(&validated, &identity("ext4", "/")).unwrap();
 
-        assert_eq!(plan.native_manifest_digest, validated.digest());
-        assert_eq!(plan.fresh_identity_digest, "identity-test");
+        assert_eq!(plan.native_manifest_digest(), validated.digest());
+        assert_eq!(plan.fresh_identity_digest(), "identity-test");
         assert_eq!(
-            plan.commands,
+            plan.commands(),
             vec![
                 DisposableCommandSpec {
                     plan_step_id: 3,
@@ -376,8 +408,8 @@ mod tests {
             compile_disposable_lvm_growth_commands(&validated, &identity("xfs", "/srv/data"))
                 .unwrap();
 
-        assert_eq!(plan.commands[1].program, DisposableProgram::XfsGrowfs);
-        assert_eq!(plan.commands[1].args, vec!["-d", "/srv/data"]);
+        assert_eq!(plan.commands()[1].program(), DisposableProgram::XfsGrowfs);
+        assert_eq!(plan.commands()[1].args(), ["-d", "/srv/data"]);
     }
 
     #[test]
