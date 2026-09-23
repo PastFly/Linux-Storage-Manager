@@ -264,6 +264,7 @@ impl<'a> LockedExecutionSession<'a> {
         &mut self,
         completed_step_id: u32,
         next_step_id: u32,
+        fresh_identity_digest: &str,
     ) -> Result<(), LockedSessionError> {
         self.require_current_durable_journal()?;
         let store = self
@@ -274,6 +275,7 @@ impl<'a> LockedExecutionSession<'a> {
         next.apply(JournalTransition::VerificationPassedContinue {
             completed_step_id,
             next_step_id,
+            fresh_identity_digest,
         })?;
         store.persist(&next)?;
         self.journal = next;
@@ -896,10 +898,24 @@ mod tests {
             *session.journal()
         );
 
+        let verified_identity_digest = "7".repeat(64);
         session
-            .persist_verification_passed_continue(mutation_step_ids[0], mutation_step_ids[1])
+            .persist_verification_passed_continue(
+                mutation_step_ids[0],
+                mutation_step_ids[1],
+                &verified_identity_digest,
+            )
             .unwrap();
         assert_eq!(session.journal().phase, JournalPhase::Executing);
+        assert_eq!(
+            session
+                .journal()
+                .verified_boundary
+                .as_ref()
+                .unwrap()
+                .fresh_identity_digest,
+            verified_identity_digest
+        );
         assert!(session.journal().mutation_may_have_started);
         assert_eq!(
             store.load(&session.journal().journal_id).unwrap(),
