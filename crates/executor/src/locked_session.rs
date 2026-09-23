@@ -1009,13 +1009,13 @@ mod tests {
             *session.journal()
         );
 
+        let grown_filesystem_size =
+            original_filesystem_size + (expected_lv_size - original_filesystem_size) / 2;
         fresh
             .filesystem
             .as_mut()
             .unwrap()
-            .observed_filesystem_size_bytes = Some(
-            original_filesystem_size + (expected_lv_size - original_filesystem_size) / 2,
-        );
+            .observed_filesystem_size_bytes = Some(grown_filesystem_size);
         let completion = crate::verify_and_complete_disposable_execution(
             &mut session,
             &validated,
