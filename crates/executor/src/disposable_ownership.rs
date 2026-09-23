@@ -36,9 +36,8 @@ fn valid_loop_path(value: &str) -> bool {
 }
 
 fn metadata(path: &Path) -> Result<fs::Metadata, DisposableOwnershipError> {
-    fs::symlink_metadata(path).map_err(|error| {
-        DisposableOwnershipError::Metadata(format!("{}: {error}", path.display()))
-    })
+    fs::symlink_metadata(path)
+        .map_err(|error| DisposableOwnershipError::Metadata(format!("{}: {error}", path.display())))
 }
 
 /// Freeze harness-owned loop identity before any disposable mutation.
@@ -57,9 +56,9 @@ pub fn capture_disposable_loop_ownership(
     let root = owned_root.canonicalize().map_err(|error| {
         DisposableOwnershipError::Metadata(format!("{}: {error}", owned_root.display()))
     })?;
-    let parent = backing_file.parent().ok_or(
-        DisposableOwnershipError::BackingFileOutsideOwnedRoot,
-    )?;
+    let parent = backing_file
+        .parent()
+        .ok_or(DisposableOwnershipError::BackingFileOutsideOwnedRoot)?;
     let canonical_parent = parent.canonicalize().map_err(|error| {
         DisposableOwnershipError::Metadata(format!("{}: {error}", parent.display()))
     })?;
@@ -87,9 +86,10 @@ pub fn revalidate_disposable_loop_ownership(
     if !valid_loop_path(&proof.loop_device) {
         return Err(DisposableOwnershipError::InvalidLoopDevice);
     }
-    let parent = proof.backing_file.parent().ok_or(
-        DisposableOwnershipError::BackingFileOutsideOwnedRoot,
-    )?;
+    let parent = proof
+        .backing_file
+        .parent()
+        .ok_or(DisposableOwnershipError::BackingFileOutsideOwnedRoot)?;
     let canonical_parent = parent.canonicalize().map_err(|error| {
         DisposableOwnershipError::Metadata(format!("{}: {error}", parent.display()))
     })?;
@@ -170,8 +170,9 @@ mod tests {
         File::create(&image).unwrap();
         let proof = capture_disposable_loop_ownership("/dev/loop7", &image, &root).unwrap();
 
-        fs::remove_file(&image).unwrap();
-        File::create(&image).unwrap();
+        let replacement = root.join("replacement.img");
+        File::create(&replacement).unwrap();
+        fs::rename(&replacement, &image).unwrap();
 
         assert_eq!(
             revalidate_disposable_loop_ownership(&proof),
