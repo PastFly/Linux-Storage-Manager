@@ -44,9 +44,7 @@ pub use disposable_ownership::{
 pub use disposable_permit::{
     bind_disposable_execution_permit, DisposableExecutionPermit, DisposablePermitError,
 };
-pub use disposable_start::{
-    persist_disposable_execution_start, DisposableExecutionStartError,
-};
+pub use disposable_start::{persist_disposable_execution_start, DisposableExecutionStartError};
 pub use execution_intent::{
     freeze_execution_intent, ExecutionIntentError, ExecutionIntentManifestStatus,
     FrozenExecutionIntentManifest, FrozenIntentAction, FrozenIntentRole, FrozenIntentStep,
