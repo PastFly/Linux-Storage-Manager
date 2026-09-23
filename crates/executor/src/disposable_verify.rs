@@ -1,3 +1,4 @@
+use lsm_core::HostCapabilities;
 use lsm_planner::{
     ExecutionStartBinding, JournalPhase, LayerRouteStatus, LvmIdentityKind, TargetIdentityManifest,
 };
@@ -299,6 +300,7 @@ pub fn verify_and_complete_disposable_execution(
     validated: &ValidatedNativeManifest,
     before_growth: &TargetIdentityManifest,
     fresh_identity: &TargetIdentityManifest,
+    fresh_capabilities: &HostCapabilities,
     completed_step_id: u32,
 ) -> Result<DisposableVerifiedCompletion, DisposableBoundaryVerificationError> {
     session
@@ -315,6 +317,13 @@ pub fn verify_and_complete_disposable_execution(
         .as_ref()
         .cloned()
         .ok_or(DisposableBoundaryVerificationError::ExecutionBindingInvalid)?;
+    if !session
+        .handoff()
+        .matches_capabilities(fresh_capabilities)
+        .unwrap_or(false)
+    {
+        return Err(DisposableBoundaryVerificationError::CapabilityInventoryMismatch);
+    }
     let verified_boundary = session
         .journal()
         .verified_boundary
@@ -358,6 +367,7 @@ pub fn verify_and_continue_disposable_boundary(
     session: &mut LockedExecutionSession<'_>,
     validated: &ValidatedNativeManifest,
     fresh_identity: &TargetIdentityManifest,
+    fresh_capabilities: &HostCapabilities,
     completed_step_id: u32,
 ) -> Result<DisposableVerifiedBoundary, DisposableBoundaryVerificationError> {
     session
@@ -374,6 +384,13 @@ pub fn verify_and_continue_disposable_boundary(
         .as_ref()
         .cloned()
         .ok_or(DisposableBoundaryVerificationError::ExecutionBindingInvalid)?;
+    if !session
+        .handoff()
+        .matches_capabilities(fresh_capabilities)
+        .unwrap_or(false)
+    {
+        return Err(DisposableBoundaryVerificationError::CapabilityInventoryMismatch);
+    }
 
     let (next_step_id, fresh_identity_digest) =
         verify_boundary_state(&execution, validated, fresh_identity, completed_step_id)?;
