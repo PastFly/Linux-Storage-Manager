@@ -1863,6 +1863,25 @@ fn apply_partition_outcome(
     }
 }
 
+fn apply_lvm_underlying_preview(
+    plan: &mut PlanPreview,
+    candidate: (
+        GrowthRouteAlternative,
+        SizeChange,
+        Option<PartitionSizeChange>,
+        Vec<PlanStep>,
+    ),
+) {
+    let (route, size, partition_size, steps) = candidate;
+    let grows_partition = partition_size.is_some();
+    plan.status = PlanStatus::Preview;
+    plan.size_change = Some(size);
+    plan.partition_size_change = partition_size;
+    plan.preflight_checks = lvm_underlying_preflight_checks(grows_partition);
+    plan.steps = steps;
+    plan.growth_route_alternatives.push(route);
+}
+
 fn apply_lvm_outcome(
     plan: &mut PlanPreview,
     snapshot: &HostSnapshot,
@@ -1877,16 +1896,10 @@ fn apply_lvm_outcome(
         }
         Err(blocker) => {
             if matches!(blocker.code.as_str(), "insufficient-capacity" | "no-growth") {
-                if let Some((route, size, partition_size, steps)) =
+                if let Some(candidate) =
                     build_lvm_underlying_growth_candidate(snapshot, &plan.request)
                 {
-                    let grows_partition = partition_size.is_some();
-                    plan.status = PlanStatus::Preview;
-                    plan.size_change = Some(size);
-                    plan.partition_size_change = partition_size;
-                    plan.preflight_checks = lvm_underlying_preflight_checks(grows_partition);
-                    plan.steps = steps;
-                    plan.growth_route_alternatives.push(route);
+                    apply_lvm_underlying_preview(plan, candidate);
                     return;
                 }
                 if let Some(route) = analyze_lvm_underlying_growth(snapshot, &plan.request) {
@@ -2221,8 +2234,19 @@ pub fn plan_extend(
             }
         }
         ExtendPlannerProfile::Lvm => {
-            let lvm = build_candidate(snapshot, capabilities, &plan.request);
-            apply_lvm_outcome(&mut plan, snapshot, lvm);
+            if matches!(plan.request.growth, Growth::MaxFree) {
+                if let Some(candidate) =
+                    build_lvm_underlying_growth_candidate(snapshot, &plan.request)
+                {
+                    apply_lvm_underlying_preview(&mut plan, candidate);
+                } else {
+                    let lvm = build_candidate(snapshot, capabilities, &plan.request);
+                    apply_lvm_outcome(&mut plan, snapshot, lvm);
+                }
+            } else {
+                let lvm = build_candidate(snapshot, capabilities, &plan.request);
+                apply_lvm_outcome(&mut plan, snapshot, lvm);
+            }
         }
         ExtendPlannerProfile::WholeBlockFilesystem => {
             let filesystem =
