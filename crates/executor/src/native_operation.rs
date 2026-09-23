@@ -266,7 +266,9 @@ pub enum NativeManifestValidationError {
     DependencyCycle,
     #[error("native step {0} role does not match its operation")]
     RoleOperationMismatch(u32),
-    #[error("native mutation step {after} is not ordered after required lower-layer step {before}")]
+    #[error(
+        "native mutation step {after} is not ordered after required lower-layer step {before}"
+    )]
     UnsafeLayerOrder { before: u32, after: u32 },
     #[error("mutation step {0} is missing a verification barrier")]
     MissingVerificationBarrier(u32),
@@ -345,17 +347,13 @@ fn validate_native_layer_order(
         .map(|step| (step.plan_step_id, step))
         .collect::<BTreeMap<_, _>>();
 
-    fn depends_on(
-        current: u32,
-        required: u32,
-        by_id: &BTreeMap<u32, &NativeCompiledStep>,
-    ) -> bool {
+    fn depends_on(current: u32, required: u32, by_id: &BTreeMap<u32, &NativeCompiledStep>) -> bool {
         let Some(step) = by_id.get(&current) else {
             return false;
         };
-        step.depends_on.iter().any(|dependency| {
-            *dependency == required || depends_on(*dependency, required, by_id)
-        })
+        step.depends_on
+            .iter()
+            .any(|dependency| *dependency == required || depends_on(*dependency, required, by_id))
     }
 
     let mutations = steps
