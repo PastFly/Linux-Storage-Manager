@@ -5,6 +5,8 @@ mod disposable_argv;
 mod disposable_loop_association;
 mod disposable_ownership;
 mod disposable_permit;
+#[cfg(feature = "disposable-executor")]
+mod disposable_exec;
 mod execution_intent;
 mod journal_store;
 mod locked_session;
@@ -35,6 +37,11 @@ pub use disposable_ownership::{
 };
 pub use disposable_permit::{
     bind_disposable_execution_permit, DisposableExecutionPermit, DisposablePermitError,
+};
+#[cfg(feature = "disposable-executor")]
+pub use disposable_exec::{
+    execute_disposable_command, DisposableCommandOutcome, DisposableExecutionError,
+    DisposableToolPaths,
 };
 pub use execution_intent::{
     freeze_execution_intent, ExecutionIntentError, ExecutionIntentManifestStatus,
