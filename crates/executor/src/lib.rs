@@ -4,6 +4,7 @@ mod backup_manifest;
 mod disposable_argv;
 mod disposable_loop_association;
 mod disposable_ownership;
+mod disposable_permit;
 mod execution_intent;
 mod journal_store;
 mod locked_session;
@@ -31,6 +32,9 @@ pub use disposable_loop_association::{
 pub use disposable_ownership::{
     capture_disposable_loop_ownership, revalidate_disposable_loop_ownership,
     DisposableLoopOwnershipProof, DisposableOwnershipError,
+};
+pub use disposable_permit::{
+    bind_disposable_execution_permit, DisposableExecutionPermit, DisposablePermitError,
 };
 pub use execution_intent::{
     freeze_execution_intent, ExecutionIntentError, ExecutionIntentManifestStatus,
