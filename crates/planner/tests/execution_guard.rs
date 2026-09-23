@@ -77,6 +77,7 @@ fn execution_binding(journal: &OperationJournal) -> ExecutionStartBinding {
         &"a".repeat(64),
         &"b".repeat(64),
         &journal.baseline_manifest_digest,
+        &[5, 6],
     )
     .unwrap()
 }
