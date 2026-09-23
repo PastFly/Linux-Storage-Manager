@@ -247,6 +247,45 @@ impl<'a> LockedExecutionSession<'a> {
         Ok(())
     }
 
+    pub fn persist_verification_started(&mut self) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::VerificationStarted)?;
+        store.persist(&next)?;
+        self.journal = next;
+        Ok(())
+    }
+
+    pub fn persist_completed(&mut self) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::Completed)?;
+        store.persist(&next)?;
+        self.journal = next;
+        Ok(())
+    }
+
+    pub fn persist_interrupted(&mut self, reason: &str) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::Interrupted { reason })?;
+        store.persist(&next)?;
+        self.journal = next;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn begin_at_path(
         handoff: &'a FrozenExecutionHandoff,
@@ -828,6 +867,22 @@ mod tests {
         let persisted = store.load(&session.journal().journal_id).unwrap();
         assert_eq!(persisted, *session.journal());
         assert_eq!(persisted.execution.as_ref(), Some(&binding));
+
+        session.persist_verification_started().unwrap();
+        assert_eq!(session.journal().phase, JournalPhase::Verifying);
+        assert!(session.journal().mutation_may_have_started);
+        assert_eq!(
+            store.load(&session.journal().journal_id).unwrap(),
+            *session.journal()
+        );
+
+        session.persist_completed().unwrap();
+        assert_eq!(session.journal().phase, JournalPhase::Completed);
+        assert!(session.journal().mutation_may_have_started);
+        assert_eq!(
+            store.load(&session.journal().journal_id).unwrap(),
+            *session.journal()
+        );
 
         drop(session);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
