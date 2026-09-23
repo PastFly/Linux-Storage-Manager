@@ -45,6 +45,27 @@ impl DisposableVerifiedBoundary {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct DisposableVerifiedCompletion {
+    execution_id: String,
+    completed_step_id: u32,
+    fresh_identity_digest: String,
+}
+
+impl DisposableVerifiedCompletion {
+    pub fn execution_id(&self) -> &str {
+        &self.execution_id
+    }
+
+    pub fn completed_step_id(&self) -> u32 {
+        self.completed_step_id
+    }
+
+    pub fn fresh_identity_digest(&self) -> &str {
+        &self.fresh_identity_digest
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum DisposableBoundaryVerificationError {
     #[error("durable session is not at the post-mutation verification boundary")]
@@ -75,7 +96,7 @@ pub enum DisposableBoundaryVerificationError {
     FilesystemIdentityMismatch,
     #[error("fresh filesystem size did not increase within the verified backing device")]
     FilesystemSizeDidNotGrow,
-    #[error("durable verification continuation could not be persisted")]
+    #[error("durable verification transition could not be persisted")]
     PersistenceFailed,
 }
 
@@ -265,6 +286,51 @@ fn verify_terminal_filesystem_state(
     }
 
     Ok(fresh_identity.manifest_digest.clone())
+}
+
+/// Verify the final filesystem mutation against fresh state and durably complete execution.
+///
+/// Failed verification never advances the durable journal: the session remains at
+/// `Verifying` so interruption/restart continues to require reconciliation.
+pub fn verify_and_complete_disposable_execution(
+    session: &mut LockedExecutionSession<'_>,
+    validated: &ValidatedNativeManifest,
+    before_growth: &TargetIdentityManifest,
+    fresh_identity: &TargetIdentityManifest,
+    completed_step_id: u32,
+) -> Result<DisposableVerifiedCompletion, DisposableBoundaryVerificationError> {
+    session
+        .require_current_durable_journal()
+        .map_err(|_| DisposableBoundaryVerificationError::DurableVerificationStateRequired)?;
+    if session.journal().phase != JournalPhase::Verifying
+        || !session.journal().mutation_may_have_started
+    {
+        return Err(DisposableBoundaryVerificationError::DurableVerificationStateRequired);
+    }
+    let execution = session
+        .journal()
+        .execution
+        .as_ref()
+        .cloned()
+        .ok_or(DisposableBoundaryVerificationError::ExecutionBindingInvalid)?;
+
+    let fresh_identity_digest = verify_terminal_filesystem_state(
+        &execution,
+        validated,
+        before_growth,
+        fresh_identity,
+        completed_step_id,
+    )?;
+
+    session
+        .persist_completed()
+        .map_err(|_| DisposableBoundaryVerificationError::PersistenceFailed)?;
+
+    Ok(DisposableVerifiedCompletion {
+        execution_id: execution.execution_id,
+        completed_step_id,
+        fresh_identity_digest,
+    })
 }
 
 /// Verify the completed destructive layer against a fresh target identity and durably
