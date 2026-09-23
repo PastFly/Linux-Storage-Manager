@@ -36,6 +36,7 @@ pub struct DisposableCommandSpec {
 pub struct DisposableCommandPlan {
     pub source_manifest_id: String,
     pub native_manifest_digest: String,
+    pub fresh_identity_digest: String,
     pub commands: Vec<DisposableCommandSpec>,
 }
 
@@ -238,6 +239,7 @@ pub fn compile_disposable_lvm_growth_commands(
     Ok(DisposableCommandPlan {
         source_manifest_id: manifest.source_manifest_id.clone(),
         native_manifest_digest: validated.digest().to_owned(),
+        fresh_identity_digest: fresh_identity.manifest_digest.clone(),
         commands,
     })
 }
@@ -344,6 +346,7 @@ mod tests {
             compile_disposable_lvm_growth_commands(&validated, &identity("ext4", "/")).unwrap();
 
         assert_eq!(plan.native_manifest_digest, validated.digest());
+        assert_eq!(plan.fresh_identity_digest, "identity-test");
         assert_eq!(
             plan.commands,
             vec![
