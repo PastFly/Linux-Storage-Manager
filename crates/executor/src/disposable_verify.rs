@@ -347,8 +347,11 @@ mod tests {
         let before = fresh_identity(9 * 1024 * 1024 * 1024);
         let mut fresh = before.clone();
         fresh.manifest_digest = digest('c');
-        fresh.filesystem.as_mut().unwrap().observed_filesystem_size_bytes =
-            Some(9 * 1024 * 1024 * 1024);
+        fresh
+            .filesystem
+            .as_mut()
+            .unwrap()
+            .observed_filesystem_size_bytes = Some(9 * 1024 * 1024 * 1024);
 
         let final_digest =
             verify_terminal_filesystem_state(&execution, &validated, &before, &fresh, 4).unwrap();
@@ -363,8 +366,11 @@ mod tests {
         let before = fresh_identity(9 * 1024 * 1024 * 1024);
         let mut fresh = before.clone();
         fresh.manifest_digest = digest('c');
-        fresh.filesystem.as_mut().unwrap().observed_filesystem_size_bytes =
-            Some(9 * 1024 * 1024 * 1024);
+        fresh
+            .filesystem
+            .as_mut()
+            .unwrap()
+            .observed_filesystem_size_bytes = Some(9 * 1024 * 1024 * 1024);
 
         assert_eq!(
             verify_terminal_filesystem_state(&execution, &validated, &before, &fresh, 3),
