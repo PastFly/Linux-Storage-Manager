@@ -8,6 +8,7 @@ mod disposable_loop_association;
 mod disposable_ownership;
 mod disposable_permit;
 mod disposable_start;
+mod disposable_verify;
 mod execution_intent;
 mod journal_store;
 mod locked_session;
@@ -45,6 +46,10 @@ pub use disposable_permit::{
     bind_disposable_execution_permit, DisposableExecutionPermit, DisposablePermitError,
 };
 pub use disposable_start::{persist_disposable_execution_start, DisposableExecutionStartError};
+pub use disposable_verify::{
+    verify_and_continue_disposable_boundary, DisposableBoundaryVerificationError,
+    DisposableVerifiedBoundary,
+};
 pub use execution_intent::{
     freeze_execution_intent, ExecutionIntentError, ExecutionIntentManifestStatus,
     FrozenExecutionIntentManifest, FrozenIntentAction, FrozenIntentRole, FrozenIntentStep,

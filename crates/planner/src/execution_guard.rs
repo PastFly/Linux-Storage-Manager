@@ -398,6 +398,10 @@ pub enum JournalTransition<'a> {
         binding: &'a ExecutionStartBinding,
     },
     VerificationStarted,
+    VerificationPassedContinue {
+        completed_step_id: u32,
+        next_step_id: u32,
+    },
     Completed,
     Interrupted {
         reason: &'a str,
@@ -444,6 +448,10 @@ pub enum JournalError {
     ExecutionBindingApprovedJournalMismatch,
     #[error("execution start requires an exact approval binding")]
     ExecutionBindingApprovalMissing,
+    #[error("verification continuation requires the durable execution binding")]
+    VerificationExecutionBindingMissing,
+    #[error("verified mutation boundary does not match the ordered execution step sequence")]
+    VerificationSequenceMismatch,
     #[error("journal is terminal and cannot advance")]
     Terminal,
 }
@@ -587,6 +595,41 @@ impl OperationJournal {
                 "verification-started",
                 "post-mutation rediscovery and verification started",
             ),
+            JournalTransition::VerificationPassedContinue {
+                completed_step_id,
+                next_step_id,
+            } => {
+                if self.phase != JournalPhase::Verifying {
+                    return Err(self.invalid("verification_passed_continue"));
+                }
+                let execution = self
+                    .execution
+                    .as_ref()
+                    .ok_or(JournalError::VerificationExecutionBindingMissing)?;
+                let ordered_pair = execution
+                    .mutation_step_ids
+                    .windows(2)
+                    .any(|pair| pair[0] == completed_step_id && pair[1] == next_step_id);
+                if completed_step_id == 0
+                    || next_step_id == 0
+                    || completed_step_id == next_step_id
+                    || !ordered_pair
+                {
+                    return Err(JournalError::VerificationSequenceMismatch);
+                }
+
+                let from = self.phase;
+                self.phase = JournalPhase::Executing;
+                self.push_event(
+                    from,
+                    JournalPhase::Executing,
+                    "verification-passed-continue",
+                    &format!(
+                        "mutation step {completed_step_id} verified; next mutation step {next_step_id} may proceed"
+                    ),
+                );
+                Ok(())
+            }
             JournalTransition::Completed => self.advance(
                 JournalPhase::Verifying,
                 JournalPhase::Completed,

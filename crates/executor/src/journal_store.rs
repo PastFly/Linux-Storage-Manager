@@ -465,6 +465,7 @@ fn allowed_transition(from: JournalPhase, to: JournalPhase) -> bool {
             | (JournalPhase::PreconditionsVerified, JournalPhase::Approved)
             | (JournalPhase::Approved, JournalPhase::Executing)
             | (JournalPhase::Executing, JournalPhase::Verifying)
+            | (JournalPhase::Verifying, JournalPhase::Executing)
             | (JournalPhase::Verifying, JournalPhase::Completed)
             | (JournalPhase::Planned, JournalPhase::Aborted)
             | (JournalPhase::HostLockHeld, JournalPhase::Aborted)
