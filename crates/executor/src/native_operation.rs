@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use lsm_planner::Reversibility;
 use serde::Serialize;
 use thiserror::Error;
@@ -232,6 +234,16 @@ pub fn compile_native_manifest(manifest: &FrozenExecutionIntentManifest) -> Nati
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum NativeManifestValidationError {
+    #[error("native step ID must be non-zero")]
+    ZeroStepId,
+    #[error("duplicate native step ID {0}")]
+    DuplicateStepId(u32),
+    #[error("native step {step_id} depends on unknown step {dependency}")]
+    UnknownDependency { step_id: u32, dependency: u32 },
+    #[error("native step {0} depends on itself")]
+    SelfDependency(u32),
+    #[error("native dependency graph contains a cycle")]
+    DependencyCycle,
     #[error("mutation step {0} is missing a verification barrier")]
     MissingVerificationBarrier(u32),
     #[error("mutation step {0} has multiple verification barriers")]
@@ -251,9 +263,70 @@ fn is_mutation_operation(operation: &NativeOperationSpec) -> bool {
     )
 }
 
+fn validate_native_dependency_graph(
+    steps: &[NativeCompiledStep],
+) -> Result<(), NativeManifestValidationError> {
+    let mut by_id = BTreeMap::new();
+    for step in steps {
+        if step.plan_step_id == 0 {
+            return Err(NativeManifestValidationError::ZeroStepId);
+        }
+        if by_id.insert(step.plan_step_id, step).is_some() {
+            return Err(NativeManifestValidationError::DuplicateStepId(
+                step.plan_step_id,
+            ));
+        }
+    }
+
+    for step in steps {
+        for dependency in &step.depends_on {
+            if *dependency == step.plan_step_id {
+                return Err(NativeManifestValidationError::SelfDependency(
+                    step.plan_step_id,
+                ));
+            }
+            if !by_id.contains_key(dependency) {
+                return Err(NativeManifestValidationError::UnknownDependency {
+                    step_id: step.plan_step_id,
+                    dependency: *dependency,
+                });
+            }
+        }
+    }
+
+    fn visit(
+        id: u32,
+        by_id: &BTreeMap<u32, &NativeCompiledStep>,
+        states: &mut BTreeMap<u32, u8>,
+    ) -> Result<(), NativeManifestValidationError> {
+        match states.get(&id).copied() {
+            Some(1) => return Err(NativeManifestValidationError::DependencyCycle),
+            Some(2) => return Ok(()),
+            _ => {}
+        }
+
+        states.insert(id, 1);
+        let step = by_id[&id];
+        for dependency in &step.depends_on {
+            visit(*dependency, by_id, states)?;
+        }
+        states.insert(id, 2);
+        Ok(())
+    }
+
+    let mut states = BTreeMap::new();
+    for id in by_id.keys().copied() {
+        visit(id, &by_id, &mut states)?;
+    }
+
+    Ok(())
+}
+
 pub fn validate_native_manifest(
     manifest: &NativeCompiledManifest,
 ) -> Result<(), NativeManifestValidationError> {
+    validate_native_dependency_graph(&manifest.steps)?;
+
     for barrier in &manifest.verification_barriers {
         let Some(step) = manifest
             .steps
@@ -318,6 +391,62 @@ pub fn validate_native_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn graph_step(plan_step_id: u32, depends_on: Vec<u32>) -> NativeCompiledStep {
+        NativeCompiledStep {
+            plan_step_id,
+            depends_on,
+            reversibility: Reversibility::NotApplicable,
+            role: FrozenIntentRole::PreExecutionEvidence,
+            operation: NativeOperationSpec::RevalidateSnapshot,
+        }
+    }
+
+    #[test]
+    fn native_manifest_dependency_graph_fails_closed() {
+        let manifest = |steps| NativeCompiledManifest {
+            source_manifest_id: "dependency-graph-test".into(),
+            steps,
+            verification_barriers: vec![],
+        };
+
+        assert_eq!(
+            validate_native_manifest(&manifest(vec![
+                graph_step(1, vec![]),
+                graph_step(2, vec![1]),
+            ])),
+            Ok(())
+        );
+        assert_eq!(
+            validate_native_manifest(&manifest(vec![graph_step(0, vec![])])),
+            Err(NativeManifestValidationError::ZeroStepId)
+        );
+        assert_eq!(
+            validate_native_manifest(&manifest(vec![
+                graph_step(1, vec![]),
+                graph_step(1, vec![]),
+            ])),
+            Err(NativeManifestValidationError::DuplicateStepId(1))
+        );
+        assert_eq!(
+            validate_native_manifest(&manifest(vec![graph_step(2, vec![99])])),
+            Err(NativeManifestValidationError::UnknownDependency {
+                step_id: 2,
+                dependency: 99,
+            })
+        );
+        assert_eq!(
+            validate_native_manifest(&manifest(vec![graph_step(3, vec![3])])),
+            Err(NativeManifestValidationError::SelfDependency(3))
+        );
+        assert_eq!(
+            validate_native_manifest(&manifest(vec![
+                graph_step(4, vec![5]),
+                graph_step(5, vec![4]),
+            ])),
+            Err(NativeManifestValidationError::DependencyCycle)
+        );
+    }
 
     #[test]
     fn native_manifest_validation_fails_closed_on_barrier_mismatch() {
