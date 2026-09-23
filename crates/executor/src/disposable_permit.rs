@@ -1,9 +1,11 @@
 use lsm_planner::{ExecutionStartBinding, LvmIdentityKind, TargetIdentityManifest};
 use thiserror::Error;
 
+use crate::disposable_argv::compile_verified_disposable_next_command;
 use crate::{
-    revalidate_disposable_loop_ownership, DisposableCommandPlan, DisposableCommandSpec,
-    DisposableLoopAssociation, DisposableLoopOwnershipProof, DisposableOwnershipError,
+    revalidate_disposable_loop_ownership, DisposableArgvError, DisposableCommandPlan,
+    DisposableCommandSpec, DisposableLoopAssociation, DisposableLoopOwnershipProof,
+    DisposableOwnershipError, DisposableVerifiedBoundary, ValidatedNativeManifest,
 };
 
 #[derive(Debug)]
@@ -63,6 +65,10 @@ pub enum DisposablePermitError {
     ExecutionBindingIntegrityMismatch,
     #[error("disposable plan step {0} is not the next authorized mutation boundary")]
     ExecutionStepNotNext(u32),
+    #[error("verified disposable boundary does not match the durable execution continuation")]
+    VerifiedBoundaryMismatch,
+    #[error("verified disposable continuation command is invalid: {0}")]
+    VerifiedCommand(#[from] DisposableArgvError),
     #[error("requested disposable plan step {0} did not resolve to exactly one command")]
     CommandStepNotUnique(u32),
     #[error("disposable ownership proof is no longer valid: {0}")]
@@ -155,6 +161,69 @@ pub fn bind_disposable_execution_permit(
         .collect::<Vec<_>>();
     if commands.len() != 1 {
         return Err(DisposablePermitError::CommandStepNotUnique(plan_step_id));
+    }
+
+    Ok(DisposableExecutionPermit {
+        source_manifest_id: plan.source_manifest_id().to_owned(),
+        native_manifest_digest: plan.native_manifest_digest().to_owned(),
+        fresh_identity_digest: plan.fresh_identity_digest().to_owned(),
+        execution_id: execution.execution_id.clone(),
+        loop_device: ownership.loop_device().to_owned(),
+        command: commands[0].clone(),
+        #[cfg(feature = "disposable-executor")]
+        ownership: ownership.clone(),
+    })
+}
+
+/// Bind the next destructive layer only from a consumed, freshly verified boundary.
+///
+/// Unlike the first-step binder, this intentionally does not compare the durable
+/// execution's original `fresh_identity_digest`: that digest describes the state
+/// before the first mutation. The consumed boundary is the only authority for the
+/// post-mutation identity and exact next ordered step.
+pub fn bind_verified_disposable_execution_permit(
+    validated: &ValidatedNativeManifest,
+    fresh_identity: &TargetIdentityManifest,
+    ownership: &DisposableLoopOwnershipProof,
+    association: &DisposableLoopAssociation,
+    execution: &ExecutionStartBinding,
+    boundary: DisposableVerifiedBoundary,
+) -> Result<DisposableExecutionPermit, DisposablePermitError> {
+    revalidate_disposable_loop_ownership(ownership)?;
+
+    if association.loop_device() != ownership.loop_device()
+        || association.backing_file() != ownership.backing_file()
+    {
+        return Err(DisposablePermitError::AssociationOwnershipMismatch);
+    }
+
+    verify_target_owned_by_loop(fresh_identity, ownership.loop_device())?;
+
+    if execution.schema_version != 1 || !execution.integrity_matches().unwrap_or(false) {
+        return Err(DisposablePermitError::ExecutionBindingIntegrityMismatch);
+    }
+    if execution.source_manifest_id != validated.manifest().source_manifest_id
+        || execution.native_manifest_digest != validated.digest()
+    {
+        return Err(DisposablePermitError::ExecutionBindingMismatch);
+    }
+
+    let ordered_pair = execution
+        .mutation_step_ids
+        .windows(2)
+        .any(|pair| pair[0] == boundary.completed_step_id() && pair[1] == boundary.next_step_id());
+    if boundary.execution_id() != execution.execution_id
+        || boundary.fresh_identity_digest() != fresh_identity.manifest_digest
+        || !ordered_pair
+    {
+        return Err(DisposablePermitError::VerifiedBoundaryMismatch);
+    }
+
+    let next_step_id = boundary.next_step_id();
+    let plan = compile_verified_disposable_next_command(validated, fresh_identity, next_step_id)?;
+    let commands = plan.commands();
+    if commands.len() != 1 || commands[0].plan_step_id() != next_step_id {
+        return Err(DisposablePermitError::CommandStepNotUnique(next_step_id));
     }
 
     Ok(DisposableExecutionPermit {
@@ -370,6 +439,91 @@ mod tests {
             permit.native_manifest_digest(),
             plan.native_manifest_digest()
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn verified_boundary_mints_only_fresh_filesystem_permit() {
+        let (root, ownership, association, plan, mut identity) = setup();
+        let execution = execution(&plan);
+
+        identity.manifest_digest = "post-lv-id".into();
+        identity.lvm[1].size_bytes = 9 * 1024 * 1024 * 1024;
+        let filesystem = identity.filesystem.as_mut().unwrap();
+        filesystem.backing_device_size_bytes = 9 * 1024 * 1024 * 1024;
+        filesystem.observed_filesystem_size_bytes = Some(8 * 1024 * 1024 * 1024);
+
+        let boundary = DisposableVerifiedBoundary::new(
+            execution.execution_id.clone(),
+            3,
+            4,
+            identity.manifest_digest.clone(),
+        );
+        let permit = bind_verified_disposable_execution_permit(
+            &validated(),
+            &identity,
+            &ownership,
+            &association,
+            &execution,
+            boundary,
+        )
+        .unwrap();
+
+        assert_eq!(permit.execution_id(), execution.execution_id);
+        assert_eq!(permit.fresh_identity_digest(), "post-lv-id");
+        assert_eq!(permit.command().plan_step_id(), 4);
+        assert_eq!(permit.command().args(), ["/dev/mapper/vg0-root"]);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_or_reordered_verified_boundary_fails_closed() {
+        let (root, ownership, association, plan, mut identity) = setup();
+        let execution = execution(&plan);
+
+        identity.manifest_digest = "post-lv-id".into();
+        identity.lvm[1].size_bytes = 9 * 1024 * 1024 * 1024;
+        let filesystem = identity.filesystem.as_mut().unwrap();
+        filesystem.backing_device_size_bytes = 9 * 1024 * 1024 * 1024;
+        filesystem.observed_filesystem_size_bytes = Some(8 * 1024 * 1024 * 1024);
+
+        let stale = DisposableVerifiedBoundary::new(
+            execution.execution_id.clone(),
+            3,
+            4,
+            "stale-post-lv-id".into(),
+        );
+        assert!(matches!(
+            bind_verified_disposable_execution_permit(
+                &validated(),
+                &identity,
+                &ownership,
+                &association,
+                &execution,
+                stale,
+            ),
+            Err(DisposablePermitError::VerifiedBoundaryMismatch)
+        ));
+
+        let reordered = DisposableVerifiedBoundary::new(
+            execution.execution_id.clone(),
+            4,
+            3,
+            identity.manifest_digest.clone(),
+        );
+        assert!(matches!(
+            bind_verified_disposable_execution_permit(
+                &validated(),
+                &identity,
+                &ownership,
+                &association,
+                &execution,
+                reordered,
+            ),
+            Err(DisposablePermitError::VerifiedBoundaryMismatch)
+        ));
+
         fs::remove_dir_all(root).unwrap();
     }
 

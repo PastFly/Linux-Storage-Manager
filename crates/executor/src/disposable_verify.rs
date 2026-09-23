@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::{LockedExecutionSession, NativeOperationSpec, ValidatedNativeManifest};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DisposableVerifiedBoundary {
     execution_id: String,
     completed_step_id: u32,
@@ -14,6 +14,20 @@ pub struct DisposableVerifiedBoundary {
 }
 
 impl DisposableVerifiedBoundary {
+    pub(crate) fn new(
+        execution_id: String,
+        completed_step_id: u32,
+        next_step_id: u32,
+        fresh_identity_digest: String,
+    ) -> Self {
+        Self {
+            execution_id,
+            completed_step_id,
+            next_step_id,
+            fresh_identity_digest,
+        }
+    }
+
     pub fn execution_id(&self) -> &str {
         &self.execution_id
     }
@@ -161,12 +175,12 @@ pub fn verify_and_continue_disposable_boundary(
         .persist_verification_passed_continue(completed_step_id, next_step_id)
         .map_err(|_| DisposableBoundaryVerificationError::PersistenceFailed)?;
 
-    Ok(DisposableVerifiedBoundary {
-        execution_id: execution.execution_id,
+    Ok(DisposableVerifiedBoundary::new(
+        execution.execution_id,
         completed_step_id,
         next_step_id,
         fresh_identity_digest,
-    })
+    ))
 }
 
 #[cfg(test)]

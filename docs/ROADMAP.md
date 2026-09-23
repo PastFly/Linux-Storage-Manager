@@ -112,7 +112,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Add an exact non-executable `ResizePhysicalVolume` contract across planner, frozen intent and native layers.
 - [x] Promote proven single-PV underlying LVM capacity into exact dry-run chains for `partition? -> PV -> LV -> filesystem`, including `--max`.
 - [x] Fail closed when native mutation layers are reordered or bypass required lower-layer dependencies.
-- [ ] Compile the first disposable-only `LV -> filesystem` profile into a minimal typed executable argv allowlist bound to fresh identity.
+- [x] Compile the first disposable-only `LV -> filesystem` profile into a minimal typed executable argv allowlist bound to fresh identity.
 - [ ] Execute that first profile only on harness-owned `/dev/loopN` fixtures while production `MUTATION_ENABLED=false` remains unchanged.
 - [x] Add partition-table metadata backup plus a recovery drill.
 - [x] Add LVM metadata backup plus a recovery drill.
@@ -125,7 +125,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [ ] Keep every discovered filesystem selectable when several partitions/LVs exist.
 - [ ] Present blocked paths with the exact reason instead of silently omitting the target.
 - [ ] Support safe disk-tail migration strategies such as swap-partition -> swapfile only after dedicated hibernation/resume checks.
-- [ ] Re-discover and verify after every destructive boundary.
+- [ ] Re-discover and verify after every destructive boundary (the first LV -> filesystem boundary is now enforced; remaining mutation profiles are still pending).
 - [ ] Keep shrink unsupported until it is separately designed and reviewed.
 
 ## M2 — Provisioning and swap
