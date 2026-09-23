@@ -298,8 +298,8 @@ mod tests {
     use super::*;
     use lsm_core::{HostCapabilities, HostSnapshot};
     use lsm_planner::{
-        build_frozen_execution_handoff, plan_extend, ExtendRequest, Growth, JournalPhase,
-        PlanStatus,
+        build_execution_start_binding, build_frozen_execution_handoff, plan_extend, ExtendRequest,
+        Growth, JournalPhase, PlanStatus,
     };
     use serde_json::json;
     use std::os::unix::fs::symlink;
@@ -779,6 +779,47 @@ mod tests {
             binding.preconditions_journal_digest,
             approval.preconditions_journal_digest()
         );
+
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exact_execution_start_binding_advances_durable_journal_atomically() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("execution-start");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut session, &handoff, &snapshot, &capabilities);
+
+        let frozen = crate::freeze_execution_intent(&session, &approval).unwrap();
+        let compiled = crate::compile_native_manifest(&frozen);
+        let validated = crate::validate_and_bind_native_manifest(compiled).unwrap();
+        let binding = build_execution_start_binding(
+            session.journal(),
+            frozen.manifest_id(),
+            validated.digest(),
+            &handoff.target_identity().manifest_digest,
+        )
+        .unwrap();
+
+        let approved = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(approved.phase, JournalPhase::Approved);
+        assert!(!approved.mutation_may_have_started);
+        assert!(approved.execution.is_none());
+
+        session.persist_execution_started(&binding).unwrap();
+
+        assert_eq!(session.journal().phase, JournalPhase::Executing);
+        assert!(session.journal().mutation_may_have_started);
+        assert_eq!(session.journal().execution.as_ref(), Some(&binding));
+        let persisted = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(persisted, *session.journal());
+        assert_eq!(persisted.execution.as_ref(), Some(&binding));
 
         drop(session);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
