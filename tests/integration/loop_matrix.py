@@ -608,10 +608,29 @@ def check_preview(plan: Any, expected_status: str) -> None:
     else:
         lvm_change = plan.get("size_change")
         partition_change = plan.get("partition_size_change")
-        if ((isinstance(lvm_change, dict) + isinstance(partition_change, dict)) != 1
+        has_lvm_change = isinstance(lvm_change, dict)
+        has_partition_change = isinstance(partition_change, dict)
+        if (not (has_lvm_change or has_partition_change)
                 or not plan.get("steps") or plan.get("blockers") != []):
-            raise SafetyError("preview must contain exactly one size change and no blockers")
-        if isinstance(lvm_change, dict):
+            raise SafetyError("preview must contain a size change and no blockers")
+        if has_lvm_change and has_partition_change:
+            operations = [
+                step.get("operation")
+                for step in plan["steps"]
+                if isinstance(step, dict)
+            ]
+            required = [
+                "extend_partition",
+                "resize_physical_volume",
+                "extend_logical_volume",
+                "grow_filesystem",
+                "rediscover_and_verify",
+            ]
+            if any(operation not in operations for operation in required):
+                raise SafetyError(
+                    "combined partition/LVM preview lacks the exact chained growth operations"
+                )
+        if has_lvm_change:
             extent = lvm_change.get("extent_size_bytes")
             growth = lvm_change.get("rounded_growth_bytes")
             if (type(extent) is not int or extent <= 0 or type(growth) is not int or growth <= 0
@@ -619,7 +638,7 @@ def check_preview(plan: Any, expected_status: str) -> None:
                     or lvm_change["current_lv_size_bytes"] + growth
                     != lvm_change["expected_lv_size_bytes"]):
                 raise SafetyError("inconsistent LVM preview size arithmetic")
-        else:
+        if has_partition_change:
             sector = partition_change.get("sector_size_bytes")
             growth = partition_change.get("rounded_growth_bytes")
             if (type(sector) is not int or sector <= 0 or type(growth) is not int or growth <= 0
