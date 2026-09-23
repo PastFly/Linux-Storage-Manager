@@ -339,4 +339,56 @@ mod tests {
             Err(DisposableBoundaryVerificationError::LogicalVolumeSizeMismatch)
         );
     }
+
+    #[test]
+    fn exact_terminal_filesystem_growth_verifies_final_step() {
+        let validated = validated();
+        let execution = execution(&validated);
+        let before = fresh_identity(9 * 1024 * 1024 * 1024);
+        let mut fresh = before.clone();
+        fresh.manifest_digest = digest('c');
+        fresh.filesystem.as_mut().unwrap().observed_filesystem_size_bytes =
+            Some(9 * 1024 * 1024 * 1024);
+
+        let final_digest =
+            verify_terminal_filesystem_state(&execution, &validated, &before, &fresh, 4).unwrap();
+
+        assert_eq!(final_digest, digest('c'));
+    }
+
+    #[test]
+    fn terminal_verification_rejects_nonfinal_or_changed_filesystem_identity() {
+        let validated = validated();
+        let execution = execution(&validated);
+        let before = fresh_identity(9 * 1024 * 1024 * 1024);
+        let mut fresh = before.clone();
+        fresh.manifest_digest = digest('c');
+        fresh.filesystem.as_mut().unwrap().observed_filesystem_size_bytes =
+            Some(9 * 1024 * 1024 * 1024);
+
+        assert_eq!(
+            verify_terminal_filesystem_state(&execution, &validated, &before, &fresh, 3),
+            Err(DisposableBoundaryVerificationError::FinalStepNotLast)
+        );
+
+        fresh.filesystem.as_mut().unwrap().uuid = Some("other-fs".into());
+        assert_eq!(
+            verify_terminal_filesystem_state(&execution, &validated, &before, &fresh, 4),
+            Err(DisposableBoundaryVerificationError::FilesystemIdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn terminal_verification_requires_observed_filesystem_growth() {
+        let validated = validated();
+        let execution = execution(&validated);
+        let before = fresh_identity(9 * 1024 * 1024 * 1024);
+        let mut fresh = before.clone();
+        fresh.manifest_digest = digest('c');
+
+        assert_eq!(
+            verify_terminal_filesystem_state(&execution, &validated, &before, &fresh, 4),
+            Err(DisposableBoundaryVerificationError::FilesystemSizeDidNotGrow)
+        );
+    }
 }
