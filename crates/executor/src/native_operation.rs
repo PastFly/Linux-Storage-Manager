@@ -257,6 +257,30 @@ pub enum NativeManifestValidationError {
     UnsafeVerificationBarrier(u32),
 }
 
+#[derive(Debug, Error)]
+pub enum NativeManifestBindingError {
+    #[error("native manifest validation failed: {0}")]
+    Validation(#[from] NativeManifestValidationError),
+    #[error("native manifest digest serialization failed: {0}")]
+    Serialization(#[from] serde_json::Error),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ValidatedNativeManifest {
+    manifest: NativeCompiledManifest,
+    digest: String,
+}
+
+impl ValidatedNativeManifest {
+    pub fn manifest(&self) -> &NativeCompiledManifest {
+        &self.manifest
+    }
+
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+}
+
 fn is_mutation_operation(operation: &NativeOperationSpec) -> bool {
     matches!(
         operation,
@@ -424,9 +448,47 @@ pub fn validate_native_manifest(
     Ok(())
 }
 
+pub fn validate_and_bind_native_manifest(
+    manifest: NativeCompiledManifest,
+) -> Result<ValidatedNativeManifest, NativeManifestBindingError> {
+    validate_native_manifest(&manifest)?;
+    let digest = native_manifest_digest(&manifest)?;
+    Ok(ValidatedNativeManifest { manifest, digest })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validated_native_manifest_binds_only_valid_manifest_and_digest() {
+        let valid = NativeCompiledManifest {
+            source_manifest_id: "validated-native-test".into(),
+            steps: vec![NativeCompiledStep {
+                plan_step_id: 1,
+                depends_on: vec![],
+                reversibility: Reversibility::NotApplicable,
+                role: FrozenIntentRole::PreExecutionEvidence,
+                operation: NativeOperationSpec::RevalidateSnapshot,
+            }],
+            verification_barriers: vec![],
+        };
+
+        let expected_digest = native_manifest_digest(&valid).unwrap();
+        let validated = validate_and_bind_native_manifest(valid.clone()).unwrap();
+
+        assert_eq!(validated.manifest(), &valid);
+        assert_eq!(validated.digest(), expected_digest);
+
+        let mut invalid = valid;
+        invalid.steps[0].role = FrozenIntentRole::MutationCandidate;
+        assert!(matches!(
+            validate_and_bind_native_manifest(invalid),
+            Err(NativeManifestBindingError::Validation(
+                NativeManifestValidationError::RoleOperationMismatch(1)
+            ))
+        ));
+    }
 
     fn graph_step(plan_step_id: u32, depends_on: Vec<u32>) -> NativeCompiledStep {
         NativeCompiledStep {
