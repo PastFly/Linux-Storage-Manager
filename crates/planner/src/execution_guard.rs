@@ -287,6 +287,14 @@ impl ExecutionStartBinding {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionProgress {
+    pub next_step_index: u32,
+    pub verifying_step_id: Option<u32>,
+    pub verified_step_ids: Vec<u32>,
+    pub latest_identity_digest: String,
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ExecutionStartBindingError {
     #[error("execution start binding requires an approved journal")]
@@ -318,6 +326,7 @@ pub struct OperationJournal {
     pub mutation_may_have_started: bool,
     pub approval: Option<ExactApprovalBinding>,
     pub execution: Option<ExecutionStartBinding>,
+    pub execution_progress: Option<ExecutionProgress>,
     pub events: Vec<JournalEvent>,
 }
 
@@ -398,8 +407,13 @@ pub enum JournalTransition<'a> {
     ExecutionStarted {
         binding: &'a ExecutionStartBinding,
     },
-    VerificationStarted,
-    Completed,
+    VerificationStarted {
+        plan_step_id: u32,
+    },
+    VerificationPassed {
+        plan_step_id: u32,
+        fresh_identity_digest: &'a str,
+    },
     Interrupted {
         reason: &'a str,
     },
@@ -445,6 +459,12 @@ pub enum JournalError {
     ExecutionBindingApprovedJournalMismatch,
     #[error("execution start requires an exact approval binding")]
     ExecutionBindingApprovalMissing,
+    #[error("execution progress is missing")]
+    ExecutionProgressMissing,
+    #[error("verification step mismatch: expected {expected}, got {actual}")]
+    VerificationStepMismatch { expected: u32, actual: u32 },
+    #[error("verification identity digest is not a SHA-256 digest")]
+    VerificationIdentityDigestInvalid,
     #[error("journal is terminal and cannot advance")]
     Terminal,
 }
@@ -461,6 +481,7 @@ impl OperationJournal {
             mutation_may_have_started: false,
             approval: None,
             execution: None,
+            execution_progress: None,
             events: Vec::new(),
         }
     }
@@ -580,20 +601,111 @@ impl OperationJournal {
                 // the next journal write. Therefore interruption must require reconciliation.
                 self.mutation_may_have_started = true;
                 self.execution = Some(binding.clone());
+                self.execution_progress = Some(ExecutionProgress {
+                    next_step_index: 0,
+                    verifying_step_id: None,
+                    verified_step_ids: Vec::new(),
+                    latest_identity_digest: binding.fresh_identity_digest.clone(),
+                });
                 Ok(())
             }
-            JournalTransition::VerificationStarted => self.advance(
-                JournalPhase::Executing,
-                JournalPhase::Verifying,
-                "verification-started",
-                "post-mutation rediscovery and verification started",
-            ),
-            JournalTransition::Completed => self.advance(
-                JournalPhase::Verifying,
-                JournalPhase::Completed,
-                "completed",
-                "final topology and expected invariants verified",
-            ),
+            JournalTransition::VerificationStarted { plan_step_id } => {
+                if self.phase != JournalPhase::Executing {
+                    return Err(self.invalid("verification_started"));
+                }
+                let binding = self
+                    .execution
+                    .as_ref()
+                    .ok_or(JournalError::ExecutionProgressMissing)?;
+                let progress = self
+                    .execution_progress
+                    .as_ref()
+                    .ok_or(JournalError::ExecutionProgressMissing)?;
+                let expected = binding
+                    .mutation_step_ids
+                    .get(progress.next_step_index as usize)
+                    .copied()
+                    .ok_or(JournalError::ExecutionProgressMissing)?;
+                if expected != plan_step_id {
+                    return Err(JournalError::VerificationStepMismatch {
+                        expected,
+                        actual: plan_step_id,
+                    });
+                }
+                if progress.verifying_step_id.is_some() {
+                    return Err(self.invalid("verification_started"));
+                }
+
+                self.advance(
+                    JournalPhase::Executing,
+                    JournalPhase::Verifying,
+                    "verification-started",
+                    "post-mutation rediscovery and verification started for the exact bound step",
+                )?;
+                self.execution_progress
+                    .as_mut()
+                    .ok_or(JournalError::ExecutionProgressMissing)?
+                    .verifying_step_id = Some(plan_step_id);
+                Ok(())
+            }
+            JournalTransition::VerificationPassed {
+                plan_step_id,
+                fresh_identity_digest,
+            } => {
+                if self.phase != JournalPhase::Verifying {
+                    return Err(self.invalid("verification_passed"));
+                }
+                if !is_sha256_hex(fresh_identity_digest) {
+                    return Err(JournalError::VerificationIdentityDigestInvalid);
+                }
+                let binding = self
+                    .execution
+                    .as_ref()
+                    .ok_or(JournalError::ExecutionProgressMissing)?;
+                let progress = self
+                    .execution_progress
+                    .as_ref()
+                    .ok_or(JournalError::ExecutionProgressMissing)?;
+                let expected = binding
+                    .mutation_step_ids
+                    .get(progress.next_step_index as usize)
+                    .copied()
+                    .ok_or(JournalError::ExecutionProgressMissing)?;
+                if expected != plan_step_id || progress.verifying_step_id != Some(plan_step_id) {
+                    return Err(JournalError::VerificationStepMismatch {
+                        expected,
+                        actual: plan_step_id,
+                    });
+                }
+
+                let final_step =
+                    progress.next_step_index as usize + 1 == binding.mutation_step_ids.len();
+                if final_step {
+                    self.advance(
+                        JournalPhase::Verifying,
+                        JournalPhase::Completed,
+                        "completed",
+                        "all bound mutation steps were rediscovered and verified",
+                    )?;
+                } else {
+                    self.advance(
+                        JournalPhase::Verifying,
+                        JournalPhase::Executing,
+                        "verification-passed",
+                        "bound mutation step verified; next bound step may now execute",
+                    )?;
+                }
+
+                let progress = self
+                    .execution_progress
+                    .as_mut()
+                    .ok_or(JournalError::ExecutionProgressMissing)?;
+                progress.verified_step_ids.push(plan_step_id);
+                progress.next_step_index += 1;
+                progress.verifying_step_id = None;
+                progress.latest_identity_digest = fresh_identity_digest.to_owned();
+                Ok(())
+            }
             JournalTransition::Interrupted { reason } => {
                 let from = self.phase;
                 if self.mutation_may_have_started
