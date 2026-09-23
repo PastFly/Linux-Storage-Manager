@@ -390,6 +390,21 @@ fn validate_execution_binding(journal: &OperationJournal) -> Result<(), JournalS
                 validate_hex_digest(value, label)?;
             }
 
+            if binding.mutation_step_ids.is_empty()
+                || binding.mutation_step_ids.iter().any(|step_id| *step_id == 0)
+                || {
+                    let mut seen = std::collections::BTreeSet::new();
+                    binding
+                        .mutation_step_ids
+                        .iter()
+                        .any(|step_id| !seen.insert(*step_id))
+                }
+            {
+                return Err(JournalStoreError::InvalidRecord(
+                    "execution binding mutation step sequence is invalid".to_owned(),
+                ));
+            }
+
             if binding.journal_id != journal.journal_id {
                 return Err(JournalStoreError::InvalidRecord(
                     "execution binding journal ID does not match the journal".to_owned(),
@@ -820,6 +835,7 @@ mod tests {
             &digest('f'),
             &digest('1'),
             &journal.baseline_manifest_digest,
+            &[5, 6],
         )
         .unwrap();
         journal
@@ -878,6 +894,7 @@ mod tests {
             &digest('f'),
             &digest('1'),
             &journal.baseline_manifest_digest,
+            &[5, 6],
         )
         .unwrap();
         journal
