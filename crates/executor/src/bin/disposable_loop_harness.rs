@@ -87,7 +87,9 @@ fn run() -> HarnessResult<()> {
         },
     )?;
     if plan.status() != PlanStatus::Preview {
-        return Err(boxed("live disposable fixture did not produce a preview-ready plan"));
+        return Err(boxed(
+            "live disposable fixture did not produce a preview-ready plan",
+        ));
     }
     let handoff = build_frozen_execution_handoff(&snapshot, &capabilities, &plan)?;
 
@@ -105,11 +107,8 @@ fn run() -> HarnessResult<()> {
     }
 
     let backup_manifest = build_metadata_backup_manifest(&handoff)?;
-    let backup_receipt = capture_metadata_backups_at_disposable_root(
-        &session,
-        &backup_manifest,
-        &args.backup_root,
-    )?;
+    let backup_receipt =
+        capture_metadata_backups_at_disposable_root(&session, &backup_manifest, &args.backup_root)?;
     let backup_revalidation = revalidate_metadata_backup_receipt_at_disposable_root(
         &backup_manifest,
         &backup_receipt,
@@ -147,10 +146,13 @@ fn run() -> HarnessResult<()> {
     )?;
 
     let intent = freeze_execution_intent(&session, &approval)?;
-    let validated = lsm_executor::validate_and_bind_native_manifest(compile_native_manifest(&intent))?;
+    let validated =
+        lsm_executor::validate_and_bind_native_manifest(compile_native_manifest(&intent))?;
     let initial_identity = capture_target_identity(&fresh_snapshot, &args.target)?;
     if initial_identity.manifest_digest != handoff.target_identity().manifest_digest {
-        return Err(boxed("fresh executable identity diverged from the locked handoff"));
+        return Err(boxed(
+            "fresh executable identity diverged from the locked handoff",
+        ));
     }
     let command_plan = compile_disposable_lvm_growth_commands(&validated, &initial_identity)?;
     if command_plan.commands().len() != 2
@@ -160,7 +162,9 @@ fn run() -> HarnessResult<()> {
             DisposableProgram::Resize2fs | DisposableProgram::XfsGrowfs
         )
     {
-        return Err(boxed("compiled mutation sequence is not exactly LV then filesystem growth"));
+        return Err(boxed(
+            "compiled mutation sequence is not exactly LV then filesystem growth",
+        ));
     }
 
     let execution = persist_disposable_execution_start(&mut session, &command_plan)?;
@@ -236,7 +240,8 @@ fn run() -> HarnessResult<()> {
     let (execution_id, final_identity_digest) = match mutation_result {
         Ok(value) => value,
         Err(error) => {
-            let _ = session.persist_interrupted("disposable loop harness failed after execution start");
+            let _ =
+                session.persist_interrupted("disposable loop harness failed after execution start");
             return Err(error);
         }
     };
@@ -246,7 +251,9 @@ fn run() -> HarnessResult<()> {
     }
     let persisted = store.load(&session.journal().journal_id)?;
     if persisted != *session.journal() {
-        return Err(boxed("completed durable journal does not match live session state"));
+        return Err(boxed(
+            "completed durable journal does not match live session state",
+        ));
     }
     let final_binding = persisted
         .verified_boundary
@@ -255,7 +262,9 @@ fn run() -> HarnessResult<()> {
     if final_binding.final_step_id != Some(final_step)
         || final_binding.final_identity_digest.as_deref() != Some(final_identity_digest.as_str())
     {
-        return Err(boxed("completed journal is missing exact terminal verification identity"));
+        return Err(boxed(
+            "completed journal is missing exact terminal verification identity",
+        ));
     }
 
     let journal_id = persisted.journal_id.clone();
@@ -360,7 +369,9 @@ fn require_direct_child(root: &Path, path: &Path, label: &str) -> HarnessResult<
         .ok_or_else(|| boxed(format!("{label} has no parent")))?
         .canonicalize()?;
     if parent != root {
-        return Err(boxed(format!("{label} must be a direct child of the owned root")));
+        return Err(boxed(format!(
+            "{label} must be a direct child of the owned root"
+        )));
     }
     match fs::symlink_metadata(path) {
         Ok(_) => Err(boxed(format!("{label} already exists"))),
