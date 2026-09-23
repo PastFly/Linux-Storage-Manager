@@ -21,6 +21,11 @@ pub use backup_capture::{
     capture_metadata_backups, revalidate_metadata_backup_receipt, BackupArtifactReceipt,
     BackupCaptureError, BackupReceiptRevalidation, MetadataBackupReceipt,
 };
+#[cfg(feature = "disposable-loop-harness")]
+pub use backup_capture::{
+    capture_metadata_backups_at_disposable_root,
+    revalidate_metadata_backup_receipt_at_disposable_root,
+};
 pub use backup_manifest::{
     build_metadata_backup_manifest, BackupCommandSpec, BackupExpectedIdentity, BackupManifestError,
     MetadataBackupKind, MetadataBackupManifest, MetadataBackupRequirement, BACKUP_DIRECTORY,
