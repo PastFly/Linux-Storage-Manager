@@ -545,12 +545,26 @@ fn chained_lvm_route_uses_partition_tail_when_vg_free_is_insufficient() {
         .any(|step| step.contains("resize LVM PV")));
 
     let plan = plan_extend(&snapshot, &caps, request).unwrap();
-    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert_eq!(plan.status(), PlanStatus::Preview);
     assert_eq!(plan.growth_route_alternatives().len(), 1);
+    assert!(plan.blockers().is_empty());
+    assert!(plan.partition_size_change().is_some());
     assert!(plan
-        .blockers()
+        .steps()
         .iter()
-        .any(|blocker| blocker.code == "insufficient-capacity"));
+        .any(|step| matches!(step.operation, Operation::ExtendPartition { .. })));
+    assert!(plan
+        .steps()
+        .iter()
+        .any(|step| matches!(step.operation, Operation::ResizePhysicalVolume { .. })));
+    assert!(plan
+        .steps()
+        .iter()
+        .any(|step| matches!(step.operation, Operation::ExtendLogicalVolume { .. })));
+    assert!(plan
+        .steps()
+        .iter()
+        .any(|step| matches!(step.operation, Operation::GrowFilesystem { .. })));
 }
 
 #[test]
@@ -604,8 +618,18 @@ fn chained_lvm_route_handles_pv_directly_on_an_enlarged_disk() {
     assert_eq!(route.code, "grow-pv-lv-filesystem");
 
     let plan = plan_extend(&snapshot, &caps, request).unwrap();
-    assert_eq!(plan.status(), PlanStatus::Blocked);
+    assert_eq!(plan.status(), PlanStatus::Preview);
     assert_eq!(plan.growth_route_alternatives().len(), 1);
+    assert!(plan.blockers().is_empty());
+    assert!(plan.partition_size_change().is_none());
+    assert!(plan
+        .steps()
+        .iter()
+        .any(|step| matches!(step.operation, Operation::ResizePhysicalVolume { .. })));
+    assert!(!plan
+        .steps()
+        .iter()
+        .any(|step| matches!(step.operation, Operation::ExtendPartition { .. })));
 }
 
 #[test]
