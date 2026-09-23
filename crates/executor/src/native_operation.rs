@@ -1,5 +1,6 @@
 use lsm_planner::Reversibility;
 use serde::Serialize;
+use thiserror::Error;
 
 use crate::{
     FrozenExecutionIntentManifest, FrozenIntentAction, FrozenIntentRole, FrozenIntentStep,
@@ -229,9 +230,150 @@ pub fn compile_native_manifest(manifest: &FrozenExecutionIntentManifest) -> Nati
     )
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum NativeManifestValidationError {
+    #[error("mutation step {0} is missing a verification barrier")]
+    MissingVerificationBarrier(u32),
+    #[error("mutation step {0} has multiple verification barriers")]
+    DuplicateVerificationBarrier(u32),
+    #[error("verification barrier after step {0} does not reference a mutation step")]
+    UnexpectedVerificationBarrier(u32),
+    #[error("verification barrier after step {0} is not fail-closed")]
+    UnsafeVerificationBarrier(u32),
+}
+
+fn is_mutation_operation(operation: &NativeOperationSpec) -> bool {
+    matches!(
+        operation,
+        NativeOperationSpec::ExtendPartition { .. }
+            | NativeOperationSpec::ExtendLogicalVolume { .. }
+            | NativeOperationSpec::GrowFilesystem { .. }
+    )
+}
+
+pub fn validate_native_manifest(
+    manifest: &NativeCompiledManifest,
+) -> Result<(), NativeManifestValidationError> {
+    for barrier in &manifest.verification_barriers {
+        let Some(step) = manifest
+            .steps
+            .iter()
+            .find(|step| step.plan_step_id == barrier.after_plan_step_id)
+        else {
+            return Err(NativeManifestValidationError::UnexpectedVerificationBarrier(
+                barrier.after_plan_step_id,
+            ));
+        };
+
+        if !is_mutation_operation(&step.operation) {
+            return Err(NativeManifestValidationError::UnexpectedVerificationBarrier(
+                barrier.after_plan_step_id,
+            ));
+        }
+
+        if !(barrier.before_next_mutation
+            && barrier.require_fresh_target_identity
+            && barrier.require_fresh_capabilities
+            && barrier.require_expected_state_check
+            && barrier.stop_on_mismatch)
+        {
+            return Err(NativeManifestValidationError::UnsafeVerificationBarrier(
+                barrier.after_plan_step_id,
+            ));
+        }
+    }
+
+    for step in &manifest.steps {
+        if !is_mutation_operation(&step.operation) {
+            continue;
+        }
+
+        match manifest
+            .verification_barriers
+            .iter()
+            .filter(|barrier| barrier.after_plan_step_id == step.plan_step_id)
+            .count()
+        {
+            0 => {
+                return Err(NativeManifestValidationError::MissingVerificationBarrier(
+                    step.plan_step_id,
+                ));
+            }
+            1 => {}
+            _ => {
+                return Err(NativeManifestValidationError::DuplicateVerificationBarrier(
+                    step.plan_step_id,
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_manifest_validation_fails_closed_on_barrier_mismatch() {
+        let step = NativeCompiledStep {
+            plan_step_id: 31,
+            depends_on: vec![],
+            reversibility: Reversibility::Irreversible,
+            role: FrozenIntentRole::MutationCandidate,
+            operation: NativeOperationSpec::ExtendLogicalVolume {
+                lv_uuid: "lv-validation-test".into(),
+                additional_extents: 3,
+                expected_lv_size_bytes: 32 * 1024 * 1024,
+            },
+        };
+        let barrier = NativeVerificationBarrier {
+            after_plan_step_id: 31,
+            before_next_mutation: true,
+            require_fresh_target_identity: true,
+            require_fresh_capabilities: true,
+            require_expected_state_check: true,
+            stop_on_mismatch: true,
+        };
+        let valid = NativeCompiledManifest {
+            source_manifest_id: "manifest-validation-test".into(),
+            steps: vec![step],
+            verification_barriers: vec![barrier],
+        };
+
+        assert_eq!(validate_native_manifest(&valid), Ok(()));
+
+        let mut missing = valid.clone();
+        missing.verification_barriers.clear();
+        assert_eq!(
+            validate_native_manifest(&missing),
+            Err(NativeManifestValidationError::MissingVerificationBarrier(31))
+        );
+
+        let mut duplicate = valid.clone();
+        duplicate
+            .verification_barriers
+            .push(duplicate.verification_barriers[0].clone());
+        assert_eq!(
+            validate_native_manifest(&duplicate),
+            Err(NativeManifestValidationError::DuplicateVerificationBarrier(31))
+        );
+
+        let mut unexpected = valid.clone();
+        unexpected.steps[0].operation = NativeOperationSpec::RevalidateSnapshot;
+        assert_eq!(
+            validate_native_manifest(&unexpected),
+            Err(NativeManifestValidationError::UnexpectedVerificationBarrier(31))
+        );
+
+        let mut unsafe_barrier = valid.clone();
+        unsafe_barrier.verification_barriers[0].stop_on_mismatch = false;
+        assert_eq!(
+            validate_native_manifest(&unsafe_barrier),
+            Err(NativeManifestValidationError::UnsafeVerificationBarrier(31))
+        );
+    }
 
     #[test]
     fn native_manifest_compiler_binds_exact_frozen_manifest() {
