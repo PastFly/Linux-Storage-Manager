@@ -107,8 +107,13 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Freeze the exact approved semantic `PlanStep` graph into a deterministic non-executable execution-intent manifest with per-mutation verification barriers, while leaving the durable journal at `Approved` and mutation disabled.
 - [x] Compile the frozen execution intent into a typed non-executable native manifest with exact operation payloads, preserved step order/dependencies and preserved verification barriers.
 - [x] Fail closed when a native mutation step is missing its verification barrier, has duplicate barriers, references a non-mutation step, or weakens any required barrier flag.
-- [ ] Complete native dependency-graph validation and role/operation consistency checks before defining any executor boundary.
-- [ ] Add deterministic native-manifest identity/binding so a future executor can only consume the exact validated manifest.
+- [x] Complete native dependency-graph validation and role/operation consistency checks before defining any executor boundary.
+- [x] Add deterministic native-manifest identity/binding so a future executor can only consume the exact validated manifest.
+- [x] Add an exact non-executable `ResizePhysicalVolume` contract across planner, frozen intent and native layers.
+- [x] Promote proven single-PV underlying LVM capacity into exact dry-run chains for `partition? -> PV -> LV -> filesystem`, including `--max`.
+- [x] Fail closed when native mutation layers are reordered or bypass required lower-layer dependencies.
+- [ ] Compile the first disposable-only `LV -> filesystem` profile into a minimal typed executable argv allowlist bound to fresh identity.
+- [ ] Execute that first profile only on harness-owned `/dev/loopN` fixtures while production `MUTATION_ENABLED=false` remains unchanged.
 - [x] Add partition-table metadata backup plus a recovery drill.
 - [x] Add LVM metadata backup plus a recovery drill.
 - [ ] Grow GPT/MBR partitions where safe without moving a partition start.
