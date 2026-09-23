@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use lsm_core::{HostCapabilities, HostSnapshot};
 use lsm_planner::{
     revalidate_target_identity, ExactApprovalBinding, ExecutionHandoffStatus,
-    FrozenExecutionHandoff, IdentityRevalidation, JournalError, JournalPhase, JournalTransition,
-    OperationJournal, PlannerError,
+    ExecutionStartBinding, FrozenExecutionHandoff, IdentityRevalidation, JournalError,
+    JournalPhase, JournalTransition, OperationJournal, PlannerError,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -231,6 +231,61 @@ impl<'a> LockedExecutionSession<'a> {
         Ok(())
     }
 
+    pub fn persist_execution_started(
+        &mut self,
+        binding: &ExecutionStartBinding,
+    ) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::ExecutionStarted { binding })?;
+        store.persist(&next)?;
+        self.journal = next;
+        Ok(())
+    }
+
+    pub fn persist_verification_started(&mut self) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::VerificationStarted)?;
+        store.persist(&next)?;
+        self.journal = next;
+        Ok(())
+    }
+
+    pub fn persist_completed(&mut self) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::Completed)?;
+        store.persist(&next)?;
+        self.journal = next;
+        Ok(())
+    }
+
+    pub fn persist_interrupted(&mut self, reason: &str) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::Interrupted { reason })?;
+        store.persist(&next)?;
+        self.journal = next;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn begin_at_path(
         handoff: &'a FrozenExecutionHandoff,
@@ -282,8 +337,8 @@ mod tests {
     use super::*;
     use lsm_core::{HostCapabilities, HostSnapshot};
     use lsm_planner::{
-        build_frozen_execution_handoff, plan_extend, ExtendRequest, Growth, JournalPhase,
-        PlanStatus,
+        build_execution_start_binding, build_frozen_execution_handoff, plan_extend, ExtendRequest,
+        Growth, JournalPhase, PlanStatus,
     };
     use serde_json::json;
     use std::os::unix::fs::symlink;
@@ -762,6 +817,71 @@ mod tests {
         assert_eq!(
             binding.preconditions_journal_digest,
             approval.preconditions_journal_digest()
+        );
+
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exact_execution_start_binding_advances_durable_journal_atomically() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("execution-start");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut session, &handoff, &snapshot, &capabilities);
+
+        let frozen = crate::freeze_execution_intent(&session, &approval).unwrap();
+        let compiled = crate::compile_native_manifest(&frozen);
+        let validated = crate::validate_and_bind_native_manifest(compiled).unwrap();
+        let mutation_step_ids = validated
+            .manifest()
+            .steps
+            .iter()
+            .filter(|step| step.role == crate::FrozenIntentRole::MutationCandidate)
+            .map(|step| step.plan_step_id)
+            .collect::<Vec<_>>();
+        let binding = build_execution_start_binding(
+            session.journal(),
+            frozen.manifest_id(),
+            validated.digest(),
+            &handoff.target_identity().manifest_digest,
+            &mutation_step_ids,
+        )
+        .unwrap();
+
+        let approved = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(approved.phase, JournalPhase::Approved);
+        assert!(!approved.mutation_may_have_started);
+        assert!(approved.execution.is_none());
+
+        session.persist_execution_started(&binding).unwrap();
+
+        assert_eq!(session.journal().phase, JournalPhase::Executing);
+        assert!(session.journal().mutation_may_have_started);
+        assert_eq!(session.journal().execution.as_ref(), Some(&binding));
+        let persisted = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(persisted, *session.journal());
+        assert_eq!(persisted.execution.as_ref(), Some(&binding));
+
+        session.persist_verification_started().unwrap();
+        assert_eq!(session.journal().phase, JournalPhase::Verifying);
+        assert!(session.journal().mutation_may_have_started);
+        assert_eq!(
+            store.load(&session.journal().journal_id).unwrap(),
+            *session.journal()
+        );
+
+        session.persist_completed().unwrap();
+        assert_eq!(session.journal().phase, JournalPhase::Completed);
+        assert!(session.journal().mutation_may_have_started);
+        assert_eq!(
+            store.load(&session.journal().journal_id).unwrap(),
+            *session.journal()
         );
 
         drop(session);
