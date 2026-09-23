@@ -104,6 +104,10 @@ pub enum Operation {
         new_size_sectors: u64,
         sector_size_bytes: u64,
     },
+    ResizePhysicalVolume {
+        pv_uuid: String,
+        expected_pv_size_bytes: u64,
+    },
     ExtendLogicalVolume {
         lv_uuid: String,
         additional_extents: u64,
