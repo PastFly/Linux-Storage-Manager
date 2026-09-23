@@ -124,6 +124,16 @@ mod tests {
     }
 
     #[test]
+    fn loop_path_boundary_rejects_partitions_and_non_loop_devices() {
+        assert!(valid_loop_path("/dev/loop0"));
+        assert!(valid_loop_path("/dev/loop42"));
+        assert!(!valid_loop_path("/dev/loop"));
+        assert!(!valid_loop_path("/dev/loop7p1"));
+        assert!(!valid_loop_path("/dev/sda"));
+        assert!(!valid_loop_path("loop7"));
+    }
+
+    #[test]
     fn captures_and_revalidates_owned_regular_backing_file() {
         let root = root();
         fs::create_dir_all(&root).unwrap();
