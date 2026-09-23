@@ -1,8 +1,9 @@
 use lsm_core::HostSnapshot;
 use lsm_planner::{
-    build_execution_guard_plan, capture_target_identity, ExactApprovalBinding, GuardPlanStatus,
-    JournalError, JournalPhase, JournalTransition, LayerRouteStatus, LockScope, OperationJournal,
-    ResumeDisposition, HOST_STORAGE_LOCK_PATH,
+    build_execution_guard_plan, build_execution_start_binding, capture_target_identity,
+    ExactApprovalBinding, ExecutionStartBinding, GuardPlanStatus, JournalError, JournalPhase,
+    JournalTransition, LayerRouteStatus, LockScope, OperationJournal, ResumeDisposition,
+    HOST_STORAGE_LOCK_PATH,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -70,6 +71,16 @@ fn approval(journal: &OperationJournal) -> ExactApprovalBinding {
     approval
 }
 
+fn execution_binding(journal: &OperationJournal) -> ExecutionStartBinding {
+    build_execution_start_binding(
+        journal,
+        &"a".repeat(64),
+        &"b".repeat(64),
+        &journal.baseline_manifest_digest,
+    )
+    .unwrap()
+}
+
 #[test]
 fn guard_uses_one_nonblocking_host_exclusive_storage_lock() {
     let guard = guard();
@@ -127,8 +138,14 @@ fn journal_happy_path_requires_exact_order_and_exact_identity() {
         ResumeDisposition::RestartFromFreshPlan
     );
 
-    journal.apply(JournalTransition::ExecutionStarted).unwrap();
+    let execution = execution_binding(&journal);
+    journal
+        .apply(JournalTransition::ExecutionStarted {
+            binding: &execution,
+        })
+        .unwrap();
     assert!(journal.mutation_may_have_started);
+    assert_eq!(journal.execution.as_ref(), Some(&execution));
     assert_eq!(
         journal.resume_disposition(),
         ResumeDisposition::RecoveryRequired
@@ -149,6 +166,41 @@ fn journal_happy_path_requires_exact_order_and_exact_identity() {
             .collect::<Vec<_>>(),
         vec![1, 2, 3, 4, 5, 6, 7]
     );
+}
+
+#[test]
+fn execution_binding_for_another_native_manifest_is_rejected() {
+    let guard = guard();
+    let mut journal = OperationJournal::new(&guard);
+    journal.apply(JournalTransition::HostLockAcquired).unwrap();
+    journal
+        .apply(JournalTransition::IdentityRevalidated {
+            fresh_manifest_digest: &guard.baseline_manifest_digest,
+        })
+        .unwrap();
+    journal
+        .apply(JournalTransition::PreconditionsVerified)
+        .unwrap();
+    let approval = approval(&journal);
+    journal
+        .apply(JournalTransition::ExactPlanApproved {
+            approved_plan_id: &guard.plan_id,
+            approval: &approval,
+        })
+        .unwrap();
+
+    let mut execution = execution_binding(&journal);
+    execution.native_manifest_digest = "c".repeat(64);
+
+    assert_eq!(
+        journal.apply(JournalTransition::ExecutionStarted {
+            binding: &execution,
+        }),
+        Err(JournalError::ExecutionBindingIntegrityMismatch)
+    );
+    assert_eq!(journal.phase, JournalPhase::Approved);
+    assert!(!journal.mutation_may_have_started);
+    assert!(journal.execution.is_none());
 }
 
 #[test]
@@ -290,7 +342,12 @@ fn interruption_after_execution_boundary_requires_reconciliation_not_replay() {
             approval: &approval,
         })
         .unwrap();
-    journal.apply(JournalTransition::ExecutionStarted).unwrap();
+    let execution = execution_binding(&journal);
+    journal
+        .apply(JournalTransition::ExecutionStarted {
+            binding: &execution,
+        })
+        .unwrap();
 
     journal
         .apply(JournalTransition::Interrupted {
@@ -306,7 +363,9 @@ fn interruption_after_execution_boundary_requires_reconciliation_not_replay() {
     );
     assert_eq!(
         journal
-            .apply(JournalTransition::ExecutionStarted)
+            .apply(JournalTransition::ExecutionStarted {
+                binding: &execution,
+            })
             .unwrap_err(),
         JournalError::Terminal
     );
@@ -332,7 +391,12 @@ fn abort_after_execution_boundary_is_recovery_required() {
             approval: &approval,
         })
         .unwrap();
-    journal.apply(JournalTransition::ExecutionStarted).unwrap();
+    let execution = execution_binding(&journal);
+    journal
+        .apply(JournalTransition::ExecutionStarted {
+            binding: &execution,
+        })
+        .unwrap();
 
     journal
         .apply(JournalTransition::Abort {
