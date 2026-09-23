@@ -609,9 +609,7 @@ impl OperationJournal {
                 let ordered_pair = execution
                     .mutation_step_ids
                     .windows(2)
-                    .any(|pair| {
-                        pair[0] == completed_step_id && pair[1] == next_step_id
-                    });
+                    .any(|pair| pair[0] == completed_step_id && pair[1] == next_step_id);
                 if completed_step_id == 0
                     || next_step_id == 0
                     || completed_step_id == next_step_id
