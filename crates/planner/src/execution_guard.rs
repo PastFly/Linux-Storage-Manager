@@ -303,15 +303,25 @@ pub struct VerifiedMutationBoundaryBinding {
 
 impl VerifiedMutationBoundaryBinding {
     pub fn expected_boundary_id(&self) -> Result<String, serde_json::Error> {
-        fingerprint(&(
-            self.schema_version,
-            &self.execution_id,
-            self.completed_step_id,
-            self.next_step_id,
-            &self.fresh_identity_digest,
-            self.final_step_id,
-            &self.final_identity_digest,
-        ))
+        if self.schema_version == 1 {
+            fingerprint(&(
+                self.schema_version,
+                &self.execution_id,
+                self.completed_step_id,
+                self.next_step_id,
+                &self.fresh_identity_digest,
+            ))
+        } else {
+            fingerprint(&(
+                self.schema_version,
+                &self.execution_id,
+                self.completed_step_id,
+                self.next_step_id,
+                &self.fresh_identity_digest,
+                self.final_step_id,
+                &self.final_identity_digest,
+            ))
+        }
     }
 
     pub fn integrity_matches(&self) -> Result<bool, serde_json::Error> {
@@ -730,6 +740,7 @@ impl OperationJournal {
                     return Err(JournalError::CompletionVerifiedBoundaryMismatch);
                 }
 
+                boundary.schema_version = 2;
                 boundary.final_step_id = Some(completed_step_id);
                 boundary.final_identity_digest = Some(fresh_identity_digest.to_owned());
                 boundary.boundary_id = boundary.expected_boundary_id().map_err(|error| {
