@@ -208,9 +208,10 @@ pub fn bind_verified_disposable_execution_permit(
         return Err(DisposablePermitError::ExecutionBindingMismatch);
     }
 
-    let ordered_pair = execution.mutation_step_ids.windows(2).any(|pair| {
-        pair[0] == boundary.completed_step_id() && pair[1] == boundary.next_step_id()
-    });
+    let ordered_pair = execution
+        .mutation_step_ids
+        .windows(2)
+        .any(|pair| pair[0] == boundary.completed_step_id() && pair[1] == boundary.next_step_id());
     if boundary.execution_id() != execution.execution_id
         || boundary.fresh_identity_digest() != fresh_identity.manifest_digest
         || !ordered_pair
@@ -219,8 +220,7 @@ pub fn bind_verified_disposable_execution_permit(
     }
 
     let next_step_id = boundary.next_step_id();
-    let plan =
-        compile_verified_disposable_next_command(validated, fresh_identity, next_step_id)?;
+    let plan = compile_verified_disposable_next_command(validated, fresh_identity, next_step_id)?;
     let commands = plan.commands();
     if commands.len() != 1 || commands[0].plan_step_id() != next_step_id {
         return Err(DisposablePermitError::CommandStepNotUnique(next_step_id));
@@ -442,7 +442,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-
     #[test]
     fn verified_boundary_mints_only_fresh_filesystem_permit() {
         let (root, ownership, association, plan, mut identity) = setup();
@@ -473,10 +472,7 @@ mod tests {
         assert_eq!(permit.execution_id(), execution.execution_id);
         assert_eq!(permit.fresh_identity_digest(), "post-lv-id");
         assert_eq!(permit.command().plan_step_id(), 4);
-        assert_eq!(
-            permit.command().args(),
-            ["/dev/mapper/vg0-root"]
-        );
+        assert_eq!(permit.command().args(), ["/dev/mapper/vg0-root"]);
 
         fs::remove_dir_all(root).unwrap();
     }
