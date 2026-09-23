@@ -5,8 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use lsm_planner::{
-    ExactApprovalBinding, ExecutionStartBinding, JournalEvent, JournalPhase, OperationJournal,
-    JOURNAL_DIRECTORY,
+    ExactApprovalBinding, ExecutionProgress, ExecutionStartBinding, JournalEvent, JournalPhase,
+    OperationJournal, JOURNAL_DIRECTORY,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -56,6 +56,8 @@ struct JournalWire {
     approval: Option<ExactApprovalBinding>,
     #[serde(default)]
     execution: Option<ExecutionStartBinding>,
+    #[serde(default)]
+    execution_progress: Option<ExecutionProgress>,
     events: Vec<JournalEvent>,
 }
 
@@ -174,6 +176,7 @@ impl DurableJournalStore {
             mutation_may_have_started: wire.mutation_may_have_started,
             approval: wire.approval,
             execution: wire.execution,
+            execution_progress: wire.execution_progress,
             events: wire.events,
         };
         validate_journal(&journal)?;
@@ -262,6 +265,7 @@ fn validate_journal(journal: &OperationJournal) -> Result<(), JournalStoreError>
 
     validate_approval_binding(journal)?;
     validate_execution_binding(journal)?;
+    validate_execution_progress(journal)?;
 
     Ok(())
 }
@@ -331,6 +335,7 @@ fn validate_approval_binding(journal: &OperationJournal) -> Result<(), JournalSt
             preconditions.mutation_may_have_started = false;
             preconditions.approval = None;
             preconditions.execution = None;
+            preconditions.execution_progress = None;
             preconditions.events.truncate(approval_index);
             let expected_digest = crate::preconditions::journal_digest(&preconditions)?;
             if binding.preconditions_journal_digest != expected_digest {
@@ -441,6 +446,7 @@ fn validate_execution_binding(journal: &OperationJournal) -> Result<(), JournalS
             approved.phase = JournalPhase::Approved;
             approved.mutation_may_have_started = false;
             approved.execution = None;
+            approved.execution_progress = None;
             approved.events.truncate(execution_index);
             let expected_digest = crate::preconditions::journal_digest(&approved)?;
             if binding.approved_journal_digest != expected_digest {
@@ -451,6 +457,88 @@ fn validate_execution_binding(journal: &OperationJournal) -> Result<(), JournalS
             Ok(())
         }
     }
+}
+
+fn validate_execution_progress(journal: &OperationJournal) -> Result<(), JournalStoreError> {
+    match (&journal.execution, &journal.execution_progress) {
+        (None, None) => return Ok(()),
+        (None, Some(_)) => {
+            return Err(JournalStoreError::InvalidRecord(
+                "journal contains execution progress without an execution binding".to_owned(),
+            ));
+        }
+        (Some(_), None) => {
+            return Err(JournalStoreError::InvalidRecord(
+                "journal contains an execution binding without execution progress".to_owned(),
+            ));
+        }
+        (Some(_), Some(_)) => {}
+    }
+
+    let binding = journal.execution.as_ref().expect("matched above");
+    let progress = journal.execution_progress.as_ref().expect("matched above");
+
+    validate_hex_digest(
+        &progress.latest_identity_digest,
+        "execution progress identity digest",
+    )?;
+
+    let next = progress.next_step_index as usize;
+    if next > binding.mutation_step_ids.len() {
+        return Err(JournalStoreError::InvalidRecord(
+            "execution progress index exceeds bound mutation step count".to_owned(),
+        ));
+    }
+    if progress.verified_step_ids != binding.mutation_step_ids[..next] {
+        return Err(JournalStoreError::InvalidRecord(
+            "execution progress verified steps are not the exact bound prefix".to_owned(),
+        ));
+    }
+
+    match journal.phase {
+        JournalPhase::Executing => {
+            if next >= binding.mutation_step_ids.len() || progress.verifying_step_id.is_some() {
+                return Err(JournalStoreError::InvalidRecord(
+                    "executing journal has inconsistent per-layer progress".to_owned(),
+                ));
+            }
+        }
+        JournalPhase::Verifying => {
+            let expected = binding.mutation_step_ids.get(next).copied();
+            if expected.is_none() || progress.verifying_step_id != expected {
+                return Err(JournalStoreError::InvalidRecord(
+                    "verifying journal does not reference the exact current mutation step"
+                        .to_owned(),
+                ));
+            }
+        }
+        JournalPhase::Completed => {
+            if next != binding.mutation_step_ids.len() || progress.verifying_step_id.is_some() {
+                return Err(JournalStoreError::InvalidRecord(
+                    "completed journal does not contain a fully verified mutation sequence"
+                        .to_owned(),
+                ));
+            }
+        }
+        JournalPhase::RecoveryRequired => {
+            if next >= binding.mutation_step_ids.len()
+                || progress
+                    .verifying_step_id
+                    .is_some_and(|step_id| Some(step_id) != binding.mutation_step_ids.get(next).copied())
+            {
+                return Err(JournalStoreError::InvalidRecord(
+                    "recovery-required journal has inconsistent per-layer progress".to_owned(),
+                ));
+            }
+        }
+        _ => {
+            return Err(JournalStoreError::InvalidRecord(
+                "execution progress exists outside an execution/recovery phase".to_owned(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn allowed_transition(from: JournalPhase, to: JournalPhase) -> bool {
@@ -468,6 +556,7 @@ fn allowed_transition(from: JournalPhase, to: JournalPhase) -> bool {
             | (JournalPhase::PreconditionsVerified, JournalPhase::Approved)
             | (JournalPhase::Approved, JournalPhase::Executing)
             | (JournalPhase::Executing, JournalPhase::Verifying)
+            | (JournalPhase::Verifying, JournalPhase::Executing)
             | (JournalPhase::Verifying, JournalPhase::Completed)
             | (JournalPhase::Planned, JournalPhase::Aborted)
             | (JournalPhase::HostLockHeld, JournalPhase::Aborted)
@@ -584,6 +673,7 @@ mod tests {
             mutation_may_have_started: false,
             approval: None,
             execution: None,
+            execution_progress: None,
             events: Vec::new(),
         }
     }
