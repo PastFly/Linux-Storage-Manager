@@ -3482,8 +3482,8 @@ fn build_lvm_underlying_growth_candidate(
         return None;
     }
     let existing_free_extents = route.existing_vg_free_bytes / extent;
-    let requested_extents =
-        route.requested_growth_bytes / extent + u64::from(route.requested_growth_bytes % extent != 0);
+    let requested_extents = route.requested_growth_bytes / extent
+        + u64::from(route.requested_growth_bytes % extent != 0);
     let additional_pv_extents = requested_extents.checked_sub(existing_free_extents)?;
     if additional_pv_extents == 0 {
         return None;
@@ -3545,13 +3545,15 @@ fn build_lvm_underlying_growth_candidate(
         .ok()?;
         let label = table.label.clone()?;
         let sector = table.sector_size_bytes?;
-        if sector != route.sector_size_bytes
-            || route.required_partition_growth_bytes % sector != 0
+        if sector != route.sector_size_bytes || route.required_partition_growth_bytes % sector != 0
         {
             return None;
         }
         let record = unique(
-            table.partitions.iter().filter(|record| record.node == partition),
+            table
+                .partitions
+                .iter()
+                .filter(|record| record.node == partition),
             "partition-record-not-unique",
         )
         .ok()?;
