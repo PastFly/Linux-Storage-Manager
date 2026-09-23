@@ -4,7 +4,7 @@ use lsm_planner::{
 use thiserror::Error;
 
 use crate::{
-    LockedExecutionSession, LockedSessionError, NativeOperationSpec, ValidatedNativeManifest,
+    LockedExecutionSession, NativeOperationSpec, ValidatedNativeManifest,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
