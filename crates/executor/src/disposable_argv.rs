@@ -88,6 +88,8 @@ pub enum DisposableArgvError {
     FilesystemIdentityMissing,
     #[error("fresh filesystem identity does not match frozen growth intent")]
     FilesystemIdentityMismatch,
+    #[error("fresh filesystem geometry does not prove remaining growth capacity")]
+    FilesystemGrowthNotProven,
     #[error("fresh filesystem mount identity is not unique")]
     FilesystemMountNotUnique,
     #[error("filesystem device path is not a safe absolute /dev path")]
@@ -276,6 +278,68 @@ pub fn compile_disposable_lvm_growth_commands(
     })
 }
 
+/// Compile only the verified next destructive boundary against the freshly rediscovered identity.
+///
+/// This deliberately cannot recompile or re-authorize the already-completed LV mutation.
+/// The only accepted continuation for the first disposable profile is the filesystem-growth
+/// step that directly depends on the verified LV-growth step.
+pub(crate) fn compile_verified_disposable_next_command(
+    validated: &ValidatedNativeManifest,
+    fresh_identity: &TargetIdentityManifest,
+    plan_step_id: u32,
+) -> Result<DisposableCommandPlan, DisposableArgvError> {
+    let manifest = validated.manifest();
+    let mutation_steps = manifest
+        .steps
+        .iter()
+        .filter(|step| step.role == FrozenIntentRole::MutationCandidate)
+        .collect::<Vec<_>>();
+
+    if mutation_steps.len() != 2 {
+        return Err(DisposableArgvError::UnsupportedMutationProfile);
+    }
+
+    let first = mutation_steps[0];
+    let second = mutation_steps[1];
+    if !matches!(
+        &first.operation,
+        NativeOperationSpec::ExtendLogicalVolume { .. }
+    ) || second.plan_step_id != plan_step_id
+        || !second.depends_on.contains(&first.plan_step_id)
+    {
+        return Err(DisposableArgvError::UnsupportedMutationProfile);
+    }
+
+    let NativeOperationSpec::GrowFilesystem {
+        fs_type,
+        mountpoint,
+    } = &second.operation
+    else {
+        return Err(DisposableArgvError::UnsupportedMutationProfile);
+    };
+
+    let filesystem = fresh_identity
+        .filesystem
+        .as_ref()
+        .ok_or(DisposableArgvError::FilesystemIdentityMissing)?;
+    let observed = filesystem
+        .observed_filesystem_size_bytes
+        .ok_or(DisposableArgvError::FilesystemGrowthNotProven)?;
+    if observed == 0 || filesystem.backing_device_size_bytes <= observed {
+        return Err(DisposableArgvError::FilesystemGrowthNotProven);
+    }
+
+    let command =
+        compile_filesystem_grow(second.plan_step_id, fs_type, mountpoint, fresh_identity)?;
+
+    Ok(DisposableCommandPlan {
+        source_manifest_id: manifest.source_manifest_id.clone(),
+        native_manifest_digest: validated.digest().to_owned(),
+        fresh_identity_digest: fresh_identity.manifest_digest.clone(),
+        commands: vec![command],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,6 +474,56 @@ mod tests {
 
         assert_eq!(plan.commands()[1].program(), DisposableProgram::XfsGrowfs);
         assert_eq!(plan.commands()[1].args(), ["-d", "/srv/data"]);
+    }
+
+
+    #[test]
+    fn verified_post_lv_identity_compiles_only_filesystem_command() {
+        let validated = validated_manifest("ext4", "/");
+        let mut fresh = identity("ext4", "/");
+        fresh.manifest_digest = "post-lv-identity".into();
+        fresh.lvm[0].size_bytes = 9 * 1024 * 1024 * 1024;
+        let filesystem = fresh.filesystem.as_mut().unwrap();
+        filesystem.backing_device_size_bytes = 9 * 1024 * 1024 * 1024;
+        filesystem.observed_filesystem_size_bytes = Some(8 * 1024 * 1024 * 1024);
+
+        let plan =
+            compile_verified_disposable_next_command(&validated, &fresh, 4).unwrap();
+
+        assert_eq!(plan.fresh_identity_digest(), "post-lv-identity");
+        assert_eq!(plan.commands().len(), 1);
+        assert_eq!(plan.commands()[0].plan_step_id(), 4);
+        assert_eq!(plan.commands()[0].program(), DisposableProgram::Resize2fs);
+        assert_eq!(
+            plan.commands()[0].args(),
+            ["/dev/mapper/vg0-root"]
+        );
+    }
+
+    #[test]
+    fn verified_continuation_rejects_wrong_step_or_missing_growth_room() {
+        let validated = validated_manifest("xfs", "/srv/data");
+        let mut fresh = identity("xfs", "/srv/data");
+        fresh.manifest_digest = "post-lv-identity".into();
+        fresh.lvm[0].size_bytes = 9 * 1024 * 1024 * 1024;
+        let filesystem = fresh.filesystem.as_mut().unwrap();
+        filesystem.backing_device_size_bytes = 9 * 1024 * 1024 * 1024;
+        filesystem.observed_filesystem_size_bytes = Some(8 * 1024 * 1024 * 1024);
+
+        assert_eq!(
+            compile_verified_disposable_next_command(&validated, &fresh, 3),
+            Err(DisposableArgvError::UnsupportedMutationProfile)
+        );
+
+        fresh
+            .filesystem
+            .as_mut()
+            .unwrap()
+            .observed_filesystem_size_bytes = Some(9 * 1024 * 1024 * 1024);
+        assert_eq!(
+            compile_verified_disposable_next_command(&validated, &fresh, 4),
+            Err(DisposableArgvError::FilesystemGrowthNotProven)
+        );
     }
 
     #[test]
