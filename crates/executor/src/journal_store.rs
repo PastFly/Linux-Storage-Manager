@@ -390,16 +390,13 @@ fn validate_execution_binding(journal: &OperationJournal) -> Result<(), JournalS
                 validate_hex_digest(value, label)?;
             }
 
-            if binding.mutation_step_ids.is_empty()
-                || binding.mutation_step_ids.contains(&0)
-                || {
-                    let mut seen = std::collections::BTreeSet::new();
-                    binding
-                        .mutation_step_ids
-                        .iter()
-                        .any(|step_id| !seen.insert(*step_id))
-                }
-            {
+            if binding.mutation_step_ids.is_empty() || binding.mutation_step_ids.contains(&0) || {
+                let mut seen = std::collections::BTreeSet::new();
+                binding
+                    .mutation_step_ids
+                    .iter()
+                    .any(|step_id| !seen.insert(*step_id))
+            } {
                 return Err(JournalStoreError::InvalidRecord(
                     "execution binding mutation step sequence is invalid".to_owned(),
                 ));
