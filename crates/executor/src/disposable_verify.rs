@@ -175,9 +175,7 @@ pub fn verify_and_continue_disposable_boundary(
 mod tests {
     use super::*;
     use lsm_core::NodeKind;
-    use lsm_planner::{
-        FilesystemIdentity, LvmIdentity, MountIdentity, Reversibility,
-    };
+    use lsm_planner::{FilesystemIdentity, LvmIdentity, MountIdentity, Reversibility};
 
     use crate::{
         validate_and_bind_native_manifest, FrozenIntentRole, NativeCompiledManifest,
