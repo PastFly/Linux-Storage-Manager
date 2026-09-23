@@ -2,6 +2,7 @@ mod approval;
 mod backup_capture;
 mod backup_manifest;
 mod disposable_argv;
+mod disposable_loop_association;
 mod execution_intent;
 mod journal_store;
 mod locked_session;
@@ -21,6 +22,10 @@ pub use backup_manifest::{
 pub use disposable_argv::{
     compile_disposable_lvm_growth_commands, DisposableArgvError, DisposableCommandPlan,
     DisposableCommandSpec, DisposableProgram,
+};
+pub use disposable_loop_association::{
+    verify_disposable_loop_association_row, DisposableLoopAssociation,
+    DisposableLoopAssociationError,
 };
 pub use execution_intent::{
     freeze_execution_intent, ExecutionIntentError, ExecutionIntentManifestStatus,
