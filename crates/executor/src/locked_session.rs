@@ -927,6 +927,119 @@ mod tests {
     }
 
     #[test]
+    fn terminal_disposable_verification_completes_only_after_fresh_filesystem_growth() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("terminal-disposable-verification");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut session, &handoff, &snapshot, &capabilities);
+
+        let frozen = crate::freeze_execution_intent(&session, &approval).unwrap();
+        let compiled = crate::compile_native_manifest(&frozen);
+        let validated = crate::validate_and_bind_native_manifest(compiled).unwrap();
+        let mutation_step_ids = validated
+            .manifest()
+            .steps
+            .iter()
+            .filter(|step| step.role == crate::FrozenIntentRole::MutationCandidate)
+            .map(|step| step.plan_step_id)
+            .collect::<Vec<_>>();
+        assert_eq!(mutation_step_ids.len(), 2);
+
+        let binding = build_execution_start_binding(
+            session.journal(),
+            frozen.manifest_id(),
+            validated.digest(),
+            &handoff.target_identity().manifest_digest,
+            &mutation_step_ids,
+        )
+        .unwrap();
+        session.persist_execution_started(&binding).unwrap();
+        session.persist_verification_started().unwrap();
+        session
+            .persist_verification_passed_continue(mutation_step_ids[0], mutation_step_ids[1])
+            .unwrap();
+        session.persist_verification_started().unwrap();
+        assert_eq!(session.journal().phase, JournalPhase::Verifying);
+
+        let expected_lv_size = validated
+            .manifest()
+            .steps
+            .iter()
+            .find_map(|step| match &step.operation {
+                crate::NativeOperationSpec::ExtendLogicalVolume {
+                    expected_lv_size_bytes,
+                    ..
+                } => Some(*expected_lv_size_bytes),
+                _ => None,
+            })
+            .unwrap();
+
+        let mut before_growth = handoff.target_identity().clone();
+        before_growth.manifest_digest = "b".repeat(64);
+        for entry in &mut before_growth.lvm {
+            if entry.kind == lsm_planner::LvmIdentityKind::LogicalVolume {
+                entry.size_bytes = expected_lv_size;
+            }
+        }
+        let before_filesystem = before_growth.filesystem.as_mut().unwrap();
+        let original_filesystem_size = before_filesystem.observed_filesystem_size_bytes.unwrap();
+        before_filesystem.backing_device_size_bytes = expected_lv_size;
+
+        let mut fresh = before_growth.clone();
+        fresh.manifest_digest = "c".repeat(64);
+
+        let blocked = crate::verify_and_complete_disposable_execution(
+            &mut session,
+            &validated,
+            &before_growth,
+            &fresh,
+            mutation_step_ids[1],
+        );
+        assert!(matches!(
+            blocked,
+            Err(crate::DisposableBoundaryVerificationError::FilesystemSizeDidNotGrow)
+        ));
+        assert_eq!(session.journal().phase, JournalPhase::Verifying);
+        assert_eq!(
+            store.load(&session.journal().journal_id).unwrap(),
+            *session.journal()
+        );
+
+        fresh
+            .filesystem
+            .as_mut()
+            .unwrap()
+            .observed_filesystem_size_bytes = Some(
+            original_filesystem_size + (expected_lv_size - original_filesystem_size) / 2,
+        );
+        let completion = crate::verify_and_complete_disposable_execution(
+            &mut session,
+            &validated,
+            &before_growth,
+            &fresh,
+            mutation_step_ids[1],
+        )
+        .unwrap();
+
+        assert_eq!(completion.execution_id(), binding.execution_id);
+        assert_eq!(completion.completed_step_id(), mutation_step_ids[1]);
+        assert_eq!(completion.fresh_identity_digest(), fresh.manifest_digest);
+        assert_eq!(session.journal().phase, JournalPhase::Completed);
+        assert_eq!(
+            store.load(&session.journal().journal_id).unwrap(),
+            *session.journal()
+        );
+
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn exact_approved_session_freezes_non_executable_intent() {
         let (snapshot, capabilities) = fixture();
         let handoff = handoff(&snapshot, &capabilities);
