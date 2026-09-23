@@ -27,7 +27,7 @@ class SafetyError(RuntimeError):
 
 
 class Runner:
-    def __init__(self, binary: Path):
+    def __init__(self, binary: Path, executor_binary: Path):
         names = ("losetup", "sfdisk", "partx", "mkfs.ext4", "mkfs.xfs", "pvcreate",
                  "vgcreate", "vgchange", "lvcreate", "lvrename", "vgremove", "vgs", "pvs", "lvs",
                  "mount", "umount", "findmnt", "vgcfgbackup", "vgcfgrestore", "lvextend",
@@ -39,6 +39,7 @@ class Runner:
                 raise SafetyError(f"required test tool is missing: {name}")
             self.tools[name] = path
         self.tools["storagemgr"] = str(binary.resolve(strict=True))
+        self.tools["disposable-executor"] = str(executor_binary.resolve(strict=True))
 
     def run(self, name: str, *args: str, input: str | None = None,
             allowed: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess[str]:
@@ -682,37 +683,55 @@ def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loo
     sentinel = (target / "readonly-sentinel").read_bytes()
     before_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
 
-    backup_path = resources.root / f"{vg}-growth.vgcfg"
-    binary.run("vgcfgbackup", "--file", str(backup_path), vg)
-    resources.track_artifact(backup_path)
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    if not association_row:
+        raise SafetyError("exact loop association row is unavailable before Rust execution")
 
-    # From this point a tool may have changed storage. Any failure retains evidence/resources.
+    journal_root = resources.root / f"{vg}-executor-journal"
+    backup_root = resources.root / f"{vg}-executor-backup"
+
+    # From this point the Rust executor may change storage. Any failure retains all fixture evidence.
     resources.uncertain = True
-    binary.run("lvextend", "--extents", f"+{growth_extents}", "--", source)
+    result = binary.run(
+        "disposable-executor",
+        "--allow-disposable-loop-execution",
+        "--target", str(target),
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--journal-root", str(journal_root),
+        "--backup-root", str(backup_root),
+        "--growth-bytes", str(growth_extents * extent),
+        "--lvextend", binary.tools["lvextend"],
+        "--resize2fs", binary.tools["resize2fs"],
+        "--xfs-growfs", binary.tools["xfs_growfs"],
+        "--udevadm", binary.tools["udevadm"],
+    )
+    outcome = json.loads(result.stdout)
+    if (not isinstance(outcome, dict) or outcome.get("status") != "completed"
+            or outcome.get("mutation_enabled") is not False
+            or not isinstance(outcome.get("execution_id"), str)
+            or not isinstance(outcome.get("final_identity_digest"), str)):
+        raise SafetyError(f"invalid Rust executor completion evidence: {outcome!r}")
 
     refresh_fixture_udev(binary, Path(source).resolve(strict=True).name)
-    after_lv = ready_snapshot(binary, loop.device, vg)
-    after_lvs = [row for row in after_lv["lvm"]["logical_volumes"]
-                 if row.get("vg_name") == vg and row.get("path") == source]
-    if len(after_lvs) != 1 or after_lvs[0].get("size_bytes") != expected_lv_size:
-        raise SafetyError("LV size did not match the exact expected post-lvextend size")
-
-    if filesystem == "ext4":
-        binary.run("resize2fs", source)
-    else:
-        binary.run("xfs_growfs", "-d", str(target))
-
-    after_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
-    if after_fs_bytes <= before_fs_bytes:
-        raise SafetyError("filesystem capacity did not increase after growth")
-    if (target / "readonly-sentinel").read_bytes() != sentinel:
-        raise SafetyError("filesystem sentinel changed during disposable growth drill")
-
     final = ready_snapshot(binary, loop.device, vg)
     final_lvs = [row for row in final["lvm"]["logical_volumes"]
                  if row.get("vg_name") == vg and row.get("path") == source]
     if len(final_lvs) != 1 or final_lvs[0].get("size_bytes") != expected_lv_size:
-        raise SafetyError("final rediscovery lost the expected LV size")
+        raise SafetyError("final rediscovery lost the exact Rust-executed LV size")
+
+    after_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    if after_fs_bytes <= before_fs_bytes:
+        raise SafetyError("filesystem capacity did not increase after Rust executor growth")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("filesystem sentinel changed during Rust executor growth")
+
+    if journal_root.exists() or backup_root.exists():
+        raise SafetyError("Rust harness did not clean its owned journal/backup artifacts")
 
     resources.uncertain = False
 
@@ -870,6 +889,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-disposable-loop-tests", action="store_true",
                         help="acknowledge that this dedicated VM can be discarded")
     parser.add_argument("binary", type=Path)
+    parser.add_argument("executor_binary", type=Path)
     args = parser.parse_args(argv)
     if not args.allow_disposable_loop_tests:
         parser.error("explicit --allow-disposable-loop-tests is required; never use on a production host")
@@ -877,12 +897,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("requires root in a disposable Linux VM")
     if not args.binary.is_file() or not os.access(args.binary, os.X_OK):
         parser.error("binary is absent or not executable")
+    if not args.executor_binary.is_file() or not os.access(args.executor_binary, os.X_OK):
+        parser.error("disposable executor binary is absent or not executable")
     def interrupted(signum: int, frame: Any) -> None:
         raise KeyboardInterrupt(f"received signal {signum}")
     for signum in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, interrupted)
     os.umask(0o077)
-    runner = Runner(args.binary)
+    runner = Runner(args.binary, args.executor_binary)
     root = Path(tempfile.mkdtemp(prefix="lsm-loop-matrix-"))
     resources = Resources(root, runner)
     failed = False
