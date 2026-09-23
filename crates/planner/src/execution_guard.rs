@@ -295,6 +295,10 @@ pub struct VerifiedMutationBoundaryBinding {
     pub completed_step_id: u32,
     pub next_step_id: u32,
     pub fresh_identity_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_step_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_identity_digest: Option<String>,
 }
 
 impl VerifiedMutationBoundaryBinding {
@@ -305,6 +309,8 @@ impl VerifiedMutationBoundaryBinding {
             self.completed_step_id,
             self.next_step_id,
             &self.fresh_identity_digest,
+            self.final_step_id,
+            &self.final_identity_digest,
         ))
     }
 
@@ -432,6 +438,10 @@ pub enum JournalTransition<'a> {
     VerificationPassedContinue {
         completed_step_id: u32,
         next_step_id: u32,
+        fresh_identity_digest: &'a str,
+    },
+    VerificationPassedComplete {
+        completed_step_id: u32,
         fresh_identity_digest: &'a str,
     },
     Completed,
@@ -668,6 +678,8 @@ impl OperationJournal {
                     completed_step_id,
                     next_step_id,
                     fresh_identity_digest: fresh_identity_digest.to_owned(),
+                    final_step_id: None,
+                    final_identity_digest: None,
                 };
                 verified_boundary.boundary_id =
                     verified_boundary.expected_boundary_id().map_err(|error| {
@@ -687,6 +699,50 @@ impl OperationJournal {
                 );
                 Ok(())
             }
+            JournalTransition::VerificationPassedComplete {
+                completed_step_id,
+                fresh_identity_digest,
+            } => {
+                if self.phase != JournalPhase::Verifying {
+                    return Err(self.invalid("verification_passed_complete"));
+                }
+                let execution = self
+                    .execution
+                    .as_ref()
+                    .ok_or(JournalError::VerificationExecutionBindingMissing)?;
+                if execution.mutation_step_ids.len() < 2
+                    || execution.mutation_step_ids.last().copied() != Some(completed_step_id)
+                {
+                    return Err(JournalError::VerificationSequenceMismatch);
+                }
+                if !is_sha256_hex(fresh_identity_digest) {
+                    return Err(JournalError::VerificationIdentityDigestInvalid);
+                }
+
+                let boundary = self
+                    .verified_boundary
+                    .as_mut()
+                    .ok_or(JournalError::CompletionVerifiedBoundaryMismatch)?;
+                if boundary.execution_id != execution.execution_id
+                    || boundary.next_step_id != completed_step_id
+                    || !boundary.integrity_matches().unwrap_or(false)
+                {
+                    return Err(JournalError::CompletionVerifiedBoundaryMismatch);
+                }
+
+                boundary.final_step_id = Some(completed_step_id);
+                boundary.final_identity_digest = Some(fresh_identity_digest.to_owned());
+                boundary.boundary_id = boundary.expected_boundary_id().map_err(|error| {
+                    JournalError::VerificationBoundarySerialization(error.to_string())
+                })?;
+
+                self.advance(
+                    JournalPhase::Verifying,
+                    JournalPhase::Completed,
+                    "verification-passed-complete",
+                    "final mutation step verified against fresh topology and expected invariants",
+                )
+            }
             JournalTransition::Completed => {
                 if self.phase != JournalPhase::Verifying {
                     return Err(self.invalid("completed"));
@@ -696,16 +752,7 @@ impl OperationJournal {
                     .as_ref()
                     .ok_or(JournalError::VerificationExecutionBindingMissing)?;
                 if execution.mutation_step_ids.len() > 1 {
-                    let final_step_id = execution.mutation_step_ids.last().copied();
-                    let boundary_matches =
-                        self.verified_boundary.as_ref().is_some_and(|boundary| {
-                            boundary.execution_id == execution.execution_id
-                                && Some(boundary.next_step_id) == final_step_id
-                                && boundary.integrity_matches().unwrap_or(false)
-                        });
-                    if !boundary_matches {
-                        return Err(JournalError::CompletionVerifiedBoundaryMismatch);
-                    }
+                    return Err(JournalError::CompletionVerifiedBoundaryMismatch);
                 }
                 self.advance(
                     JournalPhase::Verifying,
