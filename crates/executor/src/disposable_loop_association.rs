@@ -4,8 +4,18 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisposableLoopAssociation {
-    pub loop_device: String,
-    pub backing_file: PathBuf,
+    loop_device: String,
+    backing_file: PathBuf,
+}
+
+impl DisposableLoopAssociation {
+    pub fn loop_device(&self) -> &str {
+        &self.loop_device
+    }
+
+    pub fn backing_file(&self) -> &Path {
+        &self.backing_file
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -67,10 +77,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(association.loop_device, "/dev/loop7");
+        assert_eq!(association.loop_device(), "/dev/loop7");
         assert_eq!(
-            association.backing_file,
-            PathBuf::from("/tmp/lsm-owned/disk image.raw")
+            association.backing_file(),
+            Path::new("/tmp/lsm-owned/disk image.raw")
         );
     }
 

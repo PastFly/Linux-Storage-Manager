@@ -7,11 +7,29 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DisposableLoopOwnershipProof {
-    pub loop_device: String,
-    pub backing_file: PathBuf,
-    pub backing_dev: u64,
-    pub backing_ino: u64,
-    pub owned_root: PathBuf,
+    loop_device: String,
+    backing_file: PathBuf,
+    backing_dev: u64,
+    backing_ino: u64,
+    owned_root: PathBuf,
+}
+
+impl DisposableLoopOwnershipProof {
+    pub fn loop_device(&self) -> &str {
+        &self.loop_device
+    }
+
+    pub fn backing_file(&self) -> &Path {
+        &self.backing_file
+    }
+
+    pub fn owned_root(&self) -> &Path {
+        &self.owned_root
+    }
+
+    pub fn backing_identity(&self) -> (u64, u64) {
+        (self.backing_dev, self.backing_ino)
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -142,7 +160,7 @@ mod tests {
 
         let proof = capture_disposable_loop_ownership("/dev/loop7", &image, &root).unwrap();
 
-        assert_eq!(proof.loop_device, "/dev/loop7");
+        assert_eq!(proof.loop_device(), "/dev/loop7");
         assert_eq!(revalidate_disposable_loop_ownership(&proof), Ok(()));
         fs::remove_dir_all(root).unwrap();
     }
