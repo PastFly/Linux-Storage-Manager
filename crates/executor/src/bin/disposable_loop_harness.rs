@@ -284,7 +284,9 @@ fn run() -> HarnessResult<()> {
             if outcome.plan_step_id != next_command.plan_step_id()
                 || outcome.program != next_command.program()
             {
-                return Err(boxed("executor returned the wrong continued mutation outcome"));
+                return Err(boxed(
+                    "executor returned the wrong continued mutation outcome",
+                ));
             }
             completed_step = next_command.plan_step_id();
             completed_program = next_command.program();
