@@ -472,7 +472,7 @@ mod tests {
         let (mut snapshot, _) = fixture("clean");
         let device = &mut snapshot.storage.block_devices[0].children[0];
         device.filesystem.as_mut().unwrap().fs_type = "xfs".into();
-        snapshot.mounts[0].fs_type = "xfs".into();
+        snapshot.mounts[0].fs_type = Some("xfs".into());
         snapshot.filesystem_preflight[0].fs_type = "xfs".into();
         snapshot.filesystem_preflight[0].grow_check_passed = Some(true);
         let capabilities = serde_json::from_value(json!({"tools":[
@@ -624,8 +624,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .clone();
-        let receipt =
-            crate::ExplicitFilesystemHealthReceipt::test_for_check(&session, &check);
+        let receipt = crate::ExplicitFilesystemHealthReceipt::test_for_check(&session, &check);
 
         let complete = build_pre_mutation_evidence_with_filesystem_health(
             &session,
@@ -645,7 +644,10 @@ mod tests {
             complete.filesystem_health_receipt_id(),
             Some(receipt.receipt_id())
         );
-        assert_eq!(complete.status(), PreMutationEvidenceStatus::EvidenceComplete);
+        assert_eq!(
+            complete.status(),
+            PreMutationEvidenceStatus::EvidenceComplete
+        );
         assert!(!complete
             .future_gates()
             .iter()
