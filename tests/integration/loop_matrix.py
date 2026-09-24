@@ -651,6 +651,98 @@ def check_preview(plan: Any, expected_status: str) -> None:
                 raise SafetyError("inconsistent partition preview size arithmetic")
 
 
+def remove_owned_evidence_directory(resources: Resources, path: Path) -> None:
+    if path.parent.resolve(strict=True) != resources.root or path.is_symlink() or not path.is_dir():
+        raise SafetyError(f"refusing cleanup of unowned evidence directory: {path}")
+    for entry in path.iterdir():
+        info = entry.lstat()
+        if entry.is_symlink() or not stat.S_ISREG(info.st_mode):
+            raise SafetyError(f"unexpected non-file in evidence directory: {entry}")
+        entry.unlink()
+    path.rmdir()
+
+
+def exercise_disposable_pre_spawn_failure(resources: Resources, binary: Runner, loop: Loop,
+                                          source: str, target: Path, vg: str) -> None:
+    resources.check_loop(loop)
+    before = ready_snapshot(binary, loop.device, vg)
+    lvs = [row for row in before["lvm"]["logical_volumes"]
+           if row.get("vg_name") == vg and row.get("path") == source]
+    vgs = [row for row in before["lvm"]["volume_groups"]
+           if row.get("name") == vg]
+    if len(lvs) != 1 or len(vgs) != 1:
+        raise SafetyError("fault-injection LV/VG identity is ambiguous")
+    current_lv_size = lvs[0].get("size_bytes")
+    extent = vgs[0].get("extent_size_bytes")
+    if type(current_lv_size) is not int or type(extent) is not int or extent <= 0:
+        raise SafetyError("fault-injection LVM size evidence is incomplete")
+
+    sentinel = (target / "readonly-sentinel").read_bytes()
+    before_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    journal_root = resources.root / f"{vg}-fault-journal"
+    backup_root = resources.root / f"{vg}-fault-backup"
+    args = (
+        "--allow-disposable-loop-execution",
+        "--target", str(target),
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--journal-root", str(journal_root),
+        "--backup-root", str(backup_root),
+        "--growth-bytes", str(8 * extent),
+        "--lvextend", "/usr/bin/false",
+        "--resize2fs", binary.tools["resize2fs"],
+        "--xfs-growfs", binary.tools["xfs_growfs"],
+        "--xfs-scrub", binary.tools["xfs_scrub"],
+        "--udevadm", binary.tools["udevadm"],
+    )
+
+    resources.uncertain = True
+    failed = binary.run("disposable-executor", *args, allowed=(1,))
+    if "selected disposable tool path is unsafe for Lvextend" not in failed.stderr:
+        raise SafetyError(f"unexpected pre-spawn fault result: {failed.stderr!r}")
+
+    journals = list(journal_root.glob("*.json"))
+    if len(journals) != 1:
+        raise SafetyError("fault injection did not retain exactly one durable journal")
+    journal_bytes = journals[0].read_bytes()
+    journal = json.loads(journal_bytes)
+    events = journal.get("events")
+    if (journal.get("phase") != "recovery_required"
+            or journal.get("mutation_may_have_started") is not True
+            or not isinstance(journal.get("execution"), dict)
+            or not isinstance(events, list) or not events
+            or events[-1].get("code") != "interrupted-after-mutation-boundary"):
+        raise SafetyError(f"fault journal did not enter RecoveryRequired: {journal!r}")
+
+    unchanged = ready_snapshot(binary, loop.device, vg)
+    unchanged_lvs = [row for row in unchanged["lvm"]["logical_volumes"]
+                     if row.get("vg_name") == vg and row.get("path") == source]
+    if len(unchanged_lvs) != 1 or unchanged_lvs[0].get("size_bytes") != current_lv_size:
+        raise SafetyError("pre-spawn failure changed LV size")
+    if os.statvfs(target).f_blocks * os.statvfs(target).f_frsize != before_fs_bytes:
+        raise SafetyError("pre-spawn failure changed filesystem capacity")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("pre-spawn failure changed filesystem sentinel")
+
+    replay_args = list(args)
+    replay_args[replay_args.index("/usr/bin/false")] = binary.tools["lvextend"]
+    replay = binary.run("disposable-executor", *replay_args, allowed=(1,))
+    if "journal root already exists" not in replay.stderr:
+        raise SafetyError(f"replay was not blocked by retained durable evidence: {replay.stderr!r}")
+    if journals[0].read_bytes() != journal_bytes:
+        raise SafetyError("blocked replay changed the retained recovery journal")
+
+    remove_owned_evidence_directory(resources, backup_root)
+    remove_owned_evidence_directory(resources, journal_root)
+    resources.uncertain = False
+    print("DISPOSABLE_RECOVERY_REQUIRED_OK=pre-spawn-failure-no-storage-change", flush=True)
+
+
 def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loop,
                                  source: str, target: Path, vg: str,
                                  filesystem: str) -> None:
@@ -958,6 +1050,11 @@ def main(argv: list[str] | None = None) -> int:
             target = resources.mount(source, label + "-mount")
             exercise(resources, runner, loop, target, vg)
             if vg is not None:
+                if filesystem == "ext4":
+                    print(f"==> {label}-pre-spawn-failure", flush=True)
+                    exercise_disposable_pre_spawn_failure(
+                        resources, runner, loop, source, target, vg
+                    )
                 print(f"==> {label}-growth-mutation", flush=True)
                 exercise_lvm_growth_mutation(
                     resources, runner, loop, source, target, vg, filesystem
@@ -977,7 +1074,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-growth,lvm-xfs-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
     return int(failed)
 
 
