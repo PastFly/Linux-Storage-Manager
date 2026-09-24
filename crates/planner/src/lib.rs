@@ -3299,14 +3299,20 @@ pub fn analyze_lvm_underlying_growth(
             .map(|filesystem| filesystem.fs_type.as_str())
             != Some("LVM2_member")
         || pv_device.uuid != pv.uuid
-        || pv.size_bytes > pv_device.size_bytes
+        || pv.pe_start_bytes.is_none()
+        || pv.size_bytes
+            > pv_device
+                .size_bytes
+                .saturating_sub(pv.pe_start_bytes.unwrap_or(0))
         || pv.size_bytes % extent != 0
         || pv.free_bytes != vg.free_bytes
     {
         return None;
     }
 
-    let pv_device_slack_bytes = pv_device.size_bytes.checked_sub(pv.size_bytes)?;
+    let pv_pe_start_bytes = pv.pe_start_bytes?;
+    let pv_usable_backing_bytes = pv_device.size_bytes.checked_sub(pv_pe_start_bytes)?;
+    let pv_device_slack_bytes = pv_usable_backing_bytes.checked_sub(pv.size_bytes)?;
     let mut disk_path = pv_device
         .path
         .clone()
