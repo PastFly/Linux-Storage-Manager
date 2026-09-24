@@ -103,6 +103,8 @@ The final ext4 inter-layer recovery drill executes the real `resize2fs` and inje
 
 The current multi-target hardening layer keeps selection explicit after those recovery gates. Two mounted ext4 LVs in one disposable VG are independently discoverable and plannable; executing growth against one must preserve the sibling LV UUID, size, filesystem capacity and sentinel bytes. A separate two-partition fixture proves both mounted filesystems remain in the target catalog even when the non-tail partition is blocked by its neighbor while the tail partition stays growable.
 
+Blocked target visibility is now structured as well: every catalog entry carries the planner's blocker `code` and `message` when blocked/advisory. The JSON catalog can therefore drive TUI/GUI explanations without parsing prose, while the text CLI renders the same exact evidence. Integration checks the non-tail partition catalog blocker against the blocker returned by its direct `plan extend`.
+
 ## ExactApprovalBinding
 
 The durable `OperationJournal` now carries an optional structured approval binding.
