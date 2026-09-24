@@ -101,6 +101,8 @@ The following boundary applies the same fail-closed model after a real `lvextend
 
 The final ext4 inter-layer recovery drill executes the real `resize2fs` and injects failure before terminal verification. The durable journal must enter `RecoveryRequired` while retaining the prior verified LV boundary without a terminal step, fresh reconciliation must prove both the exact resized LV and an increased filesystem capacity, sentinel data must remain intact, and a new execution must remain blocked until owned-fixture evidence is explicitly cleared.
 
+The current multi-target hardening layer keeps selection explicit after those recovery gates. Two mounted ext4 LVs in one disposable VG are independently discoverable and plannable; executing growth against one must preserve the sibling LV UUID, size, filesystem capacity and sentinel bytes. A separate two-partition fixture proves both mounted filesystems remain in the target catalog even when the non-tail partition is blocked by its neighbor while the tail partition stays growable.
+
 ## ExactApprovalBinding
 
 The durable `OperationJournal` now carries an optional structured approval binding.
