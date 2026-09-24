@@ -1,5 +1,5 @@
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -15,6 +15,8 @@ use lsm_planner::JournalPhase;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisposableToolPaths {
+    sfdisk: PathBuf,
+    partx: PathBuf,
     pvresize: PathBuf,
     lvextend: PathBuf,
     resize2fs: PathBuf,
@@ -23,12 +25,16 @@ pub struct DisposableToolPaths {
 
 impl DisposableToolPaths {
     pub fn new(
+        sfdisk: PathBuf,
+        partx: PathBuf,
         pvresize: PathBuf,
         lvextend: PathBuf,
         resize2fs: PathBuf,
         xfs_growfs: PathBuf,
     ) -> Self {
         Self {
+            sfdisk,
+            partx,
             pvresize,
             lvextend,
             resize2fs,
@@ -38,6 +44,8 @@ impl DisposableToolPaths {
 
     fn path_for(&self, program: DisposableProgram) -> &Path {
         match program {
+            DisposableProgram::Sfdisk => &self.sfdisk,
+            DisposableProgram::Partx => &self.partx,
             DisposableProgram::Pvresize => &self.pvresize,
             DisposableProgram::Lvextend => &self.lvextend,
             DisposableProgram::Resize2fs => &self.resize2fs,
@@ -247,23 +255,64 @@ pub fn execute_disposable_command(
     let program = command.program();
     let tool_path = validate_tool_path(program, tools)?;
 
-    let output = Command::new(&tool_path)
+    let mut child = Command::new(&tool_path)
         .args(command.args())
         .env_clear()
         .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
         .env("LC_ALL", "C")
-        .stdin(Stdio::null())
+        .stdin(if command.stdin_payload().is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
         .map_err(|source| DisposableExecutionError::Spawn { step_id, source })?;
 
+    if let Some(payload) = command.stdin_payload() {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| DisposableExecutionError::Spawn {
+                step_id,
+                source: io::Error::other("disposable command stdin pipe is unavailable"),
+            })?;
+        stdin
+            .write_all(payload.as_bytes())
+            .map_err(|source| DisposableExecutionError::Spawn { step_id, source })?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|source| DisposableExecutionError::Spawn { step_id, source })?;
     if !output.status.success() {
         return Err(DisposableExecutionError::CommandFailed {
             step_id,
             status: output.status.code(),
             stderr: stderr_summary(&output.stderr),
         });
+    }
+
+    if let Some(refresh) = command.kernel_refresh() {
+        let refresh_path = validate_tool_path(refresh.program(), tools)?;
+        let refresh_output = Command::new(&refresh_path)
+            .args(refresh.args())
+            .env_clear()
+            .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|source| DisposableExecutionError::Spawn { step_id, source })?;
+        if !refresh_output.status.success() {
+            return Err(DisposableExecutionError::CommandFailed {
+                step_id,
+                status: refresh_output.status.code(),
+                stderr: stderr_summary(&refresh_output.stderr),
+            });
+        }
     }
 
     Ok(DisposableCommandOutcome {
@@ -306,7 +355,22 @@ mod tests {
         let mut permissions = fs::metadata(&pvresize).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&pvresize, permissions).unwrap();
-        let paths = DisposableToolPaths::new(pvresize, lvextend.clone(), resize2fs, xfs_growfs);
+        let sfdisk = root.join("sfdisk");
+        let partx = root.join("partx");
+        for path in [&sfdisk, &partx] {
+            File::create(path).unwrap();
+            let mut permissions = fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).unwrap();
+        }
+        let paths = DisposableToolPaths::new(
+            sfdisk,
+            partx,
+            pvresize,
+            lvextend.clone(),
+            resize2fs,
+            xfs_growfs,
+        );
 
         assert_eq!(
             validate_tool_path(DisposableProgram::Lvextend, &paths).unwrap(),
