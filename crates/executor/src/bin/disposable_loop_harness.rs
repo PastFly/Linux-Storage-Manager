@@ -41,6 +41,7 @@ struct Args {
     journal_root: PathBuf,
     backup_root: PathBuf,
     growth_bytes: u64,
+    pvresize: PathBuf,
     lvextend: PathBuf,
     resize2fs: PathBuf,
     xfs_growfs: PathBuf,
@@ -199,6 +200,7 @@ fn run() -> HarnessResult<()> {
 
     let execution = persist_disposable_execution_start(&mut session, &command_plan)?;
     let tools = DisposableToolPaths::new(
+        args.pvresize.clone(),
         args.lvextend.clone(),
         args.resize2fs.clone(),
         args.xfs_growfs.clone(),
@@ -363,6 +365,7 @@ fn parse_args() -> HarnessResult<Args> {
     if growth_bytes == 0 {
         return Err(boxed("--growth-bytes must be nonzero"));
     }
+    let pvresize = PathBuf::from(take("--pvresize")?);
     let lvextend = PathBuf::from(take("--lvextend")?);
     let resize2fs = PathBuf::from(take("--resize2fs")?);
     let xfs_growfs = PathBuf::from(take("--xfs-growfs")?);
@@ -384,6 +387,7 @@ fn parse_args() -> HarnessResult<Args> {
         journal_root,
         backup_root,
         growth_bytes,
+        pvresize,
         lvextend,
         resize2fs,
         xfs_growfs,
