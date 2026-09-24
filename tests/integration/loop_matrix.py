@@ -1474,6 +1474,140 @@ def exercise_lv_post_write_recovery(
     print("LV_RECOVERY_REQUIRED_OK=post-lvextend-pre-filesystem-grow", flush=True)
 
 
+def exercise_filesystem_post_write_recovery(
+    resources: Resources, binary: Runner, loop: Loop,
+    source: str, target: Path, vg: str,
+) -> None:
+    resources.check_loop(loop)
+    if source != f"/dev/{vg}/data":
+        raise SafetyError("unexpected filesystem recovery-boundary identity")
+
+    before = ready_snapshot(binary, loop.device, vg)
+    lvm = before.get("lvm")
+    if not isinstance(lvm, dict):
+        raise SafetyError("LVM inventory missing before filesystem recovery-boundary drill")
+    lvs = [row for row in lvm.get("logical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg and row.get("path") == source]
+    vgs = [row for row in lvm.get("volume_groups", [])
+           if isinstance(row, dict) and row.get("name") == vg]
+    if len(lvs) != 1 or len(vgs) != 1:
+        raise SafetyError("LV/VG identity is ambiguous before filesystem recovery-boundary drill")
+
+    current_lv_size = lvs[0].get("size_bytes")
+    current_lv_uuid = lvs[0].get("uuid")
+    vg_uuid = vgs[0].get("uuid")
+    extent = vgs[0].get("extent_size_bytes")
+    free_extents = vgs[0].get("free_extent_count")
+    if (type(current_lv_size) is not int or type(extent) is not int
+            or type(free_extents) is not int or extent <= 0 or free_extents < 8
+            or not isinstance(current_lv_uuid, str) or not current_lv_uuid
+            or not isinstance(vg_uuid, str) or not vg_uuid):
+        raise SafetyError("filesystem recovery-boundary identity/extent evidence is incomplete")
+
+    growth_extents = 8
+    growth_bytes = growth_extents * extent
+    expected_lv_size = current_lv_size + growth_bytes
+    sentinel = (target / "readonly-sentinel").read_bytes()
+    before_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    if not association_row:
+        raise SafetyError("loop association missing before filesystem recovery-boundary drill")
+
+    journal_root = resources.root / f"{vg}-filesystem-post-write-fault-journal"
+    backup_root = resources.root / f"{vg}-filesystem-post-write-fault-backup"
+    args = (
+        "--allow-disposable-loop-execution",
+        "--inject-failure-after-resize2fs",
+        "--target", str(target),
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--journal-root", str(journal_root),
+        "--backup-root", str(backup_root),
+        "--growth-bytes", str(growth_bytes),
+        "--sfdisk", binary.tools["sfdisk"],
+        "--partx", binary.tools["partx"],
+        "--pvresize", binary.tools["pvresize"],
+        "--lvextend", binary.tools["lvextend"],
+        "--resize2fs", binary.tools["resize2fs"],
+        "--xfs-growfs", binary.tools["xfs_growfs"],
+        "--xfs-scrub", binary.tools["xfs_scrub"],
+        "--udevadm", binary.tools["udevadm"],
+    )
+
+    resources.uncertain = True
+    failed = binary.run("disposable-executor", *args, allowed=(1,))
+    if "injected failure after resize2fs before terminal verification" not in failed.stderr:
+        raise SafetyError(f"unexpected filesystem post-write fault result: {failed.stderr!r}")
+
+    journals = list(journal_root.glob("*.json"))
+    if len(journals) != 1:
+        raise SafetyError("filesystem post-write fault did not retain exactly one durable journal")
+    journal_bytes = journals[0].read_bytes()
+    journal = json.loads(journal_bytes)
+    events = journal.get("events")
+    boundary = journal.get("verified_boundary")
+    if (journal.get("phase") != "recovery_required"
+            or journal.get("mutation_may_have_started") is not True
+            or not isinstance(journal.get("execution"), dict)
+            or not isinstance(boundary, dict)
+            or not isinstance(boundary.get("completed_step_id"), int)
+            or not isinstance(boundary.get("next_step_id"), int)
+            or not isinstance(boundary.get("fresh_identity_digest"), str)
+            or not boundary["fresh_identity_digest"]
+            or boundary.get("final_step_id") is not None
+            or boundary.get("final_identity_digest") is not None
+            or not isinstance(events, list) or not events
+            or events[-1].get("code") != "interrupted-after-mutation-boundary"):
+        raise SafetyError(
+            f"filesystem post-write fault lost pre-terminal verified boundary evidence: {journal!r}"
+        )
+
+    reconciled = ready_snapshot(binary, loop.device, vg)
+    reconciled_lvm = reconciled.get("lvm")
+    if not isinstance(reconciled_lvm, dict):
+        raise SafetyError("LVM inventory missing during filesystem recovery reconciliation")
+    new_vgs = [row for row in reconciled_lvm.get("volume_groups", [])
+               if isinstance(row, dict) and row.get("name") == vg]
+    new_lvs = [row for row in reconciled_lvm.get("logical_volumes", [])
+               if isinstance(row, dict) and row.get("vg_name") == vg and row.get("path") == source]
+    if len(new_vgs) != 1 or len(new_lvs) != 1:
+        raise SafetyError("filesystem recovery reconciliation lost exact LVM identity")
+    if new_vgs[0].get("uuid") != vg_uuid:
+        raise SafetyError("filesystem recovery reconciliation changed VG identity")
+    if (new_lvs[0].get("uuid") != current_lv_uuid
+            or new_lvs[0].get("size_bytes") != expected_lv_size):
+        raise SafetyError("filesystem recovery reconciliation lost exact resized LV state")
+
+    after_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    if after_fs_bytes <= before_fs_bytes:
+        raise SafetyError(
+            "filesystem recovery-boundary drill did not prove successful resize2fs mutation"
+        )
+    if after_fs_bytes > expected_lv_size:
+        raise SafetyError("filesystem capacity exceeds resized LV backing")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("filesystem recovery-boundary fault changed filesystem sentinel")
+
+    replay_args = [arg for arg in args if arg != "--inject-failure-after-resize2fs"]
+    replay = binary.run("disposable-executor", *replay_args, allowed=(1,))
+    if "journal root already exists" not in replay.stderr:
+        raise SafetyError(f"filesystem post-write replay was not blocked: {replay.stderr!r}")
+    if journals[0].read_bytes() != journal_bytes:
+        raise SafetyError("blocked filesystem post-write replay changed retained recovery evidence")
+
+    remove_owned_evidence_directory(resources, backup_root)
+    remove_owned_evidence_directory(resources, journal_root)
+    resources.uncertain = False
+    print(
+        "FILESYSTEM_RECOVERY_REQUIRED_OK=post-resize2fs-pre-terminal-verification",
+        flush=True,
+    )
+
+
 def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loop,
                                  source: str, target: Path, vg: str,
                                  filesystem: str) -> None:
@@ -1793,6 +1927,31 @@ def main(argv: list[str] | None = None) -> int:
                 exercise_lvm_growth_mutation(
                     resources, runner, loop, source, target, vg, filesystem
                 )
+        print("==> lvm-ext4-filesystem-post-write-recovery", flush=True)
+        fs_fault_loop = resources.create_loop(
+            "lvm-ext4-filesystem-post-write-recovery", 1024 * 1024 * 1024
+        )
+        fs_fault_partition = resources.create_partition(
+            fs_fault_loop, 896, True
+        )
+        fs_fault_vg = "lsmtest" + os.urandom(12).hex()
+        fs_fault_source = resources.create_vg(
+            fs_fault_loop, fs_fault_partition, fs_fault_vg
+        )
+        runner.run("mkfs.ext4", "-F", fs_fault_source)
+        refresh_fixture_udev(runner, Path(fs_fault_source).resolve(strict=True).name)
+        fs_fault_target = resources.mount(
+            fs_fault_source, "lvm-ext4-filesystem-post-write-recovery-mount"
+        )
+        exercise_filesystem_post_write_recovery(
+            resources,
+            runner,
+            fs_fault_loop,
+            fs_fault_source,
+            fs_fault_target,
+            fs_fault_vg,
+        )
+
         print("==> lvm-ext4-lv-post-write-recovery", flush=True)
         lv_fault_loop = resources.create_loop(
             "lvm-ext4-lv-post-write-recovery", 1024 * 1024 * 1024
@@ -1929,7 +2088,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
     return int(failed)
 
 
