@@ -118,16 +118,16 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Prove a forced pre-spawn executor failure after durable `Executing` transitions to `RecoveryRequired`, preserves recovery evidence and leaves LV/filesystem/sentinel state unchanged.
 - [x] Add partition-table metadata backup plus a recovery drill.
 - [x] Add LVM metadata backup plus a recovery drill.
-- [ ] Grow GPT/MBR partitions where safe without moving a partition start.
+- [x] Grow existing GPT/MBR partitions on harness-owned loop fixtures without moving the partition start, using exact size-only `sfdisk -N` geometry plus fresh kernel/table verification.
 - [x] Resize an existing LVM PV after its containing partition/device grows in the disposable owned-loop executor, with exact PV UUID/PE-start/size verification.
 - [x] Extend an LV using existing or newly exposed extents in the disposable single-PV executor profile.
 - [ ] Support ext4 online/offline growth as allowed by the detected filesystem state.
 - [ ] Support XFS online growth.
-- [ ] Automatically chain multi-layer growth: disk -> partition -> PV -> VG -> LV -> filesystem.
+- [x] Automatically chain verified single-PV disk-tail growth through disk -> partition -> PV -> VG -> LV -> filesystem on the disposable executor; broader layered profiles remain separately gated.
 - [ ] Keep every discovered filesystem selectable when several partitions/LVs exist.
 - [ ] Present blocked paths with the exact reason instead of silently omitting the target.
 - [ ] Support safe disk-tail migration strategies such as swap-partition -> swapfile only after dedicated hibernation/resume checks.
-- [ ] Re-discover and verify after every destructive boundary (PV -> LV -> filesystem is enforced; partition and later mutation profiles remain pending).
+- [x] Re-discover and verify after every destructive boundary in every currently executable disposable profile, including partition -> PV -> LV -> filesystem.
 - [ ] Keep shrink unsupported until it is separately designed and reviewed.
 
 ## M2 — Provisioning and swap
