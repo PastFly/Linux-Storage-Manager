@@ -170,8 +170,7 @@ pub(crate) fn exact_safe_system_tool_path(
     path: &Path,
     expected_name: &str,
 ) -> Result<bool, io::Error> {
-    if !path.is_absolute()
-        || path.file_name().and_then(|name| name.to_str()) != Some(expected_name)
+    if !path.is_absolute() || path.file_name().and_then(|name| name.to_str()) != Some(expected_name)
     {
         return Ok(false);
     }
