@@ -62,9 +62,9 @@ pub use execution_intent::{
     FrozenExecutionIntentManifest, FrozenIntentAction, FrozenIntentRole, FrozenIntentStep,
     VerificationBarrierSpec,
 };
-pub use filesystem_health::{ExplicitFilesystemHealthError, ExplicitFilesystemHealthReceipt};
 #[cfg(feature = "disposable-loop-harness")]
 pub use filesystem_health::execute_explicit_filesystem_health_check;
+pub use filesystem_health::{ExplicitFilesystemHealthError, ExplicitFilesystemHealthReceipt};
 pub use journal_store::{DurableJournalStore, JournalStoreError};
 pub use locked_session::{
     LockedExecutionSession, LockedRevalidation, LockedRevalidationStatus, LockedSessionError,
