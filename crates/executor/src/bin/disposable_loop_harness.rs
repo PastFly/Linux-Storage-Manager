@@ -8,9 +8,11 @@ use lsm_discovery::{discover_capabilities, discover_snapshot};
 use lsm_executor::{
     approve_exact_plan, bind_disposable_execution_permit,
     bind_verified_disposable_execution_permit, build_metadata_backup_manifest,
-    build_pre_mutation_evidence, capture_disposable_loop_ownership,
+    build_pre_mutation_evidence, build_pre_mutation_evidence_with_filesystem_health,
+    capture_disposable_loop_ownership,
     capture_metadata_backups_at_disposable_root, compile_disposable_lvm_growth_commands,
-    compile_native_manifest, execute_disposable_command, freeze_execution_intent,
+    compile_native_manifest, execute_disposable_command, execute_explicit_filesystem_health_check,
+    freeze_execution_intent,
     persist_disposable_execution_start, revalidate_metadata_backup_receipt_at_disposable_root,
     verify_and_complete_disposable_execution, verify_and_continue_disposable_boundary,
     verify_disposable_loop_association_row, verify_preconditions, DisposableProgram,
@@ -18,8 +20,8 @@ use lsm_executor::{
     PreMutationEvidenceStatus,
 };
 use lsm_planner::{
-    build_frozen_execution_handoff, capture_target_identity, plan_extend, ExtendRequest, Growth,
-    JournalPhase, PlanStatus,
+    build_frozen_execution_handoff, capture_target_identity, plan_extend, ExtendRequest,
+    FilesystemDecisionState, Growth, JournalPhase, PlanStatus,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -43,6 +45,7 @@ struct Args {
     lvextend: PathBuf,
     resize2fs: PathBuf,
     xfs_growfs: PathBuf,
+    xfs_scrub: PathBuf,
     udevadm: PathBuf,
 }
 
@@ -121,16 +124,36 @@ fn run() -> HarnessResult<()> {
         )));
     }
 
-    let evidence = build_pre_mutation_evidence(
+    let mut evidence = build_pre_mutation_evidence(
         &session,
         &fresh_snapshot,
         &fresh_capabilities,
         &backup_revalidation,
     )?;
+    if evidence.status() == PreMutationEvidenceStatus::FutureChecksRequired
+        && evidence.filesystem_decision().state
+            == FilesystemDecisionState::ReadOnlyHealthCheckRequired
+    {
+        let health_receipt = execute_explicit_filesystem_health_check(
+            &session,
+            &fresh_snapshot,
+            &fresh_capabilities,
+            &args.xfs_scrub,
+        )?;
+        evidence = build_pre_mutation_evidence_with_filesystem_health(
+            &session,
+            &fresh_snapshot,
+            &fresh_capabilities,
+            &backup_revalidation,
+            &health_receipt,
+        )?;
+    }
     if evidence.status() != PreMutationEvidenceStatus::EvidenceComplete {
+        let mut details = evidence.blockers().to_vec();
+        details.extend(evidence.future_gates().iter().cloned());
         return Err(boxed(format!(
             "pre-mutation evidence incomplete: {}",
-            evidence.blockers().join("; ")
+            details.join("; ")
         )));
     }
     let verification = verify_preconditions(&mut session, &evidence)?;
@@ -336,6 +359,7 @@ fn parse_args() -> HarnessResult<Args> {
     let lvextend = PathBuf::from(take("--lvextend")?);
     let resize2fs = PathBuf::from(take("--resize2fs")?);
     let xfs_growfs = PathBuf::from(take("--xfs-growfs")?);
+    let xfs_scrub = PathBuf::from(take("--xfs-scrub")?);
     let udevadm = PathBuf::from(take("--udevadm")?);
     if !values.is_empty() {
         return Err(boxed(format!(
@@ -356,6 +380,7 @@ fn parse_args() -> HarnessResult<Args> {
         lvextend,
         resize2fs,
         xfs_growfs,
+        xfs_scrub,
         udevadm,
     })
 }
