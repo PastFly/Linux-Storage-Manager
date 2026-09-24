@@ -468,6 +468,22 @@ mod tests {
         (snapshot, capabilities)
     }
 
+    fn xfs_fixture() -> (HostSnapshot, HostCapabilities) {
+        let (mut snapshot, _) = fixture("clean");
+        let device = &mut snapshot.storage.block_devices[0].children[0];
+        device.filesystem.as_mut().unwrap().fs_type = "xfs".into();
+        snapshot.mounts[0].fs_type = "xfs".into();
+        snapshot.filesystem_preflight[0].fs_type = "xfs".into();
+        snapshot.filesystem_preflight[0].grow_check_passed = Some(true);
+        let capabilities = serde_json::from_value(json!({"tools":[
+            {"name":"sfdisk","available":true},
+            {"name":"xfs_growfs","available":true},
+            {"name":"xfs_scrub","available":true}
+        ]}))
+        .unwrap();
+        (snapshot, capabilities)
+    }
+
     fn handoff(
         snapshot: &HostSnapshot,
         capabilities: &HostCapabilities,
@@ -577,6 +593,79 @@ mod tests {
             .iter()
             .any(|gate| gate.contains("e2fsck")));
         assert_eq!(session.journal().phase, JournalPhase::IdentityRevalidated);
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+    }
+
+    #[test]
+    fn exact_xfs_health_receipt_promotes_only_the_matching_check() {
+        let (snapshot, capabilities) = xfs_fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let lock = test_path("xfs-health").join("storage.lock");
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let backup = crate::backup_capture::test_backup_receipt_revalidation(
+            handoff.handoff_id(),
+            handoff.plan().plan_id(),
+            &handoff.target_identity().manifest_digest,
+            true,
+            Vec::new(),
+        );
+
+        let pending =
+            build_pre_mutation_evidence(&session, &snapshot, &capabilities, &backup).unwrap();
+        assert_eq!(
+            pending.status(),
+            PreMutationEvidenceStatus::FutureChecksRequired
+        );
+        let check = pending
+            .filesystem_decision()
+            .read_only_check
+            .as_ref()
+            .unwrap()
+            .clone();
+        let receipt =
+            crate::ExplicitFilesystemHealthReceipt::test_for_check(&session, &check);
+
+        let complete = build_pre_mutation_evidence_with_filesystem_health(
+            &session,
+            &snapshot,
+            &capabilities,
+            &backup,
+            &receipt,
+        )
+        .unwrap();
+        assert_eq!(complete.schema_version(), 3);
+        assert_eq!(
+            complete.filesystem_decision().state,
+            FilesystemDecisionState::ReadyOnlineGrow
+        );
+        assert!(complete.filesystem_decision().read_only_check.is_none());
+        assert_eq!(
+            complete.filesystem_health_receipt_id(),
+            Some(receipt.receipt_id())
+        );
+        assert_eq!(complete.status(), PreMutationEvidenceStatus::EvidenceComplete);
+        assert!(!complete
+            .future_gates()
+            .iter()
+            .any(|gate| gate.starts_with("filesystem")));
+
+        let mut wrong_check = check;
+        wrong_check.args.push("--wrong-target".into());
+        let wrong_receipt =
+            crate::ExplicitFilesystemHealthReceipt::test_for_check(&session, &wrong_check);
+        assert!(matches!(
+            build_pre_mutation_evidence_with_filesystem_health(
+                &session,
+                &snapshot,
+                &capabilities,
+                &backup,
+                &wrong_receipt,
+            ),
+            Err(PreMutationEvidenceError::FilesystemHealthReceiptMismatch)
+        ));
+
         let _ = fs::remove_dir_all(lock.parent().unwrap());
     }
 
