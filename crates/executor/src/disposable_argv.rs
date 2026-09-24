@@ -147,6 +147,7 @@ fn compile_pvresize(
         plan_step_id,
         program: DisposableProgram::Pvresize,
         args: vec![
+            "--yes".to_owned(),
             "--setphysicalvolumesize".to_owned(),
             format!("{expected_pv_size_bytes}B"),
             "--".to_owned(),
@@ -570,6 +571,7 @@ mod tests {
         assert_eq!(
             plan.commands()[0].args(),
             [
+                "--yes",
                 "--setphysicalvolumesize",
                 "9663676416B",
                 "--",
