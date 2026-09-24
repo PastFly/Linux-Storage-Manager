@@ -299,14 +299,13 @@ fn verify_terminal_filesystem_state(
         .nth(1)
         .copied()
         .ok_or(DisposableBoundaryVerificationError::UnsupportedFinalMutation)?;
-    let (next_step_id, _) =
-        verify_boundary_state(
-            execution,
-            validated,
-            before_growth,
-            fresh_identity,
-            previous_step_id,
-        )?;
+    let (next_step_id, _) = verify_boundary_state(
+        execution,
+        validated,
+        before_growth,
+        fresh_identity,
+        previous_step_id,
+    )?;
     if next_step_id != completed_step_id {
         return Err(DisposableBoundaryVerificationError::FinalStepNotLast);
     }
@@ -478,14 +477,13 @@ pub fn verify_and_continue_disposable_boundary(
         return Err(DisposableBoundaryVerificationError::CapabilityInventoryMismatch);
     }
 
-    let (next_step_id, fresh_identity_digest) =
-        verify_boundary_state(
-            &execution,
-            validated,
-            session.handoff().target_identity(),
-            fresh_identity,
-            completed_step_id,
-        )?;
+    let (next_step_id, fresh_identity_digest) = verify_boundary_state(
+        &execution,
+        validated,
+        session.handoff().target_identity(),
+        fresh_identity,
+        completed_step_id,
+    )?;
 
     session
         .persist_verification_passed_continue(
@@ -769,15 +767,14 @@ mod tests {
             },
         );
 
-        let (next, fresh_digest) =
-            verify_boundary_state(
-                &execution,
-                &validated,
-                &fresh_identity(8 * 1024 * 1024 * 1024),
-                &fresh,
-                2,
-            )
-            .unwrap();
+        let (next, fresh_digest) = verify_boundary_state(
+            &execution,
+            &validated,
+            &fresh_identity(8 * 1024 * 1024 * 1024),
+            &fresh,
+            2,
+        )
+        .unwrap();
 
         assert_eq!(next, 3);
         assert_eq!(fresh_digest, digest('b'));
@@ -789,15 +786,14 @@ mod tests {
         let execution = execution(&validated);
         let expected = 9 * 1024 * 1024 * 1024;
 
-        let (next, fresh_digest) =
-            verify_boundary_state(
-                &execution,
-                &validated,
-                &fresh_identity(8 * 1024 * 1024 * 1024),
-                &fresh_identity(expected),
-                3,
-            )
-            .unwrap();
+        let (next, fresh_digest) = verify_boundary_state(
+            &execution,
+            &validated,
+            &fresh_identity(8 * 1024 * 1024 * 1024),
+            &fresh_identity(expected),
+            3,
+        )
+        .unwrap();
 
         assert_eq!(next, 4);
         assert_eq!(fresh_digest, digest('b'));
