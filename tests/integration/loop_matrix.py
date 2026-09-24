@@ -28,7 +28,7 @@ class SafetyError(RuntimeError):
 
 class Runner:
     def __init__(self, binary: Path, executor_binary: Path):
-        names = ("losetup", "sfdisk", "partx", "mkfs.ext4", "mkfs.xfs", "pvcreate",
+        names = ("losetup", "sfdisk", "partx", "mkfs.ext4", "mkfs.xfs", "pvcreate", "pvresize",
                  "vgcreate", "vgchange", "lvcreate", "lvrename", "vgremove", "vgs", "pvs", "lvs",
                  "mount", "umount", "findmnt", "vgcfgbackup", "vgcfgrestore", "lvextend",
                  "resize2fs", "xfs_growfs", "xfs_scrub", "udevadm")
@@ -694,6 +694,7 @@ def exercise_disposable_pre_spawn_failure(resources: Resources, binary: Runner, 
         "--journal-root", str(journal_root),
         "--backup-root", str(backup_root),
         "--growth-bytes", str(8 * extent),
+        "--pvresize", binary.tools["pvresize"],
         "--lvextend", "/usr/bin/false",
         "--resize2fs", binary.tools["resize2fs"],
         "--xfs-growfs", binary.tools["xfs_growfs"],
@@ -822,6 +823,7 @@ def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loo
         "--journal-root", str(journal_root),
         "--backup-root", str(backup_root),
         "--growth-bytes", str(growth_extents * extent),
+        "--pvresize", binary.tools["pvresize"],
         "--lvextend", binary.tools["lvextend"],
         "--resize2fs", binary.tools["resize2fs"],
         "--xfs-growfs", binary.tools["xfs_growfs"],
