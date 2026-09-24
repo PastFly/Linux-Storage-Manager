@@ -689,6 +689,140 @@ mod tests {
     }
 
     #[test]
+    fn partition_pv_lv_ext4_profile_compiles_exact_size_only_sfdisk_contract() {
+        let mut fresh = identity("ext4", "/");
+        fresh.devices = vec![
+            lsm_planner::DeviceIdentity {
+                kind: lsm_core::NodeKind::Loop,
+                path: "/dev/loop0".into(),
+                kernel_name: Some("loop0".into()),
+                parent_kernel_name: None,
+                size_bytes: 1024 * 1024 * 1024,
+                start_512_sector: None,
+                logical_sector_bytes: Some(512),
+                uuid: None,
+                partition_uuid: None,
+                model: None,
+                serial: None,
+                filesystem_type: None,
+            },
+            lsm_planner::DeviceIdentity {
+                kind: lsm_core::NodeKind::Partition,
+                path: "/dev/loop0p1".into(),
+                kernel_name: Some("loop0p1".into()),
+                parent_kernel_name: Some("loop0".into()),
+                size_bytes: 640 * 1024 * 1024,
+                start_512_sector: Some(2048),
+                logical_sector_bytes: Some(512),
+                uuid: Some("pv-1".into()),
+                partition_uuid: Some("part-1".into()),
+                model: None,
+                serial: None,
+                filesystem_type: Some("LVM2_member".into()),
+            },
+        ];
+        fresh.partitions = vec![lsm_planner::PartitionGeometryIdentity {
+            partition: "/dev/loop0p1".into(),
+            disk: Some("/dev/loop0".into()),
+            table_label: Some("gpt".into()),
+            table_id: Some("table-1".into()),
+            sector_size_bytes: Some(512),
+            start_sector: Some(2048),
+            size_sectors: Some(1_310_720),
+            record_uuid: Some("part-1".into()),
+        }];
+        fresh.lvm.insert(
+            0,
+            LvmIdentity {
+                kind: LvmIdentityKind::PhysicalVolume,
+                name: "/dev/loop0p1".into(),
+                uuid: Some("pv-1".into()),
+                size_bytes: 636 * 1024 * 1024,
+                free_bytes: Some(252 * 1024 * 1024),
+                pe_start_bytes: Some(1024 * 1024),
+                extent_size_bytes: None,
+                free_extent_count: None,
+                pv_count: None,
+                lv_count: None,
+                attributes: None,
+                layout: None,
+                role: None,
+            },
+        );
+        let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
+            source_manifest_id: "partition-pv-source-intent".into(),
+            steps: vec![
+                NativeCompiledStep {
+                    plan_step_id: 1,
+                    depends_on: vec![],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ExtendPartition {
+                        partition: "/dev/loop0p1".into(),
+                        start_sector: 2048,
+                        old_size_sectors: 1_310_720,
+                        new_size_sectors: 1_449_984,
+                        sector_size_bytes: 512,
+                    },
+                },
+                NativeCompiledStep {
+                    plan_step_id: 2,
+                    depends_on: vec![1],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ResizePhysicalVolume {
+                        pv_uuid: "pv-1".into(),
+                        expected_pv_size_bytes: 704 * 1024 * 1024,
+                    },
+                },
+                NativeCompiledStep {
+                    plan_step_id: 3,
+                    depends_on: vec![2],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ExtendLogicalVolume {
+                        lv_uuid: "lv-1".into(),
+                        additional_extents: 80,
+                        expected_lv_size_bytes: 8 * 1024 * 1024 * 1024 + 320 * 1024 * 1024,
+                    },
+                },
+                NativeCompiledStep {
+                    plan_step_id: 4,
+                    depends_on: vec![3],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::GrowFilesystem {
+                        fs_type: "ext4".into(),
+                        mountpoint: "/".into(),
+                    },
+                },
+            ],
+            verification_barriers: vec![barrier(1), barrier(2), barrier(3), barrier(4)],
+        })
+        .unwrap();
+
+        let plan = compile_disposable_lvm_growth_commands(&validated, &fresh).unwrap();
+
+        assert_eq!(plan.commands().len(), 4);
+        let partition = &plan.commands()[0];
+        assert_eq!(partition.program(), DisposableProgram::Sfdisk);
+        assert_eq!(
+            partition.args(),
+            ["--lock=yes", "--no-reread", "--no-tell-kernel", "-N", "1", "/dev/loop0"]
+        );
+        assert_eq!(
+            partition.stdin_payload(),
+            Some("start=2048, size=1449984\n")
+        );
+        let refresh = partition.kernel_refresh().unwrap();
+        assert_eq!(refresh.program(), DisposableProgram::Partx);
+        assert_eq!(refresh.args(), ["--update", "--nr", "1", "/dev/loop0"]);
+        assert_eq!(plan.commands()[1].program(), DisposableProgram::Pvresize);
+        assert_eq!(plan.commands()[2].program(), DisposableProgram::Lvextend);
+        assert_eq!(plan.commands()[3].program(), DisposableProgram::Resize2fs);
+    }
+
+    #[test]
     fn pv_lv_ext4_profile_compiles_exact_non_shell_argv() {
         let mut fresh = identity("ext4", "/");
         fresh.lvm.insert(
@@ -786,11 +920,15 @@ mod tests {
                         "--".into(),
                         "/dev/vg0/root".into(),
                     ],
+                    stdin_payload: None,
+                    kernel_refresh: None,
                 },
                 DisposableCommandSpec {
                     plan_step_id: 4,
                     program: DisposableProgram::Resize2fs,
                     args: vec!["/dev/mapper/vg0-root".into()],
+                    stdin_payload: None,
+                    kernel_refresh: None,
                 },
             ]
         );
