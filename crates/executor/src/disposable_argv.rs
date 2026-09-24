@@ -500,6 +500,74 @@ mod tests {
     }
 
     #[test]
+    fn pv_lv_ext4_profile_compiles_exact_non_shell_argv() {
+        let mut fresh = identity("ext4", "/");
+        fresh.lvm.insert(
+            0,
+            LvmIdentity {
+                kind: LvmIdentityKind::PhysicalVolume,
+                name: "/dev/loop0p1".into(),
+                uuid: Some("pv-1".into()),
+                size_bytes: 8 * 1024 * 1024 * 1024,
+                free_bytes: Some(0),
+                extent_size_bytes: None,
+                free_extent_count: None,
+                pv_count: None,
+                lv_count: None,
+                attributes: None,
+                layout: None,
+                role: None,
+            },
+        );
+        let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
+            source_manifest_id: "pv-source-intent".into(),
+            steps: vec![
+                NativeCompiledStep {
+                    plan_step_id: 2,
+                    depends_on: vec![],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ResizePhysicalVolume {
+                        pv_uuid: "pv-1".into(),
+                        expected_pv_size_bytes: 9 * 1024 * 1024 * 1024,
+                    },
+                },
+                NativeCompiledStep {
+                    plan_step_id: 3,
+                    depends_on: vec![2],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ExtendLogicalVolume {
+                        lv_uuid: "lv-1".into(),
+                        additional_extents: 4,
+                        expected_lv_size_bytes: 9 * 1024 * 1024 * 1024,
+                    },
+                },
+                NativeCompiledStep {
+                    plan_step_id: 4,
+                    depends_on: vec![3],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::GrowFilesystem {
+                        fs_type: "ext4".into(),
+                        mountpoint: "/".into(),
+                    },
+                },
+            ],
+            verification_barriers: vec![barrier(2), barrier(3), barrier(4)],
+        })
+        .unwrap();
+
+        let plan = compile_disposable_lvm_growth_commands(&validated, &fresh).unwrap();
+
+        assert_eq!(plan.commands().len(), 3);
+        assert_eq!(plan.commands()[0].program(), DisposableProgram::Pvresize);
+        assert_eq!(plan.commands()[0].args(), ["/dev/loop0p1"]);
+        assert_eq!(plan.commands()[1].program(), DisposableProgram::Lvextend);
+        assert_eq!(plan.commands()[2].program(), DisposableProgram::Resize2fs);
+    }
+
+    #[test]
     fn ext4_profile_compiles_exact_non_shell_argv() {
         let validated = validated_manifest("ext4", "/");
         let plan =
