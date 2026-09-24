@@ -119,6 +119,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Add partition-table metadata backup plus a recovery drill.
 - [x] Add LVM metadata backup plus a recovery drill.
 - [x] Grow existing GPT/MBR partitions on harness-owned loop fixtures without moving the partition start, using exact size-only `sfdisk -N` geometry plus fresh kernel/table verification.
+- [x] Prove a successful partition-table write followed by kernel-refresh failure enters durable `RecoveryRequired`, blocks replay, preserves LVM/filesystem state, and reconciles exact GPT/DOS geometry on owned loops.
 - [x] Resize an existing LVM PV after its containing partition/device grows in the disposable owned-loop executor, with exact PV UUID/PE-start/size verification.
 - [x] Extend an LV using existing or newly exposed extents in the disposable single-PV executor profile.
 - [ ] Support ext4 online/offline growth as allowed by the detected filesystem state.

@@ -755,6 +755,187 @@ def exercise_disposable_pre_spawn_failure(resources: Resources, binary: Runner, 
     print("DISPOSABLE_RECOVERY_REQUIRED_OK=pre-spawn-failure-no-storage-change", flush=True)
 
 
+def exercise_partition_post_write_recovery(
+    resources: Resources, binary: Runner, loop: Loop, partition: str,
+    source: str, target: Path, vg: str, table_label: str,
+) -> None:
+    resources.check_loop(loop)
+    if partition != loop.device + "p1" or source != f"/dev/{vg}/data":
+        raise SafetyError("unexpected partition recovery-boundary identity")
+    if table_label not in ("gpt", "dos"):
+        raise SafetyError("unsupported partition recovery-boundary table")
+
+    before = ready_snapshot(binary, loop.device, vg)
+    tables = [table for table in before["partition_tables"] if table.get("device") == loop.device]
+    if len(tables) != 1 or tables[0].get("label") != table_label:
+        raise SafetyError("partition recovery-boundary table identity is ambiguous")
+    table = tables[0]
+    records = [row for row in table.get("partitions", []) if row.get("node") == partition]
+    if len(records) != 1:
+        raise SafetyError("partition recovery-boundary record is ambiguous")
+    record = records[0]
+    sector = table.get("sector_size_bytes")
+    start_sector = record.get("start_sector")
+    current_size_sectors = record.get("size_sectors")
+    if (type(sector) is not int or type(start_sector) is not int
+            or type(current_size_sectors) is not int or sector <= 0
+            or current_size_sectors <= 0):
+        raise SafetyError("partition recovery-boundary geometry is incomplete")
+
+    lvm = before.get("lvm")
+    if not isinstance(lvm, dict):
+        raise SafetyError("LVM inventory missing before partition recovery-boundary drill")
+    pvs = [row for row in lvm.get("physical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg and row.get("name") == partition]
+    vgs = [row for row in lvm.get("volume_groups", [])
+           if isinstance(row, dict) and row.get("name") == vg]
+    if len(pvs) != 1 or len(vgs) != 1:
+        raise SafetyError("PV/VG identity is ambiguous before partition recovery-boundary drill")
+    current_pv_size = pvs[0].get("size_bytes")
+    pe_start_bytes = pvs[0].get("pe_start_bytes")
+    extent = vgs[0].get("extent_size_bytes")
+    free_extents = vgs[0].get("free_extent_count")
+    if (type(current_pv_size) is not int or type(pe_start_bytes) is not int
+            or type(extent) is not int or type(free_extents) is not int
+            or pe_start_bytes < 0 or extent <= 0 or free_extents < 0):
+        raise SafetyError("partition recovery-boundary LVM geometry is incomplete")
+
+    growth_bytes = 320 * 1024 * 1024
+    if growth_bytes % extent:
+        raise SafetyError("partition recovery-boundary growth is not extent aligned")
+    growth_extents = growth_bytes // extent
+    if growth_extents <= free_extents:
+        raise SafetyError("partition recovery-boundary drill would not require partition growth")
+
+    required_pv_growth_bytes = (growth_extents - free_extents) * extent
+    current_partition_size_bytes = current_size_sectors * sector
+    if current_partition_size_bytes < pe_start_bytes:
+        raise SafetyError("PV PE start exceeds partition before recovery-boundary drill")
+    usable_backing_bytes = current_partition_size_bytes - pe_start_bytes
+    if usable_backing_bytes < current_pv_size:
+        raise SafetyError("PV exceeds usable partition backing before recovery-boundary drill")
+    pv_device_slack_bytes = usable_backing_bytes - current_pv_size
+    raw_partition_growth_bytes = max(0, required_pv_growth_bytes - pv_device_slack_bytes)
+    required_partition_growth_bytes = (
+        (raw_partition_growth_bytes + sector - 1) // sector
+    ) * sector
+    if required_partition_growth_bytes <= 0:
+        raise SafetyError("recovery-boundary drill unexpectedly fits current partition")
+
+    expected_size_sectors = (
+        current_partition_size_bytes + required_partition_growth_bytes
+    ) // sector
+    baseline_disk_facts = partition_table_facts(
+        binary.json("sfdisk", "--json", loop.device), loop.device, partition
+    )
+    baseline_lvm = lvm_metadata_facts(binary, vg, partition)
+    sentinel = (target / "readonly-sentinel").read_bytes()
+    before_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    if not association_row:
+        raise SafetyError("loop association missing before partition recovery-boundary drill")
+
+    journal_root = resources.root / f"{vg}-{table_label}-post-write-fault-journal"
+    backup_root = resources.root / f"{vg}-{table_label}-post-write-fault-backup"
+    args = (
+        "--allow-disposable-loop-execution",
+        "--target", str(target),
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--journal-root", str(journal_root),
+        "--backup-root", str(backup_root),
+        "--growth-bytes", str(growth_bytes),
+        "--sfdisk", binary.tools["sfdisk"],
+        "--partx", "/usr/bin/false",
+        "--pvresize", binary.tools["pvresize"],
+        "--lvextend", binary.tools["lvextend"],
+        "--resize2fs", binary.tools["resize2fs"],
+        "--xfs-growfs", binary.tools["xfs_growfs"],
+        "--xfs-scrub", binary.tools["xfs_scrub"],
+        "--udevadm", binary.tools["udevadm"],
+    )
+
+    resources.uncertain = True
+    failed = binary.run("disposable-executor", *args, allowed=(1,))
+    if "selected disposable tool path is unsafe for Partx" not in failed.stderr:
+        raise SafetyError(f"unexpected post-write fault result: {failed.stderr!r}")
+
+    journals = list(journal_root.glob("*.json"))
+    if len(journals) != 1:
+        raise SafetyError("post-write fault did not retain exactly one durable journal")
+    journal_bytes = journals[0].read_bytes()
+    journal = json.loads(journal_bytes)
+    events = journal.get("events")
+    if (journal.get("phase") != "recovery_required"
+            or journal.get("mutation_may_have_started") is not True
+            or not isinstance(journal.get("execution"), dict)
+            or not isinstance(events, list) or not events
+            or events[-1].get("code") != "interrupted-after-mutation-boundary"):
+        raise SafetyError(f"post-write fault journal did not require recovery: {journal!r}")
+
+    disk_facts = partition_table_facts(
+        binary.json("sfdisk", "--json", loop.device), loop.device, partition
+    )
+    before_record = baseline_disk_facts["partitions"][0]
+    changed_record = disk_facts["partitions"][0]
+    if (disk_facts.get("label") != baseline_disk_facts.get("label")
+            or disk_facts.get("id") != baseline_disk_facts.get("id")
+            or changed_record.get("start") != before_record.get("start")
+            or changed_record.get("size") != expected_size_sectors):
+        raise SafetyError("post-write fault did not leave the exact approved on-disk geometry")
+    for key in ("type", "uuid", "name", "attrs", "bootable"):
+        if changed_record.get(key) != before_record.get(key):
+            raise SafetyError(f"post-write fault changed partition metadata field: {key}")
+
+    if lvm_metadata_facts(binary, vg, partition) != baseline_lvm:
+        raise SafetyError("post-write fault changed PV/VG/LV metadata before pvresize")
+    if os.statvfs(target).f_blocks * os.statvfs(target).f_frsize != before_fs_bytes:
+        raise SafetyError("post-write fault changed filesystem capacity")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("post-write fault changed filesystem sentinel")
+
+    replay_args = list(args)
+    replay_args[replay_args.index("/usr/bin/false")] = binary.tools["partx"]
+    replay = binary.run("disposable-executor", *replay_args, allowed=(1,))
+    if "journal root already exists" not in replay.stderr:
+        raise SafetyError(f"post-write replay was not blocked: {replay.stderr!r}")
+    if journals[0].read_bytes() != journal_bytes:
+        raise SafetyError("blocked post-write replay changed retained recovery evidence")
+
+    binary.run("partx", "--update", "--nr", "1", loop.device)
+    binary.run("udevadm", "settle", "--timeout=30")
+    wait_block(partition)
+    reconciled = ready_snapshot(binary, loop.device, vg)
+    reconciled_tables = [
+        item for item in reconciled["partition_tables"] if item.get("device") == loop.device
+    ]
+    if len(reconciled_tables) != 1:
+        raise SafetyError("post-write reconciliation lost partition-table identity")
+    reconciled_records = [
+        row for row in reconciled_tables[0].get("partitions", []) if row.get("node") == partition
+    ]
+    if (len(reconciled_records) != 1
+            or reconciled_records[0].get("start_sector") != start_sector
+            or reconciled_records[0].get("size_sectors") != expected_size_sectors):
+        raise SafetyError("post-write reconciliation did not converge on exact geometry")
+    if lvm_metadata_facts(binary, vg, partition) != baseline_lvm:
+        raise SafetyError("post-write reconciliation changed PV/VG/LV metadata")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("post-write reconciliation changed filesystem sentinel")
+
+    remove_owned_evidence_directory(resources, backup_root)
+    remove_owned_evidence_directory(resources, journal_root)
+    resources.uncertain = False
+    print(
+        f"PARTITION_RECOVERY_REQUIRED_OK={table_label}-post-write-pre-kernel-refresh",
+        flush=True,
+    )
+
+
 def exercise_partition_pv_lvm_growth_mutation(
     resources: Resources, binary: Runner, loop: Loop, partition: str,
     source: str, target: Path, vg: str, table_label: str,
@@ -1366,6 +1547,36 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         for table_label in ("gpt", "dos"):
+            print(f"==> lvm-ext4-{table_label}-partition-post-write-recovery", flush=True)
+            fault_loop = resources.create_loop(
+                f"lvm-ext4-{table_label}-partition-post-write-recovery",
+                1024 * 1024 * 1024,
+            )
+            fault_partition = resources.create_partition(
+                fault_loop, 640, True, table_label=table_label
+            )
+            fault_vg = "lsmtest" + os.urandom(12).hex()
+            fault_source = resources.create_vg(
+                fault_loop, fault_partition, fault_vg
+            )
+            runner.run("mkfs.ext4", "-F", fault_source)
+            refresh_fixture_udev(runner, Path(fault_source).resolve(strict=True).name)
+            fault_target = resources.mount(
+                fault_source,
+                f"lvm-ext4-{table_label}-partition-post-write-recovery-mount",
+            )
+            exercise_partition_post_write_recovery(
+                resources,
+                runner,
+                fault_loop,
+                fault_partition,
+                fault_source,
+                fault_target,
+                fault_vg,
+                table_label,
+            )
+
+        for table_label in ("gpt", "dos"):
             print(f"==> lvm-ext4-{table_label}-partition-pv-lv-filesystem-growth", flush=True)
             chain_loop = resources.create_loop(
                 f"lvm-ext4-{table_label}-partition-growth", 1024 * 1024 * 1024
@@ -1408,7 +1619,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
     return int(failed)
 
 
