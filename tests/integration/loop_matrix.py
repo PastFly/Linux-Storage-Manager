@@ -801,11 +801,13 @@ def exercise_partition_pv_lvm_growth_mutation(
         raise SafetyError("partition/PV/VG/LV identity is ambiguous before growth")
 
     current_pv_size = pvs[0].get("size_bytes")
+    pe_start_bytes = pvs[0].get("pe_start_bytes")
     current_lv_size = lvs[0].get("size_bytes")
     extent = vgs[0].get("extent_size_bytes")
     free_extents = vgs[0].get("free_extent_count")
-    if (type(current_pv_size) is not int or type(current_lv_size) is not int
-            or type(extent) is not int or type(free_extents) is not int
+    if (type(current_pv_size) is not int or type(pe_start_bytes) is not int
+            or type(current_lv_size) is not int or type(extent) is not int
+            or type(free_extents) is not int or pe_start_bytes < 0
             or extent <= 0 or free_extents < 0):
         raise SafetyError("exact partition/PV/VG/LV size evidence is incomplete")
 
@@ -819,9 +821,12 @@ def exercise_partition_pv_lvm_growth_mutation(
     additional_pv_extents = growth_extents - free_extents
     required_pv_growth_bytes = additional_pv_extents * extent
     current_partition_size_bytes = current_size_sectors * sector
-    if current_partition_size_bytes < current_pv_size:
-        raise SafetyError("PV is larger than its partition before growth")
-    pv_device_slack_bytes = current_partition_size_bytes - current_pv_size
+    if current_partition_size_bytes < pe_start_bytes:
+        raise SafetyError("PV PE start exceeds the partition before growth")
+    usable_backing_bytes = current_partition_size_bytes - pe_start_bytes
+    if usable_backing_bytes < current_pv_size:
+        raise SafetyError("PV is larger than its usable partition backing before growth")
+    pv_device_slack_bytes = usable_backing_bytes - current_pv_size
     raw_partition_growth_bytes = max(0, required_pv_growth_bytes - pv_device_slack_bytes)
     required_partition_growth_bytes = (
         (raw_partition_growth_bytes + sector - 1) // sector
