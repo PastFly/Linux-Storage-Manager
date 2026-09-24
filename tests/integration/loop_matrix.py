@@ -1960,7 +1960,8 @@ def refresh_fixture_udev(binary: Runner, sysname: str) -> None:
     binary.run("udevadm", "settle", "--timeout=30")
 
 
-def fixture_identity_gaps(snapshot: dict[str, Any], loop: str, vg: str | None) -> list[str]:
+def fixture_identity_gaps(snapshot: dict[str, Any], loop: str, vg: str | None,
+                          expected_lv_count: int = 1) -> list[str]:
     if vg is None:
         return []
 
@@ -1982,8 +1983,10 @@ def fixture_identity_gaps(snapshot: dict[str, Any], loop: str, vg: str | None) -
         gaps.append(f"pv-count={len(pvs)}")
     if len(vgs) != 1:
         gaps.append(f"vg-count={len(vgs)}")
-    if len(lvs) != 1:
-        gaps.append(f"lv-count={len(lvs)}")
+    if expected_lv_count <= 0:
+        gaps.append("expected-lv-count-invalid")
+    elif len(lvs) != expected_lv_count:
+        gaps.append(f"lv-count={len(lvs)} expected={expected_lv_count}")
     if gaps:
         return gaps
 
@@ -2014,19 +2017,21 @@ def fixture_identity_gaps(snapshot: dict[str, Any], loop: str, vg: str | None) -
         )
 
     lvm_nodes = [node for node in nodes if node.get("kind") == "lvm"]
-    if len(lvm_nodes) != 1:
-        gaps.append(f"lvm-node-count={len(lvm_nodes)}")
-    elif not isinstance(lvm_nodes[0].get("uuid"), str) or not lvm_nodes[0]["uuid"]:
+    if len(lvm_nodes) != expected_lv_count:
+        gaps.append(f"lvm-node-count={len(lvm_nodes)} expected={expected_lv_count}")
+    elif any(not isinstance(node.get("uuid"), str) or not node["uuid"] for node in lvm_nodes):
         gaps.append("filesystem-uuid-missing")
 
     return gaps
 
 
-def fixture_identity_ready(snapshot: dict[str, Any], loop: str, vg: str | None) -> bool:
-    return not fixture_identity_gaps(snapshot, loop, vg)
+def fixture_identity_ready(snapshot: dict[str, Any], loop: str, vg: str | None,
+                           expected_lv_count: int = 1) -> bool:
+    return not fixture_identity_gaps(snapshot, loop, vg, expected_lv_count)
 
 
-def ready_snapshot(binary: Runner, loop: str, vg: str | None) -> dict[str, Any]:
+def ready_snapshot(binary: Runner, loop: str, vg: str | None,
+                   expected_lv_count: int = 1) -> dict[str, Any]:
     """Require settled, repeatable fixture facts BEFORE testing nonmutation.
 
     This is fixture setup, not an acceptance retry. Changes after any planning
@@ -2037,12 +2042,14 @@ def ready_snapshot(binary: Runner, loop: str, vg: str | None) -> dict[str, Any]:
     for attempt in range(20):
         snapshot = binary.json("storagemgr", "snapshot")
         facts = storage_facts(snapshot, loop, vg)
-        if previous is not None and facts == previous and fixture_identity_ready(snapshot, loop, vg):
+        if (previous is not None and facts == previous
+                and fixture_identity_ready(snapshot, loop, vg, expected_lv_count)):
             return snapshot
         previous = facts
         if attempt < 19:
             time.sleep(0.1)
-    gaps = fixture_identity_gaps(snapshot, loop, vg) if 'snapshot' in locals() else ["no-snapshot"]
+    gaps = (fixture_identity_gaps(snapshot, loop, vg, expected_lv_count)
+            if 'snapshot' in locals() else ["no-snapshot"])
     raise SafetyError(
         "fixture metadata did not stabilize before read-only tests; identity gaps="
         + ",".join(gaps)
