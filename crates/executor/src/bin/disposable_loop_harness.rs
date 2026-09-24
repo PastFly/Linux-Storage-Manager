@@ -41,6 +41,8 @@ struct Args {
     journal_root: PathBuf,
     backup_root: PathBuf,
     growth_bytes: u64,
+    sfdisk: PathBuf,
+    partx: PathBuf,
     pvresize: PathBuf,
     lvextend: PathBuf,
     resize2fs: PathBuf,
@@ -203,6 +205,15 @@ fn run() -> HarnessResult<()> {
                     DisposableProgram::Resize2fs | DisposableProgram::XfsGrowfs
                 )
         }
+        [partition, pv, lv, filesystem] => {
+            partition.program() == DisposableProgram::Sfdisk
+                && pv.program() == DisposableProgram::Pvresize
+                && lv.program() == DisposableProgram::Lvextend
+                && matches!(
+                    filesystem.program(),
+                    DisposableProgram::Resize2fs | DisposableProgram::XfsGrowfs
+                )
+        }
         _ => false,
     };
     if !supported_sequence {
@@ -213,6 +224,8 @@ fn run() -> HarnessResult<()> {
 
     let execution = persist_disposable_execution_start(&mut session, &command_plan)?;
     let tools = DisposableToolPaths::new(
+        args.sfdisk.clone(),
+        args.partx.clone(),
         args.pvresize.clone(),
         args.lvextend.clone(),
         args.resize2fs.clone(),
@@ -385,6 +398,8 @@ fn parse_args() -> HarnessResult<Args> {
     if growth_bytes == 0 {
         return Err(boxed("--growth-bytes must be nonzero"));
     }
+    let sfdisk = PathBuf::from(take("--sfdisk")?);
+    let partx = PathBuf::from(take("--partx")?);
     let pvresize = PathBuf::from(take("--pvresize")?);
     let lvextend = PathBuf::from(take("--lvextend")?);
     let resize2fs = PathBuf::from(take("--resize2fs")?);
@@ -407,6 +422,8 @@ fn parse_args() -> HarnessResult<Args> {
         journal_root,
         backup_root,
         growth_bytes,
+        sfdisk,
+        partx,
         pvresize,
         lvextend,
         resize2fs,
