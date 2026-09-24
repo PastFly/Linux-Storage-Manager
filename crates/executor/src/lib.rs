@@ -10,6 +10,7 @@ mod disposable_permit;
 mod disposable_start;
 mod disposable_verify;
 mod execution_intent;
+mod filesystem_health;
 mod journal_store;
 mod locked_session;
 mod native_operation;
@@ -20,6 +21,11 @@ pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError
 pub use backup_capture::{
     capture_metadata_backups, revalidate_metadata_backup_receipt, BackupArtifactReceipt,
     BackupCaptureError, BackupReceiptRevalidation, MetadataBackupReceipt,
+};
+#[cfg(feature = "disposable-loop-harness")]
+pub use backup_capture::{
+    capture_metadata_backups_at_disposable_root,
+    revalidate_metadata_backup_receipt_at_disposable_root,
 };
 pub use backup_manifest::{
     build_metadata_backup_manifest, BackupCommandSpec, BackupExpectedIdentity, BackupManifestError,
@@ -56,6 +62,9 @@ pub use execution_intent::{
     FrozenExecutionIntentManifest, FrozenIntentAction, FrozenIntentRole, FrozenIntentStep,
     VerificationBarrierSpec,
 };
+#[cfg(feature = "disposable-loop-harness")]
+pub use filesystem_health::execute_explicit_filesystem_health_check;
+pub use filesystem_health::{ExplicitFilesystemHealthError, ExplicitFilesystemHealthReceipt};
 pub use journal_store::{DurableJournalStore, JournalStoreError};
 pub use locked_session::{
     LockedExecutionSession, LockedRevalidation, LockedRevalidationStatus, LockedSessionError,
@@ -70,8 +79,8 @@ pub use native_operation::{
     NativeVerificationBarrier, ValidatedNativeManifest, NATIVE_OPERATION_ALLOWLIST,
 };
 pub use precondition_evidence::{
-    build_pre_mutation_evidence, PreMutationEvidenceBundle, PreMutationEvidenceError,
-    PreMutationEvidenceStatus,
+    build_pre_mutation_evidence, build_pre_mutation_evidence_with_filesystem_health,
+    PreMutationEvidenceBundle, PreMutationEvidenceError, PreMutationEvidenceStatus,
 };
 pub use preconditions::{
     verify_preconditions, PreconditionsVerification, PreconditionsVerificationError,

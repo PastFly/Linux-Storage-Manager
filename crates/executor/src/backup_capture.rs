@@ -157,6 +157,24 @@ pub fn revalidate_metadata_backup_receipt(
     revalidate_receipt_at_root(manifest, receipt, None)
 }
 
+#[cfg(feature = "disposable-loop-harness")]
+pub fn capture_metadata_backups_at_disposable_root(
+    session: &LockedExecutionSession<'_>,
+    manifest: &MetadataBackupManifest,
+    owned_root: &Path,
+) -> Result<MetadataBackupReceipt, BackupCaptureError> {
+    capture_with_runner(session, manifest, Some(owned_root), &SystemCaptureRunner)
+}
+
+#[cfg(feature = "disposable-loop-harness")]
+pub fn revalidate_metadata_backup_receipt_at_disposable_root(
+    manifest: &MetadataBackupManifest,
+    receipt: &MetadataBackupReceipt,
+    owned_root: &Path,
+) -> Result<BackupReceiptRevalidation, BackupCaptureError> {
+    revalidate_receipt_at_root(manifest, receipt, Some(owned_root))
+}
+
 trait CaptureRunner {
     fn capture_partition_table(&self, disk: &str, output: &Path) -> Result<(), BackupCaptureError>;
     fn capture_lvm_metadata(&self, vg_name: &str, output: &Path) -> Result<(), BackupCaptureError>;

@@ -1054,6 +1054,7 @@ mod tests {
             &validated,
             &before_growth,
             &fresh,
+            &capabilities,
             mutation_step_ids[1],
         );
         assert!(matches!(
@@ -1081,6 +1082,7 @@ mod tests {
             &validated,
             &forged_before_growth,
             &fresh,
+            &capabilities,
             mutation_step_ids[1],
         );
         assert!(matches!(
@@ -1094,6 +1096,7 @@ mod tests {
             &validated,
             &before_growth,
             &fresh,
+            &capabilities,
             mutation_step_ids[1],
         )
         .unwrap();

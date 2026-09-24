@@ -1,0 +1,502 @@
+use std::env;
+use std::error::Error;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+use lsm_discovery::{discover_capabilities, discover_snapshot};
+use lsm_executor::{
+    approve_exact_plan, bind_disposable_execution_permit,
+    bind_verified_disposable_execution_permit, build_metadata_backup_manifest,
+    build_pre_mutation_evidence, build_pre_mutation_evidence_with_filesystem_health,
+    capture_disposable_loop_ownership, capture_metadata_backups_at_disposable_root,
+    compile_disposable_lvm_growth_commands, compile_native_manifest, execute_disposable_command,
+    execute_explicit_filesystem_health_check, freeze_execution_intent,
+    persist_disposable_execution_start, revalidate_metadata_backup_receipt_at_disposable_root,
+    verify_and_complete_disposable_execution, verify_and_continue_disposable_boundary,
+    verify_disposable_loop_association_row, verify_preconditions, DisposableProgram,
+    DisposableToolPaths, DurableJournalStore, LockedExecutionSession, LockedRevalidationStatus,
+    PreMutationEvidenceStatus,
+};
+use lsm_planner::{
+    build_frozen_execution_handoff, capture_target_identity, plan_extend, ExtendRequest,
+    FilesystemDecisionState, Growth, JournalPhase, PlanStatus,
+};
+use serde_json::json;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+#[error("{0}")]
+struct HarnessError(String);
+
+type HarnessResult<T> = Result<T, Box<dyn Error>>;
+
+#[derive(Debug)]
+struct Args {
+    target: String,
+    loop_device: String,
+    backing_file: PathBuf,
+    owned_root: PathBuf,
+    association_row: String,
+    journal_root: PathBuf,
+    backup_root: PathBuf,
+    growth_bytes: u64,
+    lvextend: PathBuf,
+    resize2fs: PathBuf,
+    xfs_growfs: PathBuf,
+    xfs_scrub: PathBuf,
+    udevadm: PathBuf,
+}
+
+fn boxed(message: impl Into<String>) -> Box<dyn Error> {
+    Box::new(HarnessError(message.into()))
+}
+
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("DISPOSABLE_EXECUTOR_FAILED: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> HarnessResult<()> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Err(boxed("disposable loop harness requires root"));
+    }
+    let args = parse_args()?;
+    let owned_root = args.owned_root.canonicalize()?;
+    require_direct_child(&owned_root, &args.journal_root, "journal root")?;
+    require_direct_child(&owned_root, &args.backup_root, "backup root")?;
+
+    let backing_file = args.backing_file.canonicalize()?;
+    let ownership =
+        capture_disposable_loop_ownership(&args.loop_device, &backing_file, &owned_root)?;
+    let association = verify_disposable_loop_association_row(
+        &args.loop_device,
+        &backing_file,
+        &args.association_row,
+    )?;
+
+    settle_udev(&args.udevadm)?;
+    let snapshot = discover_snapshot()?;
+    let capabilities = discover_capabilities();
+    let plan = plan_extend(
+        &snapshot,
+        &capabilities,
+        ExtendRequest {
+            target: args.target.clone(),
+            growth: Growth::ByBytes(args.growth_bytes),
+        },
+    )?;
+    if plan.status() != PlanStatus::Preview {
+        return Err(boxed(
+            "live disposable fixture did not produce a preview-ready plan",
+        ));
+    }
+    let handoff = build_frozen_execution_handoff(&snapshot, &capabilities, &plan)?;
+
+    let store = DurableJournalStore::at(&args.journal_root);
+    let mut session = LockedExecutionSession::begin_durable(&handoff, &store)?;
+
+    let fresh_snapshot = discover_snapshot()?;
+    let fresh_capabilities = discover_capabilities();
+    let revalidation = session.revalidate(&fresh_snapshot, &fresh_capabilities)?;
+    if revalidation.status != LockedRevalidationStatus::Revalidated {
+        return Err(boxed(format!(
+            "locked revalidation blocked: {}",
+            revalidation.blockers.join("; ")
+        )));
+    }
+
+    let backup_manifest = build_metadata_backup_manifest(&handoff)?;
+    let backup_receipt =
+        capture_metadata_backups_at_disposable_root(&session, &backup_manifest, &args.backup_root)?;
+    let backup_revalidation = revalidate_metadata_backup_receipt_at_disposable_root(
+        &backup_manifest,
+        &backup_receipt,
+        &args.backup_root,
+    )?;
+    if !backup_revalidation.matches() {
+        return Err(boxed(format!(
+            "backup revalidation blocked: {}",
+            backup_revalidation.blockers().join("; ")
+        )));
+    }
+
+    let mut evidence = build_pre_mutation_evidence(
+        &session,
+        &fresh_snapshot,
+        &fresh_capabilities,
+        &backup_revalidation,
+    )?;
+    if evidence.status() == PreMutationEvidenceStatus::FutureChecksRequired
+        && evidence.filesystem_decision().state
+            == FilesystemDecisionState::ReadOnlyHealthCheckRequired
+    {
+        let health_receipt = execute_explicit_filesystem_health_check(
+            &session,
+            &fresh_snapshot,
+            &fresh_capabilities,
+            &args.xfs_scrub,
+        )?;
+        evidence = build_pre_mutation_evidence_with_filesystem_health(
+            &session,
+            &fresh_snapshot,
+            &fresh_capabilities,
+            &backup_revalidation,
+            &health_receipt,
+        )?;
+    }
+    if evidence.status() != PreMutationEvidenceStatus::EvidenceComplete {
+        let mut details = evidence.blockers().to_vec();
+        details.extend(evidence.future_gates().iter().cloned());
+        return Err(boxed(format!(
+            "pre-mutation evidence incomplete: {}",
+            details.join("; ")
+        )));
+    }
+    let verification = verify_preconditions(&mut session, &evidence)?;
+    let approved_plan_id = verification.plan_id().to_owned();
+    let approved_evidence_id = verification.bundle_id().to_owned();
+    let approved_target_digest = verification.target_manifest_digest().to_owned();
+    let approval = approve_exact_plan(
+        &mut session,
+        &verification,
+        &approved_plan_id,
+        &approved_evidence_id,
+        &approved_target_digest,
+    )?;
+
+    let intent = freeze_execution_intent(&session, &approval)?;
+    let validated =
+        lsm_executor::validate_and_bind_native_manifest(compile_native_manifest(&intent))?;
+
+    let executable_snapshot = discover_snapshot()?;
+    let executable_capabilities = discover_capabilities();
+    if !handoff.matches_capabilities(&executable_capabilities)? {
+        return Err(boxed(
+            "capability inventory changed immediately before disposable execution",
+        ));
+    }
+    let initial_identity = capture_target_identity(&executable_snapshot, &args.target)?;
+    if initial_identity.manifest_digest != handoff.target_identity().manifest_digest {
+        return Err(boxed(
+            "fresh executable identity diverged from the locked handoff",
+        ));
+    }
+    let command_plan = compile_disposable_lvm_growth_commands(&validated, &initial_identity)?;
+    if command_plan.commands().len() != 2
+        || command_plan.commands()[0].program() != DisposableProgram::Lvextend
+        || !matches!(
+            command_plan.commands()[1].program(),
+            DisposableProgram::Resize2fs | DisposableProgram::XfsGrowfs
+        )
+    {
+        return Err(boxed(
+            "compiled mutation sequence is not exactly LV then filesystem growth",
+        ));
+    }
+
+    let execution = persist_disposable_execution_start(&mut session, &command_plan)?;
+    let tools = DisposableToolPaths::new(
+        args.lvextend.clone(),
+        args.resize2fs.clone(),
+        args.xfs_growfs.clone(),
+    );
+    let first_step = command_plan.commands()[0].plan_step_id();
+    let final_step = command_plan.commands()[1].plan_step_id();
+
+    let mutation_result: HarnessResult<(String, String)> = (|| {
+        let first_permit = bind_disposable_execution_permit(
+            &command_plan,
+            &initial_identity,
+            &ownership,
+            &association,
+            &execution,
+            first_step,
+        )?;
+        let first_outcome = execute_disposable_command(first_permit, &session, &tools)?;
+        if first_outcome.plan_step_id != first_step
+            || first_outcome.program != DisposableProgram::Lvextend
+        {
+            return Err(boxed("executor returned the wrong first mutation outcome"));
+        }
+
+        refresh_udev(&args.udevadm, &initial_identity.resolved_device)?;
+        session.persist_verification_started()?;
+        let post_lv_snapshot = discover_snapshot()?;
+        let post_lv_capabilities = discover_capabilities();
+        let post_lv_identity = capture_target_identity(&post_lv_snapshot, &args.target)?;
+        let boundary = verify_and_continue_disposable_boundary(
+            &mut session,
+            &validated,
+            &post_lv_identity,
+            &post_lv_capabilities,
+            first_step,
+        )?;
+
+        let second_permit = bind_verified_disposable_execution_permit(
+            &validated,
+            &post_lv_identity,
+            &ownership,
+            &association,
+            &execution,
+            boundary,
+        )?;
+        let second_outcome = execute_disposable_command(second_permit, &session, &tools)?;
+        if second_outcome.plan_step_id != final_step {
+            return Err(boxed("executor returned the wrong final mutation step"));
+        }
+
+        settle_udev(&args.udevadm)?;
+        session.persist_verification_started()?;
+        let final_snapshot = discover_snapshot()?;
+        let final_capabilities = discover_capabilities();
+        let final_identity = capture_target_identity(&final_snapshot, &args.target)?;
+        let completion = verify_and_complete_disposable_execution(
+            &mut session,
+            &validated,
+            &post_lv_identity,
+            &final_identity,
+            &final_capabilities,
+            final_step,
+        )?;
+        Ok((
+            completion.execution_id().to_owned(),
+            completion.fresh_identity_digest().to_owned(),
+        ))
+    })();
+
+    let (execution_id, final_identity_digest) = match mutation_result {
+        Ok(value) => value,
+        Err(error) => {
+            let _ =
+                session.persist_interrupted("disposable loop harness failed after execution start");
+            return Err(error);
+        }
+    };
+
+    if session.journal().phase != JournalPhase::Completed {
+        return Err(boxed("successful executor run did not end in Completed"));
+    }
+    let persisted = store.load(&session.journal().journal_id)?;
+    if persisted != *session.journal() {
+        return Err(boxed(
+            "completed durable journal does not match live session state",
+        ));
+    }
+    let final_binding = persisted
+        .verified_boundary
+        .as_ref()
+        .ok_or_else(|| boxed("completed journal is missing verified boundary"))?;
+    if final_binding.final_step_id != Some(final_step)
+        || final_binding.final_identity_digest.as_deref() != Some(final_identity_digest.as_str())
+    {
+        return Err(boxed(
+            "completed journal is missing exact terminal verification identity",
+        ));
+    }
+
+    let journal_id = persisted.journal_id.clone();
+    drop(session);
+    remove_owned_directory(&args.backup_root, &owned_root)?;
+    remove_owned_directory(&args.journal_root, &owned_root)?;
+
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "status": "completed",
+            "execution_id": execution_id,
+            "journal_id": journal_id,
+            "first_step_id": first_step,
+            "final_step_id": final_step,
+            "final_identity_digest": final_identity_digest,
+            "mutation_enabled": lsm_executor::MUTATION_ENABLED,
+        }))?
+    );
+    Ok(())
+}
+
+fn parse_args() -> HarnessResult<Args> {
+    let mut values = std::collections::BTreeMap::<String, String>::new();
+    let mut allowed = false;
+    let mut iter = env::args().skip(1);
+    while let Some(key) = iter.next() {
+        if key == "--allow-disposable-loop-execution" {
+            if allowed {
+                return Err(boxed("duplicate disposable execution acknowledgement"));
+            }
+            allowed = true;
+            continue;
+        }
+        if !key.starts_with("--") {
+            return Err(boxed(format!("unexpected argument: {key}")));
+        }
+        let value = iter
+            .next()
+            .ok_or_else(|| boxed(format!("missing value for {key}")))?;
+        if values.insert(key.clone(), value).is_some() {
+            return Err(boxed(format!("duplicate argument: {key}")));
+        }
+    }
+    if !allowed {
+        return Err(boxed(
+            "explicit --allow-disposable-loop-execution is required",
+        ));
+    }
+
+    let mut take = |key: &str| -> HarnessResult<String> {
+        values
+            .remove(key)
+            .ok_or_else(|| boxed(format!("missing required argument: {key}")))
+    };
+    let target = take("--target")?;
+    let loop_device = take("--loop-device")?;
+    let backing_file = PathBuf::from(take("--backing-file")?);
+    let owned_root = PathBuf::from(take("--owned-root")?);
+    let association_row = take("--association-row")?;
+    let journal_root = PathBuf::from(take("--journal-root")?);
+    let backup_root = PathBuf::from(take("--backup-root")?);
+    let growth_bytes = take("--growth-bytes")?
+        .parse::<u64>()
+        .map_err(|_| boxed("--growth-bytes must be a positive integer"))?;
+    if growth_bytes == 0 {
+        return Err(boxed("--growth-bytes must be nonzero"));
+    }
+    let lvextend = PathBuf::from(take("--lvextend")?);
+    let resize2fs = PathBuf::from(take("--resize2fs")?);
+    let xfs_growfs = PathBuf::from(take("--xfs-growfs")?);
+    let xfs_scrub = PathBuf::from(take("--xfs-scrub")?);
+    let udevadm = PathBuf::from(take("--udevadm")?);
+    if !values.is_empty() {
+        return Err(boxed(format!(
+            "unknown arguments: {}",
+            values.keys().cloned().collect::<Vec<_>>().join(", ")
+        )));
+    }
+
+    Ok(Args {
+        target,
+        loop_device,
+        backing_file,
+        owned_root,
+        association_row,
+        journal_root,
+        backup_root,
+        growth_bytes,
+        lvextend,
+        resize2fs,
+        xfs_growfs,
+        xfs_scrub,
+        udevadm,
+    })
+}
+
+fn require_direct_child(root: &Path, path: &Path, label: &str) -> HarnessResult<()> {
+    if !path.is_absolute() {
+        return Err(boxed(format!("{label} must be absolute")));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| boxed(format!("{label} has no parent")))?
+        .canonicalize()?;
+    if parent != root {
+        return Err(boxed(format!(
+            "{label} must be a direct child of the owned root"
+        )));
+    }
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(boxed(format!("{label} already exists"))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Box::new(error)),
+    }
+}
+
+fn validate_udevadm(path: &Path) -> HarnessResult<()> {
+    if !path.is_absolute() || path.file_name().and_then(|name| name.to_str()) != Some("udevadm") {
+        return Err(boxed("udevadm path is not exact"));
+    }
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(boxed("udevadm path is not a file"));
+    }
+    Ok(())
+}
+
+fn settle_udev(udevadm: &Path) -> HarnessResult<()> {
+    validate_udevadm(udevadm)?;
+    let status = Command::new(udevadm)
+        .args(["settle", "--timeout=30"])
+        .env_clear()
+        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()?;
+    if !status.success() {
+        return Err(boxed(format!("udevadm settle failed with {status}")));
+    }
+    Ok(())
+}
+
+fn refresh_udev(udevadm: &Path, device: &str) -> HarnessResult<()> {
+    validate_udevadm(udevadm)?;
+    let canonical = Path::new(device).canonicalize()?;
+    let sysname = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| boxed("resolved device has no UTF-8 sysname"))?;
+    if sysname.is_empty()
+        || !sysname
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._+!-".contains(&byte))
+    {
+        return Err(boxed("resolved device has unsafe sysname"));
+    }
+    let status = Command::new(udevadm)
+        .args([
+            "trigger",
+            "--action=change",
+            &format!("--sysname-match={sysname}"),
+        ])
+        .env_clear()
+        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()?;
+    if !status.success() {
+        return Err(boxed(format!("udevadm trigger failed with {status}")));
+    }
+    settle_udev(udevadm)
+}
+
+fn remove_owned_directory(path: &Path, root: &Path) -> HarnessResult<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| boxed("owned cleanup path has no parent"))?
+        .canonicalize()?;
+    if parent != root {
+        return Err(boxed("refusing cleanup outside owned root"));
+    }
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(boxed("owned cleanup path is not an exact directory"));
+    }
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        let metadata = fs::symlink_metadata(&entry_path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(boxed(format!(
+                "unexpected non-file in owned cleanup directory: {}",
+                entry_path.display()
+            )));
+        }
+        fs::remove_file(entry_path)?;
+    }
+    fs::remove_dir(path)?;
+    Ok(())
+}

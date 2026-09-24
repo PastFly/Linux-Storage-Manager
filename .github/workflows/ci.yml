@@ -56,6 +56,9 @@ jobs:
       - name: Test disposable executor feature boundary
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features disposable-executor --lib
+      - name: Check isolated loop harness feature
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo clippy --locked -p lsm-executor --features disposable-loop-harness --bin lsm-disposable-loop-harness -- -D warnings
       # Preserve generated formatting and dependency evidence for review.
       # This runs AFTER checks and cannot turn failed checks into success.
       - name: Collect source and formatting diagnostics
@@ -95,15 +98,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends lvm2 e2fsprogs xfsprogs util-linux fdisk
-      - name: Build storagemgr
-        run: cargo build --locked --release --workspace
+      - name: Build storagemgr and isolated disposable executor harness
+        run: |
+          cargo build --locked --release --workspace
+          cargo build --locked --release -p lsm-executor --features disposable-loop-harness --bin lsm-disposable-loop-harness
       - name: Test planning and partition/LVM recovery on disposable fixtures
         run: |
           for attempt in 1 2 3; do
             echo "Integration repetition ${attempt}/3"
             sudo python3 -I tests/integration/loop_matrix.py \
               --allow-disposable-loop-tests \
-              "${GITHUB_WORKSPACE}/target/release/storagemgr"
+              "${GITHUB_WORKSPACE}/target/release/storagemgr" \
+              "${GITHUB_WORKSPACE}/target/release/lsm-disposable-loop-harness"
           done
 
       - name: Package tested read-only prototype

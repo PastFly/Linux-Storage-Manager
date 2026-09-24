@@ -106,7 +106,7 @@ pub fn verify_preconditions(
     {
         return Err(PreconditionsVerificationError::MutationEnabled);
     }
-    if evidence.schema_version() != 2 {
+    if evidence.schema_version() != 3 {
         return Err(PreconditionsVerificationError::UnsupportedEvidenceSchema);
     }
     if !evidence.integrity_matches()? {
@@ -139,6 +139,9 @@ pub fn verify_preconditions(
         || !is_lower_hex_digest(evidence.target_manifest_digest())
         || !is_lower_hex_digest(evidence.backup_manifest_id())
         || !is_lower_hex_digest(evidence.backup_receipt_id())
+        || evidence
+            .filesystem_health_receipt_id()
+            .is_some_and(|receipt_id| !is_lower_hex_digest(receipt_id))
     {
         return Err(PreconditionsVerificationError::BackupBindingInvalid);
     }
