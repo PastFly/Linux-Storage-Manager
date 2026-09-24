@@ -209,6 +209,11 @@ fn run() -> HarnessResult<()> {
             "compiled mutation sequence is not an allowed LV or PV->LV filesystem profile",
         ));
     }
+    let execution_profile = if pv_profile {
+        "pv_lv_filesystem"
+    } else {
+        "lv_filesystem"
+    };
 
     let execution = persist_disposable_execution_start(&mut session, &command_plan)?;
     let tools = DisposableToolPaths::new(
@@ -347,6 +352,8 @@ fn run() -> HarnessResult<()> {
             "status": "completed",
             "execution_id": execution_id,
             "journal_id": journal_id,
+            "profile": execution_profile,
+            "mutation_step_count": command_plan.commands().len(),
             "first_step_id": first_step,
             "final_step_id": final_step,
             "final_identity_digest": final_identity_digest,
