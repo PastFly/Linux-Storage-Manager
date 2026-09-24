@@ -465,6 +465,7 @@ mod tests {
                 uuid: Some("lv-1".into()),
                 size_bytes: 8 * 1024 * 1024 * 1024,
                 free_bytes: None,
+                pe_start_bytes: None,
                 extent_size_bytes: None,
                 free_extent_count: None,
                 pv_count: None,
@@ -514,6 +515,7 @@ mod tests {
                 uuid: Some("pv-1".into()),
                 size_bytes: 10 * 1024 * 1024 * 1024,
                 free_bytes: Some(2 * 1024 * 1024 * 1024),
+                pe_start_bytes: Some(1024 * 1024),
                 extent_size_bytes: None,
                 free_extent_count: None,
                 pv_count: None,
@@ -651,7 +653,7 @@ mod tests {
             plan.commands()[0].args(),
             [
                 "--setphysicalvolumesize",
-                "11811160064B",
+                "11812208640B",
                 "--yes",
                 "--",
                 "/dev/loop7p1"
