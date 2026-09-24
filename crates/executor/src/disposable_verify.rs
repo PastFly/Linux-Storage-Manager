@@ -510,6 +510,47 @@ mod tests {
         .unwrap()
     }
 
+    fn validated_pv() -> ValidatedNativeManifest {
+        validate_and_bind_native_manifest(NativeCompiledManifest {
+            source_manifest_id: digest('d'),
+            steps: vec![
+                NativeCompiledStep {
+                    plan_step_id: 2,
+                    depends_on: vec![],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ResizePhysicalVolume {
+                        pv_uuid: "pv-1".into(),
+                        expected_pv_size_bytes: 10 * 1024 * 1024 * 1024,
+                    },
+                },
+                NativeCompiledStep {
+                    plan_step_id: 3,
+                    depends_on: vec![2],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ExtendLogicalVolume {
+                        lv_uuid: "lv-1".into(),
+                        additional_extents: 4,
+                        expected_lv_size_bytes: 9 * 1024 * 1024 * 1024,
+                    },
+                },
+                NativeCompiledStep {
+                    plan_step_id: 4,
+                    depends_on: vec![3],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::GrowFilesystem {
+                        fs_type: "ext4".into(),
+                        mountpoint: "/mnt/test".into(),
+                    },
+                },
+            ],
+            verification_barriers: vec![barrier(2), barrier(3), barrier(4)],
+        })
+        .unwrap()
+    }
+
     fn execution(validated: &ValidatedNativeManifest) -> ExecutionStartBinding {
         let mut binding = ExecutionStartBinding {
             schema_version: 1,
@@ -579,6 +620,75 @@ mod tests {
                 options: vec!["rw".into()],
             }],
         }
+    }
+
+    fn fresh_pv_identity(pv_size_bytes: u64) -> TargetIdentityManifest {
+        let mut identity = fresh_identity(8 * 1024 * 1024 * 1024);
+        identity.devices.push(lsm_planner::DeviceIdentity {
+            kind: NodeKind::Partition,
+            path: "/dev/loop7p1".into(),
+            kernel_name: Some("loop7p1".into()),
+            parent_kernel_name: Some("loop7".into()),
+            size_bytes: 12 * 1024 * 1024 * 1024,
+            start_512_sector: Some(2048),
+            logical_sector_bytes: Some(512),
+            uuid: None,
+            partition_uuid: Some("part-1".into()),
+            model: None,
+            serial: None,
+            filesystem_type: Some("LVM2_member".into()),
+        });
+        identity.lvm.insert(
+            0,
+            LvmIdentity {
+                kind: LvmIdentityKind::PhysicalVolume,
+                name: "/dev/loop7p1".into(),
+                uuid: Some("pv-1".into()),
+                size_bytes: pv_size_bytes,
+                free_bytes: Some(2 * 1024 * 1024 * 1024),
+                extent_size_bytes: None,
+                free_extent_count: None,
+                pv_count: None,
+                lv_count: None,
+                attributes: Some("a--".into()),
+                layout: None,
+                role: None,
+            },
+        );
+        identity
+    }
+
+    #[test]
+    fn exact_post_pv_state_authorizes_only_lv_step() {
+        let validated = validated_pv();
+        let mut execution = execution(&validated);
+        execution.mutation_step_ids = vec![2, 3, 4];
+        execution.execution_id = execution.expected_execution_id().unwrap();
+        let expected = 10 * 1024 * 1024 * 1024;
+
+        let (next, fresh_digest) =
+            verify_boundary_state(&execution, &validated, &fresh_pv_identity(expected), 2).unwrap();
+
+        assert_eq!(next, 3);
+        assert_eq!(fresh_digest, digest('b'));
+    }
+
+    #[test]
+    fn wrong_post_pv_size_fails_closed() {
+        let validated = validated_pv();
+        let mut execution = execution(&validated);
+        execution.mutation_step_ids = vec![2, 3, 4];
+        execution.execution_id = execution.expected_execution_id().unwrap();
+
+        assert_eq!(
+            verify_boundary_state(
+                &execution,
+                &validated,
+                &fresh_pv_identity(9 * 1024 * 1024 * 1024),
+                2,
+            ),
+            Err(DisposableBoundaryVerificationError::PhysicalVolumeSizeMismatch)
+        );
     }
 
     #[test]
