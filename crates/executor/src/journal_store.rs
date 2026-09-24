@@ -111,9 +111,7 @@ impl DurableJournalStore {
             match fs::hard_link(&temp_path, &final_path) {
                 Ok(()) => {}
                 Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-                    return Err(JournalStoreError::AlreadyExists(
-                        journal.journal_id.clone(),
-                    ));
+                    return Err(JournalStoreError::AlreadyExists(journal.journal_id.clone()));
                 }
                 Err(source) => return Err(io_error(&final_path, source)),
             }
