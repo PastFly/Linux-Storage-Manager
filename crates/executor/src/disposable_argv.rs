@@ -483,6 +483,42 @@ mod tests {
         }
     }
 
+    fn pv_identity(fs_type: &str, mountpoint: &str) -> TargetIdentityManifest {
+        let mut identity = identity(fs_type, mountpoint);
+        identity.devices.push(lsm_planner::DeviceIdentity {
+            kind: lsm_core::NodeKind::Partition,
+            path: "/dev/loop7p1".into(),
+            kernel_name: Some("loop7p1".into()),
+            parent_kernel_name: Some("loop7".into()),
+            size_bytes: 12 * 1024 * 1024 * 1024,
+            start_512_sector: Some(2048),
+            logical_sector_bytes: Some(512),
+            uuid: None,
+            partition_uuid: Some("part-1".into()),
+            model: None,
+            serial: None,
+            filesystem_type: Some("LVM2_member".into()),
+        });
+        identity.lvm.insert(
+            0,
+            LvmIdentity {
+                kind: LvmIdentityKind::PhysicalVolume,
+                name: "/dev/loop7p1".into(),
+                uuid: Some("pv-1".into()),
+                size_bytes: 10 * 1024 * 1024 * 1024,
+                free_bytes: Some(2 * 1024 * 1024 * 1024),
+                extent_size_bytes: None,
+                free_extent_count: None,
+                pv_count: None,
+                lv_count: None,
+                attributes: Some("a--".into()),
+                layout: None,
+                role: None,
+            },
+        );
+        identity
+    }
+
     fn barrier(after_plan_step_id: u32) -> NativeVerificationBarrier {
         NativeVerificationBarrier {
             after_plan_step_id,
@@ -525,6 +561,47 @@ mod tests {
         .unwrap()
     }
 
+    fn validated_pv_manifest() -> ValidatedNativeManifest {
+        validate_and_bind_native_manifest(NativeCompiledManifest {
+            source_manifest_id: "source-pv-intent".into(),
+            steps: vec![
+                NativeCompiledStep {
+                    plan_step_id: 3,
+                    depends_on: vec![],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ResizePhysicalVolume {
+                        pv_uuid: "pv-1".into(),
+                        expected_pv_size_bytes: 11 * 1024 * 1024 * 1024,
+                    },
+                },
+                NativeCompiledStep {
+                    plan_step_id: 4,
+                    depends_on: vec![3],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ExtendLogicalVolume {
+                        lv_uuid: "lv-1".into(),
+                        additional_extents: 4,
+                        expected_lv_size_bytes: 9 * 1024 * 1024 * 1024,
+                    },
+                },
+                NativeCompiledStep {
+                    plan_step_id: 5,
+                    depends_on: vec![4],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::GrowFilesystem {
+                        fs_type: "ext4".into(),
+                        mountpoint: "/".into(),
+                    },
+                },
+            ],
+            verification_barriers: vec![barrier(3), barrier(4), barrier(5)],
+        })
+        .unwrap()
+    }
+
     #[test]
     fn ext4_profile_compiles_exact_non_shell_argv() {
         let validated = validated_manifest("ext4", "/");
@@ -552,6 +629,65 @@ mod tests {
                     args: vec!["/dev/mapper/vg0-root".into()],
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn pv_lv_filesystem_profile_compiles_exact_pvresize_argv() {
+        let validated = validated_pv_manifest();
+        let plan =
+            compile_disposable_lvm_growth_commands(&validated, &pv_identity("ext4", "/")).unwrap();
+
+        assert_eq!(plan.commands().len(), 3);
+        assert_eq!(plan.commands()[0].program(), DisposableProgram::Pvresize);
+        assert_eq!(
+            plan.commands()[0].args(),
+            [
+                "--setphysicalvolumesize",
+                "11811160064B",
+                "--",
+                "/dev/loop7p1"
+            ]
+        );
+        assert_eq!(plan.commands()[1].program(), DisposableProgram::Lvextend);
+        assert_eq!(plan.commands()[2].program(), DisposableProgram::Resize2fs);
+    }
+
+    #[test]
+    fn verified_post_pv_identity_compiles_only_lv_command() {
+        let validated = validated_pv_manifest();
+        let mut fresh = pv_identity("ext4", "/");
+        fresh.manifest_digest = "post-pv-identity".into();
+        fresh.lvm[0].size_bytes = 11 * 1024 * 1024 * 1024;
+
+        let plan = compile_verified_disposable_next_command(&validated, &fresh, 4).unwrap();
+
+        assert_eq!(plan.commands().len(), 1);
+        assert_eq!(plan.commands()[0].plan_step_id(), 4);
+        assert_eq!(plan.commands()[0].program(), DisposableProgram::Lvextend);
+        assert_eq!(
+            plan.commands()[0].args(),
+            ["--extents", "+4", "--", "/dev/vg0/root"]
+        );
+    }
+
+    #[test]
+    fn pv_growth_requires_exact_uuid_and_proven_backing_capacity() {
+        let validated = validated_pv_manifest();
+        let mut fresh = pv_identity("ext4", "/");
+        fresh.lvm[0].uuid = Some("other-pv".into());
+        assert_eq!(
+            compile_disposable_lvm_growth_commands(&validated, &fresh),
+            Err(DisposableArgvError::PhysicalVolumeIdentityNotUnique(
+                "pv-1".into()
+            ))
+        );
+
+        let mut fresh = pv_identity("ext4", "/");
+        fresh.devices.last_mut().unwrap().size_bytes = 10 * 1024 * 1024 * 1024;
+        assert_eq!(
+            compile_disposable_lvm_growth_commands(&validated, &fresh),
+            Err(DisposableArgvError::PhysicalVolumeBackingNotProven)
         );
     }
 
@@ -612,44 +748,32 @@ mod tests {
     }
 
     #[test]
-    fn partition_and_pv_mutations_remain_rejected() {
-        for (operation, expected) in [
-            (
-                NativeOperationSpec::ExtendPartition {
+    fn partition_mutation_remains_rejected() {
+        let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
+            source_manifest_id: "unsupported-mutation".into(),
+            steps: vec![NativeCompiledStep {
+                plan_step_id: 1,
+                depends_on: vec![],
+                reversibility: Reversibility::Irreversible,
+                role: FrozenIntentRole::MutationCandidate,
+                operation: NativeOperationSpec::ExtendPartition {
                     partition: "/dev/loop0p1".into(),
                     start_sector: 2048,
                     old_size_sectors: 4096,
                     new_size_sectors: 8192,
                     sector_size_bytes: 512,
                 },
-                NativeOperationKind::ExtendPartition,
-            ),
-            (
-                NativeOperationSpec::ResizePhysicalVolume {
-                    pv_uuid: "pv-1".into(),
-                    expected_pv_size_bytes: 9 * 1024 * 1024 * 1024,
-                },
-                NativeOperationKind::ResizePhysicalVolume,
-            ),
-        ] {
-            let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
-                source_manifest_id: "unsupported-mutation".into(),
-                steps: vec![NativeCompiledStep {
-                    plan_step_id: 1,
-                    depends_on: vec![],
-                    reversibility: Reversibility::Irreversible,
-                    role: FrozenIntentRole::MutationCandidate,
-                    operation,
-                }],
-                verification_barriers: vec![barrier(1)],
-            })
-            .unwrap();
+            }],
+            verification_barriers: vec![barrier(1)],
+        })
+        .unwrap();
 
-            assert_eq!(
-                compile_disposable_lvm_growth_commands(&validated, &identity("ext4", "/")),
-                Err(DisposableArgvError::UnsupportedMutation(expected))
-            );
-        }
+        assert_eq!(
+            compile_disposable_lvm_growth_commands(&validated, &identity("ext4", "/")),
+            Err(DisposableArgvError::UnsupportedMutation(
+                NativeOperationKind::ExtendPartition
+            ))
+        );
     }
 
     #[test]
