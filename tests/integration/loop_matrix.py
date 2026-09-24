@@ -1640,6 +1640,181 @@ def exercise_filesystem_post_write_recovery(
     )
 
 
+def exercise_multi_partition_selection(resources: Resources, binary: Runner, loop: Loop,
+                                       first_partition: str, first_target: Path,
+                                       second_partition: str, second_target: Path) -> None:
+    resources.check_loop(loop)
+    if (first_partition != loop.device + "p1"
+            or second_partition != loop.device + "p2"
+            or first_partition == second_partition):
+        raise SafetyError("invalid multi-partition fixture identity")
+
+    first_sentinel = (first_target / "readonly-sentinel").read_bytes()
+    second_sentinel = (second_target / "readonly-sentinel").read_bytes()
+
+    ready_snapshot(binary, loop.device, None)
+    catalog = binary.json("storagemgr", "plan", "targets", "--json")
+    if not isinstance(catalog, list):
+        raise SafetyError("multi-partition target catalog is not a JSON list")
+    targets = {row.get("target"): row for row in catalog if isinstance(row, dict)}
+    for target, partition in (
+        (str(first_target), first_partition),
+        (str(second_target), second_partition),
+    ):
+        row = targets.get(target)
+        if not isinstance(row, dict):
+            raise SafetyError(f"partition target disappeared from catalog: {target}")
+        if os.path.realpath(row.get("device", "")) != os.path.realpath(partition):
+            raise SafetyError(f"partition target bound to wrong device: {target}")
+
+    blocked = binary.run(
+        "storagemgr", "plan", "extend", str(first_target), "--by", "32MiB", "--json",
+        allowed=(2,),
+    )
+    blocked_plan = json.loads(blocked.stdout)
+    if blocked_plan.get("status") != "blocked":
+        raise SafetyError("non-tail partition was not retained as an explicitly blocked target")
+
+    tail_plan = binary.json(
+        "storagemgr", "plan", "extend", str(second_target), "--by", "32MiB", "--json"
+    )
+    if tail_plan.get("status") != "preview":
+        raise SafetyError("tail partition was not independently selectable for growth")
+
+    if (first_target / "readonly-sentinel").read_bytes() != first_sentinel:
+        raise SafetyError("blocked partition target sentinel changed during planning")
+    if (second_target / "readonly-sentinel").read_bytes() != second_sentinel:
+        raise SafetyError("tail partition target sentinel changed during planning")
+
+    print(
+        "MULTI_PARTITION_SELECTION_OK=both-visible-tail-growable-neighbor-blocked",
+        flush=True,
+    )
+
+
+def exercise_multi_target_isolation(resources: Resources, binary: Runner, loop: Loop,
+                                    primary_source: str, primary_target: Path,
+                                    sibling_source: str, sibling_target: Path,
+                                    vg: str) -> None:
+    resources.check_loop(loop)
+    if primary_source == sibling_source or primary_target == sibling_target:
+        raise SafetyError("multi-target fixture did not create distinct targets")
+    if primary_source != f"/dev/{vg}/data" or sibling_source != f"/dev/{vg}/archive":
+        raise SafetyError("unexpected multi-target LV identity")
+
+    before = ready_snapshot(binary, loop.device, vg, expected_lv_count=2)
+    lvm = before.get("lvm")
+    if not isinstance(lvm, dict):
+        raise SafetyError("LVM inventory missing before multi-target drill")
+    lvs = [row for row in lvm.get("logical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg]
+    by_path = {row.get("path"): row for row in lvs if isinstance(row.get("path"), str)}
+    if primary_source not in by_path or sibling_source not in by_path:
+        raise SafetyError("multi-target LVs are missing from discovery")
+
+    primary_before = by_path[primary_source]
+    sibling_before = by_path[sibling_source]
+    primary_uuid = primary_before.get("uuid")
+    sibling_uuid = sibling_before.get("uuid")
+    primary_size = primary_before.get("size_bytes")
+    sibling_size = sibling_before.get("size_bytes")
+    if (not isinstance(primary_uuid, str) or not primary_uuid
+            or not isinstance(sibling_uuid, str) or not sibling_uuid
+            or type(primary_size) is not int or type(sibling_size) is not int):
+        raise SafetyError("multi-target LV identity is incomplete")
+
+    primary_sentinel = (primary_target / "readonly-sentinel").read_bytes()
+    sibling_sentinel = (sibling_target / "readonly-sentinel").read_bytes()
+    primary_fs_before = os.statvfs(primary_target).f_blocks * os.statvfs(primary_target).f_frsize
+    sibling_fs_before = os.statvfs(sibling_target).f_blocks * os.statvfs(sibling_target).f_frsize
+
+    catalog = binary.json("storagemgr", "plan", "targets", "--json")
+    if not isinstance(catalog, list):
+        raise SafetyError("target catalog is not a JSON list")
+    targets = {row.get("target"): row for row in catalog if isinstance(row, dict)}
+    for target, source in (
+        (str(primary_target), primary_source),
+        (str(sibling_target), sibling_source),
+    ):
+        row = targets.get(target)
+        if (not isinstance(row, dict)
+                or os.path.realpath(row.get("device", "")) != os.path.realpath(source)):
+            raise SafetyError(f"selectable target missing or misbound: {target}")
+        preview = binary.json(
+            "storagemgr", "plan", "extend", target, "--by", "32MiB", "--json"
+        )
+        if preview.get("status") != "preview":
+            raise SafetyError(f"target is not independently plannable: {target}")
+
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    if not association_row:
+        raise SafetyError("exact loop association row is unavailable before multi-target execution")
+
+    journal_root = resources.root / f"{vg}-multi-target-journal"
+    backup_root = resources.root / f"{vg}-multi-target-backup"
+    growth_bytes = 32 * 1024 * 1024
+
+    resources.uncertain = True
+    result = binary.run(
+        "disposable-executor",
+        "--allow-disposable-loop-execution",
+        "--target", str(primary_target),
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--journal-root", str(journal_root),
+        "--backup-root", str(backup_root),
+        "--growth-bytes", str(growth_bytes),
+        "--sfdisk", binary.tools["sfdisk"],
+        "--partx", binary.tools["partx"],
+        "--pvresize", binary.tools["pvresize"],
+        "--lvextend", binary.tools["lvextend"],
+        "--resize2fs", binary.tools["resize2fs"],
+        "--xfs-growfs", binary.tools["xfs_growfs"],
+        "--xfs-scrub", binary.tools["xfs_scrub"],
+        "--udevadm", binary.tools["udevadm"],
+    )
+    outcome = json.loads(result.stdout)
+    if (not isinstance(outcome, dict) or outcome.get("status") != "completed"
+            or outcome.get("mutation_enabled") is not False):
+        raise SafetyError(f"invalid multi-target executor completion: {outcome!r}")
+
+    final = ready_snapshot(binary, loop.device, vg, expected_lv_count=2)
+    final_lvs = [row for row in final["lvm"]["logical_volumes"]
+                 if isinstance(row, dict) and row.get("vg_name") == vg]
+    final_by_path = {row.get("path"): row for row in final_lvs if isinstance(row.get("path"), str)}
+    primary_after = final_by_path.get(primary_source)
+    sibling_after = final_by_path.get(sibling_source)
+    if not isinstance(primary_after, dict) or not isinstance(sibling_after, dict):
+        raise SafetyError("multi-target final LV identities are incomplete")
+
+    if (primary_after.get("uuid") != primary_uuid
+            or primary_after.get("size_bytes") != primary_size + growth_bytes):
+        raise SafetyError("selected LV did not grow by the exact requested amount")
+    if (sibling_after.get("uuid") != sibling_uuid
+            or sibling_after.get("size_bytes") != sibling_size):
+        raise SafetyError("unselected sibling LV identity or size changed")
+
+    primary_fs_after = os.statvfs(primary_target).f_blocks * os.statvfs(primary_target).f_frsize
+    sibling_fs_after = os.statvfs(sibling_target).f_blocks * os.statvfs(sibling_target).f_frsize
+    if primary_fs_after <= primary_fs_before:
+        raise SafetyError("selected filesystem capacity did not grow")
+    if sibling_fs_after != sibling_fs_before:
+        raise SafetyError("unselected sibling filesystem capacity changed")
+    if (primary_target / "readonly-sentinel").read_bytes() != primary_sentinel:
+        raise SafetyError("selected target sentinel changed")
+    if (sibling_target / "readonly-sentinel").read_bytes() != sibling_sentinel:
+        raise SafetyError("unselected sibling sentinel changed")
+    if journal_root.exists() or backup_root.exists():
+        raise SafetyError("multi-target executor did not clean owned evidence")
+
+    resources.uncertain = False
+    print("MULTI_TARGET_ISOLATION_OK=selected-grown-sibling-unchanged", flush=True)
+
+
 def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loop,
                                  source: str, target: Path, vg: str,
                                  filesystem: str) -> None:
