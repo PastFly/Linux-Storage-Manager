@@ -164,9 +164,7 @@ fn verify_boundary_state(
                 })
                 .collect::<Vec<_>>();
             if matches.len() != 1 {
-                return Err(
-                    DisposableBoundaryVerificationError::PhysicalVolumeIdentityNotUnique,
-                );
+                return Err(DisposableBoundaryVerificationError::PhysicalVolumeIdentityNotUnique);
             }
             if matches[0].size_bytes != *expected_pv_size_bytes {
                 return Err(DisposableBoundaryVerificationError::PhysicalVolumeSizeMismatch);
@@ -186,9 +184,7 @@ fn verify_boundary_state(
                 })
                 .collect::<Vec<_>>();
             if matches.len() != 1 {
-                return Err(
-                    DisposableBoundaryVerificationError::LogicalVolumeIdentityNotUnique,
-                );
+                return Err(DisposableBoundaryVerificationError::LogicalVolumeIdentityNotUnique);
             }
             if matches[0].size_bytes != *expected_lv_size_bytes {
                 return Err(DisposableBoundaryVerificationError::LogicalVolumeSizeMismatch);
