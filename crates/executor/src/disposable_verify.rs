@@ -565,6 +565,65 @@ mod tests {
     }
 
     #[test]
+    fn exact_post_pv_state_authorizes_only_the_next_step() {
+        let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
+            source_manifest_id: digest('a'),
+            steps: vec![
+                NativeCompiledStep {
+                    plan_step_id: 2,
+                    depends_on: vec![],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ResizePhysicalVolume {
+                        pv_uuid: "pv-1".into(),
+                        expected_pv_size_bytes: 9 * 1024 * 1024 * 1024,
+                    },
+                },
+                NativeCompiledStep {
+                    plan_step_id: 3,
+                    depends_on: vec![2],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ExtendLogicalVolume {
+                        lv_uuid: "lv-1".into(),
+                        additional_extents: 4,
+                        expected_lv_size_bytes: 9 * 1024 * 1024 * 1024,
+                    },
+                },
+            ],
+            verification_barriers: vec![barrier(2), barrier(3)],
+        })
+        .unwrap();
+        let mut execution = execution(&validated);
+        execution.mutation_step_ids = vec![2, 3];
+        execution.execution_id = execution.expected_execution_id().unwrap();
+        let mut fresh = fresh_identity(8 * 1024 * 1024 * 1024);
+        fresh.lvm.insert(
+            0,
+            LvmIdentity {
+                kind: LvmIdentityKind::PhysicalVolume,
+                name: "/dev/loop7p1".into(),
+                uuid: Some("pv-1".into()),
+                size_bytes: 9 * 1024 * 1024 * 1024,
+                free_bytes: Some(1024 * 1024 * 1024),
+                extent_size_bytes: None,
+                free_extent_count: None,
+                pv_count: None,
+                lv_count: None,
+                attributes: None,
+                layout: None,
+                role: None,
+            },
+        );
+
+        let (next, fresh_digest) =
+            verify_boundary_state(&execution, &validated, &fresh, 2).unwrap();
+
+        assert_eq!(next, 3);
+        assert_eq!(fresh_digest, digest('b'));
+    }
+
+    #[test]
     fn exact_post_lv_state_authorizes_only_the_next_step() {
         let validated = validated();
         let execution = execution(&validated);
