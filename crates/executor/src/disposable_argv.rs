@@ -583,7 +583,7 @@ mod tests {
             [
                 "--yes",
                 "--setphysicalvolumesize",
-                "9663676416B",
+                "9664724992B",
                 "--",
                 "/dev/loop0p1"
             ]
