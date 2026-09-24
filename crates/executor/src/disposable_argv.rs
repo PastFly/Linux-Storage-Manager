@@ -146,7 +146,12 @@ fn compile_pvresize(
     Ok(DisposableCommandSpec {
         plan_step_id,
         program: DisposableProgram::Pvresize,
-        args: vec![pv.name.clone()],
+        args: vec![
+            "--setphysicalvolumesize".to_owned(),
+            format!("{expected_pv_size_bytes}B"),
+            "--".to_owned(),
+            pv.name.clone(),
+        ],
     })
 }
 
@@ -562,7 +567,15 @@ mod tests {
 
         assert_eq!(plan.commands().len(), 3);
         assert_eq!(plan.commands()[0].program(), DisposableProgram::Pvresize);
-        assert_eq!(plan.commands()[0].args(), ["/dev/loop0p1"]);
+        assert_eq!(
+            plan.commands()[0].args(),
+            [
+                "--setphysicalvolumesize",
+                "9663676416B",
+                "--",
+                "/dev/loop0p1"
+            ]
+        );
         assert_eq!(plan.commands()[1].program(), DisposableProgram::Lvextend);
         assert_eq!(plan.commands()[2].program(), DisposableProgram::Resize2fs);
     }
