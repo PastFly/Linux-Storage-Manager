@@ -79,8 +79,14 @@ pub enum DisposableBoundaryVerificationError {
     CompletedStepNotAuthorized,
     #[error("completed mutation step has no following mutation step")]
     NoNextMutationStep,
-    #[error("first disposable verification boundary only supports logical-volume growth")]
+    #[error("disposable verification boundary does not support the completed mutation")]
     UnsupportedCompletedMutation,
+    #[error("physical volume UUID did not resolve to exactly one fresh identity")]
+    PhysicalVolumeIdentityNotUnique,
+    #[error("fresh physical volume size does not equal the exact expected post-mutation size")]
+    PhysicalVolumeSizeMismatch,
+    #[error("fresh block-device identity does not prove the verified physical volume capacity")]
+    PhysicalVolumeBackingSizeMismatch,
     #[error("fresh target route is not a supported profile")]
     UnsupportedFreshRoute,
     #[error("logical volume UUID did not resolve to exactly one fresh identity")]
@@ -142,40 +148,74 @@ fn verify_boundary_state(
         .find(|step| step.plan_step_id == completed_step_id)
         .ok_or(DisposableBoundaryVerificationError::CompletedStepNotAuthorized)?;
 
-    let NativeOperationSpec::ExtendLogicalVolume {
-        lv_uuid,
-        expected_lv_size_bytes,
-        ..
-    } = &step.operation
-    else {
-        return Err(DisposableBoundaryVerificationError::UnsupportedCompletedMutation);
-    };
-
     if fresh_identity.route_status != LayerRouteStatus::SupportedProfile {
         return Err(DisposableBoundaryVerificationError::UnsupportedFreshRoute);
     }
 
-    let matches = fresh_identity
-        .lvm
-        .iter()
-        .filter(|entry| {
-            entry.kind == LvmIdentityKind::LogicalVolume
-                && entry.uuid.as_deref() == Some(lv_uuid.as_str())
-        })
-        .collect::<Vec<_>>();
-    if matches.len() != 1 {
-        return Err(DisposableBoundaryVerificationError::LogicalVolumeIdentityNotUnique);
-    }
-    if matches[0].size_bytes != *expected_lv_size_bytes {
-        return Err(DisposableBoundaryVerificationError::LogicalVolumeSizeMismatch);
-    }
+    match &step.operation {
+        NativeOperationSpec::ResizePhysicalVolume {
+            pv_uuid,
+            expected_pv_size_bytes,
+        } => {
+            let matches = fresh_identity
+                .lvm
+                .iter()
+                .filter(|entry| {
+                    entry.kind == LvmIdentityKind::PhysicalVolume
+                        && entry.uuid.as_deref() == Some(pv_uuid.as_str())
+                })
+                .collect::<Vec<_>>();
+            if matches.len() != 1 {
+                return Err(
+                    DisposableBoundaryVerificationError::PhysicalVolumeIdentityNotUnique,
+                );
+            }
+            let pv = matches[0];
+            if pv.size_bytes != *expected_pv_size_bytes {
+                return Err(DisposableBoundaryVerificationError::PhysicalVolumeSizeMismatch);
+            }
+            let backing = fresh_identity
+                .devices
+                .iter()
+                .filter(|device| device.path == pv.name)
+                .collect::<Vec<_>>();
+            if backing.len() != 1 || backing[0].size_bytes < *expected_pv_size_bytes {
+                return Err(
+                    DisposableBoundaryVerificationError::PhysicalVolumeBackingSizeMismatch,
+                );
+            }
+        }
+        NativeOperationSpec::ExtendLogicalVolume {
+            lv_uuid,
+            expected_lv_size_bytes,
+            ..
+        } => {
+            let matches = fresh_identity
+                .lvm
+                .iter()
+                .filter(|entry| {
+                    entry.kind == LvmIdentityKind::LogicalVolume
+                        && entry.uuid.as_deref() == Some(lv_uuid.as_str())
+                })
+                .collect::<Vec<_>>();
+            if matches.len() != 1 {
+                return Err(
+                    DisposableBoundaryVerificationError::LogicalVolumeIdentityNotUnique,
+                );
+            }
+            if matches[0].size_bytes != *expected_lv_size_bytes {
+                return Err(DisposableBoundaryVerificationError::LogicalVolumeSizeMismatch);
+            }
 
-    let filesystem = fresh_identity
-        .filesystem
-        .as_ref()
-        .ok_or(DisposableBoundaryVerificationError::FilesystemBackingSizeMismatch)?;
-    if filesystem.backing_device_size_bytes != *expected_lv_size_bytes {
-        return Err(DisposableBoundaryVerificationError::FilesystemBackingSizeMismatch);
+            let filesystem = fresh_identity
+                .filesystem
+                .as_ref()
+                .ok_or(DisposableBoundaryVerificationError::FilesystemBackingSizeMismatch)?;
+            if filesystem.backing_device_size_bytes != *expected_lv_size_bytes {
+                return Err(DisposableBoundaryVerificationError::FilesystemBackingSizeMismatch);
+            }
+        }
+        _ => return Err(DisposableBoundaryVerificationError::UnsupportedCompletedMutation),
     }
 
     Ok((next_step_id, fresh_identity.manifest_digest.clone()))
