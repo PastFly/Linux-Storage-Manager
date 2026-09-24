@@ -33,7 +33,7 @@ pub enum LvmDiscoveryError {
 pub fn discover_lvm() -> Result<LvmInventory, LvmDiscoveryError> {
     Ok(LvmInventory {
         physical_volumes: parse_pvs_json(&run_report(
-            "pvs", "pv_name,pv_uuid,vg_name,pv_size,pv_free",
+            "pvs", "pv_name,pv_uuid,vg_name,pv_size,pv_free,pe_start",
         )?)?,
         volume_groups: parse_vgs_json(&run_report(
             "vgs",
@@ -84,6 +84,7 @@ pub fn parse_pvs_json(input: &str) -> Result<Vec<LvmPhysicalVolume>, LvmDiscover
                 vg_name: optional(row.vg_name),
                 size_bytes: parse_number("pv_size", &row.pv_size)?,
                 free_bytes: parse_number("pv_free", &row.pv_free)?,
+                pe_start_bytes: optional_number("pe_start", optional(row.pe_start))?,
             })
         })
         .collect()
@@ -200,6 +201,8 @@ struct PvRow {
     vg_name: String,
     pv_size: String,
     pv_free: String,
+    #[serde(default)]
+    pe_start: String,
 }
 
 #[derive(Debug, Deserialize)]
