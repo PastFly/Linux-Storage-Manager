@@ -1108,6 +1108,138 @@ def exercise_partition_pv_lvm_growth_mutation(
     )
 
 
+def exercise_pv_post_write_recovery(
+    resources: Resources, binary: Runner, loop: Loop, partition: str,
+    source: str, target: Path, vg: str,
+) -> None:
+    resources.check_loop(loop)
+    if partition != loop.device + "p1" or source != f"/dev/{vg}/data":
+        raise SafetyError("unexpected PV recovery-boundary identity")
+
+    before = ready_snapshot(binary, loop.device, vg)
+    lvm = before.get("lvm")
+    if not isinstance(lvm, dict):
+        raise SafetyError("LVM inventory missing before PV recovery-boundary drill")
+    pvs = [row for row in lvm.get("physical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg and row.get("name") == partition]
+    vgs = [row for row in lvm.get("volume_groups", [])
+           if isinstance(row, dict) and row.get("name") == vg]
+    lvs = [row for row in lvm.get("logical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg and row.get("path") == source]
+    if len(pvs) != 1 or len(vgs) != 1 or len(lvs) != 1:
+        raise SafetyError("PV/VG/LV identity is ambiguous before PV recovery-boundary drill")
+
+    current_pv_size = pvs[0].get("size_bytes")
+    current_pv_uuid = pvs[0].get("uuid")
+    current_lv_size = lvs[0].get("size_bytes")
+    current_lv_uuid = lvs[0].get("uuid")
+    extent = vgs[0].get("extent_size_bytes")
+    free_extents = vgs[0].get("free_extent_count")
+    vg_uuid = vgs[0].get("uuid")
+    if (type(current_pv_size) is not int or type(current_lv_size) is not int
+            or type(extent) is not int or type(free_extents) is not int
+            or extent <= 0 or free_extents < 0
+            or not isinstance(current_pv_uuid, str) or not current_pv_uuid
+            or not isinstance(current_lv_uuid, str) or not current_lv_uuid
+            or not isinstance(vg_uuid, str) or not vg_uuid):
+        raise SafetyError("PV recovery-boundary identity/size evidence is incomplete")
+
+    growth_bytes = 384 * 1024 * 1024
+    if growth_bytes % extent:
+        raise SafetyError("PV recovery-boundary growth is not extent aligned")
+    growth_extents = growth_bytes // extent
+    if growth_extents <= free_extents:
+        raise SafetyError("PV recovery-boundary drill would not require pvresize")
+    additional_pv_extents = growth_extents - free_extents
+    expected_pv_size = current_pv_size + additional_pv_extents * extent
+
+    sentinel = (target / "readonly-sentinel").read_bytes()
+    before_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    if not association_row:
+        raise SafetyError("loop association missing before PV recovery-boundary drill")
+
+    journal_root = resources.root / f"{vg}-pv-post-write-fault-journal"
+    backup_root = resources.root / f"{vg}-pv-post-write-fault-backup"
+    args = (
+        "--allow-disposable-loop-execution",
+        "--target", str(target),
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--journal-root", str(journal_root),
+        "--backup-root", str(backup_root),
+        "--growth-bytes", str(growth_bytes),
+        "--sfdisk", binary.tools["sfdisk"],
+        "--partx", binary.tools["partx"],
+        "--pvresize", binary.tools["pvresize"],
+        "--lvextend", "/usr/bin/false",
+        "--resize2fs", binary.tools["resize2fs"],
+        "--xfs-growfs", binary.tools["xfs_growfs"],
+        "--xfs-scrub", binary.tools["xfs_scrub"],
+        "--udevadm", binary.tools["udevadm"],
+    )
+
+    resources.uncertain = True
+    failed = binary.run("disposable-executor", *args, allowed=(1,))
+    if "selected disposable tool path is unsafe for Lvextend" not in failed.stderr:
+        raise SafetyError(f"unexpected PV post-write fault result: {failed.stderr!r}")
+
+    journals = list(journal_root.glob("*.json"))
+    if len(journals) != 1:
+        raise SafetyError("PV post-write fault did not retain exactly one durable journal")
+    journal_bytes = journals[0].read_bytes()
+    journal = json.loads(journal_bytes)
+    events = journal.get("events")
+    if (journal.get("phase") != "recovery_required"
+            or journal.get("mutation_may_have_started") is not True
+            or not isinstance(journal.get("execution"), dict)
+            or not isinstance(events, list) or not events
+            or events[-1].get("code") != "interrupted-after-mutation-boundary"):
+        raise SafetyError(f"PV post-write fault journal did not require recovery: {journal!r}")
+
+    reconciled = ready_snapshot(binary, loop.device, vg)
+    reconciled_lvm = reconciled.get("lvm")
+    if not isinstance(reconciled_lvm, dict):
+        raise SafetyError("LVM inventory missing during PV recovery reconciliation")
+    new_pvs = [row for row in reconciled_lvm.get("physical_volumes", [])
+               if isinstance(row, dict) and row.get("vg_name") == vg and row.get("name") == partition]
+    new_vgs = [row for row in reconciled_lvm.get("volume_groups", [])
+               if isinstance(row, dict) and row.get("name") == vg]
+    new_lvs = [row for row in reconciled_lvm.get("logical_volumes", [])
+               if isinstance(row, dict) and row.get("vg_name") == vg and row.get("path") == source]
+    if len(new_pvs) != 1 or len(new_vgs) != 1 or len(new_lvs) != 1:
+        raise SafetyError("PV recovery reconciliation lost exact LVM identity")
+    if (new_pvs[0].get("uuid") != current_pv_uuid
+            or new_pvs[0].get("size_bytes") != expected_pv_size):
+        raise SafetyError("PV recovery reconciliation did not prove exact resized PV state")
+    if new_vgs[0].get("uuid") != vg_uuid:
+        raise SafetyError("PV recovery reconciliation changed VG identity")
+    if (new_lvs[0].get("uuid") != current_lv_uuid
+            or new_lvs[0].get("size_bytes") != current_lv_size):
+        raise SafetyError("PV recovery-boundary fault changed LV identity or size")
+    if os.statvfs(target).f_blocks * os.statvfs(target).f_frsize != before_fs_bytes:
+        raise SafetyError("PV recovery-boundary fault changed filesystem capacity")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("PV recovery-boundary fault changed filesystem sentinel")
+
+    replay_args = list(args)
+    replay_args[replay_args.index("/usr/bin/false")] = binary.tools["lvextend"]
+    replay = binary.run("disposable-executor", *replay_args, allowed=(1,))
+    if "journal root already exists" not in replay.stderr:
+        raise SafetyError(f"PV post-write replay was not blocked: {replay.stderr!r}")
+    if journals[0].read_bytes() != journal_bytes:
+        raise SafetyError("blocked PV post-write replay changed retained recovery evidence")
+
+    remove_owned_evidence_directory(resources, backup_root)
+    remove_owned_evidence_directory(resources, journal_root)
+    resources.uncertain = False
+    print("PV_RECOVERY_REQUIRED_OK=post-pvresize-pre-lvextend", flush=True)
+
+
 def exercise_pv_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loop,
                                     partition: str, source: str, target: Path,
                                     vg: str) -> None:
