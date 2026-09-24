@@ -3,11 +3,11 @@
 M1B is the safety foundation between read-only planning and any future mutation-capable
 executor. It remains fail-closed and capability/topology driven.
 
-Verified master baseline after PR #79 on 2026-09-24:
+Verified master baseline after PR #80 on 2026-09-24:
 
-`45e391ad7ba19c9e2dd44cd31d6fc603295ec33a`
+`c64cfee6bbf41eb73752a315cf9f99761ef88ae9`
 
-That master contains M1B0 through the first live M1B16 disposable `LV -> filesystem` executor path. The executor remains feature-gated to harness-owned loop fixtures and production `MUTATION_ENABLED=false` remains unchanged. CI #737 proved real Rust-driven LVM/ext4 growth; hosted-kernel XFS execution remains fail-closed when the required online `xfs_scrub` facility is unavailable. Portable Linux #616 passed for x86_64 and aarch64.
+That master contains M1B0 through the first live M1B16 disposable `LV -> filesystem` executor plus durable replay/recovery hardening. The executor remains feature-gated to harness-owned loop fixtures and production `MUTATION_ENABLED=false` remains unchanged. PR #82 extends the candidate disposable profile to exact `PV -> LV -> filesystem` execution; it is not part of this master baseline until merged.
 
 ## Non-negotiable boundary
 
@@ -87,9 +87,9 @@ Complete at the verified master baseline above. M1B15 adds `ResizePhysicalVolume
 
 ### M1B16 — disposable-only executor
 
-PR #79 is merged at the verified master baseline above. The feature-gated harness now performs the full durable chain for the narrow `ExtendLogicalVolume -> GrowFilesystem` profile: locked revalidation, backup receipt, filesystem health gate where required, exact approval/native binding, durable `Executing`, one-shot LV mutation, fresh verification, filesystem mutation and terminal verification. It re-discovers immediately before the first destructive boundary and after each destructive layer. Partition/PV execution remains rejected and no production apply command or privileged production helper exists.
+PR #79 established the feature-gated `ExtendLogicalVolume -> GrowFilesystem` executor. PR #80 then added create-without-replacement journal start, blocked blind replay, and proved forced pre-spawn failure enters durable `RecoveryRequired` without changing LV/filesystem/sentinel state.
 
-The next hardening layer uses create-without-replacement semantics for the initial durable journal so a retained `Completed` or `RecoveryRequired` record cannot be silently replaced by a new `HostLockHeld` journal with the same ID. Fault-injection coverage deliberately enters durable `Executing`, fails before the first process spawn, requires `RecoveryRequired`, proves unchanged LV/filesystem/sentinel state, and preserves evidence until explicit reconciliation.
+PR #82 extends the candidate disposable executor to `ResizePhysicalVolume -> ExtendLogicalVolume -> GrowFilesystem` when the backing partition/device is already larger than the PV. The PV command is bound to exact PV UUID/path and observed PE start; the requested usable PV size is translated into the exact raw `pvresize --setphysicalvolumesize` limit. Fresh discovery verifies exact PV size before LV mutation, exact LV size before filesystem mutation, and final filesystem growth afterward. CI #780 proves the complete owned-loop path in 3/3 repetitions while production `MUTATION_ENABLED=false` remains unchanged. Partition mutation remains rejected.
 
 ## ExactApprovalBinding
 
