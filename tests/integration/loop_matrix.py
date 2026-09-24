@@ -30,7 +30,7 @@ class Runner:
     def __init__(self, binary: Path, executor_binary: Path):
         names = ("losetup", "sfdisk", "partx", "mkfs.ext4", "mkfs.xfs", "pvcreate",
                  "vgcreate", "vgchange", "lvcreate", "lvrename", "vgremove", "vgs", "pvs", "lvs",
-                 "mount", "umount", "findmnt", "vgcfgbackup", "vgcfgrestore", "lvextend",
+                 "mount", "umount", "findmnt", "vgcfgbackup", "vgcfgrestore", "pvresize", "lvextend",
                  "resize2fs", "xfs_growfs", "xfs_scrub", "udevadm")
         self.tools = {}
         for name in names:
@@ -822,6 +822,7 @@ def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loo
         "--journal-root", str(journal_root),
         "--backup-root", str(backup_root),
         "--growth-bytes", str(growth_extents * extent),
+        "--pvresize", binary.tools["pvresize"],
         "--lvextend", binary.tools["lvextend"],
         "--resize2fs", binary.tools["resize2fs"],
         "--xfs-growfs", binary.tools["xfs_growfs"],
