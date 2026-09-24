@@ -24,7 +24,7 @@ authoritatively larger than the current PV:
 5. ext4 or XFS filesystem growth;
 6. terminal rediscovery and verification.
 
-Partition mutation remains non-executable.
+A third disposable profile permits only size growth of one already-existing GPT or DOS/MBR partition when authoritative adjacent capacity is proven. It never moves the partition start and does not create, delete, reorder or shrink partitions.
 
 ## Required inputs
 
@@ -66,6 +66,7 @@ by the current disposable profile may compile to executable argv.
 
 For the approved disposable profiles:
 
+- `ExtendPartition` resolves the exact frozen partition/disk geometry, emits only a size-grow `sfdisk -N` payload with the same start sector, uses explicit locking and suppressed implicit kernel reread, then performs an exact `partx --update --nr` refresh;
 - `ResizePhysicalVolume` resolves the approved PV UUID/path against fresh identity,
   requires exact observed PE start, and converts the expected usable PV size into the exact
   raw `pvresize --setphysicalvolumesize` limit;
@@ -104,7 +105,10 @@ After every destructive layer:
 
 The LV/filesystem profile verifies LV size before filesystem growth and filesystem size
 after growth. The PV/LV/filesystem profile additionally verifies the exact PV UUID and
-usable PV size before minting the one-shot permit for LV growth.
+usable PV size before minting the one-shot permit for LV growth. The partition/PV/LV/filesystem
+profile first requires the fresh partition to keep the exact disk/table identity, start sector,
+type, UUID and other recorded metadata while changing only to the exact approved size; its
+kernel block-device size must also match before a PV permit can be minted.
 
 ## Integration acceptance
 
@@ -114,6 +118,8 @@ The disposable matrix must cover at least:
 - LVM/XFS using existing VG free extents;
 - LVM/ext4 with a backing partition larger than the PV, proving exact
   `pvresize -> verify PV -> lvextend -> verify LV -> resize2fs -> verify filesystem`;
+- GPT and DOS/MBR LVM/ext4 disk-tail growth, proving exact
+  `sfdisk size-only -> partx -> verify partition -> pvresize -> verify PV -> lvextend -> verify LV -> resize2fs -> verify filesystem`;
 - repeated execution attempts proving an already-applied manifest cannot be blindly replayed;
 - forced command failure before mutation;
 - forced interruption/failure after mutation-start journaling;
@@ -129,7 +135,7 @@ M1B16 does not expose:
 - production privileged helper;
 - arbitrary device paths;
 - shrink;
-- partition mutation;
+- partition creation/deletion/reordering, partition-start movement, shrink or arbitrary partition edits;
 - mount/fstab/swap mutation;
 - LUKS/RAID/Btrfs/ZFS writes.
 

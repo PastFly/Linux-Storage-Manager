@@ -3,11 +3,11 @@
 M1B is the safety foundation between read-only planning and any future mutation-capable
 executor. It remains fail-closed and capability/topology driven.
 
-Verified master baseline after PR #80 on 2026-09-24:
+Verified master baseline after PR #82 on 2026-09-24:
 
-`c64cfee6bbf41eb73752a315cf9f99761ef88ae9`
+`d71acde46da9e1dda21ab161f00f82f8cd349f50`
 
-That master contains M1B0 through the first live M1B16 disposable `LV -> filesystem` executor plus durable replay/recovery hardening. The executor remains feature-gated to harness-owned loop fixtures and production `MUTATION_ENABLED=false` remains unchanged. PR #82 extends the candidate disposable profile to exact `PV -> LV -> filesystem` execution; it is not part of this master baseline until merged.
+That master contains M1B0 through exact disposable `PV -> LV -> filesystem` execution plus durable replay/recovery hardening. The executor remains feature-gated to harness-owned loop fixtures and production `MUTATION_ENABLED=false` remains unchanged. PR #83 is the current candidate for exact existing-partition `partition -> PV -> LV -> filesystem` execution.
 
 ## Non-negotiable boundary
 
@@ -89,7 +89,9 @@ Complete at the verified master baseline above. M1B15 adds `ResizePhysicalVolume
 
 PR #79 established the feature-gated `ExtendLogicalVolume -> GrowFilesystem` executor. PR #80 then added create-without-replacement journal start, blocked blind replay, and proved forced pre-spawn failure enters durable `RecoveryRequired` without changing LV/filesystem/sentinel state.
 
-PR #82 extends the candidate disposable executor to `ResizePhysicalVolume -> ExtendLogicalVolume -> GrowFilesystem` when the backing partition/device is already larger than the PV. The PV command is bound to exact PV UUID/path and observed PE start; the requested usable PV size is translated into the exact raw `pvresize --setphysicalvolumesize` limit. Fresh discovery verifies exact PV size before LV mutation, exact LV size before filesystem mutation, and final filesystem growth afterward. CI #780 proves the complete owned-loop path in 3/3 repetitions while production `MUTATION_ENABLED=false` remains unchanged. Partition mutation remains rejected.
+PR #82, now merged at the master baseline above, executes `ResizePhysicalVolume -> ExtendLogicalVolume -> GrowFilesystem` when the backing partition/device is already larger than the PV. The PV command is bound to exact PV UUID/path and observed PE start; fresh discovery verifies exact PV size before LV mutation, exact LV size before filesystem mutation, and final filesystem growth afterward.
+
+PR #83 extends the candidate disposable executor to an existing size-growable GPT or DOS/MBR partition. It emits exact non-shell `sfdisk -N` stdin with the same start sector and an exact larger sector count, then performs exact `partx --update --nr` kernel refresh before rediscovery. Verification requires table identity, partition start, type/UUID/name/attrs/boot metadata to remain unchanged, then continues through PE-start-aware PV, LV and filesystem boundaries. CI #790 proves GPT and DOS/MBR full chains in 3/3 repetitions; Portable Linux #669 succeeds on x86_64 and aarch64. Production `MUTATION_ENABLED=false` remains unchanged.
 
 ## ExactApprovalBinding
 

@@ -81,6 +81,12 @@ pub enum DisposableBoundaryVerificationError {
     NoNextMutationStep,
     #[error("disposable verification boundary does not support the completed mutation")]
     UnsupportedCompletedMutation,
+    #[error("baseline or fresh partition geometry is missing or ambiguous")]
+    PartitionIdentityNotUnique,
+    #[error("fresh partition geometry changed outside the approved size-only mutation")]
+    PartitionGeometryMismatch,
+    #[error("fresh kernel partition device size does not match the exact expected size")]
+    PartitionDeviceSizeMismatch,
     #[error("physical volume UUID did not resolve to exactly one fresh identity")]
     PhysicalVolumeIdentityNotUnique,
     #[error("fresh physical volume size does not equal the exact expected post-mutation size")]
@@ -114,6 +120,7 @@ pub enum DisposableBoundaryVerificationError {
 fn verify_boundary_state(
     execution: &ExecutionStartBinding,
     validated: &ValidatedNativeManifest,
+    baseline_identity: &TargetIdentityManifest,
     fresh_identity: &TargetIdentityManifest,
     completed_step_id: u32,
 ) -> Result<(u32, String), DisposableBoundaryVerificationError> {
@@ -151,6 +158,54 @@ fn verify_boundary_state(
     }
 
     match &step.operation {
+        NativeOperationSpec::ExtendPartition {
+            partition,
+            start_sector,
+            old_size_sectors,
+            new_size_sectors,
+            sector_size_bytes,
+        } => {
+            let old_matches = baseline_identity
+                .partitions
+                .iter()
+                .filter(|entry| entry.partition == *partition)
+                .collect::<Vec<_>>();
+            let fresh_matches = fresh_identity
+                .partitions
+                .iter()
+                .filter(|entry| entry.partition == *partition)
+                .collect::<Vec<_>>();
+            if old_matches.len() != 1 || fresh_matches.len() != 1 {
+                return Err(DisposableBoundaryVerificationError::PartitionIdentityNotUnique);
+            }
+            let old = old_matches[0];
+            let fresh = fresh_matches[0];
+            if old.start_sector != Some(*start_sector)
+                || old.size_sectors != Some(*old_size_sectors)
+                || old.sector_size_bytes != Some(*sector_size_bytes)
+                || fresh.start_sector != Some(*start_sector)
+                || fresh.size_sectors != Some(*new_size_sectors)
+                || fresh.sector_size_bytes != Some(*sector_size_bytes)
+                || old.disk != fresh.disk
+                || old.table_label != fresh.table_label
+                || old.table_id != fresh.table_id
+                || old.record_uuid != fresh.record_uuid
+            {
+                return Err(DisposableBoundaryVerificationError::PartitionGeometryMismatch);
+            }
+
+            let expected_bytes = new_size_sectors
+                .checked_mul(*sector_size_bytes)
+                .ok_or(DisposableBoundaryVerificationError::PartitionDeviceSizeMismatch)?;
+            let device_matches = fresh_identity
+                .devices
+                .iter()
+                .filter(|device| device.path == *partition)
+                .collect::<Vec<_>>();
+            if device_matches.len() != 1 || device_matches[0].size_bytes != expected_bytes {
+                return Err(DisposableBoundaryVerificationError::PartitionDeviceSizeMismatch);
+            }
+        }
         NativeOperationSpec::ResizePhysicalVolume {
             pv_uuid,
             expected_pv_size_bytes,
@@ -244,8 +299,13 @@ fn verify_terminal_filesystem_state(
         .nth(1)
         .copied()
         .ok_or(DisposableBoundaryVerificationError::UnsupportedFinalMutation)?;
-    let (next_step_id, _) =
-        verify_boundary_state(execution, validated, fresh_identity, previous_step_id)?;
+    let (next_step_id, _) = verify_boundary_state(
+        execution,
+        validated,
+        before_growth,
+        fresh_identity,
+        previous_step_id,
+    )?;
     if next_step_id != completed_step_id {
         return Err(DisposableBoundaryVerificationError::FinalStepNotLast);
     }
@@ -417,8 +477,13 @@ pub fn verify_and_continue_disposable_boundary(
         return Err(DisposableBoundaryVerificationError::CapabilityInventoryMismatch);
     }
 
-    let (next_step_id, fresh_identity_digest) =
-        verify_boundary_state(&execution, validated, fresh_identity, completed_step_id)?;
+    let (next_step_id, fresh_identity_digest) = verify_boundary_state(
+        &execution,
+        validated,
+        session.handoff().target_identity(),
+        fresh_identity,
+        completed_step_id,
+    )?;
 
     session
         .persist_verification_passed_continue(
@@ -566,6 +631,90 @@ mod tests {
     }
 
     #[test]
+    fn exact_post_partition_state_preserves_identity_and_authorizes_pv() {
+        let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
+            source_manifest_id: digest('a'),
+            steps: vec![
+                NativeCompiledStep {
+                    plan_step_id: 1,
+                    depends_on: vec![],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ExtendPartition {
+                        partition: "/dev/loop7p1".into(),
+                        start_sector: 2048,
+                        old_size_sectors: 1_048_576,
+                        new_size_sectors: 1_179_648,
+                        sector_size_bytes: 512,
+                    },
+                },
+                NativeCompiledStep {
+                    plan_step_id: 2,
+                    depends_on: vec![1],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ResizePhysicalVolume {
+                        pv_uuid: "pv-1".into(),
+                        expected_pv_size_bytes: 600 * 1024 * 1024,
+                    },
+                },
+            ],
+            verification_barriers: vec![barrier(1), barrier(2)],
+        })
+        .unwrap();
+        let mut execution = execution(&validated);
+        execution.mutation_step_ids = vec![1, 2];
+        execution.execution_id = execution.expected_execution_id().unwrap();
+
+        let mut baseline = fresh_identity(8 * 1024 * 1024 * 1024);
+        baseline.partitions = vec![lsm_planner::PartitionGeometryIdentity {
+            partition: "/dev/loop7p1".into(),
+            disk: Some("/dev/loop7".into()),
+            table_label: Some("gpt".into()),
+            table_id: Some("table-1".into()),
+            sector_size_bytes: Some(512),
+            start_sector: Some(2048),
+            size_sectors: Some(1_048_576),
+            record_uuid: Some("part-1".into()),
+        }];
+        baseline.devices.push(lsm_planner::DeviceIdentity {
+            kind: lsm_core::NodeKind::Partition,
+            path: "/dev/loop7p1".into(),
+            kernel_name: Some("loop7p1".into()),
+            parent_kernel_name: Some("loop7".into()),
+            size_bytes: 1_048_576 * 512,
+            start_512_sector: Some(2048),
+            logical_sector_bytes: Some(512),
+            uuid: Some("pv-1".into()),
+            partition_uuid: Some("part-1".into()),
+            model: None,
+            serial: None,
+            filesystem_type: Some("LVM2_member".into()),
+        });
+        let mut fresh = baseline.clone();
+        fresh.manifest_digest = digest('c');
+        fresh.partitions[0].size_sectors = Some(1_179_648);
+        fresh
+            .devices
+            .iter_mut()
+            .find(|device| device.path == "/dev/loop7p1")
+            .unwrap()
+            .size_bytes = 1_179_648 * 512;
+
+        let (next, fresh_digest) =
+            verify_boundary_state(&execution, &validated, &baseline, &fresh, 1).unwrap();
+
+        assert_eq!(next, 2);
+        assert_eq!(fresh_digest, digest('c'));
+
+        fresh.partitions[0].record_uuid = Some("changed".into());
+        assert_eq!(
+            verify_boundary_state(&execution, &validated, &baseline, &fresh, 1),
+            Err(DisposableBoundaryVerificationError::PartitionGeometryMismatch)
+        );
+    }
+
+    #[test]
     fn exact_post_pv_state_authorizes_only_the_next_step() {
         let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
             source_manifest_id: digest('a'),
@@ -618,8 +767,14 @@ mod tests {
             },
         );
 
-        let (next, fresh_digest) =
-            verify_boundary_state(&execution, &validated, &fresh, 2).unwrap();
+        let (next, fresh_digest) = verify_boundary_state(
+            &execution,
+            &validated,
+            &fresh_identity(8 * 1024 * 1024 * 1024),
+            &fresh,
+            2,
+        )
+        .unwrap();
 
         assert_eq!(next, 3);
         assert_eq!(fresh_digest, digest('b'));
@@ -631,8 +786,14 @@ mod tests {
         let execution = execution(&validated);
         let expected = 9 * 1024 * 1024 * 1024;
 
-        let (next, fresh_digest) =
-            verify_boundary_state(&execution, &validated, &fresh_identity(expected), 3).unwrap();
+        let (next, fresh_digest) = verify_boundary_state(
+            &execution,
+            &validated,
+            &fresh_identity(8 * 1024 * 1024 * 1024),
+            &fresh_identity(expected),
+            3,
+        )
+        .unwrap();
 
         assert_eq!(next, 4);
         assert_eq!(fresh_digest, digest('b'));
@@ -647,6 +808,7 @@ mod tests {
             verify_boundary_state(
                 &execution,
                 &validated,
+                &fresh_identity(8 * 1024 * 1024 * 1024),
                 &fresh_identity(8 * 1024 * 1024 * 1024),
                 3,
             ),

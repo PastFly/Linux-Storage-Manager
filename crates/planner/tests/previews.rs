@@ -10,6 +10,7 @@ use lsm_planner::{
 };
 use serde_json::json;
 
+const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
 const EXTENT: u64 = 4 << 20;
 
@@ -40,7 +41,7 @@ fn input() -> (HostSnapshot, HostCapabilities) {
             {"component":"lvm","state":"complete"}
         ],
         "lvm":{
-            "physical_volumes":[{"name":"/dev/vda1","uuid":"pv-1","vg_name":"vg0","size_bytes":16*GIB,"free_bytes":8*GIB}],
+            "physical_volumes":[{"name":"/dev/vda1","uuid":"pv-1","vg_name":"vg0","size_bytes":16*GIB,"free_bytes":8*GIB,"pe_start_bytes":MIB}],
             "volume_groups":[{
                 "name":"vg0","uuid":"vg-1","size_bytes":16*GIB,"free_bytes":8*GIB,
                 "pv_count":1,"lv_count":1,"extent_size_bytes":EXTENT,"free_extent_count":2048,
@@ -501,9 +502,8 @@ fn with_gpt_tail(mut snapshot: HostSnapshot) -> HostSnapshot {
 fn no_verified_underlying_capacity_never_fabricates_a_growth_route() {
     let (mut snapshot, caps) = input();
 
-    let pv_device_size = snapshot.storage.block_devices[0].children[0].size_bytes;
     let lvm = snapshot.lvm.as_mut().unwrap();
-    lvm.physical_volumes[0].size_bytes = pv_device_size;
+    lvm.physical_volumes[0].size_bytes = 16 * GIB;
     lvm.physical_volumes[0].free_bytes = 0;
     lvm.volume_groups[0].free_bytes = 0;
     lvm.volume_groups[0].free_extent_count = Some(0);
@@ -535,7 +535,7 @@ fn chained_lvm_route_uses_partition_tail_when_vg_free_is_insufficient() {
     assert_eq!(route.volume_group, "vg0");
     assert_eq!(route.logical_volume, "/dev/vg0/root");
     assert_eq!(route.existing_vg_free_bytes, 8 * GIB);
-    assert!(route.pv_device_slack_bytes >= EXTENT);
+    assert_eq!(route.pv_device_slack_bytes, 3 * MIB);
     assert!(route.adjacent_partition_free_bytes > 2 * GIB);
     assert!(route.max_growth_bytes >= 10 * GIB);
     assert!(route.required_partition_growth_bytes > 0);
@@ -615,7 +615,7 @@ fn chained_lvm_route_handles_pv_directly_on_an_enlarged_disk() {
     assert_eq!(route.disk, "/dev/vda");
     assert_eq!(route.partition, None);
     assert_eq!(route.physical_volume, "/dev/vda");
-    assert_eq!(route.pv_device_slack_bytes, 2 * GIB);
+    assert_eq!(route.pv_device_slack_bytes, 2 * GIB - MIB);
     assert_eq!(route.required_partition_growth_bytes, 0);
     assert!(route.max_growth_bytes >= 11 * GIB);
     assert_eq!(route.code, "grow-pv-lv-filesystem");
