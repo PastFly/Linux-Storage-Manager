@@ -595,7 +595,7 @@ mod tests {
             sector_size_bytes: 512,
         };
         let expected = NativeOperationKind::ExtendPartition;
-            let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
+        let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
                 source_manifest_id: "unsupported-mutation".into(),
                 steps: vec![NativeCompiledStep {
                     plan_step_id: 1,
@@ -605,13 +605,13 @@ mod tests {
                     operation,
                 }],
                 verification_barriers: vec![barrier(1)],
-            })
-            .unwrap();
+        })
+        .unwrap();
 
-            assert_eq!(
-                compile_disposable_lvm_growth_commands(&validated, &identity("ext4", "/")),
-                Err(DisposableArgvError::UnsupportedMutation(expected))
-            );
+        assert_eq!(
+            compile_disposable_lvm_growth_commands(&validated, &identity("ext4", "/")),
+            Err(DisposableArgvError::UnsupportedMutation(expected))
+        );
     }
 
     #[test]
