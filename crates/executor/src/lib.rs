@@ -79,8 +79,8 @@ pub use native_operation::{
     NativeVerificationBarrier, ValidatedNativeManifest, NATIVE_OPERATION_ALLOWLIST,
 };
 pub use precondition_evidence::{
-    build_pre_mutation_evidence, PreMutationEvidenceBundle, PreMutationEvidenceError,
-    PreMutationEvidenceStatus,
+    build_pre_mutation_evidence, build_pre_mutation_evidence_with_filesystem_health,
+    PreMutationEvidenceBundle, PreMutationEvidenceError, PreMutationEvidenceStatus,
 };
 pub use preconditions::{
     verify_preconditions, PreconditionsVerification, PreconditionsVerificationError,
