@@ -178,6 +178,27 @@ class Resources:
         self.check_loop(loop)
         return partition
 
+    def create_two_plain_partitions(self, loop: Loop, first_mib: int, second_mib: int,
+                                    table_label: str = "gpt") -> tuple[str, str]:
+        self.check_loop(loop)
+        if table_label not in ("gpt", "dos") or first_mib <= 0 or second_mib <= 0:
+            raise SafetyError("invalid multi-partition fixture request")
+        self.runner.run(
+            "sfdisk",
+            loop.device,
+            input=f"label: {table_label}\n,{first_mib}MiB\n,{second_mib}MiB\n",
+        )
+        self.runner.run("partx", "--update", loop.device)
+        partitions = (loop.device + "p1", loop.device + "p2")
+        for partition in partitions:
+            wait_block(partition)
+            sys_path = Path("/sys/class/block") / Path(partition).name
+            if (not (sys_path / "partition").is_file()
+                    or sys_path.resolve().parent.name != Path(loop.device).name):
+                raise SafetyError("multi-partition parent identity could not be verified")
+        self.check_loop(loop)
+        return partitions
+
     def create_vg(self, loop: Loop, partition: str, name: str,
                   pv_size_mib: int | None = None) -> str:
         self.check_loop(loop)
@@ -201,8 +222,19 @@ class Resources:
         if len(reports) != 1 or not reports[0].get("vg_uuid"):
             raise SafetyError("new VG identity is unavailable")
         group.uuid = reports[0]["vg_uuid"].strip()
-        self.runner.run("lvcreate", "--size", "384MiB", "--name", "data", name)
-        lv = f"/dev/{name}/data"
+        return self.create_lv(name, "data", 384)
+
+    def create_lv(self, vg: str, name: str, size_mib: int) -> str:
+        if re.fullmatch(r"lsmtest[a-f0-9]+", vg) is None:
+            raise SafetyError("invalid disposable VG name")
+        if re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", name) is None or size_mib <= 0:
+            raise SafetyError("invalid disposable LV request")
+        if len(self.vg_rows(vg)) != 1:
+            raise SafetyError("disposable VG identity is unavailable before LV creation")
+        lv = f"/dev/{vg}/{name}"
+        if Path(lv).exists():
+            raise SafetyError(f"refusing existing disposable LV: {lv}")
+        self.runner.run("lvcreate", "--size", f"{size_mib}MiB", "--name", name, vg)
         wait_block(lv)
         return lv
 
