@@ -306,8 +306,7 @@ mod tests {
         let mut permissions = fs::metadata(&pvresize).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&pvresize, permissions).unwrap();
-        let paths =
-            DisposableToolPaths::new(pvresize, lvextend.clone(), resize2fs, xfs_growfs);
+        let paths = DisposableToolPaths::new(pvresize, lvextend.clone(), resize2fs, xfs_growfs);
 
         assert_eq!(
             validate_tool_path(DisposableProgram::Lvextend, &paths).unwrap(),
