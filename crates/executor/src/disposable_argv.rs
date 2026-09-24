@@ -86,6 +86,8 @@ pub enum DisposableArgvError {
     UnsafePhysicalVolumePath,
     #[error("physical volume growth values are not valid against fresh identity")]
     PhysicalVolumeGrowthMismatch,
+    #[error("physical volume PE start is absent from fresh identity")]
+    PhysicalVolumePeStartMissing,
     #[error("logical volume UUID {0} did not resolve to exactly one fresh identity")]
     LogicalVolumeIdentityNotUnique(String),
     #[error("logical volume path is not a safe absolute /dev path")]
@@ -142,6 +144,12 @@ fn compile_pvresize(
     if !safe_device_path(&pv.name) {
         return Err(DisposableArgvError::UnsafePhysicalVolumePath);
     }
+    let pe_start_bytes = pv
+        .pe_start_bytes
+        .ok_or(DisposableArgvError::PhysicalVolumePeStartMissing)?;
+    let raw_limit_bytes = expected_pv_size_bytes
+        .checked_add(pe_start_bytes)
+        .ok_or(DisposableArgvError::PhysicalVolumeGrowthMismatch)?;
 
     Ok(DisposableCommandSpec {
         plan_step_id,
@@ -149,7 +157,7 @@ fn compile_pvresize(
         args: vec![
             "--yes".to_owned(),
             "--setphysicalvolumesize".to_owned(),
-            format!("{expected_pv_size_bytes}B"),
+            format!("{raw_limit_bytes}B"),
             "--".to_owned(),
             pv.name.clone(),
         ],
