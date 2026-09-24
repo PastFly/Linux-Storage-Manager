@@ -123,6 +123,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Resize an existing LVM PV after its containing partition/device grows in the disposable owned-loop executor, with exact PV UUID/PE-start/size verification.
 - [x] Prove a successful `pvresize` followed by pre-`lvextend` failure enters durable `RecoveryRequired`, blocks replay, preserves LV/filesystem state, and reconciles the exact resized PV identity on owned loops.
 - [x] Extend an LV using existing or newly exposed extents in the disposable single-PV executor profile.
+- [x] Prove a successful `lvextend` followed by pre-filesystem-grow failure enters durable `RecoveryRequired`, blocks replay, preserves filesystem/sentinel state, and reconciles the exact resized LV identity on owned loops.
 - [ ] Support ext4 online/offline growth as allowed by the detected filesystem state.
 - [ ] Support XFS online growth.
 - [x] Automatically chain verified single-PV disk-tail growth through disk -> partition -> PV -> VG -> LV -> filesystem on the disposable executor; broader layered profiles remain separately gated.

@@ -97,6 +97,8 @@ PR #85 hardens the post-write/pre-kernel-refresh recovery boundary. The owned-lo
 
 The next recovery boundary applies the same model after a real `pvresize`: the PV reaches the exact approved new size and is freshly rediscovered, `lvextend` is deliberately blocked before spawn, the durable journal must enter `RecoveryRequired`, the resized PV identity must reconcile exactly, LV/filesystem/sentinel state must remain unchanged, and blind replay must stay blocked until evidence is explicitly cleared in the owned fixture.
 
+The following boundary applies the same fail-closed model after a real `lvextend`: the LV reaches the exact approved new size and its verified continuation is durably recorded, filesystem growth is deliberately blocked before spawn, the journal must enter `RecoveryRequired`, the resized LV must reconcile exactly, filesystem capacity and sentinel data must remain unchanged, and replay must stay blocked until explicit owned-fixture reconciliation.
+
 ## ExactApprovalBinding
 
 The durable `OperationJournal` now carries an optional structured approval binding.
