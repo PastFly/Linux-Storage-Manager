@@ -1674,12 +1674,24 @@ def exercise_multi_partition_selection(resources: Resources, binary: Runner, loo
     blocked_plan = json.loads(blocked.stdout)
     if blocked_plan.get("status") != "blocked":
         raise SafetyError("non-tail partition was not retained as an explicitly blocked target")
+    blocked_row = targets.get(str(first_target))
+    plan_blockers = blocked_plan.get("blockers")
+    catalog_blockers = blocked_row.get("blockers") if isinstance(blocked_row, dict) else None
+    if (not isinstance(plan_blockers, list) or not plan_blockers
+            or not isinstance(catalog_blockers, list) or not catalog_blockers):
+        raise SafetyError("blocked target is missing structured blocker evidence")
+    if (catalog_blockers[0].get("code") != plan_blockers[0].get("code")
+            or catalog_blockers[0].get("message") != plan_blockers[0].get("message")):
+        raise SafetyError("target catalog blocker does not match the exact planner blocker")
 
     tail_plan = binary.json(
         "storagemgr", "plan", "extend", str(second_target), "--by", "32MiB", "--json"
     )
     if tail_plan.get("status") != "preview":
         raise SafetyError("tail partition was not independently selectable for growth")
+    tail_row = targets.get(str(second_target))
+    if not isinstance(tail_row, dict) or tail_row.get("blockers") != []:
+        raise SafetyError("preview-ready tail target unexpectedly carries blocker evidence")
 
     if (first_target / "readonly-sentinel").read_bytes() != first_sentinel:
         raise SafetyError("blocked partition target sentinel changed during planning")
