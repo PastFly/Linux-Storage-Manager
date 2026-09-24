@@ -160,6 +160,7 @@ fn compile_pvresize(
         args: vec![
             "--setphysicalvolumesize".to_owned(),
             format!("{expected_pv_size_bytes}B"),
+            "--yes".to_owned(),
             "--".to_owned(),
             pv.name.clone(),
         ],
@@ -644,6 +645,7 @@ mod tests {
             [
                 "--setphysicalvolumesize",
                 "11811160064B",
+                "--yes",
                 "--",
                 "/dev/loop7p1"
             ]
