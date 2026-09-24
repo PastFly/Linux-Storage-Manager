@@ -126,8 +126,7 @@ fn compile_pvresize(
         .lvm
         .iter()
         .filter(|entry| {
-            entry.kind == LvmIdentityKind::PhysicalVolume
-                && entry.uuid.as_deref() == Some(pv_uuid)
+            entry.kind == LvmIdentityKind::PhysicalVolume && entry.uuid.as_deref() == Some(pv_uuid)
         })
         .collect::<Vec<_>>();
     if matches.len() != 1 {
@@ -357,9 +356,10 @@ pub(crate) fn compile_verified_disposable_next_command(
     else {
         return Err(DisposableArgvError::UnsupportedMutationProfile);
     };
-    if position == 0 || !mutation_steps[position]
-        .depends_on
-        .contains(&mutation_steps[position - 1].plan_step_id)
+    if position == 0
+        || !mutation_steps[position]
+            .depends_on
+            .contains(&mutation_steps[position - 1].plan_step_id)
     {
         return Err(DisposableArgvError::UnsupportedMutationProfile);
     }
@@ -587,16 +587,14 @@ mod tests {
 
     #[test]
     fn partition_mutation_remains_rejected() {
-        for (operation, expected) in [(
-            NativeOperationSpec::ExtendPartition {
-                partition: "/dev/loop0p1".into(),
-                start_sector: 2048,
-                old_size_sectors: 4096,
-                new_size_sectors: 8192,
-                sector_size_bytes: 512,
-            },
-            NativeOperationKind::ExtendPartition,
-        )] {
+        let operation = NativeOperationSpec::ExtendPartition {
+            partition: "/dev/loop0p1".into(),
+            start_sector: 2048,
+            old_size_sectors: 4096,
+            new_size_sectors: 8192,
+            sector_size_bytes: 512,
+        };
+        let expected = NativeOperationKind::ExtendPartition;
             let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
                 source_manifest_id: "unsupported-mutation".into(),
                 steps: vec![NativeCompiledStep {
@@ -614,7 +612,6 @@ mod tests {
                 compile_disposable_lvm_growth_commands(&validated, &identity("ext4", "/")),
                 Err(DisposableArgvError::UnsupportedMutation(expected))
             );
-        }
     }
 
     #[test]
