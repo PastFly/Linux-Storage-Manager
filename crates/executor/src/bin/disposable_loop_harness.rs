@@ -41,6 +41,7 @@ struct Args {
     journal_root: PathBuf,
     backup_root: PathBuf,
     growth_bytes: u64,
+    pvresize: PathBuf,
     lvextend: PathBuf,
     resize2fs: PathBuf,
     xfs_growfs: PathBuf,
@@ -185,28 +186,46 @@ fn run() -> HarnessResult<()> {
         ));
     }
     let command_plan = compile_disposable_lvm_growth_commands(&validated, &initial_identity)?;
-    if command_plan.commands().len() != 2
-        || command_plan.commands()[0].program() != DisposableProgram::Lvextend
-        || !matches!(
-            command_plan.commands()[1].program(),
+    let programs = command_plan
+        .commands()
+        .iter()
+        .map(|command| command.program())
+        .collect::<Vec<_>>();
+    let filesystem_program = |program: DisposableProgram| {
+        matches!(
+            program,
             DisposableProgram::Resize2fs | DisposableProgram::XfsGrowfs
         )
-    {
+    };
+    let lv_profile = programs.len() == 2
+        && programs[0] == DisposableProgram::Lvextend
+        && filesystem_program(programs[1]);
+    let pv_profile = programs.len() == 3
+        && programs[0] == DisposableProgram::Pvresize
+        && programs[1] == DisposableProgram::Lvextend
+        && filesystem_program(programs[2]);
+    if !lv_profile && !pv_profile {
         return Err(boxed(
-            "compiled mutation sequence is not exactly LV then filesystem growth",
+            "compiled mutation sequence is not an allowed LV or PV->LV filesystem profile",
         ));
     }
 
     let execution = persist_disposable_execution_start(&mut session, &command_plan)?;
     let tools = DisposableToolPaths::new(
+        args.pvresize.clone(),
         args.lvextend.clone(),
         args.resize2fs.clone(),
         args.xfs_growfs.clone(),
     );
     let first_step = command_plan.commands()[0].plan_step_id();
-    let final_step = command_plan.commands()[1].plan_step_id();
+    let final_step = command_plan
+        .commands()
+        .last()
+        .ok_or_else(|| boxed("compiled mutation sequence is empty"))?
+        .plan_step_id();
 
     let mutation_result: HarnessResult<(String, String)> = (|| {
+        let first_command = &command_plan.commands()[0];
         let first_permit = bind_disposable_execution_permit(
             &command_plan,
             &initial_identity,
@@ -217,37 +236,57 @@ fn run() -> HarnessResult<()> {
         )?;
         let first_outcome = execute_disposable_command(first_permit, &session, &tools)?;
         if first_outcome.plan_step_id != first_step
-            || first_outcome.program != DisposableProgram::Lvextend
+            || first_outcome.program != first_command.program()
         {
             return Err(boxed("executor returned the wrong first mutation outcome"));
         }
 
-        refresh_udev(&args.udevadm, &initial_identity.resolved_device)?;
-        session.persist_verification_started()?;
-        let post_lv_snapshot = discover_snapshot()?;
-        let post_lv_capabilities = discover_capabilities();
-        let post_lv_identity = capture_target_identity(&post_lv_snapshot, &args.target)?;
-        let boundary = verify_and_continue_disposable_boundary(
-            &mut session,
-            &validated,
-            &post_lv_identity,
-            &post_lv_capabilities,
-            first_step,
-        )?;
+        let mut completed_step = first_step;
+        let mut completed_program = first_command.program();
+        let mut before_final_identity = None;
 
-        let second_permit = bind_verified_disposable_execution_permit(
-            &validated,
-            &post_lv_identity,
-            &ownership,
-            &association,
-            &execution,
-            boundary,
-        )?;
-        let second_outcome = execute_disposable_command(second_permit, &session, &tools)?;
-        if second_outcome.plan_step_id != final_step {
-            return Err(boxed("executor returned the wrong final mutation step"));
+        for (index, next_command) in command_plan.commands().iter().enumerate().skip(1) {
+            if completed_program == DisposableProgram::Lvextend {
+                refresh_udev(&args.udevadm, &initial_identity.resolved_device)?;
+            } else {
+                settle_udev(&args.udevadm)?;
+            }
+            session.persist_verification_started()?;
+            let boundary_snapshot = discover_snapshot()?;
+            let boundary_capabilities = discover_capabilities();
+            let boundary_identity = capture_target_identity(&boundary_snapshot, &args.target)?;
+            let boundary = verify_and_continue_disposable_boundary(
+                &mut session,
+                &validated,
+                &boundary_identity,
+                &boundary_capabilities,
+                completed_step,
+            )?;
+
+            if index + 1 == command_plan.commands().len() {
+                before_final_identity = Some(boundary_identity.clone());
+            }
+
+            let permit = bind_verified_disposable_execution_permit(
+                &validated,
+                &boundary_identity,
+                &ownership,
+                &association,
+                &execution,
+                boundary,
+            )?;
+            let outcome = execute_disposable_command(permit, &session, &tools)?;
+            if outcome.plan_step_id != next_command.plan_step_id()
+                || outcome.program != next_command.program()
+            {
+                return Err(boxed("executor returned the wrong continued mutation outcome"));
+            }
+            completed_step = next_command.plan_step_id();
+            completed_program = next_command.program();
         }
 
+        let before_final_identity = before_final_identity
+            .ok_or_else(|| boxed("final filesystem mutation lacks verified pre-growth identity"))?;
         settle_udev(&args.udevadm)?;
         session.persist_verification_started()?;
         let final_snapshot = discover_snapshot()?;
@@ -256,7 +295,7 @@ fn run() -> HarnessResult<()> {
         let completion = verify_and_complete_disposable_execution(
             &mut session,
             &validated,
-            &post_lv_identity,
+            &before_final_identity,
             &final_identity,
             &final_capabilities,
             final_step,
@@ -363,6 +402,7 @@ fn parse_args() -> HarnessResult<Args> {
     if growth_bytes == 0 {
         return Err(boxed("--growth-bytes must be nonzero"));
     }
+    let pvresize = PathBuf::from(take("--pvresize")?);
     let lvextend = PathBuf::from(take("--lvextend")?);
     let resize2fs = PathBuf::from(take("--resize2fs")?);
     let xfs_growfs = PathBuf::from(take("--xfs-growfs")?);
@@ -384,6 +424,7 @@ fn parse_args() -> HarnessResult<Args> {
         journal_root,
         backup_root,
         growth_bytes,
+        pvresize,
         lvextend,
         resize2fs,
         xfs_growfs,
