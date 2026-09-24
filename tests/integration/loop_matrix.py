@@ -31,7 +31,7 @@ class Runner:
         names = ("losetup", "sfdisk", "partx", "mkfs.ext4", "mkfs.xfs", "pvcreate",
                  "vgcreate", "vgchange", "lvcreate", "lvrename", "vgremove", "vgs", "pvs", "lvs",
                  "mount", "umount", "findmnt", "vgcfgbackup", "vgcfgrestore", "lvextend",
-                 "resize2fs", "xfs_growfs", "udevadm")
+                 "resize2fs", "xfs_growfs", "xfs_scrub", "udevadm")
         self.tools = {}
         for name in names:
             path = shutil.which(name)
@@ -708,6 +708,7 @@ def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loo
         "--lvextend", binary.tools["lvextend"],
         "--resize2fs", binary.tools["resize2fs"],
         "--xfs-growfs", binary.tools["xfs_growfs"],
+        "--xfs-scrub", binary.tools["xfs_scrub"],
         "--udevadm", binary.tools["udevadm"],
     )
     outcome = json.loads(result.stdout)
