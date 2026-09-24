@@ -141,6 +141,13 @@ fn compile_pvresize(
     if expected_pv_size_bytes == 0 || expected_pv_size_bytes <= pv.size_bytes {
         return Err(DisposableArgvError::PhysicalVolumeGrowthMismatch);
     }
+    let pe_start_bytes = pv
+        .pe_start_bytes
+        .filter(|value| *value > 0)
+        .ok_or(DisposableArgvError::PhysicalVolumeGrowthMismatch)?;
+    let requested_device_size_bytes = expected_pv_size_bytes
+        .checked_add(pe_start_bytes)
+        .ok_or(DisposableArgvError::PhysicalVolumeGrowthMismatch)?;
     if !safe_device_path(&pv.name) {
         return Err(DisposableArgvError::UnsafePhysicalVolumePath);
     }
@@ -150,7 +157,7 @@ fn compile_pvresize(
         .iter()
         .filter(|device| device.path == pv.name)
         .collect::<Vec<_>>();
-    if backing_matches.len() != 1 || backing_matches[0].size_bytes < expected_pv_size_bytes {
+    if backing_matches.len() != 1 || backing_matches[0].size_bytes < requested_device_size_bytes {
         return Err(DisposableArgvError::PhysicalVolumeBackingNotProven);
     }
 
@@ -159,7 +166,7 @@ fn compile_pvresize(
         program: DisposableProgram::Pvresize,
         args: vec![
             "--setphysicalvolumesize".to_owned(),
-            format!("{expected_pv_size_bytes}B"),
+            format!("{requested_device_size_bytes}B"),
             "--yes".to_owned(),
             "--".to_owned(),
             pv.name.clone(),
