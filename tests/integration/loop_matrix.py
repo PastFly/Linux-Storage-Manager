@@ -178,13 +178,20 @@ class Resources:
         self.check_loop(loop)
         return partition
 
-    def create_vg(self, loop: Loop, partition: str, name: str) -> str:
+    def create_vg(self, loop: Loop, partition: str, name: str,
+                  pv_size_mib: int | None = None) -> str:
         self.check_loop(loop)
         if partition != loop.device + "p1" or re.fullmatch(r"lsmtest[a-f0-9]+", name) is None:
             raise SafetyError("invalid disposable PV or VG")
         if self.vg_rows(name):
             raise SafetyError(f"refusing existing VG: {name}")
-        self.runner.run("pvcreate", "--yes", partition)
+        pvcreate_args = ["--yes"]
+        if pv_size_mib is not None:
+            if pv_size_mib <= 0:
+                raise SafetyError("disposable PV size limit must be positive")
+            pvcreate_args.extend(["--setphysicalvolumesize", f"{pv_size_mib}M"])
+        pvcreate_args.append(partition)
+        self.runner.run("pvcreate", *pvcreate_args)
         group = VolumeGroup(name, partition)
         self.groups.append(group)  # Also track partial vgcreate failures.
         self.runner.run("vgcreate", name, partition)
