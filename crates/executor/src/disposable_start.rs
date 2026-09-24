@@ -141,6 +141,7 @@ mod tests {
                 uuid: Some("lv-1".into()),
                 size_bytes: 8 * 1024 * 1024 * 1024,
                 free_bytes: None,
+                pe_start_bytes: None,
                 extent_size_bytes: None,
                 free_extent_count: None,
                 pv_count: None,
