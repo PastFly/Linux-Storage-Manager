@@ -49,6 +49,7 @@ struct Args {
     xfs_growfs: PathBuf,
     xfs_scrub: PathBuf,
     udevadm: PathBuf,
+    inject_failure_after_resize2fs: bool,
 }
 
 fn boxed(message: impl Into<String>) -> Box<dyn Error> {
@@ -252,6 +253,13 @@ fn run() -> HarnessResult<()> {
             {
                 return Err(boxed("executor returned a mutation outcome out of order"));
             }
+            if args.inject_failure_after_resize2fs
+                && outcome.program == DisposableProgram::Resize2fs
+            {
+                return Err(boxed(
+                    "injected failure after resize2fs before terminal verification",
+                ));
+            }
 
             let final_mutation = index + 1 == commands.len();
             if outcome.program == DisposableProgram::Lvextend {
@@ -355,6 +363,7 @@ fn run() -> HarnessResult<()> {
 fn parse_args() -> HarnessResult<Args> {
     let mut values = std::collections::BTreeMap::<String, String>::new();
     let mut allowed = false;
+    let mut inject_failure_after_resize2fs = false;
     let mut iter = env::args().skip(1);
     while let Some(key) = iter.next() {
         if key == "--allow-disposable-loop-execution" {
@@ -362,6 +371,13 @@ fn parse_args() -> HarnessResult<Args> {
                 return Err(boxed("duplicate disposable execution acknowledgement"));
             }
             allowed = true;
+            continue;
+        }
+        if key == "--inject-failure-after-resize2fs" {
+            if inject_failure_after_resize2fs {
+                return Err(boxed("duplicate resize2fs failure injection"));
+            }
+            inject_failure_after_resize2fs = true;
             continue;
         }
         if !key.starts_with("--") {
@@ -430,6 +446,7 @@ fn parse_args() -> HarnessResult<Args> {
         xfs_growfs,
         xfs_scrub,
         udevadm,
+        inject_failure_after_resize2fs,
     })
 }
 
