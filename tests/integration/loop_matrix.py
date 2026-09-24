@@ -178,13 +178,22 @@ class Resources:
         self.check_loop(loop)
         return partition
 
-    def create_vg(self, loop: Loop, partition: str, name: str) -> str:
+    def create_vg(self, loop: Loop, partition: str, name: str,
+                  pv_size_mib: int | None = None) -> str:
         self.check_loop(loop)
         if partition != loop.device + "p1" or re.fullmatch(r"lsmtest[a-f0-9]+", name) is None:
             raise SafetyError("invalid disposable PV or VG")
         if self.vg_rows(name):
             raise SafetyError(f"refusing existing VG: {name}")
-        self.runner.run("pvcreate", "--yes", partition)
+        if pv_size_mib is None:
+            self.runner.run("pvcreate", "--yes", partition)
+        else:
+            if pv_size_mib <= 0:
+                raise SafetyError("limited disposable PV size must be positive")
+            self.runner.run(
+                "pvcreate", "--yes", "--setphysicalvolumesize",
+                f"{pv_size_mib}MiB", partition
+            )
         group = VolumeGroup(name, partition)
         self.groups.append(group)  # Also track partial vgcreate failures.
         self.runner.run("vgcreate", name, partition)
@@ -743,6 +752,111 @@ def exercise_disposable_pre_spawn_failure(resources: Resources, binary: Runner, 
     print("DISPOSABLE_RECOVERY_REQUIRED_OK=pre-spawn-failure-no-storage-change", flush=True)
 
 
+def exercise_pv_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loop,
+                                    partition: str, source: str, target: Path,
+                                    vg: str) -> None:
+    resources.check_loop(loop)
+    if partition != loop.device + "p1" or source != f"/dev/{vg}/data":
+        raise SafetyError("unexpected disposable PV/LV identity")
+
+    before = ready_snapshot(binary, loop.device, vg)
+    lvm = before.get("lvm")
+    if not isinstance(lvm, dict):
+        raise SafetyError("LVM inventory missing before PV mutation drill")
+    pvs = [row for row in lvm.get("physical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg and row.get("name") == partition]
+    vgs = [row for row in lvm.get("volume_groups", [])
+           if isinstance(row, dict) and row.get("name") == vg]
+    lvs = [row for row in lvm.get("logical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg and row.get("path") == source]
+    if len(pvs) != 1 or len(vgs) != 1 or len(lvs) != 1:
+        raise SafetyError("disposable PV/VG/LV identity is ambiguous before PV growth")
+
+    current_pv_size = pvs[0].get("size_bytes")
+    current_lv_size = lvs[0].get("size_bytes")
+    extent = vgs[0].get("extent_size_bytes")
+    free_extents = vgs[0].get("free_extent_count")
+    if (type(current_pv_size) is not int or type(current_lv_size) is not int
+            or type(extent) is not int or type(free_extents) is not int
+            or extent <= 0 or free_extents < 0):
+        raise SafetyError("exact PV/VG/LV size evidence is incomplete")
+
+    growth_bytes = 384 * 1024 * 1024
+    if growth_bytes % extent:
+        raise SafetyError("PV growth drill size is not extent aligned")
+    growth_extents = growth_bytes // extent
+    if growth_extents <= free_extents:
+        raise SafetyError("PV growth drill would not require pvresize")
+    additional_pv_extents = growth_extents - free_extents
+    expected_pv_size = current_pv_size + additional_pv_extents * extent
+    expected_lv_size = current_lv_size + growth_extents * extent
+
+    sentinel = (target / "readonly-sentinel").read_bytes()
+    before_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    if not association_row:
+        raise SafetyError("exact loop association row is unavailable before PV execution")
+
+    journal_root = resources.root / f"{vg}-pv-executor-journal"
+    backup_root = resources.root / f"{vg}-pv-executor-backup"
+    resources.uncertain = True
+    result = binary.run(
+        "disposable-executor",
+        "--allow-disposable-loop-execution",
+        "--target", str(target),
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--journal-root", str(journal_root),
+        "--backup-root", str(backup_root),
+        "--growth-bytes", str(growth_bytes),
+        "--pvresize", binary.tools["pvresize"],
+        "--lvextend", binary.tools["lvextend"],
+        "--resize2fs", binary.tools["resize2fs"],
+        "--xfs-growfs", binary.tools["xfs_growfs"],
+        "--xfs-scrub", binary.tools["xfs_scrub"],
+        "--udevadm", binary.tools["udevadm"],
+    )
+    outcome = json.loads(result.stdout)
+    if (not isinstance(outcome, dict) or outcome.get("status") != "completed"
+            or outcome.get("mutation_enabled") is not False
+            or not isinstance(outcome.get("execution_id"), str)
+            or not isinstance(outcome.get("final_identity_digest"), str)):
+        raise SafetyError(f"invalid PV executor completion evidence: {outcome!r}")
+
+    final = ready_snapshot(binary, loop.device, vg)
+    final_lvm = final.get("lvm")
+    if not isinstance(final_lvm, dict):
+        raise SafetyError("LVM inventory missing after PV executor drill")
+    final_pvs = [row for row in final_lvm.get("physical_volumes", [])
+                 if isinstance(row, dict) and row.get("vg_name") == vg
+                 and row.get("name") == partition]
+    final_lvs = [row for row in final_lvm.get("logical_volumes", [])
+                 if isinstance(row, dict) and row.get("vg_name") == vg
+                 and row.get("path") == source]
+    if len(final_pvs) != 1 or final_pvs[0].get("size_bytes") != expected_pv_size:
+        raise SafetyError(
+            f"PV size mismatch after Rust pvresize: expected={expected_pv_size} "
+            f"actual={final_pvs[0].get('size_bytes') if final_pvs else None}"
+        )
+    if len(final_lvs) != 1 or final_lvs[0].get("size_bytes") != expected_lv_size:
+        raise SafetyError("LV size mismatch after PV -> LV Rust execution")
+
+    after_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    if after_fs_bytes <= before_fs_bytes:
+        raise SafetyError("filesystem capacity did not increase after PV -> LV executor growth")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("filesystem sentinel changed during PV -> LV executor growth")
+    if journal_root.exists() or backup_root.exists():
+        raise SafetyError("PV executor did not clean its owned journal/backup artifacts")
+
+    resources.uncertain = False
+    print("PV_LV_FILESYSTEM_EXECUTOR_OK=exact-pv-lv-fs-boundaries", flush=True)
+
+
 def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loop,
                                  source: str, target: Path, vg: str,
                                  filesystem: str) -> None:
@@ -1060,6 +1174,18 @@ def main(argv: list[str] | None = None) -> int:
                 exercise_lvm_growth_mutation(
                     resources, runner, loop, source, target, vg, filesystem
                 )
+        print("==> lvm-ext4-pv-lv-filesystem-growth", flush=True)
+        pv_loop = resources.create_loop("lvm-ext4-pv-growth", 1024 * 1024 * 1024)
+        pv_partition = resources.create_partition(pv_loop, 896, True)
+        pv_vg = "lsmtest" + os.urandom(12).hex()
+        pv_source = resources.create_vg(pv_loop, pv_partition, pv_vg, pv_size_mib=640)
+        runner.run("mkfs.ext4", "-F", pv_source)
+        refresh_fixture_udev(runner, Path(pv_source).resolve(strict=True).name)
+        pv_target = resources.mount(pv_source, "lvm-ext4-pv-growth-mount")
+        exercise_pv_lvm_growth_mutation(
+            resources, runner, pv_loop, pv_partition, pv_source, pv_target, pv_vg
+        )
+
         for table_label in ("gpt", "dos"):
             print(f"==> partition-recovery-{table_label}", flush=True)
             exercise_partition_table_recovery(resources, runner, table_label)
@@ -1075,7 +1201,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
     return int(failed)
 
 
