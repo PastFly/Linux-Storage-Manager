@@ -703,6 +703,8 @@ def exercise_disposable_pre_spawn_failure(resources: Resources, binary: Runner, 
         "--journal-root", str(journal_root),
         "--backup-root", str(backup_root),
         "--growth-bytes", str(8 * extent),
+        "--sfdisk", binary.tools["sfdisk"],
+        "--partx", binary.tools["partx"],
         "--pvresize", binary.tools["pvresize"],
         "--lvextend", "/usr/bin/false",
         "--resize2fs", binary.tools["resize2fs"],
@@ -751,6 +753,173 @@ def exercise_disposable_pre_spawn_failure(resources: Resources, binary: Runner, 
     remove_owned_evidence_directory(resources, journal_root)
     resources.uncertain = False
     print("DISPOSABLE_RECOVERY_REQUIRED_OK=pre-spawn-failure-no-storage-change", flush=True)
+
+
+def exercise_partition_pv_lvm_growth_mutation(
+    resources: Resources, binary: Runner, loop: Loop, partition: str,
+    source: str, target: Path, vg: str, table_label: str,
+) -> None:
+    resources.check_loop(loop)
+    if partition != loop.device + "p1" or source != f"/dev/{vg}/data":
+        raise SafetyError("unexpected disposable partition/PV/LV identity")
+    if table_label not in ("gpt", "dos"):
+        raise SafetyError("unsupported disposable partition table")
+
+    before = ready_snapshot(binary, loop.device, vg)
+    tables = [table for table in before["partition_tables"] if table.get("device") == loop.device]
+    if len(tables) != 1 or tables[0].get("label") != table_label:
+        raise SafetyError("partition table identity is ambiguous before partition growth")
+    table = tables[0]
+    records = [row for row in table.get("partitions", []) if row.get("node") == partition]
+    if len(records) != 1:
+        raise SafetyError("target partition record is ambiguous before growth")
+    record = records[0]
+    sector = table.get("sector_size_bytes")
+    start_sector = record.get("start_sector")
+    current_size_sectors = record.get("size_sectors")
+    if (type(sector) is not int or type(start_sector) is not int
+            or type(current_size_sectors) is not int or sector <= 0
+            or current_size_sectors <= 0):
+        raise SafetyError("partition geometry is incomplete before growth")
+
+    preserved_table_id = table.get("id")
+    preserved_record = {
+        key: record.get(key)
+        for key in ("partition_type", "uuid", "name", "attrs", "bootable")
+    }
+
+    lvm = before.get("lvm")
+    if not isinstance(lvm, dict):
+        raise SafetyError("LVM inventory missing before partition mutation drill")
+    pvs = [row for row in lvm.get("physical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg and row.get("name") == partition]
+    vgs = [row for row in lvm.get("volume_groups", [])
+           if isinstance(row, dict) and row.get("name") == vg]
+    lvs = [row for row in lvm.get("logical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg and row.get("path") == source]
+    if len(pvs) != 1 or len(vgs) != 1 or len(lvs) != 1:
+        raise SafetyError("partition/PV/VG/LV identity is ambiguous before growth")
+
+    current_pv_size = pvs[0].get("size_bytes")
+    current_lv_size = lvs[0].get("size_bytes")
+    extent = vgs[0].get("extent_size_bytes")
+    free_extents = vgs[0].get("free_extent_count")
+    if (type(current_pv_size) is not int or type(current_lv_size) is not int
+            or type(extent) is not int or type(free_extents) is not int
+            or extent <= 0 or free_extents < 0):
+        raise SafetyError("exact partition/PV/VG/LV size evidence is incomplete")
+
+    growth_bytes = 320 * 1024 * 1024
+    if growth_bytes % extent:
+        raise SafetyError("partition growth drill size is not extent aligned")
+    growth_extents = growth_bytes // extent
+    if growth_extents <= free_extents:
+        raise SafetyError("partition growth drill would not require underlying capacity")
+
+    additional_pv_extents = growth_extents - free_extents
+    required_pv_growth_bytes = additional_pv_extents * extent
+    current_partition_size_bytes = current_size_sectors * sector
+    if current_partition_size_bytes < current_pv_size:
+        raise SafetyError("PV is larger than its partition before growth")
+    pv_device_slack_bytes = current_partition_size_bytes - current_pv_size
+    raw_partition_growth_bytes = max(0, required_pv_growth_bytes - pv_device_slack_bytes)
+    required_partition_growth_bytes = (
+        (raw_partition_growth_bytes + sector - 1) // sector
+    ) * sector
+    if required_partition_growth_bytes <= 0:
+        raise SafetyError("partition growth drill unexpectedly fits inside current partition")
+
+    expected_partition_size_bytes = current_partition_size_bytes + required_partition_growth_bytes
+    expected_partition_size_sectors = expected_partition_size_bytes // sector
+    expected_pv_size = current_pv_size + required_pv_growth_bytes
+    expected_lv_size = current_lv_size + growth_extents * extent
+
+    sentinel = (target / "readonly-sentinel").read_bytes()
+    before_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    if not association_row:
+        raise SafetyError("exact loop association row is unavailable before partition execution")
+
+    journal_root = resources.root / f"{vg}-{table_label}-partition-executor-journal"
+    backup_root = resources.root / f"{vg}-{table_label}-partition-executor-backup"
+    resources.uncertain = True
+    result = binary.run(
+        "disposable-executor",
+        "--allow-disposable-loop-execution",
+        "--target", str(target),
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--journal-root", str(journal_root),
+        "--backup-root", str(backup_root),
+        "--growth-bytes", str(growth_bytes),
+        "--sfdisk", binary.tools["sfdisk"],
+        "--partx", binary.tools["partx"],
+        "--pvresize", binary.tools["pvresize"],
+        "--lvextend", binary.tools["lvextend"],
+        "--resize2fs", binary.tools["resize2fs"],
+        "--xfs-growfs", binary.tools["xfs_growfs"],
+        "--xfs-scrub", binary.tools["xfs_scrub"],
+        "--udevadm", binary.tools["udevadm"],
+    )
+    outcome = json.loads(result.stdout)
+    if (not isinstance(outcome, dict) or outcome.get("status") != "completed"
+            or outcome.get("mutation_enabled") is not False
+            or not isinstance(outcome.get("execution_id"), str)
+            or not isinstance(outcome.get("final_identity_digest"), str)):
+        raise SafetyError(f"invalid partition executor completion evidence: {outcome!r}")
+
+    final = ready_snapshot(binary, loop.device, vg)
+    final_tables = [table for table in final["partition_tables"] if table.get("device") == loop.device]
+    if len(final_tables) != 1:
+        raise SafetyError("partition table identity is ambiguous after execution")
+    final_table = final_tables[0]
+    final_records = [
+        row for row in final_table.get("partitions", []) if row.get("node") == partition
+    ]
+    if len(final_records) != 1:
+        raise SafetyError("target partition record is ambiguous after execution")
+    final_record = final_records[0]
+    if (final_table.get("label") != table_label
+            or final_table.get("id") != preserved_table_id
+            or final_table.get("sector_size_bytes") != sector
+            or final_record.get("start_sector") != start_sector
+            or final_record.get("size_sectors") != expected_partition_size_sectors):
+        raise SafetyError("partition geometry does not match the exact approved resize")
+    for key, expected in preserved_record.items():
+        if final_record.get(key) != expected:
+            raise SafetyError(f"partition field changed unexpectedly: {key}")
+
+    final_lvm = final.get("lvm")
+    if not isinstance(final_lvm, dict):
+        raise SafetyError("LVM inventory missing after partition executor drill")
+    final_pvs = [row for row in final_lvm.get("physical_volumes", [])
+                 if isinstance(row, dict) and row.get("vg_name") == vg
+                 and row.get("name") == partition]
+    final_lvs = [row for row in final_lvm.get("logical_volumes", [])
+                 if isinstance(row, dict) and row.get("vg_name") == vg
+                 and row.get("path") == source]
+    if len(final_pvs) != 1 or final_pvs[0].get("size_bytes") != expected_pv_size:
+        raise SafetyError("PV size mismatch after partition -> PV Rust execution")
+    if len(final_lvs) != 1 or final_lvs[0].get("size_bytes") != expected_lv_size:
+        raise SafetyError("LV size mismatch after partition -> PV -> LV Rust execution")
+
+    after_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    if after_fs_bytes <= before_fs_bytes:
+        raise SafetyError("filesystem capacity did not increase after full chained growth")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("filesystem sentinel changed during full chained growth")
+    if journal_root.exists() or backup_root.exists():
+        raise SafetyError("partition executor did not clean its owned journal/backup artifacts")
+
+    resources.uncertain = False
+    print(
+        f"PARTITION_PV_LV_FILESYSTEM_EXECUTOR_OK={table_label}-size-only-boundaries",
+        flush=True,
+    )
 
 
 def exercise_pv_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loop,
@@ -814,6 +983,8 @@ def exercise_pv_lvm_growth_mutation(resources: Resources, binary: Runner, loop: 
         "--journal-root", str(journal_root),
         "--backup-root", str(backup_root),
         "--growth-bytes", str(growth_bytes),
+        "--sfdisk", binary.tools["sfdisk"],
+        "--partx", binary.tools["partx"],
         "--pvresize", binary.tools["pvresize"],
         "--lvextend", binary.tools["lvextend"],
         "--resize2fs", binary.tools["resize2fs"],
@@ -937,6 +1108,8 @@ def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loo
         "--journal-root", str(journal_root),
         "--backup-root", str(backup_root),
         "--growth-bytes", str(growth_extents * extent),
+        "--sfdisk", binary.tools["sfdisk"],
+        "--partx", binary.tools["partx"],
         "--pvresize", binary.tools["pvresize"],
         "--lvextend", binary.tools["lvextend"],
         "--resize2fs", binary.tools["resize2fs"],
@@ -1188,6 +1361,34 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         for table_label in ("gpt", "dos"):
+            print(f"==> lvm-ext4-{table_label}-partition-pv-lv-filesystem-growth", flush=True)
+            chain_loop = resources.create_loop(
+                f"lvm-ext4-{table_label}-partition-growth", 1024 * 1024 * 1024
+            )
+            chain_partition = resources.create_partition(
+                chain_loop, 640, True, table_label=table_label
+            )
+            chain_vg = "lsmtest" + os.urandom(12).hex()
+            chain_source = resources.create_vg(
+                chain_loop, chain_partition, chain_vg
+            )
+            runner.run("mkfs.ext4", "-F", chain_source)
+            refresh_fixture_udev(runner, Path(chain_source).resolve(strict=True).name)
+            chain_target = resources.mount(
+                chain_source, f"lvm-ext4-{table_label}-partition-growth-mount"
+            )
+            exercise_partition_pv_lvm_growth_mutation(
+                resources,
+                runner,
+                chain_loop,
+                chain_partition,
+                chain_source,
+                chain_target,
+                chain_vg,
+                table_label,
+            )
+
+        for table_label in ("gpt", "dos"):
             print(f"==> partition-recovery-{table_label}", flush=True)
             exercise_partition_table_recovery(resources, runner, table_label)
         print("==> lvm-metadata-recovery", flush=True)
@@ -1202,7 +1403,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
     return int(failed)
 
 
