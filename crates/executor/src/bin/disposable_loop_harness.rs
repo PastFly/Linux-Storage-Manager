@@ -241,7 +241,11 @@ fn run() -> HarnessResult<()> {
             }
 
             let final_mutation = index + 1 == commands.len();
-            settle_udev(&args.udevadm)?;
+            if outcome.program == DisposableProgram::Lvextend {
+                refresh_udev(&args.udevadm, &current_identity.resolved_device)?;
+            } else {
+                settle_udev(&args.udevadm)?;
+            }
             session.persist_verification_started()?;
             let fresh_snapshot = discover_snapshot()?;
             let fresh_capabilities = discover_capabilities();
@@ -280,7 +284,9 @@ fn run() -> HarnessResult<()> {
             )?;
         }
 
-        Err(boxed("disposable mutation sequence ended without terminal verification"))
+        Err(boxed(
+            "disposable mutation sequence ended without terminal verification",
+        ))
     })();
 
     let (execution_id, final_identity_digest) = match mutation_result {
