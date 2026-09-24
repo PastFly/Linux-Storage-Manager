@@ -124,6 +124,7 @@ The disposable matrix must cover at least:
 - forced command failure before mutation;
 - forced interruption/failure after mutation-start journaling;
 - GPT and DOS/MBR post-write failure after exact `sfdisk` success but before kernel refresh, requiring durable `RecoveryRequired`, retained evidence, blocked replay, unchanged LVM/filesystem state and explicit reconciliation;
+- post-`pvresize` failure before `lvextend`, requiring durable `RecoveryRequired`, exact resized-PV reconciliation, retained evidence, blocked replay and unchanged LV/filesystem/sentinel state;
 - sentinel data preservation;
 - exact before/after storage facts;
 - complete cleanup only when harness ownership remains certain.
