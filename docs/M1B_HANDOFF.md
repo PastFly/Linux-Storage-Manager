@@ -93,6 +93,8 @@ PR #82, now merged at the master baseline above, executes `ResizePhysicalVolume 
 
 PR #83 extends the candidate disposable executor to an existing size-growable GPT or DOS/MBR partition. It emits exact non-shell `sfdisk -N` stdin with the same start sector and an exact larger sector count, then performs exact `partx --update --nr` kernel refresh before rediscovery. Verification requires table identity, partition start, type/UUID/name/attrs/boot metadata to remain unchanged, then continues through PE-start-aware PV, LV and filesystem boundaries. CI #790 proves GPT and DOS/MBR full chains in 3/3 repetitions; Portable Linux #669 succeeds on x86_64 and aarch64. Production `MUTATION_ENABLED=false` remains unchanged.
 
+PR #85 hardens the post-write/pre-kernel-refresh recovery boundary. The owned-loop fault drill lets the exact approved `sfdisk` write complete, deliberately blocks `partx`, requires durable `RecoveryRequired`, retains journal/backup evidence, proves PV/VG/LV/filesystem state and sentinel data unchanged, blocks a second executor launch, then explicitly reconciles only the owned test partition before cleanup. GPT and DOS/MBR are both covered.
+
 ## ExactApprovalBinding
 
 The durable `OperationJournal` now carries an optional structured approval binding.
