@@ -38,10 +38,12 @@ pub struct DisposableKernelRefreshSpec {
 }
 
 impl DisposableKernelRefreshSpec {
+    #[cfg(any(test, feature = "disposable-executor"))]
     pub(crate) fn program(&self) -> DisposableProgram {
         self.program
     }
 
+    #[cfg(any(test, feature = "disposable-executor"))]
     pub(crate) fn args(&self) -> &[String] {
         &self.args
     }
@@ -69,10 +71,12 @@ impl DisposableCommandSpec {
         &self.args
     }
 
+    #[cfg(any(test, feature = "disposable-executor"))]
     pub(crate) fn stdin_payload(&self) -> Option<&str> {
         self.stdin_payload.as_deref()
     }
 
+    #[cfg(any(test, feature = "disposable-executor"))]
     pub(crate) fn kernel_refresh(&self) -> Option<&DisposableKernelRefreshSpec> {
         self.kernel_refresh.as_ref()
     }
@@ -240,9 +244,7 @@ fn compile_partition_extend(
             number.to_string(),
             disk.to_owned(),
         ],
-        stdin_payload: Some(format!(
-            "start={start_sector}, size={new_size_sectors}\n"
-        )),
+        stdin_payload: Some(format!("start={start_sector}, size={new_size_sectors}\n")),
         kernel_refresh: Some(DisposableKernelRefreshSpec {
             program: DisposableProgram::Partx,
             args: vec![
@@ -808,7 +810,14 @@ mod tests {
         assert_eq!(partition.program(), DisposableProgram::Sfdisk);
         assert_eq!(
             partition.args(),
-            ["--lock=yes", "--no-reread", "--no-tell-kernel", "-N", "1", "/dev/loop0"]
+            [
+                "--lock=yes",
+                "--no-reread",
+                "--no-tell-kernel",
+                "-N",
+                "1",
+                "/dev/loop0"
+            ]
         );
         assert_eq!(
             partition.stdin_payload(),
@@ -991,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn partition_mutation_remains_rejected() {
+    fn partition_mutation_without_exact_fresh_geometry_fails_closed() {
         let operation = NativeOperationSpec::ExtendPartition {
             partition: "/dev/loop0p1".into(),
             start_sector: 2048,
@@ -999,7 +1008,7 @@ mod tests {
             new_size_sectors: 8192,
             sector_size_bytes: 512,
         };
-        let expected = NativeOperationKind::ExtendPartition;
+        let expected_partition = "/dev/loop0p1".to_owned();
         let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
             source_manifest_id: "unsupported-mutation".into(),
             steps: vec![NativeCompiledStep {
@@ -1015,7 +1024,7 @@ mod tests {
 
         assert_eq!(
             compile_disposable_lvm_growth_commands(&validated, &identity("ext4", "/")),
-            Err(DisposableArgvError::UnsupportedMutation(expected))
+            Err(DisposableArgvError::PartitionIdentityNotUnique(expected_partition))
         );
     }
 
