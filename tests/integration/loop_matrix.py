@@ -2141,6 +2141,68 @@ def main(argv: list[str] | None = None) -> int:
                 exercise_lvm_growth_mutation(
                     resources, runner, loop, source, target, vg, filesystem
                 )
+        print("==> plain-ext4-multi-partition-selection", flush=True)
+        multi_part_loop = resources.create_loop(
+            "plain-ext4-multi-partition", 640 * 1024 * 1024
+        )
+        multi_p1, multi_p2 = resources.create_two_plain_partitions(
+            multi_part_loop, 192, 192
+        )
+        runner.run("mkfs.ext4", "-F", multi_p1)
+        runner.run("mkfs.ext4", "-F", multi_p2)
+        refresh_fixture_udev(runner, Path(multi_p1).name)
+        refresh_fixture_udev(runner, Path(multi_p2).name)
+        multi_p1_target = resources.mount(multi_p1, "plain-ext4-multi-p1")
+        multi_p2_target = resources.mount(multi_p2, "plain-ext4-multi-p2")
+        exercise_multi_partition_selection(
+            resources,
+            runner,
+            multi_part_loop,
+            multi_p1,
+            multi_p1_target,
+            multi_p2,
+            multi_p2_target,
+        )
+
+        print("==> lvm-ext4-multi-target-isolation", flush=True)
+        multi_loop = resources.create_loop(
+            "lvm-ext4-multi-target", 1536 * 1024 * 1024
+        )
+        multi_partition = resources.create_partition(
+            multi_loop, 1408, True
+        )
+        multi_vg = "lsmtest" + os.urandom(12).hex()
+        multi_primary = resources.create_vg(
+            multi_loop, multi_partition, multi_vg
+        )
+        multi_sibling = resources.create_lv(
+            multi_vg, "archive", 384
+        )
+        runner.run("mkfs.ext4", "-F", multi_primary)
+        runner.run("mkfs.ext4", "-F", multi_sibling)
+        refresh_fixture_udev(
+            runner, Path(multi_primary).resolve(strict=True).name
+        )
+        refresh_fixture_udev(
+            runner, Path(multi_sibling).resolve(strict=True).name
+        )
+        multi_primary_target = resources.mount(
+            multi_primary, "lvm-ext4-multi-primary"
+        )
+        multi_sibling_target = resources.mount(
+            multi_sibling, "lvm-ext4-multi-sibling"
+        )
+        exercise_multi_target_isolation(
+            resources,
+            runner,
+            multi_loop,
+            multi_primary,
+            multi_primary_target,
+            multi_sibling,
+            multi_sibling_target,
+            multi_vg,
+        )
+
         print("==> lvm-ext4-filesystem-post-write-recovery", flush=True)
         fs_fault_loop = resources.create_loop(
             "lvm-ext4-filesystem-post-write-recovery", 1024 * 1024 * 1024
@@ -2302,7 +2364,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,plain-ext4-multi-partition-selection,lvm-ext4-multi-target-isolation,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
     return int(failed)
 
 
