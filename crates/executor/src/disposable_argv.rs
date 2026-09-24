@@ -128,8 +128,7 @@ fn compile_pvresize(
         .lvm
         .iter()
         .filter(|entry| {
-            entry.kind == LvmIdentityKind::PhysicalVolume
-                && entry.uuid.as_deref() == Some(pv_uuid)
+            entry.kind == LvmIdentityKind::PhysicalVolume && entry.uuid.as_deref() == Some(pv_uuid)
         })
         .collect::<Vec<_>>();
     if matches.len() != 1 {
