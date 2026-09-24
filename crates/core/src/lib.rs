@@ -128,6 +128,8 @@ pub struct LvmPhysicalVolume {
     pub vg_name: Option<String>,
     pub size_bytes: u64,
     pub free_bytes: u64,
+    #[serde(default)]
+    pub pe_start_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
