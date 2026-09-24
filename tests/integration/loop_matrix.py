@@ -1547,6 +1547,36 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         for table_label in ("gpt", "dos"):
+            print(f"==> lvm-ext4-{table_label}-partition-post-write-recovery", flush=True)
+            fault_loop = resources.create_loop(
+                f"lvm-ext4-{table_label}-partition-post-write-recovery",
+                1024 * 1024 * 1024,
+            )
+            fault_partition = resources.create_partition(
+                fault_loop, 640, True, table_label=table_label
+            )
+            fault_vg = "lsmtest" + os.urandom(12).hex()
+            fault_source = resources.create_vg(
+                fault_loop, fault_partition, fault_vg
+            )
+            runner.run("mkfs.ext4", "-F", fault_source)
+            refresh_fixture_udev(runner, Path(fault_source).resolve(strict=True).name)
+            fault_target = resources.mount(
+                fault_source,
+                f"lvm-ext4-{table_label}-partition-post-write-recovery-mount",
+            )
+            exercise_partition_post_write_recovery(
+                resources,
+                runner,
+                fault_loop,
+                fault_partition,
+                fault_source,
+                fault_target,
+                fault_vg,
+                table_label,
+            )
+
+        for table_label in ("gpt", "dos"):
             print(f"==> lvm-ext4-{table_label}-partition-pv-lv-filesystem-growth", flush=True)
             chain_loop = resources.create_loop(
                 f"lvm-ext4-{table_label}-partition-growth", 1024 * 1024 * 1024
