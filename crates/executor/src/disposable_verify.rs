@@ -166,9 +166,7 @@ fn verify_boundary_state(
                 })
                 .collect::<Vec<_>>();
             if matches.len() != 1 {
-                return Err(
-                    DisposableBoundaryVerificationError::PhysicalVolumeIdentityNotUnique,
-                );
+                return Err(DisposableBoundaryVerificationError::PhysicalVolumeIdentityNotUnique);
             }
             let pv = matches[0];
             if pv.size_bytes != *expected_pv_size_bytes {
@@ -180,9 +178,7 @@ fn verify_boundary_state(
                 .filter(|device| device.path == pv.name)
                 .collect::<Vec<_>>();
             if backing.len() != 1 || backing[0].size_bytes < *expected_pv_size_bytes {
-                return Err(
-                    DisposableBoundaryVerificationError::PhysicalVolumeBackingSizeMismatch,
-                );
+                return Err(DisposableBoundaryVerificationError::PhysicalVolumeBackingSizeMismatch);
             }
         }
         NativeOperationSpec::ExtendLogicalVolume {
@@ -199,9 +195,7 @@ fn verify_boundary_state(
                 })
                 .collect::<Vec<_>>();
             if matches.len() != 1 {
-                return Err(
-                    DisposableBoundaryVerificationError::LogicalVolumeIdentityNotUnique,
-                );
+                return Err(DisposableBoundaryVerificationError::LogicalVolumeIdentityNotUnique);
             }
             if matches[0].size_bytes != *expected_lv_size_bytes {
                 return Err(DisposableBoundaryVerificationError::LogicalVolumeSizeMismatch);
