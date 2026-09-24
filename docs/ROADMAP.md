@@ -128,7 +128,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [ ] Support ext4 online/offline growth as allowed by the detected filesystem state.
 - [ ] Support XFS online growth.
 - [x] Automatically chain verified single-PV disk-tail growth through disk -> partition -> PV -> VG -> LV -> filesystem on the disposable executor; broader layered profiles remain separately gated.
-- [ ] Keep every discovered filesystem selectable when several partitions/LVs exist.
+- [x] Keep every discovered filesystem selectable when several partitions/LVs exist; live loop coverage proves two mounted LV targets remain isolated and two mounted partition targets remain visible even when one is blocked by its neighbor.
 - [ ] Present blocked paths with the exact reason instead of silently omitting the target.
 - [ ] Support safe disk-tail migration strategies such as swap-partition -> swapfile only after dedicated hibernation/resume checks.
 - [x] Re-discover and verify after every destructive boundary in every currently executable disposable profile, including partition -> PV -> LV -> filesystem.
