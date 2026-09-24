@@ -1024,7 +1024,9 @@ mod tests {
 
         assert_eq!(
             compile_disposable_lvm_growth_commands(&validated, &identity("ext4", "/")),
-            Err(DisposableArgvError::PartitionIdentityNotUnique(expected_partition))
+            Err(DisposableArgvError::PartitionIdentityNotUnique(
+                expected_partition
+            ))
         );
     }
 
