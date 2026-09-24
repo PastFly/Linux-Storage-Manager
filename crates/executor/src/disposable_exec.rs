@@ -15,14 +15,21 @@ use lsm_planner::JournalPhase;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisposableToolPaths {
+    pvresize: PathBuf,
     lvextend: PathBuf,
     resize2fs: PathBuf,
     xfs_growfs: PathBuf,
 }
 
 impl DisposableToolPaths {
-    pub fn new(lvextend: PathBuf, resize2fs: PathBuf, xfs_growfs: PathBuf) -> Self {
+    pub fn new(
+        pvresize: PathBuf,
+        lvextend: PathBuf,
+        resize2fs: PathBuf,
+        xfs_growfs: PathBuf,
+    ) -> Self {
         Self {
+            pvresize,
             lvextend,
             resize2fs,
             xfs_growfs,
@@ -31,6 +38,7 @@ impl DisposableToolPaths {
 
     fn path_for(&self, program: DisposableProgram) -> &Path {
         match program {
+            DisposableProgram::Pvresize => &self.pvresize,
             DisposableProgram::Lvextend => &self.lvextend,
             DisposableProgram::Resize2fs => &self.resize2fs,
             DisposableProgram::XfsGrowfs => &self.xfs_growfs,
@@ -284,16 +292,18 @@ mod tests {
     fn tool_validation_requires_exact_safe_executable_file() {
         let root = root();
         fs::create_dir_all(&root).unwrap();
+        let pvresize = root.join("pvresize");
         let lvextend = root.join("lvextend");
         let resize2fs = root.join("resize2fs");
         let xfs_growfs = root.join("xfs_growfs");
-        for path in [&lvextend, &resize2fs, &xfs_growfs] {
+        for path in [&pvresize, &lvextend, &resize2fs, &xfs_growfs] {
             File::create(path).unwrap();
             let mut permissions = fs::metadata(path).unwrap().permissions();
             permissions.set_mode(0o755);
             fs::set_permissions(path, permissions).unwrap();
         }
-        let paths = DisposableToolPaths::new(lvextend.clone(), resize2fs, xfs_growfs);
+        let paths =
+            DisposableToolPaths::new(pvresize, lvextend.clone(), resize2fs, xfs_growfs);
 
         assert_eq!(
             validate_tool_path(DisposableProgram::Lvextend, &paths).unwrap(),
