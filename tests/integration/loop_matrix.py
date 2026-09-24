@@ -1927,6 +1927,31 @@ def main(argv: list[str] | None = None) -> int:
                 exercise_lvm_growth_mutation(
                     resources, runner, loop, source, target, vg, filesystem
                 )
+        print("==> lvm-ext4-filesystem-post-write-recovery", flush=True)
+        fs_fault_loop = resources.create_loop(
+            "lvm-ext4-filesystem-post-write-recovery", 1024 * 1024 * 1024
+        )
+        fs_fault_partition = resources.create_partition(
+            fs_fault_loop, 896, True
+        )
+        fs_fault_vg = "lsmtest" + os.urandom(12).hex()
+        fs_fault_source = resources.create_vg(
+            fs_fault_loop, fs_fault_partition, fs_fault_vg
+        )
+        runner.run("mkfs.ext4", "-F", fs_fault_source)
+        refresh_fixture_udev(runner, Path(fs_fault_source).resolve(strict=True).name)
+        fs_fault_target = resources.mount(
+            fs_fault_source, "lvm-ext4-filesystem-post-write-recovery-mount"
+        )
+        exercise_filesystem_post_write_recovery(
+            resources,
+            runner,
+            fs_fault_loop,
+            fs_fault_source,
+            fs_fault_target,
+            fs_fault_vg,
+        )
+
         print("==> lvm-ext4-lv-post-write-recovery", flush=True)
         lv_fault_loop = resources.create_loop(
             "lvm-ext4-lv-post-write-recovery", 1024 * 1024 * 1024
@@ -2063,7 +2088,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
     return int(failed)
 
 
