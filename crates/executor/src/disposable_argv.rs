@@ -10,6 +10,8 @@ use crate::{FrozenIntentRole, NativeOperationKind, NativeOperationSpec, Validate
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DisposableProgram {
+    Sfdisk,
+    Partx,
     Pvresize,
     Lvextend,
     Resize2fs,
@@ -19,6 +21,8 @@ pub enum DisposableProgram {
 impl DisposableProgram {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Sfdisk => "sfdisk",
+            Self::Partx => "partx",
             Self::Pvresize => "pvresize",
             Self::Lvextend => "lvextend",
             Self::Resize2fs => "resize2fs",
@@ -28,10 +32,28 @@ impl DisposableProgram {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DisposableKernelRefreshSpec {
+    program: DisposableProgram,
+    args: Vec<String>,
+}
+
+impl DisposableKernelRefreshSpec {
+    pub(crate) fn program(&self) -> DisposableProgram {
+        self.program
+    }
+
+    pub(crate) fn args(&self) -> &[String] {
+        &self.args
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DisposableCommandSpec {
     plan_step_id: u32,
     program: DisposableProgram,
     args: Vec<String>,
+    stdin_payload: Option<String>,
+    kernel_refresh: Option<DisposableKernelRefreshSpec>,
 }
 
 impl DisposableCommandSpec {
@@ -45,6 +67,14 @@ impl DisposableCommandSpec {
 
     pub fn args(&self) -> &[String] {
         &self.args
+    }
+
+    pub(crate) fn stdin_payload(&self) -> Option<&str> {
+        self.stdin_payload.as_deref()
+    }
+
+    pub(crate) fn kernel_refresh(&self) -> Option<&DisposableKernelRefreshSpec> {
+        self.kernel_refresh.as_ref()
     }
 }
 
@@ -80,6 +110,18 @@ pub enum DisposableArgvError {
     UnsupportedMutation(NativeOperationKind),
     #[error("first disposable profile requires exactly LV growth followed by filesystem growth")]
     UnsupportedMutationProfile,
+    #[error("partition {0} did not resolve to exactly one fresh geometry identity")]
+    PartitionIdentityNotUnique(String),
+    #[error("partition growth identity does not exactly match the frozen geometry")]
+    PartitionGeometryMismatch,
+    #[error("partition table label is not supported by the disposable executor")]
+    UnsupportedPartitionTable,
+    #[error("partition or parent disk path is not a safe absolute /dev path")]
+    UnsafePartitionPath,
+    #[error("partition number could not be derived exactly from disk and partition paths")]
+    PartitionNumberInvalid,
+    #[error("partition growth values are invalid or overflow the parent device")]
+    PartitionGrowthMismatch,
     #[error("physical volume UUID {0} did not resolve to exactly one fresh identity")]
     PhysicalVolumeIdentityNotUnique(String),
     #[error("physical volume path is not a safe absolute /dev path")]
@@ -116,6 +158,101 @@ fn safe_absolute_path(value: &str) -> bool {
 
 fn safe_device_path(value: &str) -> bool {
     value.starts_with("/dev/") && !value.chars().any(char::is_control)
+}
+
+fn partition_number(partition: &str, disk: &str) -> Option<u32> {
+    let suffix = partition.strip_prefix(disk)?;
+    let digits = if disk.as_bytes().last().is_some_and(u8::is_ascii_digit) {
+        suffix.strip_prefix('p')?
+    } else {
+        suffix.strip_prefix('p').unwrap_or(suffix)
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let number = digits.parse::<u32>().ok()?;
+    (number > 0).then_some(number)
+}
+
+fn compile_partition_extend(
+    plan_step_id: u32,
+    partition: &str,
+    start_sector: u64,
+    old_size_sectors: u64,
+    new_size_sectors: u64,
+    sector_size_bytes: u64,
+    identity: &TargetIdentityManifest,
+) -> Result<DisposableCommandSpec, DisposableArgvError> {
+    let matches = identity
+        .partitions
+        .iter()
+        .filter(|entry| entry.partition == partition)
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(DisposableArgvError::PartitionIdentityNotUnique(
+            partition.to_owned(),
+        ));
+    }
+    let geometry = matches[0];
+    let disk = geometry
+        .disk
+        .as_deref()
+        .ok_or(DisposableArgvError::PartitionGeometryMismatch)?;
+    if !safe_device_path(partition) || !safe_device_path(disk) {
+        return Err(DisposableArgvError::UnsafePartitionPath);
+    }
+    if !matches!(geometry.table_label.as_deref(), Some("gpt" | "dos")) {
+        return Err(DisposableArgvError::UnsupportedPartitionTable);
+    }
+    if geometry.start_sector != Some(start_sector)
+        || geometry.size_sectors != Some(old_size_sectors)
+        || geometry.sector_size_bytes != Some(sector_size_bytes)
+        || sector_size_bytes == 0
+        || old_size_sectors == 0
+        || new_size_sectors <= old_size_sectors
+    {
+        return Err(DisposableArgvError::PartitionGeometryMismatch);
+    }
+
+    let number =
+        partition_number(partition, disk).ok_or(DisposableArgvError::PartitionNumberInvalid)?;
+    let disk_identity = identity
+        .devices
+        .iter()
+        .find(|device| device.path == disk)
+        .ok_or(DisposableArgvError::PartitionGrowthMismatch)?;
+    let end_sector = start_sector
+        .checked_add(new_size_sectors)
+        .ok_or(DisposableArgvError::PartitionGrowthMismatch)?;
+    let disk_sectors = disk_identity.size_bytes / sector_size_bytes;
+    if end_sector > disk_sectors {
+        return Err(DisposableArgvError::PartitionGrowthMismatch);
+    }
+
+    Ok(DisposableCommandSpec {
+        plan_step_id,
+        program: DisposableProgram::Sfdisk,
+        args: vec![
+            "--lock=yes".to_owned(),
+            "--no-reread".to_owned(),
+            "--no-tell-kernel".to_owned(),
+            "-N".to_owned(),
+            number.to_string(),
+            disk.to_owned(),
+        ],
+        stdin_payload: Some(format!(
+            "start={start_sector}, size={new_size_sectors}\n"
+        )),
+        kernel_refresh: Some(DisposableKernelRefreshSpec {
+            program: DisposableProgram::Partx,
+            args: vec![
+                "--update".to_owned(),
+                "--nr".to_owned(),
+                number.to_string(),
+                disk.to_owned(),
+            ],
+        }),
+    })
 }
 
 fn compile_pvresize(
@@ -161,6 +298,8 @@ fn compile_pvresize(
             "--".to_owned(),
             pv.name.clone(),
         ],
+        stdin_payload: None,
+        kernel_refresh: None,
     })
 }
 
@@ -204,6 +343,8 @@ fn compile_lvextend(
             "--".to_owned(),
             lv.name.clone(),
         ],
+        stdin_payload: None,
+        kernel_refresh: None,
     })
 }
 
@@ -245,11 +386,15 @@ fn compile_filesystem_grow(
             plan_step_id,
             program: DisposableProgram::Resize2fs,
             args: vec![filesystem.device.clone()],
+            stdin_payload: None,
+            kernel_refresh: None,
         }),
         "xfs" => Ok(DisposableCommandSpec {
             plan_step_id,
             program: DisposableProgram::XfsGrowfs,
             args: vec!["-d".to_owned(), mountpoint.to_owned()],
+            stdin_payload: None,
+            kernel_refresh: None,
         }),
         other => Err(DisposableArgvError::UnsupportedFilesystem(other.to_owned())),
     }
@@ -275,10 +420,23 @@ pub fn compile_disposable_lvm_growth_commands(
         }
 
         match &step.operation {
-            NativeOperationSpec::ExtendPartition { .. } => {
-                return Err(DisposableArgvError::UnsupportedMutation(
-                    NativeOperationKind::ExtendPartition,
-                ));
+            NativeOperationSpec::ExtendPartition {
+                partition,
+                start_sector,
+                old_size_sectors,
+                new_size_sectors,
+                sector_size_bytes,
+            } => {
+                mutation_kinds.push(NativeOperationKind::ExtendPartition);
+                commands.push(compile_partition_extend(
+                    step.plan_step_id,
+                    partition,
+                    *start_sector,
+                    *old_size_sectors,
+                    *new_size_sectors,
+                    *sector_size_bytes,
+                    fresh_identity,
+                )?);
             }
             NativeOperationSpec::ResizePhysicalVolume {
                 pv_uuid,
@@ -334,6 +492,13 @@ pub fn compile_disposable_lvm_growth_commands(
                 NativeOperationKind::ResizePhysicalVolume,
                 NativeOperationKind::ExtendLogicalVolume,
                 NativeOperationKind::GrowFilesystem,
+            ]
+        || mutation_kinds
+            == [
+                NativeOperationKind::ExtendPartition,
+                NativeOperationKind::ResizePhysicalVolume,
+                NativeOperationKind::ExtendLogicalVolume,
+                NativeOperationKind::GrowFilesystem,
             ];
     if !supported {
         return Err(DisposableArgvError::UnsupportedMutationProfile);
@@ -380,6 +545,15 @@ pub(crate) fn compile_verified_disposable_next_command(
 
     let step = mutation_steps[position];
     let command = match &step.operation {
+        NativeOperationSpec::ResizePhysicalVolume {
+            pv_uuid,
+            expected_pv_size_bytes,
+        } => compile_pvresize(
+            step.plan_step_id,
+            pv_uuid,
+            *expected_pv_size_bytes,
+            fresh_identity,
+        )?,
         NativeOperationSpec::ExtendLogicalVolume {
             lv_uuid,
             additional_extents,
