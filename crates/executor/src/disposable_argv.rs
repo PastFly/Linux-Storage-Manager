@@ -664,15 +664,15 @@ mod tests {
         };
         let expected = NativeOperationKind::ExtendPartition;
         let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
-                source_manifest_id: "unsupported-mutation".into(),
-                steps: vec![NativeCompiledStep {
-                    plan_step_id: 1,
-                    depends_on: vec![],
-                    reversibility: Reversibility::Irreversible,
-                    role: FrozenIntentRole::MutationCandidate,
-                    operation,
-                }],
-                verification_barriers: vec![barrier(1)],
+            source_manifest_id: "unsupported-mutation".into(),
+            steps: vec![NativeCompiledStep {
+                plan_step_id: 1,
+                depends_on: vec![],
+                reversibility: Reversibility::Irreversible,
+                role: FrozenIntentRole::MutationCandidate,
+                operation,
+            }],
+            verification_barriers: vec![barrier(1)],
         })
         .unwrap();
 
