@@ -1674,15 +1674,24 @@ def exercise_multi_partition_selection(resources: Resources, binary: Runner, loo
     blocked_plan = json.loads(blocked.stdout)
     if blocked_plan.get("status") != "blocked":
         raise SafetyError("non-tail partition was not retained as an explicitly blocked target")
+
+    catalog_basis = binary.run(
+        "storagemgr", "plan", "extend", str(first_target), "--max", "--json",
+        allowed=(2,),
+    )
+    catalog_basis_plan = json.loads(catalog_basis.stdout)
+    if catalog_basis_plan.get("status") != "blocked":
+        raise SafetyError("catalog MaxFree basis did not remain blocked for non-tail partition")
+
     blocked_row = targets.get(str(first_target))
-    plan_blockers = blocked_plan.get("blockers")
+    plan_blockers = catalog_basis_plan.get("blockers")
     catalog_blockers = blocked_row.get("blockers") if isinstance(blocked_row, dict) else None
     if (not isinstance(plan_blockers, list) or not plan_blockers
             or not isinstance(catalog_blockers, list) or not catalog_blockers):
         raise SafetyError("blocked target is missing structured blocker evidence")
     if (catalog_blockers[0].get("code") != plan_blockers[0].get("code")
             or catalog_blockers[0].get("message") != plan_blockers[0].get("message")):
-        raise SafetyError("target catalog blocker does not match the exact planner blocker")
+        raise SafetyError("target catalog blocker does not match its exact MaxFree planner basis")
 
     tail_plan = binary.json(
         "storagemgr", "plan", "extend", str(second_target), "--by", "32MiB", "--json"
