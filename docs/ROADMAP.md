@@ -119,15 +119,15 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Add partition-table metadata backup plus a recovery drill.
 - [x] Add LVM metadata backup plus a recovery drill.
 - [ ] Grow GPT/MBR partitions where safe without moving a partition start.
-- [ ] Resize an existing LVM PV after its containing partition/device grows.
-- [ ] Extend VG/LV using existing or newly exposed extents.
+- [x] Resize an existing LVM PV after its containing partition/device grows in the disposable owned-loop executor, with exact PV UUID/PE-start/size verification.
+- [x] Extend an LV using existing or newly exposed extents in the disposable single-PV executor profile.
 - [ ] Support ext4 online/offline growth as allowed by the detected filesystem state.
 - [ ] Support XFS online growth.
 - [ ] Automatically chain multi-layer growth: disk -> partition -> PV -> VG -> LV -> filesystem.
 - [ ] Keep every discovered filesystem selectable when several partitions/LVs exist.
 - [ ] Present blocked paths with the exact reason instead of silently omitting the target.
 - [ ] Support safe disk-tail migration strategies such as swap-partition -> swapfile only after dedicated hibernation/resume checks.
-- [ ] Re-discover and verify after every destructive boundary (the first LV -> filesystem boundary is now enforced; remaining mutation profiles are still pending).
+- [ ] Re-discover and verify after every destructive boundary (PV -> LV -> filesystem is enforced; partition and later mutation profiles remain pending).
 - [ ] Keep shrink unsupported until it is separately designed and reviewed.
 
 ## M2 — Provisioning and swap

@@ -10,6 +10,7 @@ use crate::{FrozenIntentRole, NativeOperationKind, NativeOperationSpec, Validate
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DisposableProgram {
+    Pvresize,
     Lvextend,
     Resize2fs,
     XfsGrowfs,
@@ -18,6 +19,7 @@ pub enum DisposableProgram {
 impl DisposableProgram {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Pvresize => "pvresize",
             Self::Lvextend => "lvextend",
             Self::Resize2fs => "resize2fs",
             Self::XfsGrowfs => "xfs_growfs",
@@ -78,6 +80,14 @@ pub enum DisposableArgvError {
     UnsupportedMutation(NativeOperationKind),
     #[error("first disposable profile requires exactly LV growth followed by filesystem growth")]
     UnsupportedMutationProfile,
+    #[error("physical volume UUID {0} did not resolve to exactly one fresh identity")]
+    PhysicalVolumeIdentityNotUnique(String),
+    #[error("physical volume path is not a safe absolute /dev path")]
+    UnsafePhysicalVolumePath,
+    #[error("physical volume growth values are not valid against fresh identity")]
+    PhysicalVolumeGrowthMismatch,
+    #[error("physical volume PE start is absent from fresh identity")]
+    PhysicalVolumePeStartMissing,
     #[error("logical volume UUID {0} did not resolve to exactly one fresh identity")]
     LogicalVolumeIdentityNotUnique(String),
     #[error("logical volume path is not a safe absolute /dev path")]
@@ -106,6 +116,52 @@ fn safe_absolute_path(value: &str) -> bool {
 
 fn safe_device_path(value: &str) -> bool {
     value.starts_with("/dev/") && !value.chars().any(char::is_control)
+}
+
+fn compile_pvresize(
+    plan_step_id: u32,
+    pv_uuid: &str,
+    expected_pv_size_bytes: u64,
+    identity: &TargetIdentityManifest,
+) -> Result<DisposableCommandSpec, DisposableArgvError> {
+    let matches = identity
+        .lvm
+        .iter()
+        .filter(|entry| {
+            entry.kind == LvmIdentityKind::PhysicalVolume && entry.uuid.as_deref() == Some(pv_uuid)
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(DisposableArgvError::PhysicalVolumeIdentityNotUnique(
+            pv_uuid.to_owned(),
+        ));
+    }
+
+    let pv = matches[0];
+    if expected_pv_size_bytes == 0 || expected_pv_size_bytes <= pv.size_bytes {
+        return Err(DisposableArgvError::PhysicalVolumeGrowthMismatch);
+    }
+    if !safe_device_path(&pv.name) {
+        return Err(DisposableArgvError::UnsafePhysicalVolumePath);
+    }
+    let pe_start_bytes = pv
+        .pe_start_bytes
+        .ok_or(DisposableArgvError::PhysicalVolumePeStartMissing)?;
+    let raw_limit_bytes = expected_pv_size_bytes
+        .checked_add(pe_start_bytes)
+        .ok_or(DisposableArgvError::PhysicalVolumeGrowthMismatch)?;
+
+    Ok(DisposableCommandSpec {
+        plan_step_id,
+        program: DisposableProgram::Pvresize,
+        args: vec![
+            "--yes".to_owned(),
+            "--setphysicalvolumesize".to_owned(),
+            format!("{raw_limit_bytes}B"),
+            "--".to_owned(),
+            pv.name.clone(),
+        ],
+    })
 }
 
 fn compile_lvextend(
@@ -224,10 +280,17 @@ pub fn compile_disposable_lvm_growth_commands(
                     NativeOperationKind::ExtendPartition,
                 ));
             }
-            NativeOperationSpec::ResizePhysicalVolume { .. } => {
-                return Err(DisposableArgvError::UnsupportedMutation(
-                    NativeOperationKind::ResizePhysicalVolume,
-                ));
+            NativeOperationSpec::ResizePhysicalVolume {
+                pv_uuid,
+                expected_pv_size_bytes,
+            } => {
+                mutation_kinds.push(NativeOperationKind::ResizePhysicalVolume);
+                commands.push(compile_pvresize(
+                    step.plan_step_id,
+                    pv_uuid,
+                    *expected_pv_size_bytes,
+                    fresh_identity,
+                )?);
             }
             NativeOperationSpec::ExtendLogicalVolume {
                 lv_uuid,
@@ -261,12 +324,18 @@ pub fn compile_disposable_lvm_growth_commands(
         }
     }
 
-    if mutation_kinds
-        != [
+    let supported = mutation_kinds
+        == [
             NativeOperationKind::ExtendLogicalVolume,
             NativeOperationKind::GrowFilesystem,
         ]
-    {
+        || mutation_kinds
+            == [
+                NativeOperationKind::ResizePhysicalVolume,
+                NativeOperationKind::ExtendLogicalVolume,
+                NativeOperationKind::GrowFilesystem,
+            ];
+    if !supported {
         return Err(DisposableArgvError::UnsupportedMutationProfile);
     }
 
@@ -295,42 +364,51 @@ pub(crate) fn compile_verified_disposable_next_command(
         .filter(|step| step.role == FrozenIntentRole::MutationCandidate)
         .collect::<Vec<_>>();
 
-    if mutation_steps.len() != 2 {
+    let Some(position) = mutation_steps
+        .iter()
+        .position(|step| step.plan_step_id == plan_step_id)
+    else {
         return Err(DisposableArgvError::UnsupportedMutationProfile);
-    }
-
-    let first = mutation_steps[0];
-    let second = mutation_steps[1];
-    if !matches!(
-        &first.operation,
-        NativeOperationSpec::ExtendLogicalVolume { .. }
-    ) || second.plan_step_id != plan_step_id
-        || !second.depends_on.contains(&first.plan_step_id)
+    };
+    if position == 0
+        || !mutation_steps[position]
+            .depends_on
+            .contains(&mutation_steps[position - 1].plan_step_id)
     {
         return Err(DisposableArgvError::UnsupportedMutationProfile);
     }
 
-    let NativeOperationSpec::GrowFilesystem {
-        fs_type,
-        mountpoint,
-    } = &second.operation
-    else {
-        return Err(DisposableArgvError::UnsupportedMutationProfile);
+    let step = mutation_steps[position];
+    let command = match &step.operation {
+        NativeOperationSpec::ExtendLogicalVolume {
+            lv_uuid,
+            additional_extents,
+            expected_lv_size_bytes,
+        } => compile_lvextend(
+            step.plan_step_id,
+            lv_uuid,
+            *additional_extents,
+            *expected_lv_size_bytes,
+            fresh_identity,
+        )?,
+        NativeOperationSpec::GrowFilesystem {
+            fs_type,
+            mountpoint,
+        } => {
+            let filesystem = fresh_identity
+                .filesystem
+                .as_ref()
+                .ok_or(DisposableArgvError::FilesystemIdentityMissing)?;
+            let observed = filesystem
+                .observed_filesystem_size_bytes
+                .ok_or(DisposableArgvError::FilesystemGrowthNotProven)?;
+            if observed == 0 || filesystem.backing_device_size_bytes <= observed {
+                return Err(DisposableArgvError::FilesystemGrowthNotProven);
+            }
+            compile_filesystem_grow(step.plan_step_id, fs_type, mountpoint, fresh_identity)?
+        }
+        _ => return Err(DisposableArgvError::UnsupportedMutationProfile),
     };
-
-    let filesystem = fresh_identity
-        .filesystem
-        .as_ref()
-        .ok_or(DisposableArgvError::FilesystemIdentityMissing)?;
-    let observed = filesystem
-        .observed_filesystem_size_bytes
-        .ok_or(DisposableArgvError::FilesystemGrowthNotProven)?;
-    if observed == 0 || filesystem.backing_device_size_bytes <= observed {
-        return Err(DisposableArgvError::FilesystemGrowthNotProven);
-    }
-
-    let command =
-        compile_filesystem_grow(second.plan_step_id, fs_type, mountpoint, fresh_identity)?;
 
     Ok(DisposableCommandPlan {
         source_manifest_id: manifest.source_manifest_id.clone(),
@@ -368,6 +446,7 @@ mod tests {
                 uuid: Some("lv-1".into()),
                 size_bytes: 8 * 1024 * 1024 * 1024,
                 free_bytes: None,
+                pe_start_bytes: None,
                 extent_size_bytes: None,
                 free_extent_count: None,
                 pv_count: None,
@@ -433,6 +512,84 @@ mod tests {
             verification_barriers: vec![barrier(3), barrier(4)],
         })
         .unwrap()
+    }
+
+    #[test]
+    fn pv_lv_ext4_profile_compiles_exact_non_shell_argv() {
+        let mut fresh = identity("ext4", "/");
+        fresh.lvm.insert(
+            0,
+            LvmIdentity {
+                kind: LvmIdentityKind::PhysicalVolume,
+                name: "/dev/loop0p1".into(),
+                uuid: Some("pv-1".into()),
+                size_bytes: 8 * 1024 * 1024 * 1024,
+                free_bytes: Some(0),
+                pe_start_bytes: Some(1024 * 1024),
+                extent_size_bytes: None,
+                free_extent_count: None,
+                pv_count: None,
+                lv_count: None,
+                attributes: None,
+                layout: None,
+                role: None,
+            },
+        );
+        let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
+            source_manifest_id: "pv-source-intent".into(),
+            steps: vec![
+                NativeCompiledStep {
+                    plan_step_id: 2,
+                    depends_on: vec![],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ResizePhysicalVolume {
+                        pv_uuid: "pv-1".into(),
+                        expected_pv_size_bytes: 9 * 1024 * 1024 * 1024,
+                    },
+                },
+                NativeCompiledStep {
+                    plan_step_id: 3,
+                    depends_on: vec![2],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::ExtendLogicalVolume {
+                        lv_uuid: "lv-1".into(),
+                        additional_extents: 4,
+                        expected_lv_size_bytes: 9 * 1024 * 1024 * 1024,
+                    },
+                },
+                NativeCompiledStep {
+                    plan_step_id: 4,
+                    depends_on: vec![3],
+                    reversibility: Reversibility::Irreversible,
+                    role: FrozenIntentRole::MutationCandidate,
+                    operation: NativeOperationSpec::GrowFilesystem {
+                        fs_type: "ext4".into(),
+                        mountpoint: "/".into(),
+                    },
+                },
+            ],
+            verification_barriers: vec![barrier(2), barrier(3), barrier(4)],
+        })
+        .unwrap();
+
+        let plan = compile_disposable_lvm_growth_commands(&validated, &fresh).unwrap();
+
+        assert_eq!(plan.commands().len(), 3);
+        assert_eq!(plan.commands()[0].program(), DisposableProgram::Pvresize);
+        assert_eq!(
+            plan.commands()[0].args(),
+            [
+                "--yes",
+                "--setphysicalvolumesize",
+                "9664724992B",
+                "--",
+                "/dev/loop0p1"
+            ]
+        );
+        assert_eq!(plan.commands()[1].program(), DisposableProgram::Lvextend);
+        assert_eq!(plan.commands()[2].program(), DisposableProgram::Resize2fs);
     }
 
     #[test]
@@ -522,44 +679,32 @@ mod tests {
     }
 
     #[test]
-    fn partition_and_pv_mutations_remain_rejected() {
-        for (operation, expected) in [
-            (
-                NativeOperationSpec::ExtendPartition {
-                    partition: "/dev/loop0p1".into(),
-                    start_sector: 2048,
-                    old_size_sectors: 4096,
-                    new_size_sectors: 8192,
-                    sector_size_bytes: 512,
-                },
-                NativeOperationKind::ExtendPartition,
-            ),
-            (
-                NativeOperationSpec::ResizePhysicalVolume {
-                    pv_uuid: "pv-1".into(),
-                    expected_pv_size_bytes: 9 * 1024 * 1024 * 1024,
-                },
-                NativeOperationKind::ResizePhysicalVolume,
-            ),
-        ] {
-            let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
-                source_manifest_id: "unsupported-mutation".into(),
-                steps: vec![NativeCompiledStep {
-                    plan_step_id: 1,
-                    depends_on: vec![],
-                    reversibility: Reversibility::Irreversible,
-                    role: FrozenIntentRole::MutationCandidate,
-                    operation,
-                }],
-                verification_barriers: vec![barrier(1)],
-            })
-            .unwrap();
+    fn partition_mutation_remains_rejected() {
+        let operation = NativeOperationSpec::ExtendPartition {
+            partition: "/dev/loop0p1".into(),
+            start_sector: 2048,
+            old_size_sectors: 4096,
+            new_size_sectors: 8192,
+            sector_size_bytes: 512,
+        };
+        let expected = NativeOperationKind::ExtendPartition;
+        let validated = validate_and_bind_native_manifest(NativeCompiledManifest {
+            source_manifest_id: "unsupported-mutation".into(),
+            steps: vec![NativeCompiledStep {
+                plan_step_id: 1,
+                depends_on: vec![],
+                reversibility: Reversibility::Irreversible,
+                role: FrozenIntentRole::MutationCandidate,
+                operation,
+            }],
+            verification_barriers: vec![barrier(1)],
+        })
+        .unwrap();
 
-            assert_eq!(
-                compile_disposable_lvm_growth_commands(&validated, &identity("ext4", "/")),
-                Err(DisposableArgvError::UnsupportedMutation(expected))
-            );
-        }
+        assert_eq!(
+            compile_disposable_lvm_growth_commands(&validated, &identity("ext4", "/")),
+            Err(DisposableArgvError::UnsupportedMutation(expected))
+        );
     }
 
     #[test]

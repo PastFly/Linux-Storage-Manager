@@ -37,6 +37,7 @@ fn reports_missing_sources_across_collectors() {
                 vg_name: Some("vg-missing".to_owned()),
                 size_bytes: 10_737_418_240,
                 free_bytes: 0,
+                pe_start_bytes: None,
             }],
             volume_groups: Vec::new(),
             logical_volumes: Vec::new(),

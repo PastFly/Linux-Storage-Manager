@@ -6,15 +6,25 @@ mutation and does not change `MUTATION_ENABLED=false`.
 
 ## Scope
 
-The first executable profile is intentionally narrow:
+The executable surface remains intentionally narrow and disposable-only.
 
-1. existing verified VG free extents;
-2. exact LV growth;
-3. ext4 or XFS filesystem growth;
-4. rediscovery and exact expected-state verification.
+The first profile uses existing verified VG free extents:
 
-The partition -> PV -> LV -> filesystem chain remains non-executable until the simpler
-profile is proven repeatedly.
+1. exact LV growth;
+2. ext4 or XFS filesystem growth;
+3. rediscovery and exact expected-state verification.
+
+The second profile starts only when the already-existing PV backing partition/device is
+authoritatively larger than the current PV:
+
+1. exact PV resize;
+2. rediscover and verify the expected PV size;
+3. exact LV growth using the newly exposed extents;
+4. rediscover and verify the expected LV size;
+5. ext4 or XFS filesystem growth;
+6. terminal rediscovery and verification.
+
+Partition mutation remains non-executable.
 
 ## Required inputs
 
@@ -54,8 +64,11 @@ The disposable executor uses typed command specifications and
 `std::process::Command` with separate arguments. Only the exact operation classes needed
 by the current disposable profile may compile to executable argv.
 
-For the first profile:
+For the approved disposable profiles:
 
+- `ResizePhysicalVolume` resolves the approved PV UUID/path against fresh identity,
+  requires exact observed PE start, and converts the expected usable PV size into the exact
+  raw `pvresize --setphysicalvolumesize` limit;
 - `ExtendLogicalVolume` resolves the approved LV UUID against the freshly revalidated
   target identity and compiles an exact LV growth command;
 - `GrowFilesystem` resolves the exact fresh filesystem device/mountpoint;
@@ -89,8 +102,9 @@ After every destructive layer:
 4. verify the expected new size/state;
 5. stop before the next mutation on any mismatch.
 
-The first LV/filesystem profile therefore verifies LV size before filesystem growth and
-filesystem size after growth.
+The LV/filesystem profile verifies LV size before filesystem growth and filesystem size
+after growth. The PV/LV/filesystem profile additionally verifies the exact PV UUID and
+usable PV size before minting the one-shot permit for LV growth.
 
 ## Integration acceptance
 
@@ -98,6 +112,8 @@ The disposable matrix must cover at least:
 
 - LVM/ext4 using existing VG free extents;
 - LVM/XFS using existing VG free extents;
+- LVM/ext4 with a backing partition larger than the PV, proving exact
+  `pvresize -> verify PV -> lvextend -> verify LV -> resize2fs -> verify filesystem`;
 - repeated execution attempts proving an already-applied manifest cannot be blindly replayed;
 - forced command failure before mutation;
 - forced interruption/failure after mutation-start journaling;
@@ -114,7 +130,6 @@ M1B16 does not expose:
 - arbitrary device paths;
 - shrink;
 - partition mutation;
-- PV resize;
 - mount/fstab/swap mutation;
 - LUKS/RAID/Btrfs/ZFS writes.
 

@@ -477,6 +477,7 @@ mod tests {
             uuid: Some("vg-uuid-1".to_owned()),
             size_bytes: 16 * GIB,
             free_bytes: Some(8 * GIB),
+            pe_start_bytes: None,
             extent_size_bytes: Some(EXTENT),
             free_extent_count: Some(2048),
             pv_count: Some(1),
