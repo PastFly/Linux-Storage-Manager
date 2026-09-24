@@ -170,7 +170,15 @@ fn run() -> HarnessResult<()> {
     let intent = freeze_execution_intent(&session, &approval)?;
     let validated =
         lsm_executor::validate_and_bind_native_manifest(compile_native_manifest(&intent))?;
-    let initial_identity = capture_target_identity(&fresh_snapshot, &args.target)?;
+
+    let executable_snapshot = discover_snapshot()?;
+    let executable_capabilities = discover_capabilities();
+    if !handoff.matches_capabilities(&executable_capabilities)? {
+        return Err(boxed(
+            "capability inventory changed immediately before disposable execution",
+        ));
+    }
+    let initial_identity = capture_target_identity(&executable_snapshot, &args.target)?;
     if initial_identity.manifest_digest != handoff.target_identity().manifest_digest {
         return Err(boxed(
             "fresh executable identity diverged from the locked handoff",
