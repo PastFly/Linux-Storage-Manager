@@ -186,15 +186,28 @@ fn run() -> HarnessResult<()> {
         ));
     }
     let command_plan = compile_disposable_lvm_growth_commands(&validated, &initial_identity)?;
-    if command_plan.commands().len() != 2
-        || command_plan.commands()[0].program() != DisposableProgram::Lvextend
-        || !matches!(
-            command_plan.commands()[1].program(),
-            DisposableProgram::Resize2fs | DisposableProgram::XfsGrowfs
-        )
-    {
+    let commands = command_plan.commands();
+    let supported_sequence = match commands {
+        [lv, filesystem] => {
+            lv.program() == DisposableProgram::Lvextend
+                && matches!(
+                    filesystem.program(),
+                    DisposableProgram::Resize2fs | DisposableProgram::XfsGrowfs
+                )
+        }
+        [pv, lv, filesystem] => {
+            pv.program() == DisposableProgram::Pvresize
+                && lv.program() == DisposableProgram::Lvextend
+                && matches!(
+                    filesystem.program(),
+                    DisposableProgram::Resize2fs | DisposableProgram::XfsGrowfs
+                )
+        }
+        _ => false,
+    };
+    if !supported_sequence {
         return Err(boxed(
-            "compiled mutation sequence is not exactly LV then filesystem growth",
+            "compiled mutation sequence is not an approved disposable LVM growth profile",
         ));
     }
 
@@ -205,68 +218,69 @@ fn run() -> HarnessResult<()> {
         args.resize2fs.clone(),
         args.xfs_growfs.clone(),
     );
-    let first_step = command_plan.commands()[0].plan_step_id();
-    let final_step = command_plan.commands()[1].plan_step_id();
+    let first_step = commands[0].plan_step_id();
+    let final_step = commands.last().unwrap().plan_step_id();
 
     let mutation_result: HarnessResult<(String, String)> = (|| {
-        let first_permit = bind_disposable_execution_permit(
+        let mut current_identity = initial_identity.clone();
+        let mut permit = bind_disposable_execution_permit(
             &command_plan,
-            &initial_identity,
+            &current_identity,
             &ownership,
             &association,
             &execution,
             first_step,
         )?;
-        let first_outcome = execute_disposable_command(first_permit, &session, &tools)?;
-        if first_outcome.plan_step_id != first_step
-            || first_outcome.program != DisposableProgram::Lvextend
-        {
-            return Err(boxed("executor returned the wrong first mutation outcome"));
+
+        for (index, expected_command) in commands.iter().enumerate() {
+            let outcome = execute_disposable_command(permit, &session, &tools)?;
+            if outcome.plan_step_id != expected_command.plan_step_id()
+                || outcome.program != expected_command.program()
+            {
+                return Err(boxed("executor returned a mutation outcome out of order"));
+            }
+
+            let final_mutation = index + 1 == commands.len();
+            settle_udev(&args.udevadm)?;
+            session.persist_verification_started()?;
+            let fresh_snapshot = discover_snapshot()?;
+            let fresh_capabilities = discover_capabilities();
+            let fresh_identity = capture_target_identity(&fresh_snapshot, &args.target)?;
+
+            if final_mutation {
+                let completion = verify_and_complete_disposable_execution(
+                    &mut session,
+                    &validated,
+                    &current_identity,
+                    &fresh_identity,
+                    &fresh_capabilities,
+                    outcome.plan_step_id,
+                )?;
+                return Ok((
+                    completion.execution_id().to_owned(),
+                    completion.fresh_identity_digest().to_owned(),
+                ));
+            }
+
+            let boundary = verify_and_continue_disposable_boundary(
+                &mut session,
+                &validated,
+                &fresh_identity,
+                &fresh_capabilities,
+                outcome.plan_step_id,
+            )?;
+            current_identity = fresh_identity;
+            permit = bind_verified_disposable_execution_permit(
+                &validated,
+                &current_identity,
+                &ownership,
+                &association,
+                &execution,
+                boundary,
+            )?;
         }
 
-        refresh_udev(&args.udevadm, &initial_identity.resolved_device)?;
-        session.persist_verification_started()?;
-        let post_lv_snapshot = discover_snapshot()?;
-        let post_lv_capabilities = discover_capabilities();
-        let post_lv_identity = capture_target_identity(&post_lv_snapshot, &args.target)?;
-        let boundary = verify_and_continue_disposable_boundary(
-            &mut session,
-            &validated,
-            &post_lv_identity,
-            &post_lv_capabilities,
-            first_step,
-        )?;
-
-        let second_permit = bind_verified_disposable_execution_permit(
-            &validated,
-            &post_lv_identity,
-            &ownership,
-            &association,
-            &execution,
-            boundary,
-        )?;
-        let second_outcome = execute_disposable_command(second_permit, &session, &tools)?;
-        if second_outcome.plan_step_id != final_step {
-            return Err(boxed("executor returned the wrong final mutation step"));
-        }
-
-        settle_udev(&args.udevadm)?;
-        session.persist_verification_started()?;
-        let final_snapshot = discover_snapshot()?;
-        let final_capabilities = discover_capabilities();
-        let final_identity = capture_target_identity(&final_snapshot, &args.target)?;
-        let completion = verify_and_complete_disposable_execution(
-            &mut session,
-            &validated,
-            &post_lv_identity,
-            &final_identity,
-            &final_capabilities,
-            final_step,
-        )?;
-        Ok((
-            completion.execution_id().to_owned(),
-            completion.fresh_identity_digest().to_owned(),
-        ))
+        Err(boxed("disposable mutation sequence ended without terminal verification"))
     })();
 
     let (execution_id, final_identity_digest) = match mutation_result {
