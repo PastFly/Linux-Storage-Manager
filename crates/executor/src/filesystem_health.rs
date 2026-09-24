@@ -4,18 +4,20 @@ use std::path::Path;
 #[cfg(feature = "disposable-loop-harness")]
 use std::process::{Command, Stdio};
 
+#[cfg(feature = "disposable-loop-harness")]
 use lsm_core::{HostCapabilities, HostSnapshot};
+#[cfg(feature = "disposable-loop-harness")]
 use lsm_planner::{
-    decide_filesystem_growth, revalidate_target_identity, FilesystemCheckKind,
-    FilesystemDecisionState, JournalPhase, PlannerError, ReadOnlyFilesystemCheck,
+    decide_filesystem_growth, revalidate_target_identity, FilesystemDecisionState, JournalPhase,
 };
+use lsm_planner::{FilesystemCheckKind, PlannerError, ReadOnlyFilesystemCheck};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{LockedExecutionSession, MUTATION_ENABLED};
+use crate::LockedExecutionSession;
 #[cfg(feature = "disposable-loop-harness")]
-use crate::disposable_exec::exact_safe_system_tool_path;
+use crate::{disposable_exec::exact_safe_system_tool_path, MUTATION_ENABLED};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExplicitFilesystemHealthReceipt {
@@ -115,21 +117,24 @@ impl ExplicitFilesystemHealthReceipt {
 pub enum ExplicitFilesystemHealthError {
     #[error("explicit filesystem health check requires identity_revalidated state")]
     SessionNotRevalidated,
-    #[error("mutation-enabled state is forbidden while collecting explicit filesystem health evidence")]
+    #[error(
+        "mutation-enabled state is forbidden while collecting explicit filesystem health evidence"
+    )]
     MutationEnabled,
     #[error("fresh target identity changed before explicit filesystem health check")]
     TargetIdentityMismatch,
-    #[error("fresh storage-tool capability inventory changed before explicit filesystem health check")]
+    #[error(
+        "fresh storage-tool capability inventory changed before explicit filesystem health check"
+    )]
     CapabilityInventoryMismatch,
-    #[error("filesystem does not currently require the supported explicit XFS no-modify health check")]
+    #[error(
+        "filesystem does not currently require the supported explicit XFS no-modify health check"
+    )]
     UnsupportedCheck,
     #[error("selected filesystem health tool path is unsafe")]
     UnsafeToolPath,
     #[error("filesystem health check failed with status {status:?}: {stderr}")]
-    CommandFailed {
-        status: Option<i32>,
-        stderr: String,
-    },
+    CommandFailed { status: Option<i32>, stderr: String },
     #[error("planner capability verification failed: {0}")]
     Planner(#[from] PlannerError),
     #[error("filesystem health check I/O failed: {0}")]
@@ -230,6 +235,7 @@ pub(crate) fn receipt_matches_exact_check(
         && receipt.args == check.args)
 }
 
+#[cfg(any(test, feature = "disposable-loop-harness"))]
 fn digest_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
