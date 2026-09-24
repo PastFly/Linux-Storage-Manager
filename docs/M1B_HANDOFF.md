@@ -95,6 +95,8 @@ PR #83 extends the candidate disposable executor to an existing size-growable GP
 
 PR #85 hardens the post-write/pre-kernel-refresh recovery boundary. The owned-loop fault drill lets the exact approved `sfdisk` write complete, deliberately blocks `partx`, requires durable `RecoveryRequired`, retains journal/backup evidence, proves PV/VG/LV/filesystem state and sentinel data unchanged, blocks a second executor launch, then explicitly reconciles only the owned test partition before cleanup. GPT and DOS/MBR are both covered.
 
+The next recovery boundary applies the same model after a real `pvresize`: the PV reaches the exact approved new size and is freshly rediscovered, `lvextend` is deliberately blocked before spawn, the durable journal must enter `RecoveryRequired`, the resized PV identity must reconcile exactly, LV/filesystem/sentinel state must remain unchanged, and blind replay must stay blocked until evidence is explicitly cleared in the owned fixture.
+
 ## ExactApprovalBinding
 
 The durable `OperationJournal` now carries an optional structured approval binding.
