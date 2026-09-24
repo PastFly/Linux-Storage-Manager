@@ -1,13 +1,16 @@
 use lsm_core::{HostCapabilities, HostSnapshot};
 use lsm_planner::{
-    decide_filesystem_growth, revalidate_target_identity, FilesystemDecisionState,
-    FilesystemGrowthDecision, JournalPhase, PlannerError,
+    decide_filesystem_growth, revalidate_target_identity, FilesystemCheckKind,
+    FilesystemDecisionState, FilesystemGrowthDecision, JournalPhase, PlannerError,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{BackupReceiptRevalidation, LockedExecutionSession, MUTATION_ENABLED};
+use crate::{
+    filesystem_health::receipt_matches_exact_check, BackupReceiptRevalidation,
+    ExplicitFilesystemHealthReceipt, LockedExecutionSession, MUTATION_ENABLED,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,6 +31,7 @@ pub struct PreMutationEvidenceBundle {
     backup_manifest_id: String,
     backup_receipt_id: String,
     backup_receipt_revalidated: bool,
+    filesystem_health_receipt_id: Option<String>,
     filesystem_decision: FilesystemGrowthDecision,
     status: PreMutationEvidenceStatus,
     owner_acceptance_required: bool,
@@ -73,6 +77,10 @@ impl PreMutationEvidenceBundle {
         self.backup_receipt_revalidated
     }
 
+    pub fn filesystem_health_receipt_id(&self) -> Option<&str> {
+        self.filesystem_health_receipt_id.as_deref()
+    }
+
     pub fn filesystem_decision(&self) -> &FilesystemGrowthDecision {
         &self.filesystem_decision
     }
@@ -106,6 +114,8 @@ pub enum PreMutationEvidenceError {
     MutationEnabled,
     #[error("backup receipt revalidation is not bound to the exact locked handoff")]
     BackupBindingMismatch,
+    #[error("explicit filesystem health receipt does not match the exact pending check")]
+    FilesystemHealthReceiptMismatch,
     #[error("planner capability verification failed: {0}")]
     Planner(#[from] PlannerError),
     #[error("could not serialize pre-mutation evidence basis: {0}")]
@@ -117,6 +127,38 @@ pub fn build_pre_mutation_evidence(
     fresh_snapshot: &HostSnapshot,
     fresh_capabilities: &HostCapabilities,
     backup_revalidation: &BackupReceiptRevalidation,
+) -> Result<PreMutationEvidenceBundle, PreMutationEvidenceError> {
+    build_pre_mutation_evidence_inner(
+        session,
+        fresh_snapshot,
+        fresh_capabilities,
+        backup_revalidation,
+        None,
+    )
+}
+
+pub fn build_pre_mutation_evidence_with_filesystem_health(
+    session: &LockedExecutionSession<'_>,
+    fresh_snapshot: &HostSnapshot,
+    fresh_capabilities: &HostCapabilities,
+    backup_revalidation: &BackupReceiptRevalidation,
+    filesystem_health_receipt: &ExplicitFilesystemHealthReceipt,
+) -> Result<PreMutationEvidenceBundle, PreMutationEvidenceError> {
+    build_pre_mutation_evidence_inner(
+        session,
+        fresh_snapshot,
+        fresh_capabilities,
+        backup_revalidation,
+        Some(filesystem_health_receipt),
+    )
+}
+
+fn build_pre_mutation_evidence_inner(
+    session: &LockedExecutionSession<'_>,
+    fresh_snapshot: &HostSnapshot,
+    fresh_capabilities: &HostCapabilities,
+    backup_revalidation: &BackupReceiptRevalidation,
+    filesystem_health_receipt: Option<&ExplicitFilesystemHealthReceipt>,
 ) -> Result<PreMutationEvidenceBundle, PreMutationEvidenceError> {
     if session.journal().phase != JournalPhase::IdentityRevalidated {
         return Err(PreMutationEvidenceError::SessionNotRevalidated);
@@ -135,8 +177,31 @@ pub fn build_pre_mutation_evidence(
 
     let identity = revalidate_target_identity(handoff.target_identity(), fresh_snapshot);
     let capabilities_match = handoff.matches_capabilities(fresh_capabilities)?;
-    let filesystem_decision =
+    let mut filesystem_decision =
         decide_filesystem_growth(fresh_snapshot, fresh_capabilities, handoff.plan().target());
+    let filesystem_health_receipt_id = if let Some(receipt) = filesystem_health_receipt {
+        let check = filesystem_decision
+            .read_only_check
+            .as_ref()
+            .ok_or(PreMutationEvidenceError::FilesystemHealthReceiptMismatch)?;
+        if filesystem_decision.state != FilesystemDecisionState::ReadOnlyHealthCheckRequired
+            || check.kind != FilesystemCheckKind::XfsMountedScrubNoModify
+            || !receipt_matches_exact_check(receipt, session, check)?
+        {
+            return Err(PreMutationEvidenceError::FilesystemHealthReceiptMismatch);
+        }
+        let receipt_id = receipt.receipt_id().to_owned();
+        filesystem_decision.state = FilesystemDecisionState::ReadyOnlineGrow;
+        filesystem_decision.read_only_check = None;
+        filesystem_decision.required_actions.clear();
+        filesystem_decision.reasons.push(
+            "explicit read-only XFS health receipt matched the exact locked session and check"
+                .to_owned(),
+        );
+        Some(receipt_id)
+    } else {
+        None
+    };
 
     let mut blockers = identity
         .changes
@@ -218,7 +283,7 @@ pub fn build_pre_mutation_evidence(
     };
 
     let mut bundle = PreMutationEvidenceBundle {
-        schema_version: 2,
+        schema_version: 3,
         bundle_id: String::new(),
         locked_session_id: session.session_id().to_owned(),
         handoff_id: handoff.handoff_id().to_owned(),
@@ -227,6 +292,7 @@ pub fn build_pre_mutation_evidence(
         backup_manifest_id: backup_revalidation.manifest_id().to_owned(),
         backup_receipt_id: backup_revalidation.receipt_id().to_owned(),
         backup_receipt_revalidated: backup_revalidation.matches(),
+        filesystem_health_receipt_id,
         filesystem_decision,
         status,
         owner_acceptance_required: true,
@@ -249,6 +315,7 @@ impl PreMutationEvidenceBundle {
             &self.backup_manifest_id,
             &self.backup_receipt_id,
             self.backup_receipt_revalidated,
+            &self.filesystem_health_receipt_id,
             &self.filesystem_decision,
             self.status,
             self.owner_acceptance_required,
