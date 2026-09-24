@@ -27,6 +27,8 @@ pub enum JournalStoreError {
     UnsafeDirectory(PathBuf),
     #[error("journal path is not a regular file: {0}")]
     NotRegularFile(PathBuf),
+    #[error("journal already exists and must not be replaced during session start: {0}")]
+    AlreadyExists(String),
     #[error("journal does not exist: {0}")]
     NotFound(String),
     #[error("journal exceeds the maximum durable record size")]
@@ -76,6 +78,52 @@ impl DurableJournalStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn persist_new(&self, journal: &OperationJournal) -> Result<PathBuf, JournalStoreError> {
+        validate_journal(journal)?;
+        ensure_secure_directory(&self.root, true)?;
+
+        let bytes = serde_json::to_vec(journal)?;
+        if bytes.len() as u64 > MAX_JOURNAL_BYTES {
+            return Err(JournalStoreError::TooLarge);
+        }
+
+        let final_path = self.path_for(&journal.journal_id)?;
+        let temp_path = self.temp_path(&journal.journal_id);
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+                .open(&temp_path)
+                .map_err(|source| io_error(&temp_path, source))?;
+
+            file.write_all(&bytes)
+                .map_err(|source| io_error(&temp_path, source))?;
+            file.write_all(b"\n")
+                .map_err(|source| io_error(&temp_path, source))?;
+            file.sync_all()
+                .map_err(|source| io_error(&temp_path, source))?;
+            drop(file);
+
+            match fs::hard_link(&temp_path, &final_path) {
+                Ok(()) => {}
+                Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+                    return Err(JournalStoreError::AlreadyExists(journal.journal_id.clone()));
+                }
+                Err(source) => return Err(io_error(&final_path, source)),
+            }
+            fs::remove_file(&temp_path).map_err(|source| io_error(&temp_path, source))?;
+            sync_directory(&self.root)?;
+            Ok(final_path.clone())
+        })();
+
+        if result.is_err() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        result
     }
 
     pub fn persist(&self, journal: &OperationJournal) -> Result<PathBuf, JournalStoreError> {
@@ -732,6 +780,33 @@ mod tests {
             std::process::id(),
             TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn persist_new_never_replaces_existing_durable_identity() {
+        let root = root("persist-new-no-replace");
+        let store = DurableJournalStore::at(&root);
+        let mut original = journal();
+        original.apply(JournalTransition::HostLockAcquired).unwrap();
+        store.persist_new(&original).unwrap();
+
+        let mut replacement = original.clone();
+        let baseline = replacement.baseline_manifest_digest.clone();
+        replacement
+            .apply(JournalTransition::IdentityRevalidated {
+                fresh_manifest_digest: &baseline,
+            })
+            .unwrap();
+
+        let result = store.persist_new(&replacement);
+        assert!(matches!(
+            result,
+            Err(JournalStoreError::AlreadyExists(ref journal_id))
+                if journal_id == &original.journal_id
+        ));
+        assert_eq!(store.load(&original.journal_id).unwrap(), original);
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

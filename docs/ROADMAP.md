@@ -95,7 +95,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [ ] Wire the revalidated locked session into mutation-capable execution only after owner acceptance and the remaining executor gates.
 - [x] Add a non-mutating atomic durable journal-store primitive with strict reload validation and recovery-state preservation.
 - [x] Persist HostLockHeld and successful IdentityRevalidated transitions from the non-mutating locked session through the durable journal store.
-- [ ] Persist the operation-journal model durably before the first mutating command.
+- [x] Persist the operation-journal model durably before the first mutating command.
 - [x] Freeze exact partition-table/LVM metadata backup and recovery command manifests without executing them.
 - [x] Prove GPT and DOS/MBR partition-table backup/restore on owned disposable loop fixtures with exact machine-readable geometry and sentinel verification.
 - [x] Prove LVM VG metadata backup/restore on an owned disposable loop fixture with exact PV/VG/LV identity and sentinel verification.
@@ -113,7 +113,9 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Promote proven single-PV underlying LVM capacity into exact dry-run chains for `partition? -> PV -> LV -> filesystem`, including `--max`.
 - [x] Fail closed when native mutation layers are reordered or bypass required lower-layer dependencies.
 - [x] Compile the first disposable-only `LV -> filesystem` profile into a minimal typed executable argv allowlist bound to fresh identity.
-- [ ] Execute that first profile only on harness-owned `/dev/loopN` fixtures while production `MUTATION_ENABLED=false` remains unchanged.
+- [x] Execute the first `LV -> filesystem` profile only on harness-owned `/dev/loopN` fixtures while production `MUTATION_ENABLED=false` remains unchanged; ext4 completes the live mutation path and XFS remains fail-closed when the host kernel lacks online scrub support.
+- [x] Prevent blind replay from replacing an existing durable journal with a fresh `HostLockHeld` record.
+- [x] Prove a forced pre-spawn executor failure after durable `Executing` transitions to `RecoveryRequired`, preserves recovery evidence and leaves LV/filesystem/sentinel state unchanged.
 - [x] Add partition-table metadata backup plus a recovery drill.
 - [x] Add LVM metadata backup plus a recovery drill.
 - [ ] Grow GPT/MBR partitions where safe without moving a partition start.

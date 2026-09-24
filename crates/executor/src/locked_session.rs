@@ -165,7 +165,7 @@ impl<'a> LockedExecutionSession<'a> {
         journal.apply(JournalTransition::HostLockAcquired)?;
         debug_assert_eq!(journal.phase, JournalPhase::HostLockHeld);
         if let Some(store) = journal_store {
-            store.persist(&journal)?;
+            store.persist_new(&journal)?;
         }
 
         let session_id = build_session_id(handoff, lock.path());
@@ -676,6 +676,36 @@ mod tests {
         assert_eq!(session.journal().phase, JournalPhase::IdentityRevalidated);
         drop(session);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn durable_session_start_refuses_to_overwrite_existing_journal() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("no-replay-overwrite");
+        let store = DurableJournalStore::at(&root);
+
+        let mut first =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        first.revalidate(&snapshot, &capabilities).unwrap();
+        let persisted_before = store.load(&first.journal().journal_id).unwrap();
+        drop(first);
+
+        let second = LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store);
+        assert!(matches!(
+            second,
+            Err(LockedSessionError::DurableJournal(
+                JournalStoreError::AlreadyExists(ref journal_id)
+            )) if journal_id == &persisted_before.journal_id
+        ));
+        assert_eq!(
+            store.load(&persisted_before.journal_id).unwrap(),
+            persisted_before
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
