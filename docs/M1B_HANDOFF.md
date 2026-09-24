@@ -3,11 +3,11 @@
 M1B is the safety foundation between read-only planning and any future mutation-capable
 executor. It remains fail-closed and capability/topology driven.
 
-Verified master baseline on 2026-09-23:
+Verified master baseline after PR #79 on 2026-09-24:
 
-`fc2084ca9f241f183a36b219cc2be67b0aacd484`
+`45e391ad7ba19c9e2dd44cd31d6fc603295ec33a`
 
-That master contains M1B0 through the complete M1B15 non-executable planning/safety package. `MUTATION_ENABLED=false` remains unchanged. M1B16 has started with a reviewed disposable-only executor design; the first code increment is an exact non-shell argv compiler for the narrow `LV -> filesystem` disposable profile.
+That master contains M1B0 through the first live M1B16 disposable `LV -> filesystem` executor path. The executor remains feature-gated to harness-owned loop fixtures and production `MUTATION_ENABLED=false` remains unchanged. CI #737 proved real Rust-driven LVM/ext4 growth; hosted-kernel XFS execution remains fail-closed when the required online `xfs_scrub` facility is unavailable. Portable Linux #616 passed for x86_64 and aarch64.
 
 ## Non-negotiable boundary
 
@@ -87,7 +87,9 @@ Complete at the verified master baseline above. M1B15 adds `ResizePhysicalVolume
 
 ### M1B16 — disposable-only executor
 
-Design is merged in `docs/M1B16_DISPOSABLE_EXECUTOR.md`. The first implementation increment compiles only `ExtendLogicalVolume -> GrowFilesystem` into typed non-shell argv bound to a fresh target identity. Partition/PV execution remains rejected. No production apply command, privileged helper, storage-changing production API, or `Executing` transition exists.
+PR #79 is merged at the verified master baseline above. The feature-gated harness now performs the full durable chain for the narrow `ExtendLogicalVolume -> GrowFilesystem` profile: locked revalidation, backup receipt, filesystem health gate where required, exact approval/native binding, durable `Executing`, one-shot LV mutation, fresh verification, filesystem mutation and terminal verification. It re-discovers immediately before the first destructive boundary and after each destructive layer. Partition/PV execution remains rejected and no production apply command or privileged production helper exists.
+
+The next hardening layer uses create-without-replacement semantics for the initial durable journal so a retained `Completed` or `RecoveryRequired` record cannot be silently replaced by a new `HostLockHeld` journal with the same ID. Fault-injection coverage deliberately enters durable `Executing`, fails before the first process spawn, requires `RecoveryRequired`, proves unchanged LV/filesystem/sentinel state, and preserves evidence until explicit reconciliation.
 
 ## ExactApprovalBinding
 
