@@ -267,6 +267,7 @@ pub struct ExtendTarget {
     pub layout_growth_bytes: Option<u64>,
     pub availability: ExtendTargetAvailability,
     pub reason: String,
+    pub blockers: Vec<Blocker>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -728,7 +729,7 @@ pub fn list_extend_targets(
         .flatten()
         .max();
 
-        let (availability, reason) = match &preview {
+        let (availability, reason, blockers) = match &preview {
             Ok(plan) if plan.status() == PlanStatus::Preview => {
                 let reason = if layout_growth_bytes
                     .is_some_and(|bytes| bytes > verified_growth_bytes.unwrap_or(0))
@@ -738,7 +739,11 @@ pub fn list_extend_targets(
                 } else {
                     "verified read-only growth preview is available".to_owned()
                 };
-                (ExtendTargetAvailability::PreviewReady, reason)
+                (
+                    ExtendTargetAvailability::PreviewReady,
+                    reason,
+                    plan.blockers().to_vec(),
+                )
             }
             Ok(plan) if layout_growth_bytes.is_some_and(|bytes| bytes > 0) => (
                 ExtendTargetAvailability::Advisory,
@@ -753,6 +758,7 @@ pub fn list_extend_targets(
                     .unwrap_or_else(|| {
                         "a non-executable underlying-capacity route is available".to_owned()
                     }),
+                plan.blockers().to_vec(),
             ),
             Ok(plan) => (
                 ExtendTargetAvailability::Blocked,
@@ -760,11 +766,19 @@ pub fn list_extend_targets(
                     .first()
                     .map(|blocker| blocker.message.clone())
                     .unwrap_or_else(|| "no verified growth path is currently available".to_owned()),
+                plan.blockers().to_vec(),
             ),
-            Err(error) => (
-                ExtendTargetAvailability::Blocked,
-                format!("planner error: {error}"),
-            ),
+            Err(error) => {
+                let message = format!("planner error: {error}");
+                (
+                    ExtendTargetAvailability::Blocked,
+                    message.clone(),
+                    vec![Blocker {
+                        code: "planner-error".to_owned(),
+                        message,
+                    }],
+                )
+            }
         };
 
         let kind = match resolve_extend_route_adapter(snapshot, &target).profile {
@@ -785,6 +799,7 @@ pub fn list_extend_targets(
             layout_growth_bytes,
             availability,
             reason,
+            blockers,
         });
     }
 
