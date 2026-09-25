@@ -101,6 +101,7 @@ pub use privileged_argv::{
 };
 pub use privileged_exec::{
     execute_privileged_descriptor_launch, DescriptorExecOutcome, PrivilegedDescriptorExecError,
+    PrivilegedDescriptorSequenceOutcome,
 };
 pub use privileged_launch::{
     build_privileged_descriptor_launch_spec, DescriptorLaunchStage, ElfClass, ElfDataEncoding,
