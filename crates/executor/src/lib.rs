@@ -105,8 +105,7 @@ pub use privileged_protocol::{
     PRIVILEGED_HELPER_PROTOCOL_VERSION,
 };
 pub use privileged_spawn::{
-    authorize_privileged_spawn, PrivilegedSpawnAuthorization,
-    PrivilegedSpawnAuthorizationError,
+    authorize_privileged_spawn, PrivilegedSpawnAuthorization, PrivilegedSpawnAuthorizationError,
 };
 pub use privileged_start::{
     persist_prepared_privileged_execution_start, PrivilegedExecutionStartError,
