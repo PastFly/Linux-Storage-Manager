@@ -210,7 +210,7 @@ M1B25 removes the remaining path-replacement window between provenance verificat
 M1B26 freezes the exact descriptor launch surface without spawning. The pinned primary and optional refresh files must be native ELF images; scripts fail closed so the future `fexecve` path can keep `O_CLOEXEC` without interpreter-FD leakage. The launch receipt binds the M1B25 pin, exact argv, optional stdin length/SHA-256, fixed non-inherited `PATH=/usr/sbin:/usr/bin:/sbin:/bin`, `LC_ALL=C`, primary/refresh ELF identities and `process_spawned=false`. Embedded NULs are rejected before any future C argv construction.\n\n
 ## M1B13 frozen execution intent contract
 
-M1B13 freezes the exact M1B12-approved plan into `FrozenExecutionIntentManifest`.
+M1B27 seals the complete pre-spawn authorization chain into one deterministic launch permit. The durable execution-start receipt, M1B24 spawn authorization and M1B26 descriptor launch receipt must agree on execution ID, start receipt, authorization ID, first mutation step and command digest. Tampering at any layer fails closed. The permit explicitly retains `mutation_enabled=false` and `process_spawned=false`; it is the final non-executing authorization object before a future descriptor-based spawn primitive.\n\nM1B13 freezes the exact M1B12-approved plan into `FrozenExecutionIntentManifest`.
 
 The manifest binds approval ID, approved journal ID/digest, plan ID, evidence bundle ID, target
 manifest digest and locked-session ID. Every source `PlanStep` is represented exactly once,
