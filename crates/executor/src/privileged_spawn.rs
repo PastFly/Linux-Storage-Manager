@@ -4,7 +4,8 @@ use thiserror::Error;
 
 use crate::{
     resolve_privileged_command_tools, PreparedPrivilegedInvocation, PrivilegedCommandSpec,
-    PrivilegedExecutionStartReceipt, PrivilegedToolResolution, TrustedToolError,
+    PrivilegedContinuationStartReceipt, PrivilegedExecutionStartReceipt, PrivilegedToolResolution,
+    TrustedToolError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -24,7 +25,7 @@ impl PrivilegedSpawnAuthorization {
         Ok(self.authorization_id == self.expected_authorization_id()?)
     }
 
-    fn expected_authorization_id(&self) -> Result<String, serde_json::Error> {
+    pub(crate) fn expected_authorization_id(&self) -> Result<String, serde_json::Error> {
         let bytes = serde_json::to_vec(&(
             self.schema_version,
             &self.execution_id,
@@ -42,10 +43,14 @@ impl PrivilegedSpawnAuthorization {
 pub enum PrivilegedSpawnAuthorizationError {
     #[error("execution-start receipt integrity check failed")]
     ExecutionStartIntegrityMismatch,
+    #[error("continuation-start receipt integrity check failed")]
+    ContinuationStartIntegrityMismatch,
     #[error("prepared invocation integrity check failed")]
     PreparedIntegrityMismatch,
     #[error("execution-start receipt does not match the prepared invocation")]
     StartPreparedMismatch,
+    #[error("continuation-start receipt does not match the prepared invocation")]
+    ContinuationPreparedMismatch,
     #[error("compiled command does not match the prepared invocation")]
     CommandMismatch,
     #[error("trusted executable provenance changed after invocation preparation")]
@@ -100,6 +105,65 @@ fn authorize_with_resolution(
     };
     authorization.authorization_id = authorization.expected_authorization_id()?;
     Ok(authorization)
+}
+
+
+fn authorize_continuation_with_resolution(
+    start: &PrivilegedContinuationStartReceipt,
+    prepared: &PreparedPrivilegedInvocation,
+    command: &PrivilegedCommandSpec,
+    fresh_tools: &PrivilegedToolResolution,
+) -> Result<PrivilegedSpawnAuthorization, PrivilegedSpawnAuthorizationError> {
+    if !start.integrity_matches()? {
+        return Err(PrivilegedSpawnAuthorizationError::ContinuationStartIntegrityMismatch);
+    }
+    if !prepared.integrity_matches()? {
+        return Err(PrivilegedSpawnAuthorizationError::PreparedIntegrityMismatch);
+    }
+    if start.execution_id != prepared.execution_id
+        || start.prepared_id != prepared.prepared_id
+        || start.plan_step_id != prepared.plan_step_id
+        || start.live_identity_digest != prepared.live_identity_digest
+    {
+        return Err(PrivilegedSpawnAuthorizationError::ContinuationPreparedMismatch);
+    }
+
+    let command_digest = command
+        .digest()
+        .map_err(|error| TrustedToolError::CommandDigest(error.to_string()))?;
+    if command.plan_step_id != prepared.plan_step_id || command_digest != prepared.command_digest {
+        return Err(PrivilegedSpawnAuthorizationError::CommandMismatch);
+    }
+
+    if fresh_tools.command_digest != command_digest
+        || fresh_tools.digest()? != prepared.tool_resolution_digest
+    {
+        return Err(PrivilegedSpawnAuthorizationError::ToolProvenanceDrift);
+    }
+
+    let mut authorization = PrivilegedSpawnAuthorization {
+        schema_version: 1,
+        authorization_id: String::new(),
+        execution_id: prepared.execution_id.clone(),
+        prepared_id: prepared.prepared_id.clone(),
+        execution_start_receipt_id: start.receipt_id.clone(),
+        plan_step_id: prepared.plan_step_id,
+        command_digest,
+        tool_resolution_digest: prepared.tool_resolution_digest.clone(),
+    };
+    authorization.authorization_id = authorization.expected_authorization_id()?;
+    Ok(authorization)
+}
+
+/// Re-resolve trusted tools and authorize a later mutation step that was
+/// explicitly bound to the latest durable verified boundary.
+pub fn authorize_privileged_continuation_spawn(
+    start: &PrivilegedContinuationStartReceipt,
+    prepared: &PreparedPrivilegedInvocation,
+    command: &PrivilegedCommandSpec,
+) -> Result<PrivilegedSpawnAuthorization, PrivilegedSpawnAuthorizationError> {
+    let fresh_tools = resolve_privileged_command_tools(command)?;
+    authorize_continuation_with_resolution(start, prepared, command, &fresh_tools)
 }
 
 /// Re-resolve and re-hash the trusted storage executables immediately before a
@@ -217,6 +281,41 @@ mod tests {
         assert!(authorization.integrity_matches().unwrap());
         assert_eq!(authorization.plan_step_id, 7);
         assert_eq!(authorization.command_digest, prepared.command_digest);
+    }
+
+
+    fn continuation_start(prepared: &PreparedPrivilegedInvocation) -> PrivilegedContinuationStartReceipt {
+        let mut start = PrivilegedContinuationStartReceipt {
+            schema_version: 1,
+            receipt_id: String::new(),
+            execution_id: prepared.execution_id.clone(),
+            verified_boundary_id: "7".repeat(64),
+            prepared_id: prepared.prepared_id.clone(),
+            journal_id: "8".repeat(64),
+            plan_step_id: prepared.plan_step_id,
+            live_identity_digest: prepared.live_identity_digest.clone(),
+            executing_journal_digest: "9".repeat(64),
+        };
+        start.receipt_id = start.expected_receipt_id().unwrap();
+        start
+    }
+
+    #[test]
+    fn verified_continuation_authorizes_the_same_spawn_contract() {
+        let command = command();
+        let tools = PrivilegedToolResolution {
+            command_digest: command.digest().unwrap(),
+            primary: tool(1),
+            kernel_refresh: None,
+        };
+        let prepared = prepared(&command, &tools);
+        let start = continuation_start(&prepared);
+
+        let authorization =
+            authorize_continuation_with_resolution(&start, &prepared, &command, &tools).unwrap();
+        assert!(authorization.integrity_matches().unwrap());
+        assert_eq!(authorization.execution_start_receipt_id, start.receipt_id);
+        assert_eq!(authorization.plan_step_id, command.plan_step_id);
     }
 
     #[test]
