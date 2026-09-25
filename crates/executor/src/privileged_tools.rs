@@ -257,6 +257,27 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires distribution storage tools installed in fixed system directories"]
+    fn resolves_installed_storage_tools_with_root_owned_provenance() {
+        for program in [
+            PrivilegedProgram::Sfdisk,
+            PrivilegedProgram::Partx,
+            PrivilegedProgram::Pvresize,
+            PrivilegedProgram::Lvextend,
+            PrivilegedProgram::Resize2fs,
+            PrivilegedProgram::XfsGrowfs,
+        ] {
+            let identity = resolve_trusted_privileged_tool(program).unwrap();
+            assert_eq!(identity.program, program);
+            assert_eq!(identity.uid, 0);
+            assert_eq!(identity.mode & 0o022, 0);
+            assert_eq!(identity.sha256.len(), 64);
+            assert!(identity.requested_path.starts_with('/'));
+            assert!(identity.canonical_path.starts_with('/'));
+        }
+    }
+
+    #[test]
     fn privileged_program_names_are_fixed_and_shell_free() {
         assert_eq!(PrivilegedProgram::Sfdisk.as_str(), "sfdisk");
         assert_eq!(PrivilegedProgram::Partx.as_str(), "partx");
