@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use lsm_planner::Reversibility;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -71,7 +71,7 @@ pub fn classify_frozen_intent_action(action: &FrozenIntentAction) -> NativeOpera
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum NativeOperationSpec {
     RevalidateSnapshot,

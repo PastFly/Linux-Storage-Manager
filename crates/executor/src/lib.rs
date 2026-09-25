@@ -87,8 +87,9 @@ pub use preconditions::{
     verify_preconditions, PreconditionsVerification, PreconditionsVerificationError,
 };
 pub use privileged_protocol::{
-    build_privileged_helper_request, validate_privileged_helper_request,
-    PrivilegedHelperProtocolError, PrivilegedHelperRequest, PRIVILEGED_HELPER_PROTOCOL_VERSION,
+    build_privileged_helper_request, decode_privileged_helper_request,
+    validate_privileged_helper_request, PrivilegedHelperProtocolError, PrivilegedHelperRequest,
+    MAX_PRIVILEGED_HELPER_REQUEST_BYTES, PRIVILEGED_HELPER_PROTOCOL_VERSION,
 };
 
 use std::fs::{self, File, OpenOptions};

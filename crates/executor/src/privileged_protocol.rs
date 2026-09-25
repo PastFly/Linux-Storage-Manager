@@ -1,15 +1,16 @@
 use std::path::{Component, Path};
 
 use lsm_planner::ExecutionStartBinding;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{FrozenIntentRole, NativeOperationSpec, ValidatedNativeManifest};
 
 pub const PRIVILEGED_HELPER_PROTOCOL_VERSION: u32 = 1;
+pub const MAX_PRIVILEGED_HELPER_REQUEST_BYTES: usize = 64 * 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrivilegedHelperRequest {
     pub schema_version: u32,
     pub request_id: String,
@@ -41,6 +42,12 @@ pub enum PrivilegedHelperProtocolError {
     RequestDigestMismatch,
     #[error("privileged-helper request serialization failed: {0}")]
     Serialization(String),
+    #[error("privileged-helper request exceeds the maximum wire size")]
+    RequestTooLarge,
+    #[error("privileged-helper request JSON is invalid: {0}")]
+    InvalidJson(String),
+    #[error("privileged-helper request contains unknown or non-canonical fields")]
+    NonCanonicalWireShape,
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -194,6 +201,27 @@ pub fn build_privileged_helper_request(
     })
 }
 
+pub fn decode_privileged_helper_request(
+    input: &[u8],
+) -> Result<PrivilegedHelperRequest, PrivilegedHelperProtocolError> {
+    if input.len() > MAX_PRIVILEGED_HELPER_REQUEST_BYTES {
+        return Err(PrivilegedHelperProtocolError::RequestTooLarge);
+    }
+
+    let raw: serde_json::Value = serde_json::from_slice(input)
+        .map_err(|error| PrivilegedHelperProtocolError::InvalidJson(error.to_string()))?;
+    let request: PrivilegedHelperRequest = serde_json::from_value(raw.clone())
+        .map_err(|error| PrivilegedHelperProtocolError::InvalidJson(error.to_string()))?;
+    let canonical = serde_json::to_value(&request)
+        .map_err(|error| PrivilegedHelperProtocolError::Serialization(error.to_string()))?;
+    if raw != canonical {
+        return Err(PrivilegedHelperProtocolError::NonCanonicalWireShape);
+    }
+
+    validate_privileged_helper_request(&request)?;
+    Ok(request)
+}
+
 pub fn validate_privileged_helper_request(
     request: &PrivilegedHelperRequest,
 ) -> Result<(), PrivilegedHelperProtocolError> {
@@ -326,6 +354,39 @@ mod tests {
         assert_eq!(
             validate_privileged_helper_request(&request),
             Err(PrivilegedHelperProtocolError::RequestDigestMismatch)
+        );
+    }
+
+    #[test]
+    fn wire_decoder_round_trips_only_exact_known_fields() {
+        let validated = validated(NativeOperationSpec::ExtendLogicalVolume {
+            lv_uuid: "lv-uuid".into(),
+            additional_extents: 2,
+            expected_lv_size_bytes: 256 * 1024 * 1024,
+        });
+        let execution = execution(&validated);
+        let request = build_privileged_helper_request(&validated, &execution, 3).unwrap();
+        let bytes = serde_json::to_vec(&request).unwrap();
+
+        assert_eq!(decode_privileged_helper_request(&bytes).unwrap(), request);
+
+        let mut raw = serde_json::to_value(&request).unwrap();
+        raw.as_object_mut()
+            .unwrap()
+            .insert("shell".into(), serde_json::Value::String("/bin/sh".into()));
+        let polluted = serde_json::to_vec(&raw).unwrap();
+        assert_eq!(
+            decode_privileged_helper_request(&polluted),
+            Err(PrivilegedHelperProtocolError::NonCanonicalWireShape)
+        );
+    }
+
+    #[test]
+    fn wire_decoder_rejects_oversized_input_before_json_parsing() {
+        let bytes = vec![b' '; MAX_PRIVILEGED_HELPER_REQUEST_BYTES + 1];
+        assert_eq!(
+            decode_privileged_helper_request(&bytes),
+            Err(PrivilegedHelperProtocolError::RequestTooLarge)
         );
     }
 

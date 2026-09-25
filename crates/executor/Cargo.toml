@@ -9,11 +9,17 @@ publish.workspace = true
 default = []
 disposable-executor = []
 disposable-loop-harness = ["disposable-executor", "dep:lsm-discovery"]
+production-helper-protocol = []
 
 [[bin]]
 name = "lsm-disposable-loop-harness"
 path = "src/bin/disposable_loop_harness.rs"
 required-features = ["disposable-loop-harness"]
+
+[[bin]]
+name = "lsm-privileged-helper-protocol"
+path = "src/bin/privileged_helper_protocol.rs"
+required-features = ["production-helper-protocol"]
 
 [dependencies]
 libc = "0.2"
