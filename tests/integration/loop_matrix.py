@@ -1082,7 +1082,36 @@ def exercise_partition_pv_lvm_growth_mutation(
         "--xfs-growfs", binary.tools["xfs_growfs"],
         "--xfs-scrub", binary.tools["xfs_scrub"],
         "--udevadm", binary.tools["udevadm"],
+        allowed=(1,) if filesystem == "xfs" else (0,),
     )
+
+    if filesystem == "xfs":
+        if "XFS kernel online scrub facility is unavailable" not in result.stderr:
+            raise SafetyError(f"unexpected XFS health-gate result: {result.stderr!r}")
+        journals = list(journal_root.glob("*.json"))
+        if len(journals) != 1:
+            raise SafetyError("XFS health-gate failure did not retain exactly one durable journal")
+        journal = json.loads(journals[0].read_bytes())
+        if (journal.get("phase") != "identity_revalidated"
+                or journal.get("mutation_may_have_started") is not False):
+            raise SafetyError(f"XFS health-gate failure crossed a mutation boundary: {journal!r}")
+        unchanged = ready_snapshot(binary, loop.device, vg)
+        unchanged_lvs = [
+            row for row in unchanged["lvm"]["logical_volumes"]
+            if row.get("vg_name") == vg and row.get("path") == source
+        ]
+        if len(unchanged_lvs) != 1 or unchanged_lvs[0].get("size_bytes") != current_lv_size:
+            raise SafetyError("XFS Rust health gate changed the disposable LV")
+        if os.statvfs(target).f_blocks * os.statvfs(target).f_frsize != before_fs_bytes:
+            raise SafetyError("XFS Rust health gate changed filesystem capacity")
+        if (target / "readonly-sentinel").read_bytes() != sentinel:
+            raise SafetyError("XFS Rust health gate changed the filesystem sentinel")
+        remove_owned_evidence_directory(resources, backup_root)
+        remove_owned_evidence_directory(resources, journal_root)
+        resources.uncertain = False
+        print("XFS_EXECUTOR_BLOCKED_EXPECTED=kernel-online-scrub-unavailable-rust-gate")
+        return
+
     outcome = json.loads(result.stdout)
     if (not isinstance(outcome, dict) or outcome.get("status") != "completed"
             or outcome.get("mutation_enabled") is not False
@@ -1984,31 +2013,6 @@ def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loo
     expected_lv_size = current_lv_size + growth_extents * extent
     sentinel = (target / "readonly-sentinel").read_bytes()
     before_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
-
-    if filesystem == "xfs":
-        scrub = binary.run(
-            "xfs_scrub", "-n", "-k", str(target), allowed=(0, 4)
-        )
-        if scrub.returncode == 4:
-            expected = "Kernel metadata scrubbing facility is not available."
-            if expected not in scrub.stderr:
-                raise SafetyError(
-                    "XFS health preflight failed for an unexpected reason: "
-                    f"{scrub.stderr.strip()!r}"
-                )
-            unchanged = ready_snapshot(binary, loop.device, vg)
-            unchanged_lvs = [
-                row for row in unchanged["lvm"]["logical_volumes"]
-                if row.get("vg_name") == vg and row.get("path") == source
-            ]
-            if len(unchanged_lvs) != 1 or unchanged_lvs[0].get("size_bytes") != current_lv_size:
-                raise SafetyError("XFS scrub capability probe changed the disposable LV")
-            if os.statvfs(target).f_blocks * os.statvfs(target).f_frsize != before_fs_bytes:
-                raise SafetyError("XFS scrub capability probe changed filesystem capacity")
-            if (target / "readonly-sentinel").read_bytes() != sentinel:
-                raise SafetyError("XFS scrub capability probe changed the filesystem sentinel")
-            print("XFS_EXECUTOR_BLOCKED_EXPECTED=kernel-online-scrub-unavailable")
-            return
 
     association_row = binary.run(
         "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
