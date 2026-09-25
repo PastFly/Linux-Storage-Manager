@@ -253,7 +253,7 @@ fn run() -> Result<ExitCode> {
             } else {
                 for target in targets {
                     println!(
-                        "{:<18} {:<28} fs={:<10} status={:?} verified={} layout={}  {}",
+                        "{:<18} {:<28} fs={:<10} status={:?} verified={} layout={} blockers={}  {}",
                         target.target,
                         target.device,
                         target.filesystem,
@@ -266,6 +266,16 @@ fn run() -> Result<ExitCode> {
                             .layout_growth_bytes
                             .map(|bytes| bytes.to_string())
                             .unwrap_or_else(|| "-".to_owned()),
+                        if target.blockers.is_empty() {
+                            "-".to_owned()
+                        } else {
+                            target
+                                .blockers
+                                .iter()
+                                .map(|blocker| format!("{}={}", blocker.code, blocker.message))
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        },
                         target.reason
                     );
                 }

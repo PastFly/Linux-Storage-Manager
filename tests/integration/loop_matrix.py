@@ -178,6 +178,27 @@ class Resources:
         self.check_loop(loop)
         return partition
 
+    def create_two_plain_partitions(self, loop: Loop, first_mib: int, second_mib: int,
+                                    table_label: str = "gpt") -> tuple[str, str]:
+        self.check_loop(loop)
+        if table_label not in ("gpt", "dos") or first_mib <= 0 or second_mib <= 0:
+            raise SafetyError("invalid multi-partition fixture request")
+        self.runner.run(
+            "sfdisk",
+            loop.device,
+            input=f"label: {table_label}\n,{first_mib}MiB\n,{second_mib}MiB\n",
+        )
+        self.runner.run("partx", "--update", loop.device)
+        partitions = (loop.device + "p1", loop.device + "p2")
+        for partition in partitions:
+            wait_block(partition)
+            sys_path = Path("/sys/class/block") / Path(partition).name
+            if (not (sys_path / "partition").is_file()
+                    or sys_path.resolve().parent.name != Path(loop.device).name):
+                raise SafetyError("multi-partition parent identity could not be verified")
+        self.check_loop(loop)
+        return partitions
+
     def create_vg(self, loop: Loop, partition: str, name: str,
                   pv_size_mib: int | None = None) -> str:
         self.check_loop(loop)
@@ -201,8 +222,19 @@ class Resources:
         if len(reports) != 1 or not reports[0].get("vg_uuid"):
             raise SafetyError("new VG identity is unavailable")
         group.uuid = reports[0]["vg_uuid"].strip()
-        self.runner.run("lvcreate", "--size", "384MiB", "--name", "data", name)
-        lv = f"/dev/{name}/data"
+        return self.create_lv(name, "data", 384)
+
+    def create_lv(self, vg: str, name: str, size_mib: int) -> str:
+        if re.fullmatch(r"lsmtest[a-f0-9]+", vg) is None:
+            raise SafetyError("invalid disposable VG name")
+        if re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", name) is None or size_mib <= 0:
+            raise SafetyError("invalid disposable LV request")
+        if len(self.vg_rows(vg)) != 1:
+            raise SafetyError("disposable VG identity is unavailable before LV creation")
+        lv = f"/dev/{vg}/{name}"
+        if Path(lv).exists():
+            raise SafetyError(f"refusing existing disposable LV: {lv}")
+        self.runner.run("lvcreate", "--size", f"{size_mib}MiB", "--name", name, vg)
         wait_block(lv)
         return lv
 
@@ -1608,6 +1640,202 @@ def exercise_filesystem_post_write_recovery(
     )
 
 
+def exercise_multi_partition_selection(resources: Resources, binary: Runner, loop: Loop,
+                                       first_partition: str, first_target: Path,
+                                       second_partition: str, second_target: Path) -> None:
+    resources.check_loop(loop)
+    if (first_partition != loop.device + "p1"
+            or second_partition != loop.device + "p2"
+            or first_partition == second_partition):
+        raise SafetyError("invalid multi-partition fixture identity")
+
+    first_sentinel = (first_target / "readonly-sentinel").read_bytes()
+    second_sentinel = (second_target / "readonly-sentinel").read_bytes()
+
+    ready_snapshot(binary, loop.device, None)
+    catalog = binary.json("storagemgr", "plan", "targets", "--json")
+    if not isinstance(catalog, list):
+        raise SafetyError("multi-partition target catalog is not a JSON list")
+    targets = {row.get("target"): row for row in catalog if isinstance(row, dict)}
+    for target, partition in (
+        (str(first_target), first_partition),
+        (str(second_target), second_partition),
+    ):
+        row = targets.get(target)
+        if not isinstance(row, dict):
+            raise SafetyError(f"partition target disappeared from catalog: {target}")
+        if os.path.realpath(row.get("device", "")) != os.path.realpath(partition):
+            raise SafetyError(f"partition target bound to wrong device: {target}")
+
+    blocked = binary.run(
+        "storagemgr", "plan", "extend", str(first_target), "--by", "32MiB", "--json",
+        allowed=(2,),
+    )
+    blocked_plan = json.loads(blocked.stdout)
+    if blocked_plan.get("status") != "blocked":
+        raise SafetyError("non-tail partition was not retained as an explicitly blocked target")
+
+    catalog_basis = binary.run(
+        "storagemgr", "plan", "extend", str(first_target), "--max", "--json",
+        allowed=(2,),
+    )
+    catalog_basis_plan = json.loads(catalog_basis.stdout)
+    if catalog_basis_plan.get("status") != "blocked":
+        raise SafetyError("catalog MaxFree basis did not remain blocked for non-tail partition")
+
+    blocked_row = targets.get(str(first_target))
+    plan_blockers = catalog_basis_plan.get("blockers")
+    catalog_blockers = blocked_row.get("blockers") if isinstance(blocked_row, dict) else None
+    if (not isinstance(plan_blockers, list) or not plan_blockers
+            or not isinstance(catalog_blockers, list) or not catalog_blockers):
+        raise SafetyError("blocked target is missing structured blocker evidence")
+    if (catalog_blockers[0].get("code") != plan_blockers[0].get("code")
+            or catalog_blockers[0].get("message") != plan_blockers[0].get("message")):
+        raise SafetyError("target catalog blocker does not match its exact MaxFree planner basis")
+
+    tail_plan = binary.json(
+        "storagemgr", "plan", "extend", str(second_target), "--by", "32MiB", "--json"
+    )
+    if tail_plan.get("status") != "preview":
+        raise SafetyError("tail partition was not independently selectable for growth")
+    tail_row = targets.get(str(second_target))
+    if not isinstance(tail_row, dict) or tail_row.get("blockers") != []:
+        raise SafetyError("preview-ready tail target unexpectedly carries blocker evidence")
+
+    if (first_target / "readonly-sentinel").read_bytes() != first_sentinel:
+        raise SafetyError("blocked partition target sentinel changed during planning")
+    if (second_target / "readonly-sentinel").read_bytes() != second_sentinel:
+        raise SafetyError("tail partition target sentinel changed during planning")
+
+    print(
+        "MULTI_PARTITION_SELECTION_OK=both-visible-tail-growable-neighbor-blocked",
+        flush=True,
+    )
+
+
+def exercise_multi_target_isolation(resources: Resources, binary: Runner, loop: Loop,
+                                    primary_source: str, primary_target: Path,
+                                    sibling_source: str, sibling_target: Path,
+                                    vg: str) -> None:
+    resources.check_loop(loop)
+    if primary_source == sibling_source or primary_target == sibling_target:
+        raise SafetyError("multi-target fixture did not create distinct targets")
+    if primary_source != f"/dev/{vg}/data" or sibling_source != f"/dev/{vg}/archive":
+        raise SafetyError("unexpected multi-target LV identity")
+
+    before = ready_snapshot(binary, loop.device, vg, expected_lv_count=2)
+    lvm = before.get("lvm")
+    if not isinstance(lvm, dict):
+        raise SafetyError("LVM inventory missing before multi-target drill")
+    lvs = [row for row in lvm.get("logical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg]
+    by_path = {row.get("path"): row for row in lvs if isinstance(row.get("path"), str)}
+    if primary_source not in by_path or sibling_source not in by_path:
+        raise SafetyError("multi-target LVs are missing from discovery")
+
+    primary_before = by_path[primary_source]
+    sibling_before = by_path[sibling_source]
+    primary_uuid = primary_before.get("uuid")
+    sibling_uuid = sibling_before.get("uuid")
+    primary_size = primary_before.get("size_bytes")
+    sibling_size = sibling_before.get("size_bytes")
+    if (not isinstance(primary_uuid, str) or not primary_uuid
+            or not isinstance(sibling_uuid, str) or not sibling_uuid
+            or type(primary_size) is not int or type(sibling_size) is not int):
+        raise SafetyError("multi-target LV identity is incomplete")
+
+    primary_sentinel = (primary_target / "readonly-sentinel").read_bytes()
+    sibling_sentinel = (sibling_target / "readonly-sentinel").read_bytes()
+    primary_fs_before = os.statvfs(primary_target).f_blocks * os.statvfs(primary_target).f_frsize
+    sibling_fs_before = os.statvfs(sibling_target).f_blocks * os.statvfs(sibling_target).f_frsize
+
+    catalog = binary.json("storagemgr", "plan", "targets", "--json")
+    if not isinstance(catalog, list):
+        raise SafetyError("target catalog is not a JSON list")
+    targets = {row.get("target"): row for row in catalog if isinstance(row, dict)}
+    for target, source in (
+        (str(primary_target), primary_source),
+        (str(sibling_target), sibling_source),
+    ):
+        row = targets.get(target)
+        if (not isinstance(row, dict)
+                or os.path.realpath(row.get("device", "")) != os.path.realpath(source)):
+            raise SafetyError(f"selectable target missing or misbound: {target}")
+        preview = binary.json(
+            "storagemgr", "plan", "extend", target, "--by", "32MiB", "--json"
+        )
+        if preview.get("status") != "preview":
+            raise SafetyError(f"target is not independently plannable: {target}")
+
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    if not association_row:
+        raise SafetyError("exact loop association row is unavailable before multi-target execution")
+
+    journal_root = resources.root / f"{vg}-multi-target-journal"
+    backup_root = resources.root / f"{vg}-multi-target-backup"
+    growth_bytes = 32 * 1024 * 1024
+
+    resources.uncertain = True
+    result = binary.run(
+        "disposable-executor",
+        "--allow-disposable-loop-execution",
+        "--target", str(primary_target),
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--journal-root", str(journal_root),
+        "--backup-root", str(backup_root),
+        "--growth-bytes", str(growth_bytes),
+        "--sfdisk", binary.tools["sfdisk"],
+        "--partx", binary.tools["partx"],
+        "--pvresize", binary.tools["pvresize"],
+        "--lvextend", binary.tools["lvextend"],
+        "--resize2fs", binary.tools["resize2fs"],
+        "--xfs-growfs", binary.tools["xfs_growfs"],
+        "--xfs-scrub", binary.tools["xfs_scrub"],
+        "--udevadm", binary.tools["udevadm"],
+    )
+    outcome = json.loads(result.stdout)
+    if (not isinstance(outcome, dict) or outcome.get("status") != "completed"
+            or outcome.get("mutation_enabled") is not False):
+        raise SafetyError(f"invalid multi-target executor completion: {outcome!r}")
+
+    final = ready_snapshot(binary, loop.device, vg, expected_lv_count=2)
+    final_lvs = [row for row in final["lvm"]["logical_volumes"]
+                 if isinstance(row, dict) and row.get("vg_name") == vg]
+    final_by_path = {row.get("path"): row for row in final_lvs if isinstance(row.get("path"), str)}
+    primary_after = final_by_path.get(primary_source)
+    sibling_after = final_by_path.get(sibling_source)
+    if not isinstance(primary_after, dict) or not isinstance(sibling_after, dict):
+        raise SafetyError("multi-target final LV identities are incomplete")
+
+    if (primary_after.get("uuid") != primary_uuid
+            or primary_after.get("size_bytes") != primary_size + growth_bytes):
+        raise SafetyError("selected LV did not grow by the exact requested amount")
+    if (sibling_after.get("uuid") != sibling_uuid
+            or sibling_after.get("size_bytes") != sibling_size):
+        raise SafetyError("unselected sibling LV identity or size changed")
+
+    primary_fs_after = os.statvfs(primary_target).f_blocks * os.statvfs(primary_target).f_frsize
+    sibling_fs_after = os.statvfs(sibling_target).f_blocks * os.statvfs(sibling_target).f_frsize
+    if primary_fs_after <= primary_fs_before:
+        raise SafetyError("selected filesystem capacity did not grow")
+    if sibling_fs_after != sibling_fs_before:
+        raise SafetyError("unselected sibling filesystem capacity changed")
+    if (primary_target / "readonly-sentinel").read_bytes() != primary_sentinel:
+        raise SafetyError("selected target sentinel changed")
+    if (sibling_target / "readonly-sentinel").read_bytes() != sibling_sentinel:
+        raise SafetyError("unselected sibling sentinel changed")
+    if journal_root.exists() or backup_root.exists():
+        raise SafetyError("multi-target executor did not clean owned evidence")
+
+    resources.uncertain = False
+    print("MULTI_TARGET_ISOLATION_OK=selected-grown-sibling-unchanged", flush=True)
+
+
 def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loop,
                                  source: str, target: Path, vg: str,
                                  filesystem: str) -> None:
@@ -1753,7 +1981,8 @@ def refresh_fixture_udev(binary: Runner, sysname: str) -> None:
     binary.run("udevadm", "settle", "--timeout=30")
 
 
-def fixture_identity_gaps(snapshot: dict[str, Any], loop: str, vg: str | None) -> list[str]:
+def fixture_identity_gaps(snapshot: dict[str, Any], loop: str, vg: str | None,
+                          expected_lv_count: int = 1) -> list[str]:
     if vg is None:
         return []
 
@@ -1775,8 +2004,10 @@ def fixture_identity_gaps(snapshot: dict[str, Any], loop: str, vg: str | None) -
         gaps.append(f"pv-count={len(pvs)}")
     if len(vgs) != 1:
         gaps.append(f"vg-count={len(vgs)}")
-    if len(lvs) != 1:
-        gaps.append(f"lv-count={len(lvs)}")
+    if expected_lv_count <= 0:
+        gaps.append("expected-lv-count-invalid")
+    elif len(lvs) != expected_lv_count:
+        gaps.append(f"lv-count={len(lvs)} expected={expected_lv_count}")
     if gaps:
         return gaps
 
@@ -1807,19 +2038,21 @@ def fixture_identity_gaps(snapshot: dict[str, Any], loop: str, vg: str | None) -
         )
 
     lvm_nodes = [node for node in nodes if node.get("kind") == "lvm"]
-    if len(lvm_nodes) != 1:
-        gaps.append(f"lvm-node-count={len(lvm_nodes)}")
-    elif not isinstance(lvm_nodes[0].get("uuid"), str) or not lvm_nodes[0]["uuid"]:
+    if len(lvm_nodes) != expected_lv_count:
+        gaps.append(f"lvm-node-count={len(lvm_nodes)} expected={expected_lv_count}")
+    elif any(not isinstance(node.get("uuid"), str) or not node["uuid"] for node in lvm_nodes):
         gaps.append("filesystem-uuid-missing")
 
     return gaps
 
 
-def fixture_identity_ready(snapshot: dict[str, Any], loop: str, vg: str | None) -> bool:
-    return not fixture_identity_gaps(snapshot, loop, vg)
+def fixture_identity_ready(snapshot: dict[str, Any], loop: str, vg: str | None,
+                           expected_lv_count: int = 1) -> bool:
+    return not fixture_identity_gaps(snapshot, loop, vg, expected_lv_count)
 
 
-def ready_snapshot(binary: Runner, loop: str, vg: str | None) -> dict[str, Any]:
+def ready_snapshot(binary: Runner, loop: str, vg: str | None,
+                   expected_lv_count: int = 1) -> dict[str, Any]:
     """Require settled, repeatable fixture facts BEFORE testing nonmutation.
 
     This is fixture setup, not an acceptance retry. Changes after any planning
@@ -1830,12 +2063,14 @@ def ready_snapshot(binary: Runner, loop: str, vg: str | None) -> dict[str, Any]:
     for attempt in range(20):
         snapshot = binary.json("storagemgr", "snapshot")
         facts = storage_facts(snapshot, loop, vg)
-        if previous is not None and facts == previous and fixture_identity_ready(snapshot, loop, vg):
+        if (previous is not None and facts == previous
+                and fixture_identity_ready(snapshot, loop, vg, expected_lv_count)):
             return snapshot
         previous = facts
         if attempt < 19:
             time.sleep(0.1)
-    gaps = fixture_identity_gaps(snapshot, loop, vg) if 'snapshot' in locals() else ["no-snapshot"]
+    gaps = (fixture_identity_gaps(snapshot, loop, vg, expected_lv_count)
+            if 'snapshot' in locals() else ["no-snapshot"])
     raise SafetyError(
         "fixture metadata did not stabilize before read-only tests; identity gaps="
         + ",".join(gaps)
@@ -1927,6 +2162,68 @@ def main(argv: list[str] | None = None) -> int:
                 exercise_lvm_growth_mutation(
                     resources, runner, loop, source, target, vg, filesystem
                 )
+        print("==> plain-ext4-multi-partition-selection", flush=True)
+        multi_part_loop = resources.create_loop(
+            "plain-ext4-multi-partition", 640 * 1024 * 1024
+        )
+        multi_p1, multi_p2 = resources.create_two_plain_partitions(
+            multi_part_loop, 192, 192
+        )
+        runner.run("mkfs.ext4", "-F", multi_p1)
+        runner.run("mkfs.ext4", "-F", multi_p2)
+        refresh_fixture_udev(runner, Path(multi_p1).name)
+        refresh_fixture_udev(runner, Path(multi_p2).name)
+        multi_p1_target = resources.mount(multi_p1, "plain-ext4-multi-p1")
+        multi_p2_target = resources.mount(multi_p2, "plain-ext4-multi-p2")
+        exercise_multi_partition_selection(
+            resources,
+            runner,
+            multi_part_loop,
+            multi_p1,
+            multi_p1_target,
+            multi_p2,
+            multi_p2_target,
+        )
+
+        print("==> lvm-ext4-multi-target-isolation", flush=True)
+        multi_loop = resources.create_loop(
+            "lvm-ext4-multi-target", 1536 * 1024 * 1024
+        )
+        multi_partition = resources.create_partition(
+            multi_loop, 1408, True
+        )
+        multi_vg = "lsmtest" + os.urandom(12).hex()
+        multi_primary = resources.create_vg(
+            multi_loop, multi_partition, multi_vg
+        )
+        multi_sibling = resources.create_lv(
+            multi_vg, "archive", 384
+        )
+        runner.run("mkfs.ext4", "-F", multi_primary)
+        runner.run("mkfs.ext4", "-F", multi_sibling)
+        refresh_fixture_udev(
+            runner, Path(multi_primary).resolve(strict=True).name
+        )
+        refresh_fixture_udev(
+            runner, Path(multi_sibling).resolve(strict=True).name
+        )
+        multi_primary_target = resources.mount(
+            multi_primary, "lvm-ext4-multi-primary"
+        )
+        multi_sibling_target = resources.mount(
+            multi_sibling, "lvm-ext4-multi-sibling"
+        )
+        exercise_multi_target_isolation(
+            resources,
+            runner,
+            multi_loop,
+            multi_primary,
+            multi_primary_target,
+            multi_sibling,
+            multi_sibling_target,
+            multi_vg,
+        )
+
         print("==> lvm-ext4-filesystem-post-write-recovery", flush=True)
         fs_fault_loop = resources.create_loop(
             "lvm-ext4-filesystem-post-write-recovery", 1024 * 1024 * 1024
@@ -2088,7 +2385,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,plain-ext4-multi-partition-selection,lvm-ext4-multi-target-isolation,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
     return int(failed)
 
 
