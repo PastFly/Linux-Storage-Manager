@@ -222,7 +222,6 @@ pub fn build_privileged_helper_request(
     })
 }
 
-
 pub fn build_privileged_helper_request_for_durable_step(
     validated: &ValidatedNativeManifest,
     journal: &OperationJournal,
@@ -258,7 +257,9 @@ pub fn build_privileged_helper_request_for_durable_step(
         .mutation_step_ids
         .iter()
         .position(|step_id| *step_id == plan_step_id)
-        .ok_or(PrivilegedHelperProtocolError::UnauthorizedStep(plan_step_id))?;
+        .ok_or(PrivilegedHelperProtocolError::UnauthorizedStep(
+            plan_step_id,
+        ))?;
 
     let expected_identity_digest = if position == 0 {
         if journal.verified_boundary.is_some() {
