@@ -88,7 +88,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 `pvresize`, `lvextend` and filesystem commands.
 
 - [x] Freeze the exact M1A plan, target identity manifest, filesystem decision and execution guard into a repeatable non-mutating M1B0 handoff.
-- [ ] Obtain explicit owner acceptance of the completed M0/M1A baseline before any mutation-capable executor rollout.
+- [x] Obtain explicit owner acceptance of the completed M0/M1A baseline before any mutation-capable executor rollout; owner acceptance was recorded on 2026-09-25 and does not bypass CI, identity, recovery or production-safety gates.
 - [x] Implement a non-mutating host-exclusive advisory lock primitive with nonblocking OS-backed locking and RAII release.
 - [ ] Wire the host-exclusive lock into the mutation-capable executor only after the owner-acceptance gate is satisfied.
 - [x] Wire target-manifest and capability-inventory revalidation into a non-mutating locked pre-executor session.
