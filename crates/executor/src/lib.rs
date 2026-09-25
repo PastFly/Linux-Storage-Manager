@@ -101,6 +101,10 @@ pub use privileged_argv::{
     compile_privileged_helper_command, PrivilegedArgvError, PrivilegedCommandSpec,
     PrivilegedKernelRefreshSpec, PrivilegedProgram,
 };
+pub use privileged_continue::{
+    classify_privileged_durable_transition, persist_privileged_durable_transition,
+    PrivilegedDurableDisposition, PrivilegedDurableTransitionError,
+};
 pub use privileged_exec::{
     execute_privileged_descriptor_launch, DescriptorExecOutcome, PrivilegedDescriptorExecError,
     PrivilegedDescriptorSequenceOutcome,
@@ -120,7 +124,8 @@ pub use privileged_prepared::{
     prepare_privileged_invocation, PreparedInvocationError, PreparedPrivilegedInvocation,
 };
 pub use privileged_protocol::{
-    build_privileged_helper_request, decode_privileged_helper_request,
+    build_privileged_helper_request, build_privileged_helper_request_for_durable_step,
+    decode_privileged_helper_request,
     validate_privileged_helper_live_identity, validate_privileged_helper_request,
     PrivilegedHelperProtocolError, PrivilegedHelperRequest, MAX_PRIVILEGED_HELPER_REQUEST_BYTES,
     PRIVILEGED_HELPER_PROTOCOL_VERSION,
