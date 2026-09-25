@@ -54,7 +54,7 @@ pub enum FrozenIntentAction {
     },
     GrowFilesystem {
         fs_type: String,
-        mountpoint: String,
+        mountpoint: Option<String>,
     },
     RediscoverAndVerify,
 }
@@ -436,7 +436,7 @@ fn validate_step_semantics(
             fs_type,
             mountpoint,
         } => {
-            if fs_type.is_empty() || mountpoint.is_empty() {
+            if fs_type.is_empty() || mountpoint.as_deref().is_some_and(str::is_empty) {
                 return Err(mismatch("filesystem growth identity is empty"));
             }
             let Some(filesystem) = identity.filesystem.as_ref() else {
@@ -446,23 +446,42 @@ fn validate_step_semantics(
                 || filesystem.fs_type != *fs_type
                 || decision.device.as_deref() != Some(filesystem.device.as_str())
                 || decision.fs_type.as_deref() != Some(fs_type.as_str())
-                || decision.mountpoint.as_deref() != Some(mountpoint.as_str())
-                || decision.state != lsm_planner::FilesystemDecisionState::ReadyOnlineGrow
+                || decision.mountpoint != *mountpoint
             {
                 return Err(mismatch(
                     "filesystem decision no longer matches approved intent",
                 ));
             }
-            let mounts = identity
-                .mounts
-                .iter()
-                .filter(|mount| {
-                    mount.target == *mountpoint
-                        && mount.fs_type.as_deref() == Some(fs_type.as_str())
-                })
-                .count();
-            if mounts != 1 {
-                return Err(mismatch("filesystem mount identity is not unique"));
+
+            match mountpoint.as_deref() {
+                Some(mountpoint) => {
+                    if decision.state != lsm_planner::FilesystemDecisionState::ReadyOnlineGrow {
+                        return Err(mismatch(
+                            "mounted filesystem decision is not ready for online growth",
+                        ));
+                    }
+                    let mounts = identity
+                        .mounts
+                        .iter()
+                        .filter(|mount| {
+                            mount.target == mountpoint
+                                && mount.fs_type.as_deref() == Some(fs_type.as_str())
+                        })
+                        .count();
+                    if mounts != 1 {
+                        return Err(mismatch("filesystem mount identity is not unique"));
+                    }
+                }
+                None => {
+                    if fs_type != "ext4"
+                        || decision.state != lsm_planner::FilesystemDecisionState::ReadyOfflineGrow
+                        || !identity.mounts.is_empty()
+                    {
+                        return Err(mismatch(
+                            "offline filesystem decision is not exact unmounted ext4",
+                        ));
+                    }
+                }
             }
             Ok(())
         }
@@ -609,7 +628,7 @@ pub fn freeze_execution_intent(
         validate_step_semantics(
             step,
             handoff.target_identity(),
-            handoff.filesystem_decision(),
+            approval.filesystem_decision(),
         )?;
         let frozen = translate_step(step)?;
         if frozen.role == FrozenIntentRole::MutationCandidate {
@@ -986,7 +1005,7 @@ mod tests {
             depends_on: vec![],
             operation: Operation::GrowFilesystem {
                 fs_type: "xfs".into(),
-                mountpoint: "/".into(),
+                mountpoint: Some("/".into()),
             },
             reversibility: Reversibility::Irreversible,
         };
@@ -1039,7 +1058,7 @@ mod tests {
             depends_on: vec![],
             operation: Operation::GrowFilesystem {
                 fs_type: "ext4".into(),
-                mountpoint: "/".into(),
+                mountpoint: Some("/".into()),
             },
             reversibility: Reversibility::Irreversible,
         };
@@ -1058,7 +1077,7 @@ mod tests {
             depends_on: vec![],
             operation: Operation::GrowFilesystem {
                 fs_type: "ext4".into(),
-                mountpoint: "/".into(),
+                mountpoint: Some("/".into()),
             },
             reversibility: Reversibility::Irreversible,
         };
@@ -1078,7 +1097,7 @@ mod tests {
             depends_on: vec![],
             operation: Operation::GrowFilesystem {
                 fs_type: "ext4".into(),
-                mountpoint: "/".into(),
+                mountpoint: Some("/".into()),
             },
             reversibility: Reversibility::Irreversible,
         };
@@ -1210,7 +1229,7 @@ mod tests {
                 depends_on: vec![4, 5],
                 operation: Operation::GrowFilesystem {
                     fs_type: "ext4".into(),
-                    mountpoint: "/".into(),
+                    mountpoint: Some("/".into()),
                 },
                 reversibility: Reversibility::Irreversible,
             },

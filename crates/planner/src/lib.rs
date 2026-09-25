@@ -116,7 +116,7 @@ pub enum Operation {
     },
     GrowFilesystem {
         fs_type: String,
-        mountpoint: String,
+        mountpoint: Option<String>,
     },
     RediscoverAndVerify,
 }
@@ -2162,7 +2162,7 @@ fn build_whole_filesystem_candidate(
             2,
             Operation::GrowFilesystem {
                 fs_type: fs.fs_type.clone(),
-                mountpoint: mount.target.clone(),
+                mountpoint: Some(mount.target.clone()),
             },
             Reversibility::Irreversible,
         ),
@@ -2280,7 +2280,7 @@ pub fn plan_extend(
 
     if plan.status == PlanStatus::Preview {
         if let Some(mountpoint) = plan.steps.iter().find_map(|step| match &step.operation {
-            Operation::GrowFilesystem { mountpoint, .. } => Some(mountpoint.as_str()),
+            Operation::GrowFilesystem { mountpoint, .. } => mountpoint.as_deref(),
             _ => None,
         }) {
             plan.preflight_checks
@@ -2944,7 +2944,7 @@ fn try_build_partition_candidate(
             4,
             Operation::GrowFilesystem {
                 fs_type: fs.fs_type.clone(),
-                mountpoint: mount.target.clone(),
+                mountpoint: Some(mountpoint.to_owned()),
             },
             Reversibility::Irreversible,
         ),
@@ -3669,7 +3669,7 @@ fn build_lvm_underlying_growth_candidate(
         next_id,
         Operation::GrowFilesystem {
             fs_type: fs.fs_type.clone(),
-            mountpoint,
+            mountpoint: Some(mountpoint),
         },
         Reversibility::Irreversible,
     ));
@@ -3951,12 +3951,21 @@ fn build_candidate(
         "unsupported-layout",
         "encrypted, RAID, multipath or unknown ancestor layers are not supported",
     )?;
+    let expected_lv_attributes = if route.mountpoint.is_some() {
+        "-wi-ao----"
+    } else {
+        "-wi-a-----"
+    };
     ensure(
         lv.layout.as_deref() == Some("linear")
             && lv.role.as_deref() == Some("public")
-            && lv.attributes.as_deref() == Some("-wi-ao----"),
+            && lv.attributes.as_deref() == Some(expected_lv_attributes),
         "unsupported-lv",
-        "M1A requires a public, linear, writable, active LV with normal inherited allocation",
+        if route.mountpoint.is_some() {
+            "mounted growth requires a public, linear, writable, active and open LV"
+        } else {
+            "offline growth requires a public, linear, writable, active and not-open LV"
+        },
     )?;
     let vg = unique(
         lvm.volume_groups.iter().filter(|v| v.name == lv.vg_name),
@@ -4023,38 +4032,58 @@ fn build_candidate(
         "unsupported-filesystem",
         "filesystem is unsupported; only ext4 and XFS previews are supported",
     )?;
-    let mountpoint = route
-        .mountpoint
-        .as_deref()
-        .ok_or_else(|| blocked("mount-not-unique", "LVM target is not uniquely mounted"))?;
-    let mount = unique(
-        snapshot
-            .mounts
-            .iter()
-            .filter(|mount| mount.target == mountpoint),
-        "mount-not-unique",
-    )?;
-    ensure(
-        mount
-            .source
-            .as_deref()
-            .is_some_and(|source| node_alias(device, source) || lv_alias(lv, source))
-            && mount.fs_type.as_deref() == Some(fs.fs_type.as_str())
-            && mount.options.iter().any(|o| o == "rw")
-            && !mount
-                .options
-                .iter()
-                .any(|o| matches!(o.as_str(), "ro" | "bind" | "rbind"))
-            && device.mountpoints == vec![mount.target.clone()]
-            && snapshot
-                .mounts
-                .iter()
-                .filter(|m| m.target == mount.target)
-                .count()
-                == 1,
-        "mount-state-mismatch",
-        "one matching read-write mount must be confirmed by lsblk and findmnt",
-    )?;
+    let mountpoint = route.mountpoint.clone();
+    match (fs.fs_type.as_str(), mountpoint.as_deref()) {
+        ("xfs", None) => {
+            return Err(blocked(
+                "mount-required",
+                "XFS target must be uniquely mounted read-write before growth",
+            ));
+        }
+        (_, Some(mountpoint)) => {
+            let mount = unique(
+                snapshot
+                    .mounts
+                    .iter()
+                    .filter(|mount| mount.target == mountpoint),
+                "mount-not-unique",
+            )?;
+            ensure(
+                mount
+                    .source
+                    .as_deref()
+                    .is_some_and(|source| node_alias(device, source) || lv_alias(lv, source))
+                    && mount.fs_type.as_deref() == Some(fs.fs_type.as_str())
+                    && mount.options.iter().any(|o| o == "rw")
+                    && !mount
+                        .options
+                        .iter()
+                        .any(|o| matches!(o.as_str(), "ro" | "bind" | "rbind"))
+                    && device.mountpoints == vec![mount.target.clone()]
+                    && snapshot
+                        .mounts
+                        .iter()
+                        .filter(|m| m.target == mount.target)
+                        .count()
+                        == 1,
+                "mount-state-mismatch",
+                "one matching read-write mount must be confirmed by lsblk and findmnt",
+            )?;
+        }
+        ("ext4", None) => {
+            ensure(
+                device.mountpoints.is_empty()
+                    && !snapshot.mounts.iter().any(|mount| {
+                        mount.source.as_deref().is_some_and(|source| {
+                            node_alias(device, source) || lv_alias(lv, source)
+                        })
+                    }),
+                "mount-state-mismatch",
+                "offline ext4 growth requires the exact LV filesystem to be unmounted",
+            )?;
+        }
+        _ => unreachable!("filesystem type was already validated"),
+    }
     ensure(
         !snapshot
             .swaps
@@ -4080,6 +4109,17 @@ fn build_candidate(
             capability.available,
             "tool-unavailable",
             "a required future operation tool is unavailable",
+        )?;
+    }
+    if fs.fs_type == "ext4" && mountpoint.is_none() {
+        let capability = unique(
+            capabilities.tools.iter().filter(|t| t.name == "e2fsck"),
+            "tool-unavailable",
+        )?;
+        ensure(
+            capability.available,
+            "tool-unavailable",
+            "offline ext4 growth requires e2fsck for an explicit no-modify health gate",
         )?;
     }
     let extent = vg
@@ -4153,7 +4193,7 @@ fn build_candidate(
             4,
             Operation::GrowFilesystem {
                 fs_type: fs.fs_type.clone(),
-                mountpoint: mount.target.clone(),
+                mountpoint: mountpoint.clone(),
             },
             Reversibility::Irreversible,
         ),

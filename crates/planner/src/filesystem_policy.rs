@@ -9,6 +9,7 @@ use crate::{analyze_layer_route, LayerRouteStatus};
 #[serde(rename_all = "snake_case")]
 pub enum FilesystemDecisionState {
     ReadyOnlineGrow,
+    ReadyOfflineGrow,
     ReadOnlyHealthCheckRequired,
     OfflineHealthCheckRequired,
     MountRequired,
@@ -49,7 +50,10 @@ pub struct FilesystemGrowthDecision {
 
 impl FilesystemGrowthDecision {
     pub fn execution_ready(&self) -> bool {
-        self.state == FilesystemDecisionState::ReadyOnlineGrow
+        matches!(
+            self.state,
+            FilesystemDecisionState::ReadyOnlineGrow | FilesystemDecisionState::ReadyOfflineGrow
+        )
     }
 }
 

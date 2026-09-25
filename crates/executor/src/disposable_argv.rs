@@ -353,7 +353,7 @@ fn compile_lvextend(
 fn compile_filesystem_grow(
     plan_step_id: u32,
     fs_type: &str,
-    mountpoint: &str,
+    mountpoint: Option<&str>,
     identity: &TargetIdentityManifest,
 ) -> Result<DisposableCommandSpec, DisposableArgvError> {
     let filesystem = identity
@@ -370,34 +370,48 @@ fn compile_filesystem_grow(
         }
         return Err(DisposableArgvError::FilesystemIdentityMismatch);
     }
-    if !safe_absolute_path(mountpoint) {
-        return Err(DisposableArgvError::UnsafeFilesystemMountpoint);
-    }
 
-    let mount_matches = identity
-        .mounts
-        .iter()
-        .filter(|mount| mount.target == mountpoint && mount.fs_type.as_deref() == Some(fs_type))
-        .count();
-    if mount_matches != 1 {
-        return Err(DisposableArgvError::FilesystemMountNotUnique);
-    }
+    let validate_mounted = |mountpoint: &str| -> Result<(), DisposableArgvError> {
+        if !safe_absolute_path(mountpoint) {
+            return Err(DisposableArgvError::UnsafeFilesystemMountpoint);
+        }
+        let mount_matches = identity
+            .mounts
+            .iter()
+            .filter(|mount| mount.target == mountpoint && mount.fs_type.as_deref() == Some(fs_type))
+            .count();
+        if mount_matches != 1 {
+            return Err(DisposableArgvError::FilesystemMountNotUnique);
+        }
+        Ok(())
+    };
 
     match fs_type {
-        "ext4" => Ok(DisposableCommandSpec {
-            plan_step_id,
-            program: DisposableProgram::Resize2fs,
-            args: vec![filesystem.device.clone()],
-            stdin_payload: None,
-            kernel_refresh: None,
-        }),
-        "xfs" => Ok(DisposableCommandSpec {
-            plan_step_id,
-            program: DisposableProgram::XfsGrowfs,
-            args: vec!["-d".to_owned(), mountpoint.to_owned()],
-            stdin_payload: None,
-            kernel_refresh: None,
-        }),
+        "ext4" => {
+            if let Some(mountpoint) = mountpoint {
+                validate_mounted(mountpoint)?;
+            } else if !identity.mounts.is_empty() {
+                return Err(DisposableArgvError::FilesystemMountNotUnique);
+            }
+            Ok(DisposableCommandSpec {
+                plan_step_id,
+                program: DisposableProgram::Resize2fs,
+                args: vec![filesystem.device.clone()],
+                stdin_payload: None,
+                kernel_refresh: None,
+            })
+        }
+        "xfs" => {
+            let mountpoint = mountpoint.ok_or(DisposableArgvError::FilesystemMountNotUnique)?;
+            validate_mounted(mountpoint)?;
+            Ok(DisposableCommandSpec {
+                plan_step_id,
+                program: DisposableProgram::XfsGrowfs,
+                args: vec!["-d".to_owned(), mountpoint.to_owned()],
+                stdin_payload: None,
+                kernel_refresh: None,
+            })
+        }
         other => Err(DisposableArgvError::UnsupportedFilesystem(other.to_owned())),
     }
 }
@@ -474,7 +488,7 @@ pub fn compile_disposable_lvm_growth_commands(
                 commands.push(compile_filesystem_grow(
                     step.plan_step_id,
                     fs_type,
-                    mountpoint,
+                    mountpoint.as_deref(),
                     fresh_identity,
                 )?);
             }
@@ -581,7 +595,12 @@ pub(crate) fn compile_verified_disposable_next_command(
             if observed == 0 || filesystem.backing_device_size_bytes <= observed {
                 return Err(DisposableArgvError::FilesystemGrowthNotProven);
             }
-            compile_filesystem_grow(step.plan_step_id, fs_type, mountpoint, fresh_identity)?
+            compile_filesystem_grow(
+                step.plan_step_id,
+                fs_type,
+                mountpoint.as_deref(),
+                fresh_identity,
+            )?
         }
         _ => return Err(DisposableArgvError::UnsupportedMutationProfile),
     };
@@ -681,7 +700,7 @@ mod tests {
                     role: FrozenIntentRole::MutationCandidate,
                     operation: NativeOperationSpec::GrowFilesystem {
                         fs_type: fs_type.to_owned(),
-                        mountpoint: mountpoint.to_owned(),
+                        mountpoint: Some(mountpoint.to_owned()),
                     },
                 },
             ],
@@ -795,7 +814,7 @@ mod tests {
                     role: FrozenIntentRole::MutationCandidate,
                     operation: NativeOperationSpec::GrowFilesystem {
                         fs_type: "ext4".into(),
-                        mountpoint: "/".into(),
+                        mountpoint: Some("/".into()),
                     },
                 },
             ],
@@ -883,7 +902,7 @@ mod tests {
                     role: FrozenIntentRole::MutationCandidate,
                     operation: NativeOperationSpec::GrowFilesystem {
                         fs_type: "ext4".into(),
-                        mountpoint: "/".into(),
+                        mountpoint: Some("/".into()),
                     },
                 },
             ],

@@ -31,7 +31,7 @@ class Runner:
         names = ("losetup", "sfdisk", "partx", "mkfs.ext4", "mkfs.xfs", "pvcreate",
                  "vgcreate", "vgchange", "lvcreate", "lvrename", "vgremove", "vgs", "pvs", "lvs",
                  "mount", "umount", "findmnt", "vgcfgbackup", "vgcfgrestore", "pvresize", "lvextend",
-                 "resize2fs", "xfs_growfs", "xfs_scrub", "udevadm")
+                 "resize2fs", "e2fsck", "xfs_growfs", "xfs_scrub", "udevadm")
         self.tools = {}
         for name in names:
             path = shutil.which(name)
@@ -1836,6 +1836,123 @@ def exercise_multi_target_isolation(resources: Resources, binary: Runner, loop: 
     print("MULTI_TARGET_ISOLATION_OK=selected-grown-sibling-unchanged", flush=True)
 
 
+def exercise_ext4_offline_growth_mutation(
+    resources: Resources, binary: Runner, loop: Loop,
+    source: str, target: Path, vg: str,
+) -> None:
+    resources.check_loop(loop)
+    if source != f"/dev/{vg}/data":
+        raise SafetyError("unexpected offline ext4 LV identity")
+
+    mounted_before = ready_snapshot(binary, loop.device, vg)
+    lvm = mounted_before.get("lvm")
+    if not isinstance(lvm, dict):
+        raise SafetyError("LVM inventory missing before offline ext4 drill")
+    lvs = [row for row in lvm.get("logical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg and row.get("path") == source]
+    vgs = [row for row in lvm.get("volume_groups", [])
+           if isinstance(row, dict) and row.get("name") == vg]
+    if len(lvs) != 1 or len(vgs) != 1:
+        raise SafetyError("offline ext4 LV/VG identity is ambiguous")
+
+    current_lv_size = lvs[0].get("size_bytes")
+    current_lv_uuid = lvs[0].get("uuid")
+    extent = vgs[0].get("extent_size_bytes")
+    free_extents = vgs[0].get("free_extent_count")
+    if (type(current_lv_size) is not int or type(extent) is not int
+            or type(free_extents) is not int or extent <= 0 or free_extents < 8
+            or not isinstance(current_lv_uuid, str) or not current_lv_uuid):
+        raise SafetyError("offline ext4 extent/identity evidence is incomplete")
+
+    growth_extents = 8
+    growth_bytes = growth_extents * extent
+    expected_lv_size = current_lv_size + growth_bytes
+    sentinel = (target / "readonly-sentinel").read_bytes()
+    before_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    tracked_mount = resources.mounts[-1]
+    assert_owned_mount(binary, tracked_mount)
+
+    binary.run("umount", str(target))
+    absent = binary.run(
+        "findmnt", "--json", "--mountpoint", str(target),
+        "--output", "SOURCE,TARGET", allowed=(0, 1),
+    )
+    if absent.returncode != 1 or absent.stdout.strip() or absent.stderr.strip():
+        raise SafetyError("offline ext4 fixture did not unmount cleanly")
+    refresh_fixture_udev(binary, Path(source).resolve(strict=True).name)
+
+    unmounted = ready_snapshot(binary, loop.device, vg)
+    roots = [node for node in unmounted["storage"]["block_devices"]
+             if isinstance(node, dict) and node.get("path") == loop.device]
+    if len(roots) != 1:
+        raise SafetyError("offline ext4 loop root is ambiguous after unmount")
+    if any(row.get("target") == str(target) for row in unmounted.get("mounts", [])):
+        raise SafetyError("offline ext4 target remains mounted in fresh snapshot")
+
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    if not association_row:
+        raise SafetyError("loop association missing before offline ext4 execution")
+
+    journal_root = resources.root / f"{vg}-offline-ext4-journal"
+    backup_root = resources.root / f"{vg}-offline-ext4-backup"
+    resources.uncertain = True
+    result = binary.run(
+        "disposable-executor",
+        "--allow-disposable-loop-execution",
+        "--target", source,
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--journal-root", str(journal_root),
+        "--backup-root", str(backup_root),
+        "--growth-bytes", str(growth_bytes),
+        "--sfdisk", binary.tools["sfdisk"],
+        "--partx", binary.tools["partx"],
+        "--pvresize", binary.tools["pvresize"],
+        "--lvextend", binary.tools["lvextend"],
+        "--resize2fs", binary.tools["resize2fs"],
+        "--e2fsck", binary.tools["e2fsck"],
+        "--xfs-growfs", binary.tools["xfs_growfs"],
+        "--xfs-scrub", binary.tools["xfs_scrub"],
+        "--udevadm", binary.tools["udevadm"],
+    )
+    outcome = json.loads(result.stdout)
+    if (not isinstance(outcome, dict) or outcome.get("status") != "completed"
+            or outcome.get("mutation_enabled") is not False
+            or not isinstance(outcome.get("execution_id"), str)
+            or not isinstance(outcome.get("final_identity_digest"), str)):
+        raise SafetyError(f"invalid offline ext4 completion evidence: {outcome!r}")
+
+    fresh = ready_snapshot(binary, loop.device, vg)
+    fresh_lvs = [row for row in fresh["lvm"]["logical_volumes"]
+                 if isinstance(row, dict) and row.get("vg_name") == vg
+                 and row.get("path") == source]
+    if (len(fresh_lvs) != 1 or fresh_lvs[0].get("uuid") != current_lv_uuid
+            or fresh_lvs[0].get("size_bytes") != expected_lv_size):
+        raise SafetyError("offline ext4 executor did not produce the exact expected LV state")
+    if any(row.get("target") == str(target) for row in fresh.get("mounts", [])):
+        raise SafetyError("offline ext4 executor unexpectedly mounted the target")
+    if journal_root.exists() or backup_root.exists():
+        raise SafetyError("offline ext4 executor did not clean owned evidence")
+
+    binary.run("mount", source, str(target))
+    assert_owned_mount(binary, tracked_mount)
+    after_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    if after_fs_bytes <= before_fs_bytes:
+        raise SafetyError("offline ext4 filesystem capacity did not increase after remount")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("offline ext4 sentinel changed across unmount/growth/remount")
+
+    resources.uncertain = False
+    print(
+        "EXT4_OFFLINE_EXECUTOR_OK=e2fsck-no-modify-lv-resize2fs",
+        flush=True,
+    )
+
+
 def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loop,
                                  source: str, target: Path, vg: str,
                                  filesystem: str) -> None:
@@ -2224,6 +2341,33 @@ def main(argv: list[str] | None = None) -> int:
             multi_vg,
         )
 
+        print("==> lvm-ext4-offline-growth", flush=True)
+        offline_loop = resources.create_loop(
+            "lvm-ext4-offline-growth", 1024 * 1024 * 1024
+        )
+        offline_partition = resources.create_partition(
+            offline_loop, 896, True
+        )
+        offline_vg = "lsmtest" + os.urandom(12).hex()
+        offline_source = resources.create_vg(
+            offline_loop, offline_partition, offline_vg
+        )
+        runner.run("mkfs.ext4", "-F", offline_source)
+        refresh_fixture_udev(
+            runner, Path(offline_source).resolve(strict=True).name
+        )
+        offline_target = resources.mount(
+            offline_source, "lvm-ext4-offline-growth-mount"
+        )
+        exercise_ext4_offline_growth_mutation(
+            resources,
+            runner,
+            offline_loop,
+            offline_source,
+            offline_target,
+            offline_vg,
+        )
+
         print("==> lvm-ext4-filesystem-post-write-recovery", flush=True)
         fs_fault_loop = resources.create_loop(
             "lvm-ext4-filesystem-post-write-recovery", 1024 * 1024 * 1024
@@ -2385,7 +2529,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,plain-ext4-multi-partition-selection,lvm-ext4-multi-target-isolation,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-offline-growth,plain-ext4-multi-partition-selection,lvm-ext4-multi-target-isolation,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
     return int(failed)
 
 

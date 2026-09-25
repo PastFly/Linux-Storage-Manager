@@ -130,6 +130,71 @@ fn recognizes_device_mapper_kernel_and_lvm_aliases() {
 }
 
 #[test]
+fn ext4_online_and_offline_profiles_require_exact_lv_open_state() {
+    let (snapshot, mut caps) = input();
+    caps.tools.push(lsm_core::ToolCapability {
+        name: "e2fsck".into(),
+        available: true,
+    });
+
+    let mounted = plan_extend(&snapshot, &caps, request("/", Growth::ByBytes(EXTENT))).unwrap();
+    assert_eq!(mounted.status(), PlanStatus::Preview);
+
+    let mut offline = snapshot.clone();
+    offline.storage.block_devices[0].children[0].children[0]
+        .mountpoints
+        .clear();
+    offline.mounts.clear();
+    offline.lvm.as_mut().unwrap().logical_volumes[0].attributes = Some("-wi-a-----".into());
+
+    let offline_plan = plan_extend(
+        &offline,
+        &caps,
+        request("/dev/vg0/root", Growth::ByBytes(EXTENT)),
+    )
+    .unwrap();
+    assert_eq!(offline_plan.status(), PlanStatus::Preview);
+    assert!(offline_plan.steps().iter().any(|step| {
+        matches!(
+            &step.operation,
+            Operation::GrowFilesystem {
+                fs_type,
+                mountpoint: None
+            } if fs_type == "ext4"
+        )
+    }));
+
+    let mut still_open = offline.clone();
+    still_open.lvm.as_mut().unwrap().logical_volumes[0].attributes = Some("-wi-ao----".into());
+    let blocked = plan_extend(
+        &still_open,
+        &caps,
+        request("/dev/vg0/root", Growth::ByBytes(EXTENT)),
+    )
+    .unwrap();
+    assert_eq!(blocked.status(), PlanStatus::Blocked);
+    assert!(blocked
+        .blockers()
+        .iter()
+        .any(|blocker| blocker.code == "unsupported-lv"));
+
+    let mut mounted_not_open = snapshot.clone();
+    mounted_not_open.lvm.as_mut().unwrap().logical_volumes[0].attributes =
+        Some("-wi-a-----".into());
+    let blocked = plan_extend(
+        &mounted_not_open,
+        &caps,
+        request("/", Growth::ByBytes(EXTENT)),
+    )
+    .unwrap();
+    assert_eq!(blocked.status(), PlanStatus::Blocked);
+    assert!(blocked
+        .blockers()
+        .iter()
+        .any(|blocker| blocker.code == "unsupported-lv"));
+}
+
+#[test]
 fn xfs_requires_matching_rw_mount() {
     let (mut snapshot, caps) = input();
     snapshot.storage.block_devices[0].children[0].children[0]

@@ -101,7 +101,7 @@ pub enum NativeOperationSpec {
     },
     GrowFilesystem {
         fs_type: String,
-        mountpoint: String,
+        mountpoint: Option<String>,
     },
     RediscoverAndVerify,
 }
@@ -608,7 +608,7 @@ mod tests {
                 vec![3],
                 NativeOperationSpec::GrowFilesystem {
                     fs_type: "ext4".into(),
-                    mountpoint: "/".into(),
+                    mountpoint: Some("/".into()),
                 },
             ),
         ];
@@ -1124,14 +1124,14 @@ mod tests {
     fn native_filesystem_spec_preserves_exact_type_and_mountpoint() {
         let action = FrozenIntentAction::GrowFilesystem {
             fs_type: "xfs".into(),
-            mountpoint: "/srv/data".into(),
+            mountpoint: Some("/srv/data".into()),
         };
 
         assert_eq!(
             build_native_operation_spec(&action),
             NativeOperationSpec::GrowFilesystem {
                 fs_type: "xfs".into(),
-                mountpoint: "/srv/data".into(),
+                mountpoint: Some("/srv/data".into()),
             }
         );
     }
@@ -1193,7 +1193,7 @@ mod tests {
             (
                 FrozenIntentAction::GrowFilesystem {
                     fs_type: "ext4".into(),
-                    mountpoint: "/mnt/test".into(),
+                    mountpoint: Some("/mnt/test".into()),
                 },
                 NativeOperationKind::GrowFilesystem,
             ),

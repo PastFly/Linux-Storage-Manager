@@ -184,18 +184,30 @@ fn build_pre_mutation_evidence_inner(
             .read_only_check
             .as_ref()
             .ok_or(PreMutationEvidenceError::FilesystemHealthReceiptMismatch)?;
-        if filesystem_decision.state != FilesystemDecisionState::ReadOnlyHealthCheckRequired
-            || check.kind != FilesystemCheckKind::XfsMountedScrubNoModify
-            || !receipt_matches_exact_check(receipt, session, check)?
-        {
+        let ready_state = match (filesystem_decision.state, check.kind) {
+            (
+                FilesystemDecisionState::ReadOnlyHealthCheckRequired,
+                FilesystemCheckKind::XfsMountedScrubNoModify,
+            ) if filesystem_decision.mountpoint.is_some() => {
+                FilesystemDecisionState::ReadyOnlineGrow
+            }
+            (
+                FilesystemDecisionState::OfflineHealthCheckRequired,
+                FilesystemCheckKind::Ext4OfflineE2fsckNoModify,
+            ) if filesystem_decision.mountpoint.is_none() => {
+                FilesystemDecisionState::ReadyOfflineGrow
+            }
+            _ => return Err(PreMutationEvidenceError::FilesystemHealthReceiptMismatch),
+        };
+        if !receipt_matches_exact_check(receipt, session, check)? {
             return Err(PreMutationEvidenceError::FilesystemHealthReceiptMismatch);
         }
         let receipt_id = receipt.receipt_id().to_owned();
-        filesystem_decision.state = FilesystemDecisionState::ReadyOnlineGrow;
+        filesystem_decision.state = ready_state;
         filesystem_decision.read_only_check = None;
         filesystem_decision.required_actions.clear();
         filesystem_decision.reasons.push(
-            "explicit read-only XFS health receipt matched the exact locked session and check"
+            "explicit no-modify filesystem health receipt matched the exact locked session and check"
                 .to_owned(),
         );
         Some(receipt_id)
@@ -254,6 +266,7 @@ fn build_pre_mutation_evidence_inner(
     if !matches!(
         filesystem_decision.state,
         FilesystemDecisionState::ReadyOnlineGrow
+            | FilesystemDecisionState::ReadyOfflineGrow
             | FilesystemDecisionState::Blocked
             | FilesystemDecisionState::AdapterRequired
     ) {
@@ -276,7 +289,10 @@ fn build_pre_mutation_evidence_inner(
 
     let status = if !blockers.is_empty() {
         PreMutationEvidenceStatus::Blocked
-    } else if filesystem_decision.state == FilesystemDecisionState::ReadyOnlineGrow {
+    } else if matches!(
+        filesystem_decision.state,
+        FilesystemDecisionState::ReadyOnlineGrow | FilesystemDecisionState::ReadyOfflineGrow
+    ) {
         PreMutationEvidenceStatus::EvidenceComplete
     } else {
         PreMutationEvidenceStatus::FutureChecksRequired
@@ -484,22 +500,101 @@ mod tests {
         (snapshot, capabilities)
     }
 
-    fn handoff(
+    fn handoff_for_target(
         snapshot: &HostSnapshot,
         capabilities: &HostCapabilities,
+        target: &str,
     ) -> lsm_planner::FrozenExecutionHandoff {
         const GIB: u64 = 1 << 30;
         let plan = plan_extend(
             snapshot,
             capabilities,
             ExtendRequest {
-                target: "/data".into(),
+                target: target.into(),
                 growth: Growth::ByBytes(GIB),
             },
         )
         .unwrap();
         assert_eq!(plan.status(), PlanStatus::Preview);
         build_frozen_execution_handoff(snapshot, capabilities, &plan).unwrap()
+    }
+
+    fn handoff(
+        snapshot: &HostSnapshot,
+        capabilities: &HostCapabilities,
+    ) -> lsm_planner::FrozenExecutionHandoff {
+        handoff_for_target(snapshot, capabilities, "/data")
+    }
+
+    fn offline_ext4_fixture() -> (HostSnapshot, HostCapabilities) {
+        const GIB: u64 = 1 << 30;
+        const MIB: u64 = 1 << 20;
+        const EXTENT: u64 = 4 << 20;
+        let snapshot: HostSnapshot = serde_json::from_value(json!({
+            "storage":{"block_devices":[{
+                "name":"vda","kernel_name":"vda","path":"/dev/vda","kind":"disk",
+                "size_bytes":20*GIB,"logical_sector_bytes":512,
+                "model":"Virtual Disk","serial":"OFFLINE-EXT4-EVIDENCE",
+                "mountpoints":[],"children":[{
+                    "name":"vda1","kernel_name":"vda1","path":"/dev/vda1","kind":"partition",
+                    "size_bytes":16*GIB,"start_512_sector":2048,"logical_sector_bytes":512,
+                    "uuid":"pv-1","partition_uuid":"part-1","partition_table":"gpt",
+                    "filesystem":{"fs_type":"LVM2_member"},"mountpoints":[],
+                    "parent_kernel_name":"vda","children":[{
+                        "name":"vg0-root","kernel_name":"dm-0","path":"/dev/mapper/vg0-root",
+                        "kind":"lvm","size_bytes":8*GIB,"uuid":"fs-1",
+                        "filesystem":{"fs_type":"ext4","version":"1.0"},
+                        "mountpoints":[],"children":[]
+                    }]
+                }]
+            }]},
+            "partition_tables":[],
+            "mounts":[],
+            "fstab":[],
+            "swaps":[],
+            "lvm":{
+                "physical_volumes":[{
+                    "name":"/dev/vda1","uuid":"pv-1","vg_name":"vg0",
+                    "size_bytes":16*GIB,"free_bytes":8*GIB,"pe_start_bytes":MIB
+                }],
+                "volume_groups":[{
+                    "name":"vg0","uuid":"vg-1","size_bytes":16*GIB,"free_bytes":8*GIB,
+                    "pv_count":1,"lv_count":1,"extent_size_bytes":EXTENT,
+                    "free_extent_count":2048,"missing_pv_count":0,"attributes":"wz--n-"
+                }],
+                "logical_volumes":[{
+                    "name":"root","path":"/dev/vg0/root","uuid":"lv-1","vg_name":"vg0",
+                    "size_bytes":8*GIB,"attributes":"-wi-a-----",
+                    "layout":"linear","role":"public"
+                }]
+            },
+            "filesystem_preflight":[{
+                "device":"/dev/mapper/vg0-root","mountpoint":null,"fs_type":"ext4",
+                "fs_version":"1.0","state":"verified","filesystem_state":"clean",
+                "revision":"1","features":["has_journal","extent","64bit","metadata_csum"],
+                "block_size_bytes":4096,"block_count":(8*GIB)/4096,
+                "size_bytes":8*GIB,"grow_check_passed":null,"detail":null
+            }],
+            "diagnostics":[],
+            "collectors":[
+                {"component":"lsblk","state":"complete"},
+                {"component":"partition_tables","state":"complete"},
+                {"component":"mounts","state":"complete"},
+                {"component":"fstab","state":"complete"},
+                {"component":"swap","state":"complete"},
+                {"component":"lvm","state":"complete"}
+            ]
+        }))
+        .unwrap();
+        let capabilities = serde_json::from_value(json!({"tools":[
+            {"name":"vgcfgbackup","available":true},
+            {"name":"lvextend","available":true},
+            {"name":"resize2fs","available":true},
+            {"name":"e2fsck","available":true},
+            {"name":"sfdisk","available":true}
+        ]}))
+        .unwrap();
+        (snapshot, capabilities)
     }
 
     fn test_path(name: &str) -> PathBuf {
@@ -593,6 +688,88 @@ mod tests {
             .iter()
             .any(|gate| gate.contains("e2fsck")));
         assert_eq!(session.journal().phase, JournalPhase::IdentityRevalidated);
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+    }
+
+    #[test]
+    fn exact_offline_ext4_health_receipt_promotes_only_unmounted_target() {
+        let (snapshot, capabilities) = offline_ext4_fixture();
+        let handoff = handoff_for_target(&snapshot, &capabilities, "/dev/vg0/root");
+        let lock = test_path("offline-ext4-health").join("storage.lock");
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let backup = crate::backup_capture::test_backup_receipt_revalidation(
+            handoff.handoff_id(),
+            handoff.plan().plan_id(),
+            &handoff.target_identity().manifest_digest,
+            true,
+            Vec::new(),
+        );
+
+        let pending =
+            build_pre_mutation_evidence(&session, &snapshot, &capabilities, &backup).unwrap();
+        assert_eq!(
+            pending.status(),
+            PreMutationEvidenceStatus::FutureChecksRequired
+        );
+        assert_eq!(
+            pending.filesystem_decision().state,
+            FilesystemDecisionState::OfflineHealthCheckRequired
+        );
+        assert!(pending.filesystem_decision().mountpoint.is_none());
+        let check = pending
+            .filesystem_decision()
+            .read_only_check
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(check.kind, FilesystemCheckKind::Ext4OfflineE2fsckNoModify);
+        assert_eq!(check.tool, "e2fsck");
+        assert_eq!(check.args, vec!["-f", "-n", "/dev/mapper/vg0-root"]);
+        assert!(check.requires_unmounted);
+        assert!(!check.requires_mounted);
+
+        let receipt = crate::ExplicitFilesystemHealthReceipt::test_for_check(&session, &check);
+        let complete = build_pre_mutation_evidence_with_filesystem_health(
+            &session,
+            &snapshot,
+            &capabilities,
+            &backup,
+            &receipt,
+        )
+        .unwrap();
+        assert_eq!(
+            complete.filesystem_decision().state,
+            FilesystemDecisionState::ReadyOfflineGrow
+        );
+        assert!(complete.filesystem_decision().execution_ready());
+        assert!(complete.filesystem_decision().mountpoint.is_none());
+        assert!(complete.filesystem_decision().read_only_check.is_none());
+        assert_eq!(
+            complete.status(),
+            PreMutationEvidenceStatus::EvidenceComplete
+        );
+        assert!(!complete
+            .future_gates()
+            .iter()
+            .any(|gate| gate.starts_with("filesystem")));
+
+        let mut wrong_check = check;
+        wrong_check.args = vec!["-n".into(), "/dev/mapper/vg0-root".into()];
+        let wrong_receipt =
+            crate::ExplicitFilesystemHealthReceipt::test_for_check(&session, &wrong_check);
+        assert!(matches!(
+            build_pre_mutation_evidence_with_filesystem_health(
+                &session,
+                &snapshot,
+                &capabilities,
+                &backup,
+                &wrong_receipt,
+            ),
+            Err(PreMutationEvidenceError::FilesystemHealthReceiptMismatch)
+        ));
+
         let _ = fs::remove_dir_all(lock.parent().unwrap());
     }
 

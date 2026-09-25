@@ -2149,6 +2149,7 @@ fn layer_route_summary_lines(route: &LayerRoute) -> Vec<Line<'static>> {
 fn filesystem_decision_lines(decision: &FilesystemGrowthDecision) -> Vec<Line<'static>> {
     let state = match decision.state {
         FilesystemDecisionState::ReadyOnlineGrow => "Online grow ready",
+        FilesystemDecisionState::ReadyOfflineGrow => "Offline grow ready",
         FilesystemDecisionState::ReadOnlyHealthCheckRequired => "Read-only health check required",
         FilesystemDecisionState::OfflineHealthCheckRequired => "Offline check required",
         FilesystemDecisionState::MountRequired => "Mount required",
@@ -2208,7 +2209,10 @@ fn operation_summary(operation: &Operation) -> String {
         Operation::GrowFilesystem {
             fs_type,
             mountpoint,
-        } => format!("Grow {fs_type} on {mountpoint}"),
+        } => mountpoint
+            .as_deref()
+            .map(|mountpoint| format!("Grow {fs_type} on {mountpoint}"))
+            .unwrap_or_else(|| format!("Grow {fs_type} offline")),
         Operation::RediscoverAndVerify => "Rediscover and verify".to_owned(),
     }
 }
@@ -3065,7 +3069,7 @@ mod tests {
                 depends_on: vec![3],
                 operation: lsm_planner::Operation::GrowFilesystem {
                     fs_type: "ext4".into(),
-                    mountpoint: "/".into(),
+                    mountpoint: Some("/".into()),
                 },
                 reversibility: lsm_planner::Reversibility::Irreversible,
             },

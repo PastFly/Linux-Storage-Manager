@@ -1,4 +1,6 @@
-use lsm_planner::{FilesystemDecisionState, JournalPhase, OperationJournal};
+use lsm_planner::{
+    FilesystemDecisionState, FilesystemGrowthDecision, JournalPhase, OperationJournal,
+};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -15,6 +17,7 @@ pub struct PreconditionsVerification {
     plan_id: String,
     target_manifest_digest: String,
     journal_digest: String,
+    filesystem_decision: FilesystemGrowthDecision,
 }
 
 impl PreconditionsVerification {
@@ -40,6 +43,10 @@ impl PreconditionsVerification {
 
     pub fn journal_digest(&self) -> &str {
         &self.journal_digest
+    }
+
+    pub fn filesystem_decision(&self) -> &FilesystemGrowthDecision {
+        &self.filesystem_decision
     }
 
     #[cfg(test)]
@@ -77,7 +84,7 @@ pub enum PreconditionsVerificationError {
     EvidenceIncomplete,
     #[error("pre-mutation evidence still contains blockers")]
     EvidenceBlocked,
-    #[error("filesystem decision is not ready for online growth")]
+    #[error("filesystem decision is not ready for an approved online or offline growth path")]
     FilesystemNotReady,
     #[error("filesystem preconditions still require an explicit check or action")]
     FilesystemChecksRemain,
@@ -157,7 +164,10 @@ pub fn verify_preconditions(
     }
 
     let filesystem = evidence.filesystem_decision();
-    if filesystem.state != FilesystemDecisionState::ReadyOnlineGrow {
+    if !matches!(
+        filesystem.state,
+        FilesystemDecisionState::ReadyOnlineGrow | FilesystemDecisionState::ReadyOfflineGrow
+    ) {
         return Err(PreconditionsVerificationError::FilesystemNotReady);
     }
     if filesystem.read_only_check.is_some()
@@ -178,6 +188,7 @@ pub fn verify_preconditions(
         plan_id: session.journal().plan_id.clone(),
         target_manifest_digest: session.journal().baseline_manifest_digest.clone(),
         journal_digest: journal_digest(session.journal())?,
+        filesystem_decision: filesystem.clone(),
     })
 }
 

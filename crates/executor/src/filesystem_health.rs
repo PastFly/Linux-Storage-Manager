@@ -127,9 +127,7 @@ pub enum ExplicitFilesystemHealthError {
         "fresh storage-tool capability inventory changed before explicit filesystem health check"
     )]
     CapabilityInventoryMismatch,
-    #[error(
-        "filesystem does not currently require the supported explicit XFS no-modify health check"
-    )]
+    #[error("filesystem does not currently require a supported explicit no-modify health check")]
     UnsupportedCheck,
     #[error("selected filesystem health tool path is unsafe")]
     UnsafeToolPath,
@@ -172,18 +170,50 @@ pub fn execute_explicit_filesystem_health_check(
         .read_only_check
         .as_ref()
         .ok_or(ExplicitFilesystemHealthError::UnsupportedCheck)?;
-    if decision.state != FilesystemDecisionState::ReadOnlyHealthCheckRequired
-        || check.kind != FilesystemCheckKind::XfsMountedScrubNoModify
-        || check.tool != "xfs_scrub"
-        || check.requires_unmounted
-        || !check.requires_mounted
-        || check.run_automatically_on_refresh
-    {
+    let supported = match (decision.state, check.kind) {
+        (
+            FilesystemDecisionState::ReadOnlyHealthCheckRequired,
+            FilesystemCheckKind::XfsMountedScrubNoModify,
+        ) => {
+            check.tool == "xfs_scrub"
+                && decision.mountpoint.is_some()
+                && check.requires_mounted
+                && !check.requires_unmounted
+                && !check.run_automatically_on_refresh
+        }
+        (
+            FilesystemDecisionState::OfflineHealthCheckRequired,
+            FilesystemCheckKind::Ext4OfflineE2fsckNoModify,
+        ) => {
+            check.tool == "e2fsck"
+                && decision.mountpoint.is_none()
+                && !check.requires_mounted
+                && check.requires_unmounted
+                && !check.run_automatically_on_refresh
+        }
+        _ => false,
+    };
+    if !supported {
         return Err(ExplicitFilesystemHealthError::UnsupportedCheck);
     }
 
-    if !exact_safe_system_tool_path(tool_path, "xfs_scrub")? {
+    if !exact_safe_system_tool_path(tool_path, &check.tool)? {
         return Err(ExplicitFilesystemHealthError::UnsafeToolPath);
+    }
+    if check.requires_unmounted {
+        let checked_device = check
+            .args
+            .last()
+            .ok_or(ExplicitFilesystemHealthError::UnsupportedCheck)?;
+        let checked_device_canonical = std::fs::canonicalize(checked_device).ok();
+        if fresh_snapshot.mounts.iter().any(|mount| {
+            mount.source.as_deref() == Some(checked_device.as_str())
+                || mount.source.as_deref().is_some_and(|source| {
+                    std::fs::canonicalize(source).ok() == checked_device_canonical
+                })
+        }) {
+            return Err(ExplicitFilesystemHealthError::UnsupportedCheck);
+        }
     }
 
     let output = Command::new(tool_path)

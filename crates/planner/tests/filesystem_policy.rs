@@ -175,6 +175,24 @@ fn unmounted_ext4_requires_offline_health_check_before_resize() {
 }
 
 #[test]
+fn verified_offline_ext4_state_is_execution_ready_only_after_explicit_promotion() {
+    let snapshot = snapshot("ext4", false, &[]);
+    let mut decision = decide_filesystem_growth(&snapshot, &capabilities(), "/dev/sda1");
+
+    assert_eq!(
+        decision.state,
+        FilesystemDecisionState::OfflineHealthCheckRequired
+    );
+    assert!(!decision.execution_ready());
+
+    decision.state = FilesystemDecisionState::ReadyOfflineGrow;
+    decision.read_only_check = None;
+    decision.required_actions.clear();
+
+    assert!(decision.execution_ready());
+}
+
+#[test]
 fn read_only_ext4_mount_is_blocked() {
     let mut snapshot = snapshot("ext4", true, &["ro"]);
     snapshot.filesystem_preflight.push(ext4_evidence("clean"));
