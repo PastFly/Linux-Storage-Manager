@@ -214,6 +214,8 @@ M1B27 seals the complete pre-spawn authorization chain into one deterministic la
 
 M1B28 implements the descriptor execution primitive itself using `fork` + `fexecve` on an already-open executable file descriptor, fixed `PATH`/`LC_ALL` and exact argv. Unit tests execute only benign `/usr/bin/true` and `/usr/bin/false` descriptors and verify exit-status handling plus pre-fork argv/program mismatch rejection. The production wrapper revalidates the M1B27 permit, M1B26 launch spec and M1B25 pinned descriptor chain, but deliberately returns `ProductionMutationDisabled` while `MUTATION_ENABLED=false`; no storage tool can yet be spawned by production code.
 
+M1B29 extends the descriptor runtime contract to exact stdin and ordered refresh semantics. Commands without stdin receive `/dev/null`; an exact payload such as the frozen `sfdisk` line is delivered through a close-on-exec pipe and remains bound to the M1B26 length/SHA-256 receipt. The optional kernel-refresh stage must match program/argv exactly and may run only after a zero primary exit; a nonzero primary result suppresses refresh. Benign unit tests prove descriptor stdin delivery and EOF behavior. The production wrapper still stops at `ProductionMutationDisabled`, so these semantics are implemented without enabling storage writes.
+
 The manifest binds approval ID, approved journal ID/digest, plan ID, evidence bundle ID, target
 manifest digest and locked-session ID. Every source `PlanStep` is represented exactly once,
 dependency lists are preserved, and malformed/cyclic graphs fail closed.
