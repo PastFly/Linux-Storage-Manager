@@ -16,6 +16,7 @@ mod locked_session;
 mod native_operation;
 mod precondition_evidence;
 mod preconditions;
+mod privileged_argv;
 mod privileged_protocol;
 
 pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError};
@@ -85,6 +86,10 @@ pub use precondition_evidence::{
 };
 pub use preconditions::{
     verify_preconditions, PreconditionsVerification, PreconditionsVerificationError,
+};
+pub use privileged_argv::{
+    compile_privileged_helper_command, PrivilegedArgvError, PrivilegedCommandSpec,
+    PrivilegedKernelRefreshSpec, PrivilegedProgram,
 };
 pub use privileged_protocol::{
     build_privileged_helper_request, decode_privileged_helper_request,
