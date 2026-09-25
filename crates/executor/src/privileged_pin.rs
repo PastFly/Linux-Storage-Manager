@@ -57,6 +57,14 @@ impl PinnedPrivilegedTools {
         }
     }
 
+    pub(crate) fn primary_file(&self) -> &File {
+        &self.primary_file
+    }
+
+    pub(crate) fn kernel_refresh_file(&self) -> Option<&File> {
+        self.kernel_refresh_file.as_ref()
+    }
+
     fn expected_pin_id(&self) -> Result<String, serde_json::Error> {
         let bytes = serde_json::to_vec(&(
             self.schema_version,
