@@ -3,7 +3,8 @@ use std::process::ExitCode;
 
 use lsm_discovery::discover_snapshot;
 use lsm_executor::{
-    decode_privileged_helper_request, validate_privileged_helper_live_identity,
+    compile_privileged_helper_command, decode_privileged_helper_request,
+    validate_privileged_helper_live_identity, PrivilegedCommandSpec,
     MAX_PRIVILEGED_HELPER_REQUEST_BYTES, MUTATION_ENABLED,
 };
 use lsm_planner::capture_target_identity;
@@ -16,6 +17,8 @@ struct ValidationResponse<'a> {
     execution_id: &'a str,
     plan_step_id: u32,
     live_identity_digest: &'a str,
+    command_digest: &'a str,
+    compiled_command: &'a PrivilegedCommandSpec,
     mutation_enabled: bool,
     execution_started: bool,
 }
@@ -36,13 +39,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let snapshot = discover_snapshot()?;
     let live_identity = capture_target_identity(&snapshot, &request.target)?;
     validate_privileged_helper_live_identity(&request, &live_identity)?;
+    let compiled_command = compile_privileged_helper_command(&request, &live_identity)?;
+    let command_digest = compiled_command.digest()?;
 
     let response = ValidationResponse {
-        status: "identity_revalidated",
+        status: "command_compiled",
         request_id: &request.request_id,
         execution_id: &request.execution_id,
         plan_step_id: request.plan_step_id,
         live_identity_digest: &live_identity.manifest_digest,
+        command_digest: &command_digest,
+        compiled_command: &compiled_command,
         mutation_enabled: false,
         execution_started: false,
     };
