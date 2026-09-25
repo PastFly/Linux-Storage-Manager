@@ -282,7 +282,6 @@ mod tests {
         assert_eq!(authorization.command_digest, prepared.command_digest);
     }
 
-
     fn continuation_start(
         prepared: &PreparedPrivilegedInvocation,
     ) -> PrivilegedContinuationStartReceipt {
