@@ -16,6 +16,7 @@ mod locked_session;
 mod native_operation;
 mod precondition_evidence;
 mod preconditions;
+mod privileged_protocol;
 
 pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError};
 pub use backup_capture::{
@@ -84,6 +85,10 @@ pub use precondition_evidence::{
 };
 pub use preconditions::{
     verify_preconditions, PreconditionsVerification, PreconditionsVerificationError,
+};
+pub use privileged_protocol::{
+    build_privileged_helper_request, validate_privileged_helper_request,
+    PrivilegedHelperProtocolError, PrivilegedHelperRequest, PRIVILEGED_HELPER_PROTOCOL_VERSION,
 };
 
 use std::fs::{self, File, OpenOptions};

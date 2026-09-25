@@ -181,6 +181,8 @@ CI #512 and Portable Linux #391.
 Even after M1B12, `Approved` is an authorization record, not permission for this codebase to
 mutate storage.
 
+M1B17 privileged-helper protocol now defines the first production-side transport contract without enabling writes. One request is bound to the exact durable execution ID, source/native/fresh-identity digests and one validated native mutation step. The protocol is versioned and self-digested, rejects foreign bindings, non-mutation steps, unsafe partition geometry/device paths, unsupported filesystem modes and any tampering. It deliberately carries semantic typed operations rather than arbitrary shell text or argv. `MUTATION_ENABLED=false` remains unchanged; no privileged process is spawned yet.
+
 Before any production path can enter `Executing`, separately review:
 
 - explicit owner acceptance for mutation-capable rollout;

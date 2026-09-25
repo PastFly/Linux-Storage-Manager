@@ -113,6 +113,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Promote proven single-PV underlying LVM capacity into exact dry-run chains for `partition? -> PV -> LV -> filesystem`, including `--max`.
 - [x] Fail closed when native mutation layers are reordered or bypass required lower-layer dependencies.
 - [x] Compile the first disposable-only `LV -> filesystem` profile into a minimal typed executable argv allowlist bound to fresh identity.
+- [x] Define a versioned, digest-bound privileged-helper request protocol that carries one exact validated native mutation step, rejects foreign execution bindings and unsafe operation payloads, and contains no generic shell command surface; production mutation remains disabled.
 - [x] Execute the first `LV -> filesystem` profile only on harness-owned `/dev/loopN` fixtures while production `MUTATION_ENABLED=false` remains unchanged; ext4 completes the live mutation path and XFS remains fail-closed when the host kernel lacks online scrub support.
 - [x] Prevent blind replay from replacing an existing durable journal with a fresh `HostLockHeld` record.
 - [x] Prove a forced pre-spawn executor failure after durable `Executing` transitions to `RecoveryRequired`, preserves recovery evidence and leaves LV/filesystem/sentinel state unchanged.
