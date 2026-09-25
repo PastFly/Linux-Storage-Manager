@@ -1,13 +1,13 @@
 use std::path::{Component, Path};
 
-use lsm_planner::ExecutionStartBinding;
+use lsm_planner::{ExecutionStartBinding, TargetIdentityManifest};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{FrozenIntentRole, NativeOperationSpec, ValidatedNativeManifest};
 
-pub const PRIVILEGED_HELPER_PROTOCOL_VERSION: u32 = 1;
+pub const PRIVILEGED_HELPER_PROTOCOL_VERSION: u32 = 2;
 pub const MAX_PRIVILEGED_HELPER_REQUEST_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,6 +18,8 @@ pub struct PrivilegedHelperRequest {
     pub source_manifest_id: String,
     pub native_manifest_digest: String,
     pub fresh_identity_digest: String,
+    pub target: String,
+    pub resolved_device: String,
     pub plan_step_id: u32,
     pub operation: NativeOperationSpec,
 }
@@ -48,6 +50,10 @@ pub enum PrivilegedHelperProtocolError {
     InvalidJson(String),
     #[error("privileged-helper request contains unknown or non-canonical fields")]
     NonCanonicalWireShape,
+    #[error("privileged-helper request is not bound to the supplied fresh target identity")]
+    FreshIdentityBindingMismatch,
+    #[error("live helper rediscovery no longer matches the request target identity")]
+    LiveIdentityMismatch,
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -119,6 +125,8 @@ fn expected_request_id(
     source_manifest_id: &str,
     native_manifest_digest: &str,
     fresh_identity_digest: &str,
+    target: &str,
+    resolved_device: &str,
     plan_step_id: u32,
     operation: &NativeOperationSpec,
 ) -> Result<String, PrivilegedHelperProtocolError> {
@@ -128,6 +136,8 @@ fn expected_request_id(
         source_manifest_id,
         native_manifest_digest,
         fresh_identity_digest,
+        target,
+        resolved_device,
         plan_step_id,
         operation,
     ))
@@ -138,6 +148,7 @@ fn expected_request_id(
 pub fn build_privileged_helper_request(
     validated: &ValidatedNativeManifest,
     execution: &ExecutionStartBinding,
+    fresh_identity: &TargetIdentityManifest,
     plan_step_id: u32,
 ) -> Result<PrivilegedHelperRequest, PrivilegedHelperProtocolError> {
     if execution.schema_version != 1
@@ -154,6 +165,13 @@ pub fn build_privileged_helper_request(
         || !is_sha256_hex(&execution.fresh_identity_digest)
     {
         return Err(PrivilegedHelperProtocolError::ExecutionBindingMismatch);
+    }
+    if fresh_identity.manifest_digest != execution.fresh_identity_digest
+        || fresh_identity.target.is_empty()
+        || !safe_absolute_path(&fresh_identity.target)
+        || !safe_device_path(&fresh_identity.resolved_device)
+    {
+        return Err(PrivilegedHelperProtocolError::FreshIdentityBindingMismatch);
     }
     if !execution.mutation_step_ids.contains(&plan_step_id) {
         return Err(PrivilegedHelperProtocolError::UnauthorizedStep(
@@ -185,6 +203,8 @@ pub fn build_privileged_helper_request(
         &execution.source_manifest_id,
         &execution.native_manifest_digest,
         &execution.fresh_identity_digest,
+        &fresh_identity.target,
+        &fresh_identity.resolved_device,
         plan_step_id,
         &step.operation,
     )?;
@@ -196,6 +216,8 @@ pub fn build_privileged_helper_request(
         source_manifest_id: execution.source_manifest_id.clone(),
         native_manifest_digest: execution.native_manifest_digest.clone(),
         fresh_identity_digest: execution.fresh_identity_digest.clone(),
+        target: fresh_identity.target.clone(),
+        resolved_device: fresh_identity.resolved_device.clone(),
         plan_step_id,
         operation: step.operation.clone(),
     })
@@ -222,6 +244,19 @@ pub fn decode_privileged_helper_request(
     Ok(request)
 }
 
+pub fn validate_privileged_helper_live_identity(
+    request: &PrivilegedHelperRequest,
+    live_identity: &TargetIdentityManifest,
+) -> Result<(), PrivilegedHelperProtocolError> {
+    if live_identity.manifest_digest != request.fresh_identity_digest
+        || live_identity.target != request.target
+        || live_identity.resolved_device != request.resolved_device
+    {
+        return Err(PrivilegedHelperProtocolError::LiveIdentityMismatch);
+    }
+    Ok(())
+}
+
 pub fn validate_privileged_helper_request(
     request: &PrivilegedHelperRequest,
 ) -> Result<(), PrivilegedHelperProtocolError> {
@@ -234,6 +269,8 @@ pub fn validate_privileged_helper_request(
         || !is_sha256_hex(&request.source_manifest_id)
         || !is_sha256_hex(&request.native_manifest_digest)
         || !is_sha256_hex(&request.fresh_identity_digest)
+        || !safe_absolute_path(&request.target)
+        || !safe_device_path(&request.resolved_device)
         || request.plan_step_id == 0
         || !operation_is_safe(&request.operation)
     {
@@ -246,6 +283,8 @@ pub fn validate_privileged_helper_request(
         &request.source_manifest_id,
         &request.native_manifest_digest,
         &request.fresh_identity_digest,
+        &request.target,
+        &request.resolved_device,
         request.plan_step_id,
         &request.operation,
     )?;
@@ -262,7 +301,7 @@ mod tests {
         validate_and_bind_native_manifest, FrozenIntentRole, NativeCompiledManifest,
         NativeCompiledStep, NativeVerificationBarrier,
     };
-    use lsm_planner::{ExecutionStartBinding, Reversibility};
+    use lsm_planner::{ExecutionStartBinding, LayerRouteStatus, Reversibility, TargetIdentityManifest};
 
     fn validated(operation: NativeOperationSpec) -> ValidatedNativeManifest {
         validate_and_bind_native_manifest(NativeCompiledManifest {
@@ -303,6 +342,22 @@ mod tests {
         binding
     }
 
+    fn fresh_identity() -> TargetIdentityManifest {
+        TargetIdentityManifest {
+            schema_version: 1,
+            target: "/mnt/data".into(),
+            manifest_digest: "b".repeat(64),
+            resolved_device: "/dev/mapper/vg-data".into(),
+            route_status: LayerRouteStatus::SupportedProfile,
+            route_issue_codes: vec![],
+            devices: vec![],
+            partitions: vec![],
+            lvm: vec![],
+            filesystem: None,
+            mounts: vec![],
+        }
+    }
+
     #[test]
     fn exact_native_mutation_builds_deterministic_protocol_request() {
         let validated = validated(NativeOperationSpec::ExtendLogicalVolume {
@@ -312,8 +367,8 @@ mod tests {
         });
         let execution = execution(&validated);
 
-        let first = build_privileged_helper_request(&validated, &execution, 3).unwrap();
-        let second = build_privileged_helper_request(&validated, &execution, 3).unwrap();
+        let first = build_privileged_helper_request(&validated, &execution, &fresh_identity(), 3).unwrap();
+        let second = build_privileged_helper_request(&validated, &execution, &fresh_identity(), 3).unwrap();
 
         assert_eq!(first, second);
         assert_eq!(first.schema_version, PRIVILEGED_HELPER_PROTOCOL_VERSION);
@@ -330,7 +385,7 @@ mod tests {
         });
         let execution = execution(&validated);
         assert_eq!(
-            build_privileged_helper_request(&validated, &execution, 3),
+            build_privileged_helper_request(&validated, &execution, &fresh_identity(), 3),
             Err(PrivilegedHelperProtocolError::UnsafeOperationPayload)
         );
     }
@@ -343,7 +398,7 @@ mod tests {
             expected_lv_size_bytes: 512 * 1024 * 1024,
         });
         let execution = execution(&validated);
-        let mut request = build_privileged_helper_request(&validated, &execution, 3).unwrap();
+        let mut request = build_privileged_helper_request(&validated, &execution, &fresh_identity(), 3).unwrap();
 
         request.operation = NativeOperationSpec::ExtendLogicalVolume {
             lv_uuid: "lv-uuid".into(),
@@ -365,7 +420,7 @@ mod tests {
             expected_lv_size_bytes: 256 * 1024 * 1024,
         });
         let execution = execution(&validated);
-        let request = build_privileged_helper_request(&validated, &execution, 3).unwrap();
+        let request = build_privileged_helper_request(&validated, &execution, &fresh_identity(), 3).unwrap();
         let bytes = serde_json::to_vec(&request).unwrap();
 
         assert_eq!(decode_privileged_helper_request(&bytes).unwrap(), request);
@@ -391,6 +446,29 @@ mod tests {
     }
 
     #[test]
+    fn helper_live_identity_must_match_exact_bound_target() {
+        let validated = validated(NativeOperationSpec::ExtendLogicalVolume {
+            lv_uuid: "lv-uuid".into(),
+            additional_extents: 1,
+            expected_lv_size_bytes: 128 * 1024 * 1024,
+        });
+        let execution = execution(&validated);
+        let request =
+            build_privileged_helper_request(&validated, &execution, &fresh_identity(), 3).unwrap();
+        let mut drifted = fresh_identity();
+        drifted.resolved_device = "/dev/mapper/vg-other".into();
+
+        assert_eq!(
+            validate_privileged_helper_live_identity(&request, &fresh_identity()),
+            Ok(())
+        );
+        assert_eq!(
+            validate_privileged_helper_live_identity(&request, &drifted),
+            Err(PrivilegedHelperProtocolError::LiveIdentityMismatch)
+        );
+    }
+
+    #[test]
     fn request_builder_rejects_foreign_execution_binding() {
         let validated = validated(NativeOperationSpec::ResizePhysicalVolume {
             pv_uuid: "pv-uuid".into(),
@@ -401,7 +479,7 @@ mod tests {
         execution.execution_id = execution.expected_execution_id().unwrap();
 
         assert_eq!(
-            build_privileged_helper_request(&validated, &execution, 3),
+            build_privileged_helper_request(&validated, &execution, &fresh_identity(), 3),
             Err(PrivilegedHelperProtocolError::ExecutionBindingMismatch)
         );
     }
