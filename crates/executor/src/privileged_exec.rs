@@ -11,6 +11,12 @@ use crate::{
     PrivilegedLaunchPermit, PrivilegedProgram, MUTATION_ENABLED,
 };
 
+#[cfg(feature = "production-mutation")]
+use crate::{
+    production_arm::validate_production_mutation_arm, LockedExecutionSession,
+    PrivilegedHelperRequest, ProductionMutationArm, ProductionMutationArmError,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DescriptorExecOutcome {
     pub exit_code: i32,
@@ -42,6 +48,9 @@ pub enum PrivilegedDescriptorExecError {
     KernelRefreshBindingMismatch,
     #[error("production descriptor execution remains disabled")]
     ProductionMutationDisabled,
+    #[cfg(feature = "production-mutation")]
+    #[error("production mutation arm rejected: {0}")]
+    ProductionArm(#[from] ProductionMutationArmError),
     #[error("descriptor exec argument contains an embedded NUL byte")]
     EmbeddedNul,
     #[error("descriptor exec child terminated by signal")]
@@ -303,18 +312,12 @@ fn kernel_refresh_matches_launch(
     }
 }
 
-/// Validate the complete M1B27 launch chain against the pinned descriptors.
-///
-/// M1B29 additionally binds exact stdin bytes and the optional kernel-refresh
-/// stage. The low-level descriptor runner is unit-tested with benign ELF
-/// utilities, but production storage-tool spawning remains hard-disabled while
-/// MUTATION_ENABLED is false.
-pub fn execute_privileged_descriptor_launch(
+fn validate_privileged_descriptor_launch_chain(
     permit: &PrivilegedLaunchPermit,
     launch: &PrivilegedDescriptorLaunchSpec,
     pinned: &PinnedPrivilegedTools,
     command: &PrivilegedCommandSpec,
-) -> Result<PrivilegedDescriptorSequenceOutcome, PrivilegedDescriptorExecError> {
+) -> Result<(), PrivilegedDescriptorExecError> {
     if !permit.integrity_matches()? {
         return Err(PrivilegedDescriptorExecError::PermitIntegrityMismatch);
     }
@@ -349,11 +352,14 @@ pub fn execute_privileged_descriptor_launch(
     if !kernel_refresh_matches_launch(command, launch) {
         return Err(PrivilegedDescriptorExecError::KernelRefreshBindingMismatch);
     }
+    Ok(())
+}
 
-    if !MUTATION_ENABLED {
-        return Err(PrivilegedDescriptorExecError::ProductionMutationDisabled);
-    }
-
+fn execute_privileged_descriptor_sequence(
+    launch: &PrivilegedDescriptorLaunchSpec,
+    pinned: &PinnedPrivilegedTools,
+    command: &PrivilegedCommandSpec,
+) -> Result<PrivilegedDescriptorSequenceOutcome, PrivilegedDescriptorExecError> {
     let primary = execute_descriptor_stage(
         pinned.primary_file(),
         launch.primary.program,
@@ -384,6 +390,48 @@ pub fn execute_privileged_descriptor_launch(
         primary,
         kernel_refresh,
     })
+}
+
+/// Validate the complete descriptor launch chain without permitting production
+/// storage mutation in the normal build.
+///
+/// The historical entry point intentionally remains read-only. M1B35 adds a
+/// separate feature-gated armed entry point rather than turning this function
+/// into a global mutation switch.
+pub fn execute_privileged_descriptor_launch(
+    permit: &PrivilegedLaunchPermit,
+    launch: &PrivilegedDescriptorLaunchSpec,
+    pinned: &PinnedPrivilegedTools,
+    command: &PrivilegedCommandSpec,
+) -> Result<PrivilegedDescriptorSequenceOutcome, PrivilegedDescriptorExecError> {
+    validate_privileged_descriptor_launch_chain(permit, launch, pinned, command)?;
+
+    if !MUTATION_ENABLED {
+        return Err(PrivilegedDescriptorExecError::ProductionMutationDisabled);
+    }
+
+    execute_privileged_descriptor_sequence(launch, pinned, command)
+}
+
+/// Execute exactly one explicitly armed production mutation.
+///
+/// This symbol does not exist in normal builds. The production-mutation
+/// feature alone is still insufficient: the current durable locked journal
+/// must exactly reproduce the arm for this request and permit immediately
+/// before descriptor execution.
+#[cfg(feature = "production-mutation")]
+pub fn execute_privileged_descriptor_launch_armed(
+    session: &LockedExecutionSession<'_>,
+    arm: &ProductionMutationArm,
+    request: &PrivilegedHelperRequest,
+    permit: &PrivilegedLaunchPermit,
+    launch: &PrivilegedDescriptorLaunchSpec,
+    pinned: &PinnedPrivilegedTools,
+    command: &PrivilegedCommandSpec,
+) -> Result<PrivilegedDescriptorSequenceOutcome, PrivilegedDescriptorExecError> {
+    validate_production_mutation_arm(session, arm, request, permit)?;
+    validate_privileged_descriptor_launch_chain(permit, launch, pinned, command)?;
+    execute_privileged_descriptor_sequence(launch, pinned, command)
 }
 
 #[cfg(test)]
