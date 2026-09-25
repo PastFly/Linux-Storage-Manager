@@ -2172,11 +2172,11 @@ mod tests {
     }
 
     #[test]
-    fn required_xfs_check_is_rejected_without_journal_advance() {
+    fn verified_xfs_dry_run_can_advance_preconditions_without_scrub_receipt() {
         let (snapshot, capabilities) = xfs_fixture();
         let handoff = handoff(&snapshot, &capabilities);
         let path = lock_path();
-        let root = journal_root("xfs-check");
+        let root = journal_root("xfs-ready");
         let store = DurableJournalStore::at(&root);
         let mut session =
             LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
@@ -2191,17 +2191,18 @@ mod tests {
         );
         assert_eq!(
             evidence.status(),
-            crate::PreMutationEvidenceStatus::FutureChecksRequired
+            crate::PreMutationEvidenceStatus::EvidenceComplete
         );
-        assert!(evidence.filesystem_decision().read_only_check.is_some());
+        assert_eq!(
+            evidence.filesystem_decision().state,
+            lsm_planner::FilesystemDecisionState::ReadyOnlineGrow
+        );
+        assert!(evidence.filesystem_decision().read_only_check.is_none());
+        assert_eq!(evidence.filesystem_health_receipt_id(), None);
 
-        let result = crate::verify_preconditions(&mut session, &evidence);
+        crate::verify_preconditions(&mut session, &evidence).unwrap();
 
-        assert!(matches!(
-            result,
-            Err(crate::PreconditionsVerificationError::EvidenceIncomplete)
-        ));
-        assert_identity_revalidated_is_durable(&session, &store);
+        assert_preconditions_verified_is_durable(&session, &store);
         drop(session);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
         let _ = std::fs::remove_dir_all(root);
