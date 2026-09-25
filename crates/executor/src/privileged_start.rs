@@ -60,10 +60,7 @@ pub enum PrivilegedExecutionStartError {
 }
 
 fn journal_digest<T: Serialize>(value: &T) -> Result<String, serde_json::Error> {
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(value)?)
-    ))
+    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
 }
 
 fn validate_start_binding(
