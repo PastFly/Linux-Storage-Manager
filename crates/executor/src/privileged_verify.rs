@@ -27,7 +27,7 @@ impl PrivilegedLayerVerificationReceipt {
         Ok(self.receipt_id == self.expected_receipt_id()?)
     }
 
-    fn expected_receipt_id(&self) -> Result<String, serde_json::Error> {
+    pub(crate) fn expected_receipt_id(&self) -> Result<String, serde_json::Error> {
         let bytes = serde_json::to_vec(&(
             self.schema_version,
             &self.execution_id,

@@ -1,6 +1,6 @@
 use std::path::{Component, Path};
 
-use lsm_planner::{ExecutionStartBinding, TargetIdentityManifest};
+use lsm_planner::{ExecutionStartBinding, JournalPhase, OperationJournal, TargetIdentityManifest};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -54,6 +54,10 @@ pub enum PrivilegedHelperProtocolError {
     FreshIdentityBindingMismatch,
     #[error("live helper rediscovery no longer matches the request target identity")]
     LiveIdentityMismatch,
+    #[error("durable journal is not at an exact executing mutation boundary")]
+    DurableJournalStateMismatch,
+    #[error("requested mutation step does not match the durable verified step sequence")]
+    DurableStepSequenceMismatch,
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -216,6 +220,124 @@ pub fn build_privileged_helper_request(
         plan_step_id,
         operation: step.operation.clone(),
     })
+}
+
+pub fn build_privileged_helper_request_for_durable_step(
+    validated: &ValidatedNativeManifest,
+    journal: &OperationJournal,
+    fresh_identity: &TargetIdentityManifest,
+    plan_step_id: u32,
+) -> Result<PrivilegedHelperRequest, PrivilegedHelperProtocolError> {
+    if journal.phase != JournalPhase::Executing || !journal.mutation_may_have_started {
+        return Err(PrivilegedHelperProtocolError::DurableJournalStateMismatch);
+    }
+    let execution = journal
+        .execution
+        .as_ref()
+        .ok_or(PrivilegedHelperProtocolError::DurableJournalStateMismatch)?;
+    if execution.schema_version != 1
+        || !execution
+            .integrity_matches()
+            .map_err(|error| PrivilegedHelperProtocolError::Serialization(error.to_string()))?
+    {
+        return Err(PrivilegedHelperProtocolError::ExecutionBindingIntegrityMismatch);
+    }
+    if execution.journal_id != journal.journal_id
+        || execution.plan_id != journal.plan_id
+        || execution.source_manifest_id != validated.manifest().source_manifest_id
+        || execution.native_manifest_digest != validated.digest()
+        || !is_sha256_hex(&execution.source_manifest_id)
+        || !is_sha256_hex(&execution.native_manifest_digest)
+        || !is_sha256_hex(&execution.fresh_identity_digest)
+    {
+        return Err(PrivilegedHelperProtocolError::ExecutionBindingMismatch);
+    }
+
+    let position = execution
+        .mutation_step_ids
+        .iter()
+        .position(|step_id| *step_id == plan_step_id)
+        .ok_or(PrivilegedHelperProtocolError::UnauthorizedStep(
+            plan_step_id,
+        ))?;
+
+    let expected_identity_digest = if position == 0 {
+        if journal.verified_boundary.is_some() {
+            return Err(PrivilegedHelperProtocolError::DurableStepSequenceMismatch);
+        }
+        execution.fresh_identity_digest.as_str()
+    } else {
+        let boundary = journal
+            .verified_boundary
+            .as_ref()
+            .ok_or(PrivilegedHelperProtocolError::DurableStepSequenceMismatch)?;
+        if boundary.schema_version != 1
+            || !boundary
+                .integrity_matches()
+                .map_err(|error| PrivilegedHelperProtocolError::Serialization(error.to_string()))?
+            || boundary.execution_id != execution.execution_id
+            || boundary.completed_step_id != execution.mutation_step_ids[position - 1]
+            || boundary.next_step_id != plan_step_id
+            || boundary.final_step_id.is_some()
+            || boundary.final_identity_digest.is_some()
+        {
+            return Err(PrivilegedHelperProtocolError::DurableStepSequenceMismatch);
+        }
+        boundary.fresh_identity_digest.as_str()
+    };
+
+    if fresh_identity.manifest_digest != expected_identity_digest
+        || fresh_identity.target.is_empty()
+        || !safe_absolute_path(&fresh_identity.target)
+        || !safe_device_path(&fresh_identity.resolved_device)
+    {
+        return Err(PrivilegedHelperProtocolError::FreshIdentityBindingMismatch);
+    }
+
+    let mut matches = validated
+        .manifest()
+        .steps
+        .iter()
+        .filter(|step| step.plan_step_id == plan_step_id);
+    let step = matches
+        .next()
+        .ok_or(PrivilegedHelperProtocolError::StepNotUnique(plan_step_id))?;
+    if matches.next().is_some() {
+        return Err(PrivilegedHelperProtocolError::StepNotUnique(plan_step_id));
+    }
+    if step.role != FrozenIntentRole::MutationCandidate {
+        return Err(PrivilegedHelperProtocolError::StepNotMutation(plan_step_id));
+    }
+    if !operation_is_safe(&step.operation) {
+        return Err(PrivilegedHelperProtocolError::UnsafeOperationPayload);
+    }
+
+    let request_id = expected_request_id(&RequestDigestPayload {
+        schema_version: PRIVILEGED_HELPER_PROTOCOL_VERSION,
+        execution_id: &execution.execution_id,
+        source_manifest_id: &execution.source_manifest_id,
+        native_manifest_digest: &execution.native_manifest_digest,
+        fresh_identity_digest: &fresh_identity.manifest_digest,
+        target: &fresh_identity.target,
+        resolved_device: &fresh_identity.resolved_device,
+        plan_step_id,
+        operation: &step.operation,
+    })?;
+
+    let request = PrivilegedHelperRequest {
+        schema_version: PRIVILEGED_HELPER_PROTOCOL_VERSION,
+        request_id,
+        execution_id: execution.execution_id.clone(),
+        source_manifest_id: execution.source_manifest_id.clone(),
+        native_manifest_digest: execution.native_manifest_digest.clone(),
+        fresh_identity_digest: fresh_identity.manifest_digest.clone(),
+        target: fresh_identity.target.clone(),
+        resolved_device: fresh_identity.resolved_device.clone(),
+        plan_step_id,
+        operation: step.operation.clone(),
+    };
+    validate_privileged_helper_request(&request)?;
+    Ok(request)
 }
 
 pub fn decode_privileged_helper_request(
