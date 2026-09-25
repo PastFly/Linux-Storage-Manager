@@ -4,7 +4,8 @@ use std::process::ExitCode;
 use lsm_discovery::discover_snapshot;
 use lsm_executor::{
     compile_privileged_helper_command, decode_privileged_helper_request,
-    resolve_privileged_command_tools, validate_privileged_helper_live_identity,
+    prepare_privileged_invocation, resolve_privileged_command_tools,
+    validate_privileged_helper_live_identity, PreparedPrivilegedInvocation,
     PrivilegedCommandSpec, PrivilegedToolResolution, MAX_PRIVILEGED_HELPER_REQUEST_BYTES,
     MUTATION_ENABLED,
 };
@@ -22,6 +23,7 @@ struct ValidationResponse<'a> {
     compiled_command: &'a PrivilegedCommandSpec,
     tool_resolution_digest: &'a str,
     trusted_tools: &'a PrivilegedToolResolution,
+    prepared_invocation: &'a PreparedPrivilegedInvocation,
     mutation_enabled: bool,
     execution_started: bool,
 }
@@ -46,9 +48,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let command_digest = compiled_command.digest()?;
     let trusted_tools = resolve_privileged_command_tools(&compiled_command)?;
     let tool_resolution_digest = trusted_tools.digest()?;
+    let prepared_invocation =
+        prepare_privileged_invocation(&request, &live_identity, &compiled_command, &trusted_tools)?;
 
     let response = ValidationResponse {
-        status: "tool_provenance_verified",
+        status: "invocation_prepared",
         request_id: &request.request_id,
         execution_id: &request.execution_id,
         plan_step_id: request.plan_step_id,
@@ -57,6 +61,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         compiled_command: &compiled_command,
         tool_resolution_digest: &tool_resolution_digest,
         trusted_tools: &trusted_tools,
+        prepared_invocation: &prepared_invocation,
         mutation_enabled: false,
         execution_started: false,
     };
