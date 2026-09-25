@@ -207,7 +207,7 @@ M1B24 closes the post-journal/pre-spawn provenance window. After `Approved -> Ex
 
 M1B25 removes the remaining path-replacement window between provenance verification and a future exec. After M1B24 authorization, the helper re-resolves the trusted tool set, opens each canonical executable with `O_NOFOLLOW|O_CLOEXEC`, and verifies the opened file object itself against the trusted device/inode/uid/mode/size/SHA-256 identity. The resulting `PinnedPrivilegedTools` retains the open file descriptors plus a tamper-evident pin receipt; replacing `/usr/sbin/lvextend` or another path after pinning cannot redirect the already-open executable object. This gate still performs no process creation and leaves production mutation disabled.\n\nBackups and approval are defense-in-depth. Neither permits bypassing topology proof.
 
-
+M1B26 freezes the exact descriptor launch surface without spawning. The pinned primary and optional refresh files must be native ELF images; scripts fail closed so the future `fexecve` path can keep `O_CLOEXEC` without interpreter-FD leakage. The launch receipt binds the M1B25 pin, exact argv, optional stdin length/SHA-256, fixed non-inherited `PATH=/usr/sbin:/usr/bin:/sbin:/bin`, `LC_ALL=C`, primary/refresh ELF identities and `process_spawned=false`. Embedded NULs are rejected before any future C argv construction.\n\n
 ## M1B13 frozen execution intent contract
 
 M1B13 freezes the exact M1B12-approved plan into `FrozenExecutionIntentManifest`.
