@@ -299,7 +299,6 @@ mod tests {
         assert_eq!(permit.plan_step_id, 7);
     }
 
-
     fn continuation_start(
         authorization: &PrivilegedSpawnAuthorization,
     ) -> PrivilegedContinuationStartReceipt {
