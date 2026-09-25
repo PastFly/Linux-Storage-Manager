@@ -21,6 +21,19 @@ pub enum PrivilegedProgram {
     XfsGrowfs,
 }
 
+impl PrivilegedProgram {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sfdisk => "sfdisk",
+            Self::Partx => "partx",
+            Self::Pvresize => "pvresize",
+            Self::Lvextend => "lvextend",
+            Self::Resize2fs => "resize2fs",
+            Self::XfsGrowfs => "xfs_growfs",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PrivilegedKernelRefreshSpec {
     pub program: PrivilegedProgram,
