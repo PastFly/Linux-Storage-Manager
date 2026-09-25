@@ -17,6 +17,7 @@ mod native_operation;
 mod precondition_evidence;
 mod preconditions;
 mod privileged_argv;
+mod privileged_continue;
 mod privileged_exec;
 mod privileged_launch;
 mod privileged_permit;
