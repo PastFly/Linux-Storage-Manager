@@ -226,6 +226,8 @@ M1B32 adds exact live per-layer post-state verification after a `RediscoveryRequ
 
 M1B33 binds those runtime and live-verification receipts to the durable journal. The next privileged request must use the exact latest verified identity boundary, preventing later steps from reusing the original pre-mutation digest. A recovery-required process is durably forced to RecoveryRequired; a successful process is first persisted as Verifying and can return to Executing only for the exact adjacent mutation step, or reach Completed only at the final verified step. Any receipt, execution, sequence, or identity-chain mismatch fails closed and is reconciled as recovery-required. Production MUTATION_ENABLED remains false.
 
+M1B34 extends that verified continuation boundary through the existing pre-spawn chain. A later prepared invocation is bound to the exact durable verified boundary ID, current executing-journal digest, next plan-step ID and rolling live-identity digest. Spawn authorization re-resolves trusted tool provenance for that continuation receipt, and the descriptor launch permit accepts the continuation receipt without weakening the existing FD-pinning or launch-integrity checks. This closes the first-step-only pre-spawn gap while production mutation remains disabled.
+
 Semantic actions are typed as pre-execution evidence, mutation candidates or verification.
 No `pvresize` or other absent mutation is synthesized. Every mutation candidate receives a
 read-only barrier requiring fresh target identity, fresh capabilities, expected-state validation
