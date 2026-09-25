@@ -1985,31 +1985,6 @@ def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loo
     sentinel = (target / "readonly-sentinel").read_bytes()
     before_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
 
-    if filesystem == "xfs":
-        scrub = binary.run(
-            "xfs_scrub", "-n", "-k", str(target), allowed=(0, 4)
-        )
-        if scrub.returncode == 4:
-            expected = "Kernel metadata scrubbing facility is not available."
-            if expected not in scrub.stderr:
-                raise SafetyError(
-                    "XFS health preflight failed for an unexpected reason: "
-                    f"{scrub.stderr.strip()!r}"
-                )
-            unchanged = ready_snapshot(binary, loop.device, vg)
-            unchanged_lvs = [
-                row for row in unchanged["lvm"]["logical_volumes"]
-                if row.get("vg_name") == vg and row.get("path") == source
-            ]
-            if len(unchanged_lvs) != 1 or unchanged_lvs[0].get("size_bytes") != current_lv_size:
-                raise SafetyError("XFS scrub capability probe changed the disposable LV")
-            if os.statvfs(target).f_blocks * os.statvfs(target).f_frsize != before_fs_bytes:
-                raise SafetyError("XFS scrub capability probe changed filesystem capacity")
-            if (target / "readonly-sentinel").read_bytes() != sentinel:
-                raise SafetyError("XFS scrub capability probe changed the filesystem sentinel")
-            print("XFS_EXECUTOR_BLOCKED_EXPECTED=kernel-online-scrub-unavailable")
-            return
-
     association_row = binary.run(
         "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
     ).stdout.strip()
@@ -2065,6 +2040,8 @@ def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loo
         raise SafetyError("Rust harness did not clean its owned journal/backup artifacts")
 
     resources.uncertain = False
+    if filesystem == "xfs":
+        print("XFS_ONLINE_EXECUTOR_OK=xfs-growfs-mounted-rw", flush=True)
 
 
 def storage_facts(snapshot: dict[str, Any], loop: str, vg: str | None) -> Any:

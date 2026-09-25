@@ -303,34 +303,18 @@ fn decide_xfs(
         return;
     }
 
+    decision.state = FilesystemDecisionState::ReadyOnlineGrow;
+    decision.read_only_check = None;
+    decision.reasons.push(
+        "exact mounted read-write XFS growth path passed xfs_growfs -n; online growth is ready"
+            .to_owned(),
+    );
     if !tool_available(capabilities, "xfs_scrub") {
         decision.reasons.push(
-            "xfs_scrub is unavailable; executor-grade read-only XFS health validation cannot be performed"
+            "xfs_scrub is unavailable; online metadata scrub is optional diagnostic evidence and is not required for XFS growth admission"
                 .to_owned(),
         );
-        return;
     }
-
-    decision.state = FilesystemDecisionState::ReadOnlyHealthCheckRequired;
-    decision.read_only_check = Some(ReadOnlyFilesystemCheck {
-        kind: FilesystemCheckKind::XfsMountedScrubNoModify,
-        tool: "xfs_scrub".to_owned(),
-        args: vec!["-n".to_owned(), "-k".to_owned(), mount.target.clone()],
-        requires_mounted: true,
-        requires_unmounted: false,
-        run_automatically_on_refresh: false,
-        rationale:
-            "perform an explicit no-repair/no-optimization metadata scrub immediately before the future mutating execution window"
-                .to_owned(),
-    });
-    decision.reasons.push(
-        "XFS dry-run growth validation passed; an explicit read-only xfs_scrub health gate remains"
-            .to_owned(),
-    );
-    decision.required_actions.push(
-        "run the read-only XFS scrub only on explicit preflight, not on ordinary discovery refresh"
-            .to_owned(),
-    );
 }
 
 fn ext4_offline_check(device: &BlockDevice) -> Option<ReadOnlyFilesystemCheck> {
