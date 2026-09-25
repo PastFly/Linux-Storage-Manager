@@ -62,6 +62,11 @@ jobs:
       - name: Check non-mutating privileged-helper protocol boundary
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo clippy --locked -p lsm-executor --features production-helper-protocol --bin lsm-privileged-helper-protocol -- -D warnings
+      - name: Check explicit production mutation arm feature
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: |
+          cargo clippy --locked -p lsm-executor --features production-mutation --lib -- -D warnings
+          cargo test --locked -p lsm-executor --features production-mutation --lib
       # Preserve generated formatting and dependency evidence for review.
       # This runs AFTER checks and cannot turn failed checks into success.
       - name: Collect source and formatting diagnostics
