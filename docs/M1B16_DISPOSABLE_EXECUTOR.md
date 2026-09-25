@@ -135,9 +135,15 @@ The disposable matrix must cover at least:
 
 Offline ext4 is deliberately separated from the mounted online path. An unmounted ext4 target may become executable only after fresh identity/capability revalidation and an exact explicit no-modify `e2fsck -f -n <device>` receipt bound to the locked session. The resulting state is `ReadyOfflineGrow`, never `ReadyOnlineGrow`.
 
-The planner/frozen/native filesystem operation carries an optional mount identity. `None` is accepted only for ext4 and only while fresh discovery proves the exact filesystem device has no mount identity. XFS remains mounted-only and still requires its separate `xfs_scrub -n -k` health gate.
+The planner/frozen/native filesystem operation carries an optional mount identity. `None` is accepted only for ext4 and only while fresh discovery proves the exact filesystem device has no mount identity. XFS remains mounted-only. Its mandatory online admission gate is exact fresh `xfs_growfs -n` evidence on the same read-write mount; `xfs_scrub -n -k` remains optional diagnostic evidence because the kernel online-scrub facility is not available on every supported Linux kernel.
 
 For offline ext4 the disposable executor performs the same verified LV boundary as the online path, requires the filesystem backing device to equal the exact expected new LV size, executes exact non-shell `resize2fs <device>`, and terminally verifies that filesystem identity/size changed as expected while the target remained unmounted. The integration fixture then remounts the filesystem only after durable completion and verifies increased capacity plus unchanged sentinel data.
+
+## XFS online executor profile
+
+XFS growth remains online-only and is bound to one exact mounted read-write filesystem identity. The planner requires fresh filesystem geometry plus a successful exact `xfs_growfs -n` preflight for that same device/mount pair before the state becomes `ReadyOnlineGrow`.
+
+The disposable executor then verifies the exact LV boundary, compiles only `xfs_growfs -d <mountpoint>` for the frozen XFS target, rediscoveries the filesystem after mutation and requires capacity growth with unchanged sentinel data. A missing kernel online-scrub facility must not block otherwise verified XFS growth; `xfs_scrub -n -k` is retained as an optional operator diagnostic and never substitutes for the mandatory dry-run/identity/terminal checks.
 
 ## Explicitly out of scope
 

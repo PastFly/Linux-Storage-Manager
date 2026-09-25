@@ -774,10 +774,10 @@ mod tests {
     }
 
     #[test]
-    fn exact_xfs_health_receipt_promotes_only_the_matching_check() {
+    fn verified_xfs_grow_dry_run_completes_evidence_without_scrub_receipt() {
         let (snapshot, capabilities) = xfs_fixture();
         let handoff = handoff(&snapshot, &capabilities);
-        let lock = test_path("xfs-health").join("storage.lock");
+        let lock = test_path("xfs-ready").join("storage.lock");
         let _ = fs::remove_dir_all(lock.parent().unwrap());
         let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
         session.revalidate(&snapshot, &capabilities).unwrap();
@@ -789,38 +789,15 @@ mod tests {
             Vec::new(),
         );
 
-        let pending =
+        let complete =
             build_pre_mutation_evidence(&session, &snapshot, &capabilities, &backup).unwrap();
-        assert_eq!(
-            pending.status(),
-            PreMutationEvidenceStatus::FutureChecksRequired
-        );
-        let check = pending
-            .filesystem_decision()
-            .read_only_check
-            .as_ref()
-            .unwrap()
-            .clone();
-        let receipt = crate::ExplicitFilesystemHealthReceipt::test_for_check(&session, &check);
-
-        let complete = build_pre_mutation_evidence_with_filesystem_health(
-            &session,
-            &snapshot,
-            &capabilities,
-            &backup,
-            &receipt,
-        )
-        .unwrap();
         assert_eq!(complete.schema_version(), 3);
         assert_eq!(
             complete.filesystem_decision().state,
             FilesystemDecisionState::ReadyOnlineGrow
         );
         assert!(complete.filesystem_decision().read_only_check.is_none());
-        assert_eq!(
-            complete.filesystem_health_receipt_id(),
-            Some(receipt.receipt_id())
-        );
+        assert_eq!(complete.filesystem_health_receipt_id(), None);
         assert_eq!(
             complete.status(),
             PreMutationEvidenceStatus::EvidenceComplete
@@ -828,22 +805,7 @@ mod tests {
         assert!(!complete
             .future_gates()
             .iter()
-            .any(|gate| gate.starts_with("filesystem")));
-
-        let mut wrong_check = check;
-        wrong_check.args.push("--wrong-target".into());
-        let wrong_receipt =
-            crate::ExplicitFilesystemHealthReceipt::test_for_check(&session, &wrong_check);
-        assert!(matches!(
-            build_pre_mutation_evidence_with_filesystem_health(
-                &session,
-                &snapshot,
-                &capabilities,
-                &backup,
-                &wrong_receipt,
-            ),
-            Err(PreMutationEvidenceError::FilesystemHealthReceiptMismatch)
-        ));
+            .any(|gate| gate.contains("xfs_scrub")));
 
         let _ = fs::remove_dir_all(lock.parent().unwrap());
     }

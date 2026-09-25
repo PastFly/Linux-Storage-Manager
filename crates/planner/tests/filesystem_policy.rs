@@ -204,23 +204,19 @@ fn read_only_ext4_mount_is_blocked() {
 }
 
 #[test]
-fn xfs_requires_explicit_no_modify_scrub_after_grow_dry_run_passes() {
+fn xfs_grow_dry_run_promotes_mounted_rw_target_to_online_ready() {
     let mut snapshot = snapshot("xfs", true, &["rw", "relatime"]);
     snapshot.filesystem_preflight.push(xfs_evidence(Some(true)));
 
     let decision = decide_filesystem_growth(&snapshot, &capabilities(), "/data");
 
-    assert_eq!(
-        decision.state,
-        FilesystemDecisionState::ReadOnlyHealthCheckRequired
-    );
-    let check = decision.read_only_check.unwrap();
-    assert_eq!(check.kind, FilesystemCheckKind::XfsMountedScrubNoModify);
-    assert_eq!(check.tool, "xfs_scrub");
-    assert_eq!(check.args, vec!["-n", "-k", "/data"]);
-    assert!(check.requires_mounted);
-    assert!(!check.requires_unmounted);
-    assert!(!check.run_automatically_on_refresh);
+    assert_eq!(decision.state, FilesystemDecisionState::ReadyOnlineGrow);
+    assert!(decision.execution_ready());
+    assert!(decision.read_only_check.is_none());
+    assert!(decision
+        .reasons
+        .iter()
+        .any(|reason| reason.contains("xfs_growfs -n")));
 }
 
 #[test]
@@ -250,7 +246,7 @@ fn failed_xfs_grow_dry_run_blocks_health_promotion() {
 }
 
 #[test]
-fn missing_xfs_scrub_capability_blocks_executor_grade_health_decision() {
+fn missing_xfs_scrub_does_not_block_verified_online_growth() {
     let mut snapshot = snapshot("xfs", true, &["rw"]);
     snapshot.filesystem_preflight.push(xfs_evidence(Some(true)));
     let mut caps = capabilities();
@@ -262,11 +258,13 @@ fn missing_xfs_scrub_capability_blocks_executor_grade_health_decision() {
 
     let decision = decide_filesystem_growth(&snapshot, &caps, "/data");
 
-    assert_eq!(decision.state, FilesystemDecisionState::Blocked);
+    assert_eq!(decision.state, FilesystemDecisionState::ReadyOnlineGrow);
+    assert!(decision.execution_ready());
+    assert!(decision.read_only_check.is_none());
     assert!(decision
         .reasons
         .iter()
-        .any(|reason| reason.contains("xfs_scrub")));
+        .any(|reason| reason.contains("optional diagnostic")));
 }
 
 #[test]
