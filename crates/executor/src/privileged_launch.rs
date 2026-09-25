@@ -106,10 +106,7 @@ pub enum PrivilegedLaunchSpecError {
 fn inspect_elf(file: &File) -> Result<ElfExecutionIdentity, PrivilegedLaunchSpecError> {
     let mut ident = [0_u8; 16];
     let read = file.read_at(&mut ident, 0)?;
-    if read != ident.len()
-        || ident[0..4] != [0x7f, b'E', b'L', b'F']
-        || ident[6] != 1
-    {
+    if read != ident.len() || ident[0..4] != [0x7f, b'E', b'L', b'F'] || ident[6] != 1 {
         return Err(PrivilegedLaunchSpecError::UnsupportedExecutableFormat);
     }
 
@@ -253,10 +250,7 @@ mod tests {
 
     #[test]
     fn script_is_rejected_from_descriptor_launch_contract() {
-        let path = std::env::temp_dir().join(format!(
-            "lsm-launch-script-{}",
-            std::process::id()
-        ));
+        let path = std::env::temp_dir().join(format!("lsm-launch-script-{}", std::process::id()));
         fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
         let file = File::open(&path).unwrap();
 
