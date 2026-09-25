@@ -17,6 +17,7 @@ mod native_operation;
 mod precondition_evidence;
 mod preconditions;
 mod privileged_argv;
+mod privileged_exec;
 mod privileged_launch;
 mod privileged_permit;
 mod privileged_pin;
@@ -97,6 +98,9 @@ pub use preconditions::{
 pub use privileged_argv::{
     compile_privileged_helper_command, PrivilegedArgvError, PrivilegedCommandSpec,
     PrivilegedKernelRefreshSpec, PrivilegedProgram,
+};
+pub use privileged_exec::{
+    execute_privileged_descriptor_launch, DescriptorExecOutcome, PrivilegedDescriptorExecError,
 };
 pub use privileged_launch::{
     build_privileged_descriptor_launch_spec, DescriptorLaunchStage, ElfClass, ElfDataEncoding,
