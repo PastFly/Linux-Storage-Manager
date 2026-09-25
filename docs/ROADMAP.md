@@ -129,6 +129,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
   - [x] Online ext4 growth remains mounted read-write and uses exact fresh identity/terminal verification.
   - [x] Offline ext4 growth uses `ReadyOfflineGrow`, an exact session-bound `e2fsck -f -n <device>` gate, optional mount identity, unmounted-only `resize2fs`, exact LV/backing-size verification, terminal verification, and remount/sentinel acceptance on owned loops.
 - [ ] Support XFS online growth.
+  - [x] Route the explicit `xfs_scrub -n -k` health gate through the Rust locked-session executor, classify kernel online-scrub unavailability explicitly, and prove fail-closed/no-mutation behavior on owned loops.
 - [x] Automatically chain verified single-PV disk-tail growth through disk -> partition -> PV -> VG -> LV -> filesystem on the disposable executor; broader layered profiles remain separately gated.
 - [x] Keep every discovered filesystem selectable when several partitions/LVs exist; live loop coverage proves two mounted LV targets remain isolated and two mounted partition targets remain visible even when one is blocked by its neighbor.
 - [x] Present blocked paths with exact structured blocker code/message instead of silently omitting the target; the target catalog remains machine-readable and text CLI renders the same evidence.
