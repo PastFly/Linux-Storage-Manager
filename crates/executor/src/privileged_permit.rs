@@ -116,8 +116,8 @@ pub fn seal_privileged_launch_permit(
 mod tests {
     use super::*;
     use crate::{
-        DescriptorLaunchStage, ElfClass, ElfDataEncoding, ElfExecutionIdentity,
-        PinnedToolReceipt, PrivilegedProgram,
+        DescriptorLaunchStage, ElfClass, ElfDataEncoding, ElfExecutionIdentity, PinnedToolReceipt,
+        PrivilegedProgram,
     };
 
     fn digest(byte: char) -> String {
