@@ -249,7 +249,22 @@ fn verify_boundary_state(
                 .filesystem
                 .as_ref()
                 .ok_or(DisposableBoundaryVerificationError::FilesystemBackingSizeMismatch)?;
+            let offline_ext4 =
+                validated
+                    .manifest()
+                    .steps
+                    .iter()
+                    .any(|step| match &step.operation {
+                        NativeOperationSpec::GrowFilesystem {
+                            fs_type,
+                            mountpoint: None,
+                        } => fs_type == "ext4",
+                        _ => false,
+                    });
             if filesystem.backing_device_size_bytes != *expected_lv_size_bytes {
+                return Err(DisposableBoundaryVerificationError::FilesystemBackingSizeMismatch);
+            }
+            if offline_ext4 && !fresh_identity.mounts.is_empty() {
                 return Err(DisposableBoundaryVerificationError::FilesystemBackingSizeMismatch);
             }
         }
@@ -325,20 +340,31 @@ fn verify_terminal_filesystem_state(
         .as_ref()
         .ok_or(DisposableBoundaryVerificationError::FilesystemIdentityMismatch)?;
 
-    let before_mounts = before_growth
-        .mounts
-        .iter()
-        .filter(|mount| {
-            mount.target == *mountpoint && mount.fs_type.as_deref() == Some(fs_type.as_str())
-        })
-        .collect::<Vec<_>>();
-    let fresh_mounts = fresh_identity
-        .mounts
-        .iter()
-        .filter(|mount| {
-            mount.target == *mountpoint && mount.fs_type.as_deref() == Some(fs_type.as_str())
-        })
-        .collect::<Vec<_>>();
+    let mounts_match = match mountpoint.as_deref() {
+        Some(mountpoint) => {
+            let before_mounts = before_growth
+                .mounts
+                .iter()
+                .filter(|mount| {
+                    mount.target == mountpoint && mount.fs_type.as_deref() == Some(fs_type.as_str())
+                })
+                .collect::<Vec<_>>();
+            let fresh_mounts = fresh_identity
+                .mounts
+                .iter()
+                .filter(|mount| {
+                    mount.target == mountpoint && mount.fs_type.as_deref() == Some(fs_type.as_str())
+                })
+                .collect::<Vec<_>>();
+            before_mounts.len() == 1
+                && fresh_mounts.len() == 1
+                && before_mounts[0].source.is_some()
+                && before_mounts[0] == fresh_mounts[0]
+        }
+        None => {
+            fs_type == "ext4" && before_growth.mounts.is_empty() && fresh_identity.mounts.is_empty()
+        }
+    };
 
     if before_growth.target != fresh_identity.target
         || before_growth.resolved_device != fresh_identity.resolved_device
@@ -351,10 +377,7 @@ fn verify_terminal_filesystem_state(
         || before_filesystem.uuid.is_none()
         || before_filesystem.uuid != fresh_filesystem.uuid
         || before_filesystem.backing_device_size_bytes != fresh_filesystem.backing_device_size_bytes
-        || before_mounts.len() != 1
-        || fresh_mounts.len() != 1
-        || before_mounts[0].source.is_none()
-        || before_mounts[0] != fresh_mounts[0]
+        || !mounts_match
     {
         return Err(DisposableBoundaryVerificationError::FilesystemIdentityMismatch);
     }
@@ -549,7 +572,7 @@ mod tests {
                     role: FrozenIntentRole::MutationCandidate,
                     operation: NativeOperationSpec::GrowFilesystem {
                         fs_type: "ext4".into(),
-                        mountpoint: "/mnt/test".into(),
+                        mountpoint: Some("/mnt/test".into()),
                     },
                 },
             ],

@@ -1,4 +1,4 @@
-use lsm_planner::{ExactApprovalBinding, JournalPhase};
+use lsm_planner::{ExactApprovalBinding, FilesystemGrowthDecision, JournalPhase};
 use thiserror::Error;
 
 use crate::{
@@ -10,6 +10,7 @@ use crate::{
 pub struct ExactPlanApproval {
     binding: ExactApprovalBinding,
     journal_id: String,
+    filesystem_decision: FilesystemGrowthDecision,
     owner_acceptance_required: bool,
     mutation_enabled: bool,
 }
@@ -41,6 +42,10 @@ impl ExactPlanApproval {
 
     pub fn journal_id(&self) -> &str {
         &self.journal_id
+    }
+
+    pub fn filesystem_decision(&self) -> &FilesystemGrowthDecision {
+        &self.filesystem_decision
     }
 
     pub fn owner_acceptance_required(&self) -> bool {
@@ -211,6 +216,7 @@ pub fn approve_exact_plan(
     Ok(ExactPlanApproval {
         binding,
         journal_id: session.journal().journal_id.clone(),
+        filesystem_decision: verification.filesystem_decision().clone(),
         owner_acceptance_required: true,
         mutation_enabled: false,
     })

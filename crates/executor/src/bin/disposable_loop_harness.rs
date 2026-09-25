@@ -3,6 +3,8 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
 
 use lsm_discovery::{discover_capabilities, discover_snapshot};
 use lsm_executor::{
@@ -16,7 +18,7 @@ use lsm_executor::{
     verify_and_complete_disposable_execution, verify_and_continue_disposable_boundary,
     verify_disposable_loop_association_row, verify_preconditions, DisposableProgram,
     DisposableToolPaths, DurableJournalStore, LockedExecutionSession, LockedRevalidationStatus,
-    PreMutationEvidenceStatus,
+    NativeOperationSpec, PreMutationEvidenceStatus,
 };
 use lsm_planner::{
     build_frozen_execution_handoff, capture_target_identity, plan_extend, ExtendRequest,
@@ -48,6 +50,7 @@ struct Args {
     resize2fs: PathBuf,
     xfs_growfs: PathBuf,
     xfs_scrub: PathBuf,
+    e2fsck: Option<PathBuf>,
     udevadm: PathBuf,
     inject_failure_after_resize2fs: bool,
 }
@@ -133,23 +136,27 @@ fn run() -> HarnessResult<()> {
         &fresh_capabilities,
         &backup_revalidation,
     )?;
-    if evidence.status() == PreMutationEvidenceStatus::FutureChecksRequired
-        && evidence.filesystem_decision().state
-            == FilesystemDecisionState::ReadOnlyHealthCheckRequired
-    {
-        let health_receipt = execute_explicit_filesystem_health_check(
-            &session,
-            &fresh_snapshot,
-            &fresh_capabilities,
-            &args.xfs_scrub,
-        )?;
-        evidence = build_pre_mutation_evidence_with_filesystem_health(
-            &session,
-            &fresh_snapshot,
-            &fresh_capabilities,
-            &backup_revalidation,
-            &health_receipt,
-        )?;
+    if evidence.status() == PreMutationEvidenceStatus::FutureChecksRequired {
+        let health_tool = match evidence.filesystem_decision().state {
+            FilesystemDecisionState::ReadOnlyHealthCheckRequired => Some(args.xfs_scrub.as_path()),
+            FilesystemDecisionState::OfflineHealthCheckRequired => args.e2fsck.as_deref(),
+            _ => None,
+        };
+        if let Some(health_tool) = health_tool {
+            let health_receipt = execute_explicit_filesystem_health_check(
+                &session,
+                &fresh_snapshot,
+                &fresh_capabilities,
+                health_tool,
+            )?;
+            evidence = build_pre_mutation_evidence_with_filesystem_health(
+                &session,
+                &fresh_snapshot,
+                &fresh_capabilities,
+                &backup_revalidation,
+                &health_receipt,
+            )?;
+        }
     }
     if evidence.status() != PreMutationEvidenceStatus::EvidenceComplete {
         let mut details = evidence.blockers().to_vec();
@@ -262,15 +269,57 @@ fn run() -> HarnessResult<()> {
             }
 
             let final_mutation = index + 1 == commands.len();
-            if outcome.program == DisposableProgram::Lvextend {
+            let fresh_identity = if outcome.program == DisposableProgram::Lvextend {
                 refresh_udev(&args.udevadm, &current_identity.resolved_device)?;
+                let expected_lv_size = validated
+                    .manifest()
+                    .steps
+                    .iter()
+                    .find(|step| step.plan_step_id == outcome.plan_step_id)
+                    .and_then(|step| match &step.operation {
+                        NativeOperationSpec::ExtendLogicalVolume {
+                            expected_lv_size_bytes,
+                            ..
+                        } => Some(*expected_lv_size_bytes),
+                        _ => None,
+                    })
+                    .ok_or_else(|| boxed("executed LV step lost its exact expected size"))?;
+
+                let mut converged = None;
+                for attempt in 0..20 {
+                    let snapshot = discover_snapshot()?;
+                    let identity = capture_target_identity(&snapshot, &args.target)?;
+                    let backing_size = identity
+                        .filesystem
+                        .as_ref()
+                        .ok_or_else(|| boxed("fresh LV target lost filesystem identity"))?
+                        .backing_device_size_bytes;
+                    if backing_size == expected_lv_size {
+                        converged = Some(identity);
+                        break;
+                    }
+                    if backing_size > expected_lv_size {
+                        return Err(boxed(format!(
+                            "fresh LV backing size exceeded approved size: expected={expected_lv_size} actual={backing_size}"
+                        )));
+                    }
+                    if attempt < 19 {
+                        thread::sleep(Duration::from_millis(50));
+                        refresh_udev(&args.udevadm, &current_identity.resolved_device)?;
+                    }
+                }
+                converged.ok_or_else(|| {
+                    boxed(format!(
+                        "fresh LV backing size did not converge to approved size {expected_lv_size}"
+                    ))
+                })?
             } else {
                 settle_udev(&args.udevadm)?;
-            }
+                let snapshot = discover_snapshot()?;
+                capture_target_identity(&snapshot, &args.target)?
+            };
             session.persist_verification_started()?;
-            let fresh_snapshot = discover_snapshot()?;
             let fresh_capabilities = discover_capabilities();
-            let fresh_identity = capture_target_identity(&fresh_snapshot, &args.target)?;
 
             if final_mutation {
                 let completion = verify_and_complete_disposable_execution(
@@ -396,6 +445,7 @@ fn parse_args() -> HarnessResult<Args> {
         ));
     }
 
+    let e2fsck = values.remove("--e2fsck").map(PathBuf::from);
     let mut take = |key: &str| -> HarnessResult<String> {
         values
             .remove(key)
@@ -445,6 +495,7 @@ fn parse_args() -> HarnessResult<Args> {
         resize2fs,
         xfs_growfs,
         xfs_scrub,
+        e2fsck,
         udevadm,
         inject_failure_after_resize2fs,
     })

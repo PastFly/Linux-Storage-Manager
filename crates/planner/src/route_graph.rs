@@ -501,13 +501,22 @@ fn append_lvm_lv(snapshot: &HostSnapshot, device: &BlockDevice, route: &mut Laye
         )),
     });
 
+    let expected_attributes = if route.mountpoint.is_some() {
+        "-wi-ao----"
+    } else {
+        "-wi-a-----"
+    };
     if lv.layout.as_deref() != Some("linear")
         || lv.role.as_deref() != Some("public")
-        || lv.attributes.as_deref() != Some("-wi-ao----")
+        || lv.attributes.as_deref() != Some(expected_attributes)
     {
         route.issues.push(adapter(
             "lvm-layout-adapter-required",
-            "nonstandard, inactive or otherwise unsupported LVM logical-volume profiles require a dedicated adapter",
+            if route.mountpoint.is_some() {
+                "mounted LVM growth requires a public, linear, active and open logical volume"
+            } else {
+                "offline LVM growth requires a public, linear, active and not-open logical volume"
+            },
             Some(device_path(device)),
         ));
     }

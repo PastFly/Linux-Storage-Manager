@@ -105,7 +105,7 @@ mod tests {
                     role: FrozenIntentRole::MutationCandidate,
                     operation: NativeOperationSpec::GrowFilesystem {
                         fs_type: "ext4".into(),
-                        mountpoint: "/mnt/test".into(),
+                        mountpoint: Some("/mnt/test".into()),
                     },
                 },
             ],

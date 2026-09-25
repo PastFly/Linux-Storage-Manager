@@ -156,6 +156,31 @@ fn lvm_alias_target_resolves_same_route_as_mountpoint() {
 }
 
 #[test]
+fn unmounted_ext4_lvm_route_requires_active_not_open_lv() {
+    let mut snapshot = lvm_snapshot();
+    let device = &mut snapshot.storage.block_devices[0].children[0].children[0];
+    device.filesystem.as_mut().unwrap().fs_type = "ext4".into();
+    device.mountpoints.clear();
+    snapshot.mounts.clear();
+    snapshot.lvm.as_mut().unwrap().logical_volumes[0].attributes = Some("-wi-a-----".into());
+
+    let route = analyze_layer_route(&snapshot, "/dev/vg0/root");
+    assert_eq!(route.status, LayerRouteStatus::SupportedProfile);
+    assert_eq!(route.mountpoint, None);
+    assert!(!route
+        .layers
+        .iter()
+        .any(|layer| layer.kind == RouteLayerKind::Mount));
+
+    snapshot.lvm.as_mut().unwrap().logical_volumes[0].attributes = Some("-wi-ao----".into());
+    let open_route = analyze_layer_route(&snapshot, "/dev/vg0/root");
+    assert_eq!(open_route.status, LayerRouteStatus::AdapterRequired);
+    assert!(open_route.issues.iter().any(|issue| {
+        issue.kind == RouteIssueKind::AdapterRequired && issue.code == "lvm-layout-adapter-required"
+    }));
+}
+
+#[test]
 fn encryption_layer_is_visible_and_requires_adapter() {
     let snapshot: HostSnapshot = serde_json::from_value(json!({
         "storage": {"block_devices": [{

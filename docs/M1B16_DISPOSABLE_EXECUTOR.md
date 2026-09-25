@@ -131,6 +131,14 @@ The disposable matrix must cover at least:
 - exact before/after storage facts;
 - complete cleanup only when harness ownership remains certain.
 
+## Offline ext4 executor profile
+
+Offline ext4 is deliberately separated from the mounted online path. An unmounted ext4 target may become executable only after fresh identity/capability revalidation and an exact explicit no-modify `e2fsck -f -n <device>` receipt bound to the locked session. The resulting state is `ReadyOfflineGrow`, never `ReadyOnlineGrow`.
+
+The planner/frozen/native filesystem operation carries an optional mount identity. `None` is accepted only for ext4 and only while fresh discovery proves the exact filesystem device has no mount identity. XFS remains mounted-only and still requires its separate `xfs_scrub -n -k` health gate.
+
+For offline ext4 the disposable executor performs the same verified LV boundary as the online path, requires the filesystem backing device to equal the exact expected new LV size, executes exact non-shell `resize2fs <device>`, and terminally verifies that filesystem identity/size changed as expected while the target remained unmounted. The integration fixture then remounts the filesystem only after durable completion and verifies increased capacity plus unchanged sentinel data.
+
 ## Explicitly out of scope
 
 M1B16 does not expose:
