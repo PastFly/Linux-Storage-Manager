@@ -189,6 +189,8 @@ M1B19 upgrades that boundary to protocol schema v2 and binds each request to the
 
 M1B20 adds exact command compilation after helper-side live identity revalidation. One authorized mutation request compiles to one typed non-shell command spec: exact `sfdisk` plus `partx` refresh geometry, exact `pvresize`, exact `lvextend`, `resize2fs`, or mounted `xfs_growfs`. Compilation rechecks live partition/LVM/filesystem/mount identity and emits a deterministic SHA-256 command digest. The helper response remains validation-only: `mutation_enabled=false`, `execution_started=false`; no storage tool is spawned and the durable journal is not advanced.
 
+M1B21 binds the compiled command to trusted executable provenance before any future spawn. The helper searches only fixed system directories, requires root-owned executable files and root-owned/non-writable directory chains, permits only root-owned symlink aliases to a root-owned canonical executable, rejects multiple distinct executable identities for the same program, and records canonical path, device/inode, uid/mode, size and SHA-256 for both the primary tool and any `partx` kernel-refresh tool. A deterministic tool-resolution digest also binds the exact M1B20 command digest. The response remains non-mutating: no command is spawned and the journal is unchanged.
+
 Owner acceptance for continuing the production-gate rollout was recorded on 2026-09-25. That acceptance removes the conversational approval stop for this project, but it does not weaken any technical safety invariant: production mutation remains disabled until the remaining helper/runtime/verification gates are implemented and tested.
 
 Before any production path can enter `Executing`, separately review:
