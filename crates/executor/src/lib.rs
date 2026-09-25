@@ -27,6 +27,7 @@ mod privileged_result;
 mod privileged_spawn;
 mod privileged_start;
 mod privileged_tools;
+mod privileged_verify;
 
 pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError};
 pub use backup_capture::{
@@ -138,6 +139,10 @@ pub use privileged_start::{
 pub use privileged_tools::{
     resolve_privileged_command_tools, resolve_trusted_privileged_tool, PrivilegedToolResolution,
     TrustedToolError, TrustedToolIdentity,
+};
+pub use privileged_verify::{
+    verify_privileged_layer_post_state, PrivilegedLayerVerificationError,
+    PrivilegedLayerVerificationReceipt,
 };
 
 use std::fs::{self, File, OpenOptions};
