@@ -18,6 +18,7 @@ mod precondition_evidence;
 mod preconditions;
 mod privileged_argv;
 mod privileged_protocol;
+mod privileged_prepared;
 mod privileged_tools;
 
 pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError};
@@ -91,6 +92,9 @@ pub use preconditions::{
 pub use privileged_argv::{
     compile_privileged_helper_command, PrivilegedArgvError, PrivilegedCommandSpec,
     PrivilegedKernelRefreshSpec, PrivilegedProgram,
+};
+pub use privileged_prepared::{
+    prepare_privileged_invocation, PreparedInvocationError, PreparedPrivilegedInvocation,
 };
 pub use privileged_protocol::{
     build_privileged_helper_request, decode_privileged_helper_request,
