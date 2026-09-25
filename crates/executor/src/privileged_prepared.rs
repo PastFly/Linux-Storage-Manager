@@ -74,11 +74,9 @@ pub fn prepare_privileged_invocation(
         return Err(PreparedInvocationError::CommandStepMismatch);
     }
 
-    let command_digest = command
-        .digest()
-        .map_err(|error| PreparedInvocationError::Tools(
-            TrustedToolError::CommandDigest(error.to_string())
-        ))?;
+    let command_digest = command.digest().map_err(|error| {
+        PreparedInvocationError::Tools(TrustedToolError::CommandDigest(error.to_string()))
+    })?;
     if tools.command_digest != command_digest {
         return Err(PreparedInvocationError::ToolCommandDigestMismatch);
     }
@@ -134,7 +132,12 @@ mod tests {
         let command = PrivilegedCommandSpec {
             plan_step_id: 3,
             program: PrivilegedProgram::Lvextend,
-            args: vec!["--extents".into(), "+8".into(), "--".into(), "/dev/vg/data".into()],
+            args: vec![
+                "--extents".into(),
+                "+8".into(),
+                "--".into(),
+                "/dev/vg/data".into(),
+            ],
             stdin_payload: None,
             kernel_refresh: None,
         };
@@ -176,7 +179,12 @@ mod tests {
             stdin_payload: Some("start=2048, size=4096\n".into()),
             kernel_refresh: Some(PrivilegedKernelRefreshSpec {
                 program: PrivilegedProgram::Partx,
-                args: vec!["--update".into(), "--nr".into(), "1".into(), "/dev/sda".into()],
+                args: vec![
+                    "--update".into(),
+                    "--nr".into(),
+                    "1".into(),
+                    "/dev/sda".into(),
+                ],
             }),
         };
         let tools = PrivilegedToolResolution {
