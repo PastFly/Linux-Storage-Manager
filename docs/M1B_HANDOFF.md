@@ -185,6 +185,10 @@ M1B17 privileged-helper protocol now defines the first production-side transport
 
 M1B18 adds the first feature-gated helper process boundary around that contract. `lsm-privileged-helper-protocol` accepts one bounded JSON request on stdin, decodes and round-trips the typed wire shape, revalidates the digest and operation safety rules, and emits only a validation receipt with `mutation_enabled=false` and `execution_started=false`. It has no storage-tool spawning path and cannot advance the journal. CI separately compiles/clippy-checks this binary. Actual privileged argv compilation, root authorization and writes remain later gates.
 
+M1B19 upgrades that boundary to protocol schema v2 and binds each request to the exact target selector and resolved device in addition to the existing execution/native/fresh-identity digests. The helper now performs its own read-only discovery, captures the live target identity, and requires target, resolved device and manifest digest to match exactly before returning `identity_revalidated`. Any drift fails closed. The helper still does not compile mutation argv, spawn storage tools, advance the journal or enable production mutation.
+
+Owner acceptance for continuing the production-gate rollout was recorded on 2026-09-25. That acceptance removes the conversational approval stop for this project, but it does not weaken any technical safety invariant: production mutation remains disabled until the remaining helper/runtime/verification gates are implemented and tested.
+
 Before any production path can enter `Executing`, separately review:
 
 - explicit owner acceptance for mutation-capable rollout;

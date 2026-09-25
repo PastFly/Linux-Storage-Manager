@@ -9,7 +9,7 @@ publish.workspace = true
 default = []
 disposable-executor = []
 disposable-loop-harness = ["disposable-executor", "dep:lsm-discovery"]
-production-helper-protocol = []
+production-helper-protocol = ["dep:lsm-discovery"]
 
 [[bin]]
 name = "lsm-disposable-loop-harness"

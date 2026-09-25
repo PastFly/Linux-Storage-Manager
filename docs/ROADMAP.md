@@ -88,7 +88,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 `pvresize`, `lvextend` and filesystem commands.
 
 - [x] Freeze the exact M1A plan, target identity manifest, filesystem decision and execution guard into a repeatable non-mutating M1B0 handoff.
-- [ ] Obtain explicit owner acceptance of the completed M0/M1A baseline before any mutation-capable executor rollout.
+- [x] Obtain explicit owner acceptance of the completed M0/M1A baseline before any mutation-capable executor rollout; owner acceptance was recorded on 2026-09-25 and does not bypass CI, identity, recovery or production-safety gates.
 - [x] Implement a non-mutating host-exclusive advisory lock primitive with nonblocking OS-backed locking and RAII release.
 - [ ] Wire the host-exclusive lock into the mutation-capable executor only after the owner-acceptance gate is satisfied.
 - [x] Wire target-manifest and capability-inventory revalidation into a non-mutating locked pre-executor session.
@@ -115,6 +115,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Compile the first disposable-only `LV -> filesystem` profile into a minimal typed executable argv allowlist bound to fresh identity.
 - [x] Define a versioned, digest-bound privileged-helper request protocol that carries one exact validated native mutation step, rejects foreign execution bindings and unsafe operation payloads, and contains no generic shell command surface; production mutation remains disabled.
 - [x] Add a feature-gated non-mutating privileged-helper process boundary with bounded strict JSON decoding, protocol revalidation and validation-only receipts; no storage tool is spawned and production mutation remains disabled.
+- [x] Bind privileged-helper protocol v2 to the exact target selector/resolved device and independently rediscover/revalidate the live target inside the helper process before any future command compilation; drift fails closed and mutation remains disabled.
 - [x] Execute the first `LV -> filesystem` profile only on harness-owned `/dev/loopN` fixtures while production `MUTATION_ENABLED=false` remains unchanged; ext4 completes the live mutation path and XFS remains fail-closed when the host kernel lacks online scrub support.
 - [x] Prevent blind replay from replacing an existing durable journal with a fresh `HostLockHeld` record.
 - [x] Prove a forced pre-spawn executor failure after durable `Executing` transitions to `RecoveryRequired`, preserves recovery evidence and leaves LV/filesystem/sentinel state unchanged.
