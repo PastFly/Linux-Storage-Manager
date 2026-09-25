@@ -23,6 +23,7 @@ mod privileged_permit;
 mod privileged_pin;
 mod privileged_prepared;
 mod privileged_protocol;
+mod privileged_result;
 mod privileged_spawn;
 mod privileged_start;
 mod privileged_tools;
@@ -122,6 +123,10 @@ pub use privileged_protocol::{
     validate_privileged_helper_live_identity, validate_privileged_helper_request,
     PrivilegedHelperProtocolError, PrivilegedHelperRequest, MAX_PRIVILEGED_HELPER_REQUEST_BYTES,
     PRIVILEGED_HELPER_PROTOCOL_VERSION,
+};
+pub use privileged_result::{
+    classify_privileged_process_outcome, PrivilegedProcessReceipt, PrivilegedProcessReceiptError,
+    PrivilegedRuntimeDisposition,
 };
 pub use privileged_spawn::{
     authorize_privileged_spawn, PrivilegedSpawnAuthorization, PrivilegedSpawnAuthorizationError,

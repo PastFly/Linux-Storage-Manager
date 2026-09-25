@@ -218,7 +218,7 @@ M1B29 extends the descriptor runtime contract to exact stdin and ordered refresh
 
 M1B30 isolates and bounds child diagnostics before production enablement. Each descriptor child gets dedicated close-on-exec stdout/stderr pipes; the parent drains both concurrently so a verbose tool cannot deadlock on a full pipe, retains at most 64 KiB per stream, and records truncation flags while discarding overflow. Unit tests prove stdout capture and failed-child stderr capture with benign ELF utilities. No production storage process can cross the existing `ProductionMutationDisabled` gate yet.
 
-The manifest binds approval ID, approved journal ID/digest, plan ID, evidence bundle ID, target
+M1B31 defines the first post-spawn runtime receipt without yet enabling production storage execution. A child exit code of zero is never interpreted as completion: it yields `RediscoveryRequired` only when the primary and any required kernel-refresh stage both exited successfully. Any nonzero primary/refresh or a missing expected refresh yields `RecoveryRequired`, because the durable journal already assumes mutation may have started. The receipt binds execution/permit/launch/step/command IDs plus SHA-256/truncation evidence for bounded stdout/stderr, and remains a pure classification layer until production rediscovery/per-layer verification is wired.\n\nThe manifest binds approval ID, approved journal ID/digest, plan ID, evidence bundle ID, target
 manifest digest and locked-session ID. Every source `PlanStep` is represented exactly once,
 dependency lists are preserved, and malformed/cyclic graphs fail closed.
 
