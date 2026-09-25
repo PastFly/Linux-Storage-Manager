@@ -213,8 +213,7 @@ mod tests {
         let prepared = prepared(&command, &tools);
         let start = start(&prepared);
 
-        let authorization =
-            authorize_with_resolution(&start, &prepared, &command, &tools).unwrap();
+        let authorization = authorize_with_resolution(&start, &prepared, &command, &tools).unwrap();
         assert!(authorization.integrity_matches().unwrap());
         assert_eq!(authorization.plan_step_id, 7);
         assert_eq!(authorization.command_digest, prepared.command_digest);
