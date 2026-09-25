@@ -92,15 +92,15 @@ pub use privileged_argv::{
     compile_privileged_helper_command, PrivilegedArgvError, PrivilegedCommandSpec,
     PrivilegedKernelRefreshSpec, PrivilegedProgram,
 };
-pub use privileged_tools::{
-    resolve_privileged_command_tools, resolve_trusted_privileged_tool, PrivilegedToolResolution,
-    TrustedToolError, TrustedToolIdentity,
-};
 pub use privileged_protocol::{
     build_privileged_helper_request, decode_privileged_helper_request,
     validate_privileged_helper_live_identity, validate_privileged_helper_request,
     PrivilegedHelperProtocolError, PrivilegedHelperRequest, MAX_PRIVILEGED_HELPER_REQUEST_BYTES,
     PRIVILEGED_HELPER_PROTOCOL_VERSION,
+};
+pub use privileged_tools::{
+    resolve_privileged_command_tools, resolve_trusted_privileged_tool, PrivilegedToolResolution,
+    TrustedToolError, TrustedToolIdentity,
 };
 
 use std::fs::{self, File, OpenOptions};
