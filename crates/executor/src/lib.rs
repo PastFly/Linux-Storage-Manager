@@ -17,8 +17,8 @@ mod native_operation;
 mod precondition_evidence;
 mod preconditions;
 mod privileged_argv;
-mod privileged_protocol;
 mod privileged_prepared;
+mod privileged_protocol;
 mod privileged_tools;
 
 pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError};
