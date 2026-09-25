@@ -147,8 +147,8 @@ fn compile_operation(
                 return Err(PrivilegedArgvError::PartitionGeometryMismatch);
             }
 
-            let number =
-                partition_number(partition, disk).ok_or(PrivilegedArgvError::PartitionNumberInvalid)?;
+            let number = partition_number(partition, disk)
+                .ok_or(PrivilegedArgvError::PartitionNumberInvalid)?;
             let disk_identity = identity
                 .devices
                 .iter()
@@ -173,9 +173,7 @@ fn compile_operation(
                     number.to_string(),
                     disk.to_owned(),
                 ],
-                stdin_payload: Some(format!(
-                    "start={start_sector}, size={new_size_sectors}\n"
-                )),
+                stdin_payload: Some(format!("start={start_sector}, size={new_size_sectors}\n")),
                 kernel_refresh: Some(PrivilegedKernelRefreshSpec {
                     program: PrivilegedProgram::Partx,
                     args: vec![
@@ -282,9 +280,15 @@ fn compile_operation(
             }
             let mounted = |expected: &str| {
                 safe_absolute_path(expected)
-                    && identity.mounts.iter().filter(|mount| {
-                        mount.target == expected && mount.fs_type.as_deref() == Some(fs_type.as_str())
-                    }).count() == 1
+                    && identity
+                        .mounts
+                        .iter()
+                        .filter(|mount| {
+                            mount.target == expected
+                                && mount.fs_type.as_deref() == Some(fs_type.as_str())
+                        })
+                        .count()
+                        == 1
             };
             match fs_type.as_str() {
                 "ext4" => {
