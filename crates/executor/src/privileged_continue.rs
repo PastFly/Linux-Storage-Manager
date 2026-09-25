@@ -414,7 +414,7 @@ mod tests {
         process: &PrivilegedProcessReceipt,
         fresh_digest: String,
     ) -> PrivilegedLayerVerificationReceipt {
-        let operation = match request.operation {
+        let operation = match &request.operation {
             NativeOperationSpec::ExtendPartition { .. } => "extend_partition",
             NativeOperationSpec::ResizePhysicalVolume { .. } => "resize_physical_volume",
             NativeOperationSpec::ExtendLogicalVolume { .. } => "extend_logical_volume",
