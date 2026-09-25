@@ -212,6 +212,8 @@ M1B26 freezes the exact descriptor launch surface without spawning. The pinned p
 
 M1B27 seals the complete pre-spawn authorization chain into one deterministic launch permit. The durable execution-start receipt, M1B24 spawn authorization and M1B26 descriptor launch receipt must agree on execution ID, start receipt, authorization ID, first mutation step and command digest. Tampering at any layer fails closed. The permit explicitly retains `mutation_enabled=false` and `process_spawned=false`; it is the final non-executing authorization object before a future descriptor-based spawn primitive.\n\nM1B13 freezes the exact M1B12-approved plan into `FrozenExecutionIntentManifest`.
 
+M1B28 implements the descriptor execution primitive itself using `fork` + `fexecve` on an already-open executable file descriptor, fixed `PATH`/`LC_ALL` and exact argv. Unit tests execute only benign `/usr/bin/true` and `/usr/bin/false` descriptors and verify exit-status handling plus pre-fork argv/program mismatch rejection. The production wrapper revalidates the M1B27 permit, M1B26 launch spec and M1B25 pinned descriptor chain, but deliberately returns `ProductionMutationDisabled` while `MUTATION_ENABLED=false`; no storage tool can yet be spawned by production code.
+
 The manifest binds approval ID, approved journal ID/digest, plan ID, evidence bundle ID, target
 manifest digest and locked-session ID. Every source `PlanStep` is represented exactly once,
 dependency lists are preserved, and malformed/cyclic graphs fail closed.
