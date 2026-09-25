@@ -114,7 +114,6 @@ pub fn seal_privileged_launch_permit(
     Ok(permit)
 }
 
-
 /// Seal the same descriptor launch chain for a later step that was bound to a
 /// durable verified continuation boundary.
 pub fn seal_privileged_continuation_launch_permit(
@@ -301,7 +300,9 @@ mod tests {
     }
 
 
-    fn continuation_start(authorization: &PrivilegedSpawnAuthorization) -> PrivilegedContinuationStartReceipt {
+    fn continuation_start(
+        authorization: &PrivilegedSpawnAuthorization,
+    ) -> PrivilegedContinuationStartReceipt {
         let mut value = PrivilegedContinuationStartReceipt {
             schema_version: 1,
             receipt_id: String::new(),
