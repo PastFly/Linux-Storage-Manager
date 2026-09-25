@@ -101,6 +101,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends lvm2 e2fsprogs xfsprogs util-linux fdisk
+      - name: Verify trusted production-helper tool provenance
+        run: |
+          cargo test --locked -p lsm-executor --features production-helper-protocol \
+            privileged_tools::tests::resolves_installed_storage_tools_with_root_owned_provenance \
+            -- --ignored --exact --nocapture
       - name: Build storagemgr and isolated disposable executor harness
         run: |
           cargo build --locked --release --workspace

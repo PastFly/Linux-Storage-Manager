@@ -4,8 +4,9 @@ use std::process::ExitCode;
 use lsm_discovery::discover_snapshot;
 use lsm_executor::{
     compile_privileged_helper_command, decode_privileged_helper_request,
-    validate_privileged_helper_live_identity, PrivilegedCommandSpec,
-    MAX_PRIVILEGED_HELPER_REQUEST_BYTES, MUTATION_ENABLED,
+    resolve_privileged_command_tools, validate_privileged_helper_live_identity,
+    PrivilegedCommandSpec, PrivilegedToolResolution, MAX_PRIVILEGED_HELPER_REQUEST_BYTES,
+    MUTATION_ENABLED,
 };
 use lsm_planner::capture_target_identity;
 use serde::Serialize;
@@ -19,6 +20,8 @@ struct ValidationResponse<'a> {
     live_identity_digest: &'a str,
     command_digest: &'a str,
     compiled_command: &'a PrivilegedCommandSpec,
+    tool_resolution_digest: &'a str,
+    trusted_tools: &'a PrivilegedToolResolution,
     mutation_enabled: bool,
     execution_started: bool,
 }
@@ -41,15 +44,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     validate_privileged_helper_live_identity(&request, &live_identity)?;
     let compiled_command = compile_privileged_helper_command(&request, &live_identity)?;
     let command_digest = compiled_command.digest()?;
+    let trusted_tools = resolve_privileged_command_tools(&compiled_command)?;
+    let tool_resolution_digest = trusted_tools.digest()?;
 
     let response = ValidationResponse {
-        status: "command_compiled",
+        status: "tool_provenance_verified",
         request_id: &request.request_id,
         execution_id: &request.execution_id,
         plan_step_id: request.plan_step_id,
         live_identity_digest: &live_identity.manifest_digest,
         command_digest: &command_digest,
         compiled_command: &compiled_command,
+        tool_resolution_digest: &tool_resolution_digest,
+        trusted_tools: &trusted_tools,
         mutation_enabled: false,
         execution_started: false,
     };
