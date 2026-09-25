@@ -126,10 +126,9 @@ pub use privileged_prepared::{
 };
 pub use privileged_protocol::{
     build_privileged_helper_request, build_privileged_helper_request_for_durable_step,
-    decode_privileged_helper_request,
-    validate_privileged_helper_live_identity, validate_privileged_helper_request,
-    PrivilegedHelperProtocolError, PrivilegedHelperRequest, MAX_PRIVILEGED_HELPER_REQUEST_BYTES,
-    PRIVILEGED_HELPER_PROTOCOL_VERSION,
+    decode_privileged_helper_request, validate_privileged_helper_live_identity,
+    validate_privileged_helper_request, PrivilegedHelperProtocolError, PrivilegedHelperRequest,
+    MAX_PRIVILEGED_HELPER_REQUEST_BYTES, PRIVILEGED_HELPER_PROTOCOL_VERSION,
 };
 pub use privileged_result::{
     classify_privileged_process_outcome, PrivilegedProcessReceipt, PrivilegedProcessReceiptError,
