@@ -75,6 +75,8 @@ pub enum ProductionMutationArmError {
     StepSequenceMismatch,
     #[error("requested target identity does not consume the current durable boundary")]
     IdentityBoundaryMismatch,
+    #[error("production mutation arm does not match the current durable step")]
+    ArmBindingMismatch,
     #[error("production mutation arm serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
     #[error("durable journal access failed: {0}")]
@@ -208,6 +210,33 @@ pub fn arm_production_mutation(
         effective_uid,
         PRODUCTION_MUTATION_COMPILED,
     )
+}
+
+
+pub(crate) fn validate_production_mutation_arm(
+    session: &LockedExecutionSession<'_>,
+    arm: &ProductionMutationArm,
+    request: &PrivilegedHelperRequest,
+    permit: &PrivilegedLaunchPermit,
+) -> Result<(), ProductionMutationArmError> {
+    session.require_current_durable_journal()?;
+    if !arm.integrity_matches()? {
+        return Err(ProductionMutationArmError::ArmBindingMismatch);
+    }
+
+    let effective_uid = unsafe { libc::geteuid() };
+    let expected = build_production_mutation_arm(
+        session.journal(),
+        request,
+        permit,
+        PRODUCTION_MUTATION_ARM_CONFIRMATION,
+        effective_uid,
+        PRODUCTION_MUTATION_COMPILED,
+    )?;
+    if expected != *arm {
+        return Err(ProductionMutationArmError::ArmBindingMismatch);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
