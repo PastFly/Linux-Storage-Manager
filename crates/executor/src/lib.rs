@@ -120,6 +120,8 @@ pub use privileged_exec::{
     execute_privileged_descriptor_launch, DescriptorExecOutcome, PrivilegedDescriptorExecError,
     PrivilegedDescriptorSequenceOutcome,
 };
+#[cfg(feature = "production-mutation")]
+pub use privileged_exec::execute_privileged_descriptor_launch_armed;
 pub use privileged_launch::{
     build_privileged_descriptor_launch_spec, DescriptorLaunchStage, ElfClass, ElfDataEncoding,
     ElfExecutionIdentity, PrivilegedDescriptorLaunchSpec, PrivilegedLaunchSpecError,
