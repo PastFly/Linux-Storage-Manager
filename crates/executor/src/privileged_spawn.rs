@@ -107,7 +107,6 @@ fn authorize_with_resolution(
     Ok(authorization)
 }
 
-
 fn authorize_continuation_with_resolution(
     start: &PrivilegedContinuationStartReceipt,
     prepared: &PreparedPrivilegedInvocation,
@@ -284,7 +283,9 @@ mod tests {
     }
 
 
-    fn continuation_start(prepared: &PreparedPrivilegedInvocation) -> PrivilegedContinuationStartReceipt {
+    fn continuation_start(
+        prepared: &PreparedPrivilegedInvocation,
+    ) -> PrivilegedContinuationStartReceipt {
         let mut start = PrivilegedContinuationStartReceipt {
             schema_version: 1,
             receipt_id: String::new(),
