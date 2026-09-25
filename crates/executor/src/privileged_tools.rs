@@ -196,7 +196,10 @@ pub fn resolve_trusted_privileged_tool(
         return Err(TrustedToolError::Ambiguous(program));
     }
 
-    Ok(unique.into_values().next().expect("non-empty trusted tool set"))
+    Ok(unique
+        .into_values()
+        .next()
+        .expect("non-empty trusted tool set"))
 }
 
 pub fn resolve_privileged_command_tools(
