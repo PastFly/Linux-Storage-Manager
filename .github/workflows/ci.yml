@@ -59,6 +59,9 @@ jobs:
       - name: Check isolated loop harness feature
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo clippy --locked -p lsm-executor --features disposable-loop-harness --bin lsm-disposable-loop-harness -- -D warnings
+      - name: Check non-mutating privileged-helper protocol boundary
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo clippy --locked -p lsm-executor --features production-helper-protocol --bin lsm-privileged-helper-protocol -- -D warnings
       # Preserve generated formatting and dependency evidence for review.
       # This runs AFTER checks and cannot turn failed checks into success.
       - name: Collect source and formatting diagnostics

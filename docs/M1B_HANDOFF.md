@@ -183,6 +183,8 @@ mutate storage.
 
 M1B17 privileged-helper protocol now defines the first production-side transport contract without enabling writes. One request is bound to the exact durable execution ID, source/native/fresh-identity digests and one validated native mutation step. The protocol is versioned and self-digested, rejects foreign bindings, non-mutation steps, unsafe partition geometry/device paths, unsupported filesystem modes and any tampering. It deliberately carries semantic typed operations rather than arbitrary shell text or argv. `MUTATION_ENABLED=false` remains unchanged; no privileged process is spawned yet.
 
+M1B18 adds the first feature-gated helper process boundary around that contract. `lsm-privileged-helper-protocol` accepts one bounded JSON request on stdin, decodes and round-trips the typed wire shape, revalidates the digest and operation safety rules, and emits only a validation receipt with `mutation_enabled=false` and `execution_started=false`. It has no storage-tool spawning path and cannot advance the journal. CI separately compiles/clippy-checks this binary. Actual privileged argv compilation, root authorization and writes remain later gates.
+
 Before any production path can enter `Executing`, separately review:
 
 - explicit owner acceptance for mutation-capable rollout;
