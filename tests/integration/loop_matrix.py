@@ -1879,6 +1879,12 @@ def exercise_ext4_offline_growth_mutation(
     )
     if absent.returncode != 1 or absent.stdout.strip() or absent.stderr.strip():
         raise SafetyError("offline ext4 fixture did not unmount cleanly")
+
+    # Test-fixture preparation only: ensure the owned disposable ext4 image has a
+    # completed writable fsck immediately before the product's read-only e2fsck
+    # gate. This removes host/kernel mount-count variance without weakening the
+    # production no-modify health check.
+    binary.run("e2fsck", "-f", "-y", source)
     refresh_fixture_udev(binary, Path(source).resolve(strict=True).name)
 
     unmounted = ready_snapshot(binary, loop.device, vg)
