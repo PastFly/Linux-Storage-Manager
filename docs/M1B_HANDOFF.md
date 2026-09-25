@@ -195,7 +195,7 @@ M1B22 freezes the helper-side pre-spawn state into a deterministic `PreparedPriv
 
 M1B23 closes the durable pre-spawn crash window. The orchestrator may persist `Approved -> Executing` only while the host lock is still held and only when the exact `ExecutionStartBinding`, first-step helper request and tamper-evident M1B22 prepared invocation all agree on execution/source/native/fresh-identity IDs. The durable transition is written before any future process creation and conservatively sets `mutation_may_have_started=true`; a deterministic start receipt binds the resulting executing-journal digest. This gate still spawns no storage tool, so production writes remain disabled while the journal/lock semantics are now wired to the production-side path.\n\nBefore any production path can enter `Executing`, separately review:
 
-- explicit owner acceptance for mutation-capable rollout;
+M1B24 closes the post-journal/pre-spawn provenance window. After `Approved -> Executing` has been persisted, the executor re-resolves the exact M1B20 command against fixed trusted system directories and re-hashes the selected primary and optional kernel-refresh executables. The fresh command digest and tool-resolution digest must exactly match the M1B22 prepared invocation; any executable replacement, inode/path/provenance drift, command mutation or prepared/start-receipt mismatch fails closed. A deterministic spawn-authorization receipt binds the execution-start receipt, prepared invocation, step, command and tool digests. This gate deliberately still performs no process creation.\n\n- explicit owner acceptance for mutation-capable rollout;
 - privileged-helper architecture;
 - minimal command allowlist;
 - exact executable argv specs;
