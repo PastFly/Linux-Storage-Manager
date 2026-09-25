@@ -327,11 +327,17 @@ fn run() -> HarnessResult<()> {
                 for attempt in 0..20 {
                     let snapshot = discover_snapshot()?;
                     let identity = capture_target_identity(&snapshot, &args.target)?;
-                    let backing_size = identity
-                        .filesystem
-                        .as_ref()
-                        .ok_or_else(|| boxed("terminal filesystem identity disappeared"))?
-                        .backing_device_size_bytes;
+                    let Some(filesystem) = identity.filesystem.as_ref() else {
+                        if attempt < 19 {
+                            thread::sleep(Duration::from_millis(50));
+                            refresh_udev(&args.udevadm, &current_identity.resolved_device)?;
+                            continue;
+                        }
+                        return Err(boxed(
+                            "terminal filesystem identity did not reappear after bounded rediscovery",
+                        ));
+                    };
+                    let backing_size = filesystem.backing_device_size_bytes;
                     if backing_size == expected_backing_size {
                         converged = Some(identity);
                         break;
