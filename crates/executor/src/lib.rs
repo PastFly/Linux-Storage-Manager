@@ -17,6 +17,7 @@ mod native_operation;
 mod precondition_evidence;
 mod preconditions;
 mod privileged_argv;
+mod privileged_pin;
 mod privileged_prepared;
 mod privileged_protocol;
 mod privileged_spawn;
@@ -94,6 +95,10 @@ pub use preconditions::{
 pub use privileged_argv::{
     compile_privileged_helper_command, PrivilegedArgvError, PrivilegedCommandSpec,
     PrivilegedKernelRefreshSpec, PrivilegedProgram,
+};
+pub use privileged_pin::{
+    pin_privileged_tools_for_spawn, PinnedPrivilegedTools, PinnedToolReceipt,
+    PrivilegedToolPinError,
 };
 pub use privileged_prepared::{
     prepare_privileged_invocation, PreparedInvocationError, PreparedPrivilegedInvocation,

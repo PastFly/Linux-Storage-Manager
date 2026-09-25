@@ -313,6 +313,44 @@ fn run() -> HarnessResult<()> {
                         "fresh LV backing size did not converge to approved size {expected_lv_size}"
                     ))
                 })?
+            } else if matches!(
+                outcome.program,
+                DisposableProgram::Resize2fs | DisposableProgram::XfsGrowfs
+            ) {
+                settle_udev(&args.udevadm)?;
+                let expected_backing_size = current_identity
+                    .filesystem
+                    .as_ref()
+                    .ok_or_else(|| boxed("pre-filesystem boundary lost filesystem identity"))?
+                    .backing_device_size_bytes;
+                let mut converged = None;
+                for attempt in 0..20 {
+                    let snapshot = discover_snapshot()?;
+                    let identity = capture_target_identity(&snapshot, &args.target)?;
+                    let backing_size = identity
+                        .filesystem
+                        .as_ref()
+                        .ok_or_else(|| boxed("terminal filesystem identity disappeared"))?
+                        .backing_device_size_bytes;
+                    if backing_size == expected_backing_size {
+                        converged = Some(identity);
+                        break;
+                    }
+                    if backing_size > expected_backing_size {
+                        return Err(boxed(format!(
+                            "terminal filesystem backing size exceeded verified LV size: expected={expected_backing_size} actual={backing_size}"
+                        )));
+                    }
+                    if attempt < 19 {
+                        thread::sleep(Duration::from_millis(50));
+                        refresh_udev(&args.udevadm, &current_identity.resolved_device)?;
+                    }
+                }
+                converged.ok_or_else(|| {
+                    boxed(format!(
+                        "terminal filesystem backing size did not converge to verified LV size {expected_backing_size}"
+                    ))
+                })?
             } else {
                 settle_udev(&args.udevadm)?;
                 let snapshot = discover_snapshot()?;
