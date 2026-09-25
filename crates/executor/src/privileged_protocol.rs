@@ -62,12 +62,8 @@ fn safe_absolute_path(value: &str) -> bool {
     if !path.is_absolute() {
         return false;
     }
-    path.components().all(|component| {
-        matches!(
-            component,
-            Component::RootDir | Component::Normal(_)
-        )
-    })
+    path.components()
+        .all(|component| matches!(component, Component::RootDir | Component::Normal(_)))
 }
 
 fn safe_device_path(value: &str) -> bool {
@@ -102,12 +98,8 @@ fn operation_is_safe(operation: &NativeOperationSpec) -> bool {
             fs_type,
             mountpoint,
         } => match fs_type.as_str() {
-            "ext4" => mountpoint
-                .as_deref()
-                .is_none_or(safe_absolute_path),
-            "xfs" => mountpoint
-                .as_deref()
-                .is_some_and(safe_absolute_path),
+            "ext4" => mountpoint.as_deref().is_none_or(safe_absolute_path),
+            "xfs" => mountpoint.as_deref().is_some_and(safe_absolute_path),
             _ => false,
         },
         _ => false,
@@ -157,7 +149,9 @@ pub fn build_privileged_helper_request(
         return Err(PrivilegedHelperProtocolError::ExecutionBindingMismatch);
     }
     if !execution.mutation_step_ids.contains(&plan_step_id) {
-        return Err(PrivilegedHelperProtocolError::UnauthorizedStep(plan_step_id));
+        return Err(PrivilegedHelperProtocolError::UnauthorizedStep(
+            plan_step_id,
+        ));
     }
 
     let mut matches = validated
