@@ -10,6 +10,7 @@ default = []
 disposable-executor = []
 disposable-loop-harness = ["disposable-executor", "dep:lsm-discovery"]
 production-helper-protocol = ["dep:lsm-discovery"]
+production-mutation = []
 
 [[bin]]
 name = "lsm-disposable-loop-harness"
