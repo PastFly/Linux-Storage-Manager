@@ -124,8 +124,11 @@ pub fn classify_privileged_durable_transition(
         return Err(PrivilegedDurableTransitionError::RuntimeBindingMismatch);
     }
 
-    let position =
-        validate_identity_chain(journal, request.plan_step_id, &request.fresh_identity_digest)?;
+    let position = validate_identity_chain(
+        journal,
+        request.plan_step_id,
+        &request.fresh_identity_digest,
+    )?;
 
     if process.disposition == PrivilegedRuntimeDisposition::RecoveryRequired {
         return Ok(PrivilegedDurableDisposition::RecoveryRequired);
