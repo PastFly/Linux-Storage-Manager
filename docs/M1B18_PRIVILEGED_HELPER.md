@@ -2,6 +2,8 @@
 
 M1B18 adds a process boundary for the future production privileged helper without enabling storage mutation.
 
+It is layered on the merged M1B17 typed protocol contract and the current ext4/XFS disposable growth baseline.
+
 The feature-gated `lsm-privileged-helper-protocol` binary:
 
 - reads one bounded JSON request from standard input;
