@@ -216,6 +216,8 @@ M1B28 implements the descriptor execution primitive itself using `fork` + `fexec
 
 M1B29 extends the descriptor runtime contract to exact stdin and ordered refresh semantics. Commands without stdin receive `/dev/null`; an exact payload such as the frozen `sfdisk` line is delivered through a close-on-exec pipe and remains bound to the M1B26 length/SHA-256 receipt. The optional kernel-refresh stage must match program/argv exactly and may run only after a zero primary exit; a nonzero primary result suppresses refresh. Benign unit tests prove descriptor stdin delivery and EOF behavior. The production wrapper still stops at `ProductionMutationDisabled`, so these semantics are implemented without enabling storage writes.
 
+M1B30 isolates and bounds child diagnostics before production enablement. Each descriptor child gets dedicated close-on-exec stdout/stderr pipes; the parent drains both concurrently so a verbose tool cannot deadlock on a full pipe, retains at most 64 KiB per stream, and records truncation flags while discarding overflow. Unit tests prove stdout capture and failed-child stderr capture with benign ELF utilities. No production storage process can cross the existing `ProductionMutationDisabled` gate yet.
+
 The manifest binds approval ID, approved journal ID/digest, plan ID, evidence bundle ID, target
 manifest digest and locked-session ID. Every source `PlanStep` is represented exactly once,
 dependency lists are preserved, and malformed/cyclic graphs fail closed.

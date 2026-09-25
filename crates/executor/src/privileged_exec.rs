@@ -1,7 +1,7 @@
 use std::ffi::CString;
 use std::fs::File;
-use std::io;
-use std::os::fd::AsRawFd;
+use std::io::{self, Read};
+use std::os::fd::{AsRawFd, FromRawFd};
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -14,6 +14,10 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DescriptorExecOutcome {
     pub exit_code: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +77,53 @@ fn write_all_fd(fd: libc::c_int, mut bytes: &[u8]) -> Result<(), io::Error> {
     Ok(())
 }
 
+const OUTPUT_CAPTURE_LIMIT: usize = 64 * 1024;
+
+#[derive(Debug)]
+struct CapturedOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+fn read_bounded(mut file: File) -> Result<CapturedOutput, io::Error> {
+    let mut bytes = Vec::new();
+    let mut truncated = false;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let remaining = OUTPUT_CAPTURE_LIMIT.saturating_sub(bytes.len());
+        if remaining > 0 {
+            let keep = remaining.min(read);
+            bytes.extend_from_slice(&buffer[..keep]);
+            if keep < read {
+                truncated = true;
+            }
+        } else {
+            truncated = true;
+        }
+    }
+    Ok(CapturedOutput { bytes, truncated })
+}
+
+fn pipe_cloexec() -> Result<[libc::c_int; 2], io::Error> {
+    let mut fds = [-1_i32; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(fds)
+}
+
+fn close_fd(fd: libc::c_int) {
+    if fd >= 0 {
+        unsafe {
+            libc::close(fd);
+        }
+    }
+}
+
 fn execute_descriptor_stage(
     file: &File,
     program: PrivilegedProgram,
@@ -100,41 +151,62 @@ fn execute_descriptor_stage(
     let mut env_ptrs = vec![path_env.as_ptr(), locale_env.as_ptr(), std::ptr::null()];
 
     let dev_null = File::open("/dev/null")?;
-    let mut pipe_fds = [-1_i32; 2];
-    if stdin_payload.is_some() {
-        let result = unsafe { libc::pipe2(pipe_fds.as_mut_ptr(), libc::O_CLOEXEC) };
-        if result != 0 {
-            return Err(io::Error::last_os_error().into());
+    let stdin_pipe = if stdin_payload.is_some() {
+        Some(pipe_cloexec()?)
+    } else {
+        None
+    };
+    let stdout_pipe = pipe_cloexec()?;
+    let stderr_pipe = match pipe_cloexec() {
+        Ok(pipe) => pipe,
+        Err(error) => {
+            close_fd(stdout_pipe[0]);
+            close_fd(stdout_pipe[1]);
+            if let Some(pipe) = stdin_pipe {
+                close_fd(pipe[0]);
+                close_fd(pipe[1]);
+            }
+            return Err(error.into());
         }
-    }
+    };
 
     let pid = unsafe { libc::fork() };
     if pid < 0 {
-        if pipe_fds[0] >= 0 {
-            unsafe {
-                libc::close(pipe_fds[0]);
-                libc::close(pipe_fds[1]);
-            }
+        close_fd(stdout_pipe[0]);
+        close_fd(stdout_pipe[1]);
+        close_fd(stderr_pipe[0]);
+        close_fd(stderr_pipe[1]);
+        if let Some(pipe) = stdin_pipe {
+            close_fd(pipe[0]);
+            close_fd(pipe[1]);
         }
         return Err(io::Error::last_os_error().into());
     }
 
     if pid == 0 {
-        let stdin_fd = if stdin_payload.is_some() {
-            unsafe {
-                libc::close(pipe_fds[1]);
-            }
-            pipe_fds[0]
+        close_fd(stdout_pipe[0]);
+        close_fd(stderr_pipe[0]);
+
+        let stdin_fd = if let Some(pipe) = stdin_pipe {
+            close_fd(pipe[1]);
+            pipe[0]
         } else {
             dev_null.as_raw_fd()
         };
-        if unsafe { libc::dup2(stdin_fd, libc::STDIN_FILENO) } < 0 {
+        if unsafe { libc::dup2(stdin_fd, libc::STDIN_FILENO) } < 0
+            || unsafe { libc::dup2(stdout_pipe[1], libc::STDOUT_FILENO) } < 0
+            || unsafe { libc::dup2(stderr_pipe[1], libc::STDERR_FILENO) } < 0
+        {
             unsafe { libc::_exit(126) };
         }
-        if stdin_payload.is_some() && stdin_fd != libc::STDIN_FILENO {
-            unsafe {
-                libc::close(stdin_fd);
-            }
+        if stdin_fd != libc::STDIN_FILENO {
+            close_fd(stdin_fd);
+        }
+        if stdout_pipe[1] != libc::STDOUT_FILENO {
+            close_fd(stdout_pipe[1]);
+        }
+        if stderr_pipe[1] != libc::STDERR_FILENO {
+            close_fd(stderr_pipe[1]);
         }
 
         let result = unsafe {
@@ -148,17 +220,21 @@ fn execute_descriptor_stage(
         unsafe { libc::_exit(127) };
     }
 
+    close_fd(stdout_pipe[1]);
+    close_fd(stderr_pipe[1]);
+
+    let stdout_file = unsafe { File::from_raw_fd(stdout_pipe[0]) };
+    let stderr_file = unsafe { File::from_raw_fd(stderr_pipe[0]) };
+    let stdout_reader = std::thread::spawn(move || read_bounded(stdout_file));
+    let stderr_reader = std::thread::spawn(move || read_bounded(stderr_file));
+
     let mut write_error = None;
-    if let Some(payload) = stdin_payload {
-        unsafe {
-            libc::close(pipe_fds[0]);
-        }
-        if let Err(error) = write_all_fd(pipe_fds[1], payload) {
+    if let (Some(payload), Some(pipe)) = (stdin_payload, stdin_pipe) {
+        close_fd(pipe[0]);
+        if let Err(error) = write_all_fd(pipe[1], payload) {
             write_error = Some(error);
         }
-        unsafe {
-            libc::close(pipe_fds[1]);
-        }
+        close_fd(pipe[1]);
     }
 
     let mut status = 0_i32;
@@ -176,12 +252,23 @@ fn execute_descriptor_stage(
         }
     }
 
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| io::Error::other("stdout capture thread panicked"))??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| io::Error::other("stderr capture thread panicked"))??;
+
     if let Some(error) = write_error {
         return Err(error.into());
     }
     if libc::WIFEXITED(status) {
         return Ok(DescriptorExecOutcome {
             exit_code: libc::WEXITSTATUS(status),
+            stdout: stdout.bytes,
+            stderr: stderr.bytes,
+            stdout_truncated: stdout.truncated,
+            stderr_truncated: stderr.truncated,
         });
     }
     Err(PrivilegedDescriptorExecError::ChildSignaled)
@@ -323,6 +410,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.stdout.is_empty());
+        assert!(outcome.stderr.is_empty());
     }
 
     #[test]
@@ -381,6 +470,46 @@ mod tests {
         )
         .unwrap();
         assert_eq!(outcome.exit_code, 0);
+    }
+
+    #[test]
+    fn descriptor_exec_captures_stdout_without_inheriting_parent_output() {
+        let file = benign_elf("printf");
+        let outcome = execute_descriptor_stage(
+            &file,
+            PrivilegedProgram::Lvextend,
+            &["lvextend".into(), "captured-output".into()],
+            "/usr/sbin:/usr/bin:/sbin:/bin",
+            "C",
+            None,
+        )
+        .unwrap();
+        assert_eq!(outcome.exit_code, 0);
+        assert_eq!(outcome.stdout, b"captured-output");
+        assert!(outcome.stderr.is_empty());
+        assert!(!outcome.stdout_truncated);
+    }
+
+    #[test]
+    fn descriptor_exec_captures_stderr_for_failed_child() {
+        let file = benign_elf("ls");
+        let outcome = execute_descriptor_stage(
+            &file,
+            PrivilegedProgram::Lvextend,
+            &[
+                "lvextend".into(),
+                "--".into(),
+                "/definitely-not-present-lsm-descriptor-test".into(),
+            ],
+            "/usr/sbin:/usr/bin:/sbin:/bin",
+            "C",
+            None,
+        )
+        .unwrap();
+        assert_ne!(outcome.exit_code, 0);
+        assert!(outcome.stdout.is_empty());
+        assert!(!outcome.stderr.is_empty());
+        assert!(!outcome.stderr_truncated);
     }
 
     #[test]
