@@ -90,9 +90,9 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Freeze the exact M1A plan, target identity manifest, filesystem decision and execution guard into a repeatable non-mutating M1B0 handoff.
 - [x] Obtain explicit owner acceptance of the completed M0/M1A baseline before any mutation-capable executor rollout; owner acceptance was recorded on 2026-09-25 and does not bypass CI, identity, recovery or production-safety gates.
 - [x] Implement a non-mutating host-exclusive advisory lock primitive with nonblocking OS-backed locking and RAII release.
-- [ ] Wire the host-exclusive lock into the mutation-capable executor only after the owner-acceptance gate is satisfied.
+- [x] Wire the host-exclusive lock into the production execution-start boundary: only the current durable locked session may persist an exact prepared invocation into `Executing`; no storage command is spawned by this gate.
 - [x] Wire target-manifest and capability-inventory revalidation into a non-mutating locked pre-executor session.
-- [ ] Wire the revalidated locked session into mutation-capable execution only after owner acceptance and the remaining executor gates.
+- [x] Wire the revalidated locked session into the conservative pre-spawn execution-start gate after owner acceptance; exact execution/request/prepared-invocation bindings are required before the durable journal can enter `Executing`.
 - [x] Add a non-mutating atomic durable journal-store primitive with strict reload validation and recovery-state preservation.
 - [x] Persist HostLockHeld and successful IdentityRevalidated transitions from the non-mutating locked session through the durable journal store.
 - [x] Persist the operation-journal model durably before the first mutating command.
@@ -119,6 +119,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Compile each live-revalidated privileged-helper mutation request into one exact typed non-shell command spec (including partition kernel refresh) with a SHA-256 command digest; the helper still does not spawn the command or advance the journal.
 - [x] Resolve every compiled privileged command to a root-owned, non-group/world-writable executable from fixed system directories, reject distinct executable ambiguity, bind canonical device/inode/mode/size plus SHA-256 provenance (including `partx` refresh), and still perform no spawn or journal advance.
 - [x] Freeze the validated request, live identity, exact command and trusted-tool resolution into a deterministic prepared-invocation receipt before any future spawn; tampering or command/tool mismatch fails closed and production mutation remains disabled.
+- [x] Persist the exact prepared first-step invocation through the host-locked durable session before any future spawn, binding execution/request/prepared IDs and moving `Approved -> Executing` with `mutation_may_have_started=true` conservatively before process creation; this gate still spawns no storage tool.
 - [x] Execute the first `LV -> filesystem` profile only on harness-owned `/dev/loopN` fixtures while production `MUTATION_ENABLED=false` remains unchanged; ext4 completes the live mutation path and XFS remains fail-closed when the host kernel lacks online scrub support.
 - [x] Prevent blind replay from replacing an existing durable journal with a fresh `HostLockHeld` record.
 - [x] Prove a forced pre-spawn executor failure after durable `Executing` transitions to `RecoveryRequired`, preserves recovery evidence and leaves LV/filesystem/sentinel state unchanged.
