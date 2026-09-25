@@ -164,16 +164,13 @@ pub fn resolve_trusted_privileged_tool(
     program: PrivilegedProgram,
 ) -> Result<TrustedToolIdentity, TrustedToolError> {
     let mut found = Vec::new();
+    let mut unsafe_candidates = Vec::new();
     for directory in TRUSTED_TOOL_DIRECTORIES {
         let candidate = Path::new(directory).join(program.as_str());
         match fs::symlink_metadata(&candidate) {
             Ok(_) => match inspect_candidate(program, &candidate)? {
                 Some(identity) => found.push(identity),
-                None => {
-                    return Err(TrustedToolError::UnsafeCandidate(
-                        candidate.to_string_lossy().into_owned(),
-                    ));
-                }
+                None => unsafe_candidates.push(candidate),
             },
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(TrustedToolError::Io(error)),
@@ -181,6 +178,11 @@ pub fn resolve_trusted_privileged_tool(
     }
 
     if found.is_empty() {
+        if let Some(candidate) = unsafe_candidates.first() {
+            return Err(TrustedToolError::UnsafeCandidate(
+                candidate.to_string_lossy().into_owned(),
+            ));
+        }
         return Err(TrustedToolError::NotFound(program));
     }
 
