@@ -283,7 +283,7 @@ fn compile_operation(
             let mounted = |expected: &str| {
                 safe_absolute_path(expected)
                     && identity.mounts.iter().filter(|mount| {
-                        mount.target == expected && mount.fs_type.as_deref() == Some(fs_type)
+                        mount.target == expected && mount.fs_type.as_deref() == Some(fs_type.as_str())
                     }).count() == 1
             };
             match fs_type.as_str() {
