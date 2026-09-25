@@ -131,6 +131,8 @@ pub enum ExplicitFilesystemHealthError {
     UnsupportedCheck,
     #[error("selected filesystem health tool path is unsafe")]
     UnsafeToolPath,
+    #[error("XFS kernel online scrub facility is unavailable: {stderr}")]
+    XfsKernelScrubUnavailable { stderr: String },
     #[error("filesystem health check failed with status {status:?}: {stderr}")]
     CommandFailed { status: Option<i32>, stderr: String },
     #[error("planner capability verification failed: {0}")]
@@ -226,9 +228,15 @@ pub fn execute_explicit_filesystem_health_check(
         .stderr(Stdio::piped())
         .output()?;
     if !output.status.success() {
+        let stderr = stderr_summary(&output.stderr);
+        if check.kind == FilesystemCheckKind::XfsMountedScrubNoModify
+            && xfs_kernel_online_scrub_unavailable(output.status.code(), &stderr)
+        {
+            return Err(ExplicitFilesystemHealthError::XfsKernelScrubUnavailable { stderr });
+        }
         return Err(ExplicitFilesystemHealthError::CommandFailed {
             status: output.status.code(),
-            stderr: stderr_summary(&output.stderr),
+            stderr,
         });
     }
 
@@ -274,9 +282,37 @@ fn fingerprint(value: &impl Serialize) -> Result<String, serde_json::Error> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
 }
 
+#[cfg(any(test, feature = "disposable-loop-harness"))]
+fn xfs_kernel_online_scrub_unavailable(status: Option<i32>, stderr: &str) -> bool {
+    status == Some(4)
+        && stderr.contains("Kernel metadata scrubbing facility is not available.")
+}
+
 #[cfg(feature = "disposable-loop-harness")]
 fn stderr_summary(stderr: &[u8]) -> String {
     const LIMIT: usize = 4096;
     let bytes = &stderr[..stderr.len().min(LIMIT)];
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::xfs_kernel_online_scrub_unavailable;
+
+    #[test]
+    fn classifies_only_exact_xfs_kernel_scrub_unavailability() {
+        assert!(xfs_kernel_online_scrub_unavailable(
+            Some(4),
+            "Kernel metadata scrubbing facility is not available.\n"
+        ));
+        assert!(!xfs_kernel_online_scrub_unavailable(
+            Some(1),
+            "Kernel metadata scrubbing facility is not available.\n"
+        ));
+        assert!(!xfs_kernel_online_scrub_unavailable(
+            Some(4),
+            "metadata corruption detected"
+        ));
+        assert!(!xfs_kernel_online_scrub_unavailable(None, ""));
+    }
 }
