@@ -222,7 +222,7 @@ M1B31 defines the first post-spawn runtime receipt without yet enabling producti
 manifest digest and locked-session ID. Every source `PlanStep` is represented exactly once,
 dependency lists are preserved, and malformed/cyclic graphs fail closed.
 
-Semantic actions are typed as pre-execution evidence, mutation candidates or verification.
+M1B32 adds exact live per-layer post-state verification after a `RediscoveryRequired` process receipt. The fresh target must preserve target/resolved-device binding; partition growth must retain start/table/record identity while reaching the exact approved sector count; PV/LV growth resolves the exact UUID and expected byte size; filesystem growth preserves filesystem UUID/type/version and mount identity while proving observed capacity increased without exceeding backing capacity. The resulting verification receipt binds before/fresh identity digests and process/request IDs. This layer is read-only and journal-neutral; production mutation remains disabled until the verified receipt is wired into durable continuation/recovery transitions.\n\nSemantic actions are typed as pre-execution evidence, mutation candidates or verification.
 No `pvresize` or other absent mutation is synthesized. Every mutation candidate receives a
 read-only barrier requiring fresh target identity, fresh capabilities, expected-state validation
 and stop-on-mismatch before any later mutation can be considered by a future executor.
