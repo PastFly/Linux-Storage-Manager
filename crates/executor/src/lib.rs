@@ -18,6 +18,7 @@ mod precondition_evidence;
 mod preconditions;
 mod privileged_argv;
 mod privileged_launch;
+mod privileged_permit;
 mod privileged_pin;
 mod privileged_prepared;
 mod privileged_protocol;
@@ -100,6 +101,9 @@ pub use privileged_argv::{
 pub use privileged_launch::{
     build_privileged_descriptor_launch_spec, DescriptorLaunchStage, ElfClass, ElfDataEncoding,
     ElfExecutionIdentity, PrivilegedDescriptorLaunchSpec, PrivilegedLaunchSpecError,
+};
+pub use privileged_permit::{
+    seal_privileged_launch_permit, PrivilegedLaunchPermit, PrivilegedLaunchPermitError,
 };
 pub use privileged_pin::{
     pin_privileged_tools_for_spawn, PinnedPrivilegedTools, PinnedToolReceipt,
