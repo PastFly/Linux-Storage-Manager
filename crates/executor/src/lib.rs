@@ -16,6 +16,7 @@ mod locked_session;
 mod native_operation;
 mod precondition_evidence;
 mod preconditions;
+mod production_arm;
 mod privileged_argv;
 mod privileged_continue;
 mod privileged_continue_start;
@@ -98,6 +99,10 @@ pub use precondition_evidence::{
 };
 pub use preconditions::{
     verify_preconditions, PreconditionsVerification, PreconditionsVerificationError,
+};
+pub use production_arm::{
+    arm_production_mutation, ProductionMutationArm, ProductionMutationArmError,
+    PRODUCTION_MUTATION_ARM_CONFIRMATION, PRODUCTION_MUTATION_COMPILED,
 };
 pub use privileged_argv::{
     compile_privileged_helper_command, PrivilegedArgvError, PrivilegedCommandSpec,
