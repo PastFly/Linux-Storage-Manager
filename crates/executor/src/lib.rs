@@ -18,6 +18,7 @@ mod precondition_evidence;
 mod preconditions;
 mod privileged_argv;
 mod privileged_protocol;
+mod privileged_tools;
 
 pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError};
 pub use backup_capture::{
@@ -90,6 +91,10 @@ pub use preconditions::{
 pub use privileged_argv::{
     compile_privileged_helper_command, PrivilegedArgvError, PrivilegedCommandSpec,
     PrivilegedKernelRefreshSpec, PrivilegedProgram,
+};
+pub use privileged_tools::{
+    resolve_privileged_command_tools, resolve_trusted_privileged_tool, PrivilegedToolResolution,
+    TrustedToolError, TrustedToolIdentity,
 };
 pub use privileged_protocol::{
     build_privileged_helper_request, decode_privileged_helper_request,
