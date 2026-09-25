@@ -205,7 +205,7 @@ M1B24 closes the post-journal/pre-spawn provenance window. After `Approved -> Ex
 - recovery UX;
 - disposable integration matrix.
 
-Backups and approval are defense-in-depth. Neither permits bypassing topology proof.
+M1B25 removes the remaining path-replacement window between provenance verification and a future exec. After M1B24 authorization, the helper re-resolves the trusted tool set, opens each canonical executable with `O_NOFOLLOW|O_CLOEXEC`, and verifies the opened file object itself against the trusted device/inode/uid/mode/size/SHA-256 identity. The resulting `PinnedPrivilegedTools` retains the open file descriptors plus a tamper-evident pin receipt; replacing `/usr/sbin/lvextend` or another path after pinning cannot redirect the already-open executable object. This gate still performs no process creation and leaves production mutation disabled.\n\nBackups and approval are defense-in-depth. Neither permits bypassing topology proof.
 
 
 ## M1B13 frozen execution intent contract
