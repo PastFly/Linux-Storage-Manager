@@ -3,9 +3,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{
-    FrozenIntentRole, NativeOperationSpec, ValidatedNativeManifest,
-};
+use crate::{FrozenIntentRole, NativeOperationSpec, ValidatedNativeManifest};
 
 /// This feature only permits constructing a production-activation intent.
 /// It does not change MUTATION_ENABLED and cannot spawn storage tools by itself.
@@ -103,9 +101,7 @@ pub enum ProductionActivationError {
     Serialization(String),
 }
 
-fn mutation_steps(
-    validated: &ValidatedNativeManifest,
-) -> Vec<&crate::NativeCompiledStep> {
+fn mutation_steps(validated: &ValidatedNativeManifest) -> Vec<&crate::NativeCompiledStep> {
     validated
         .manifest()
         .steps
@@ -197,8 +193,7 @@ fn validate_identity_binding(
         .filter(|entry| entry.kind == lsm_planner::LvmIdentityKind::PhysicalVolume)
         .count();
     let single_pv_vg = identity.lvm.iter().any(|entry| {
-        entry.kind == lsm_planner::LvmIdentityKind::VolumeGroup
-            && entry.pv_count == Some(1)
+        entry.kind == lsm_planner::LvmIdentityKind::VolumeGroup && entry.pv_count == Some(1)
     });
     if logical_volumes != 1 || physical_volumes != 1 || !single_pv_vg {
         return Err(ProductionActivationError::FreshIdentityMismatch);
@@ -221,8 +216,7 @@ fn validate_identity_binding(
                 .mounts
                 .iter()
                 .filter(|mount| {
-                    mount.target == expected
-                        && mount.fs_type.as_deref() == Some(filesystem_type)
+                    mount.target == expected && mount.fs_type.as_deref() == Some(filesystem_type)
                 })
                 .count();
             if matches != 1 {
@@ -262,14 +256,10 @@ pub fn inspect_production_activation_readiness(
     }
 
     let identity_ok = match &profile {
-        Ok((_, _, lv_uuid, fs_type, mountpoint)) => validate_identity_binding(
-            execution,
-            identity,
-            lv_uuid,
-            fs_type,
-            mountpoint.as_deref(),
-        )
-        .is_ok(),
+        Ok((_, _, lv_uuid, fs_type, mountpoint)) => {
+            validate_identity_binding(execution, identity, lv_uuid, fs_type, mountpoint.as_deref())
+                .is_ok()
+        }
         Err(_) => false,
     };
     if !identity_ok {
@@ -306,13 +296,8 @@ pub fn seal_production_mutation_activation_intent(
         return Err(ProductionActivationError::FeatureDisabled);
     }
     validate_execution_binding(validated, execution)?;
-    let (
-        lv_step_id,
-        filesystem_step_id,
-        lv_uuid,
-        filesystem_type,
-        filesystem_mountpoint,
-    ) = exact_profile(validated, execution)?;
+    let (lv_step_id, filesystem_step_id, lv_uuid, filesystem_type, filesystem_mountpoint) =
+        exact_profile(validated, execution)?;
     validate_identity_binding(
         execution,
         identity,
@@ -393,7 +378,11 @@ mod tests {
         let fs_id = next_id + 1;
         steps.push(NativeCompiledStep {
             plan_step_id: lv_id,
-            depends_on: if include_partition { vec![lv_id - 1] } else { vec![] },
+            depends_on: if include_partition {
+                vec![lv_id - 1]
+            } else {
+                vec![]
+            },
             reversibility: Reversibility::Irreversible,
             role: FrozenIntentRole::MutationCandidate,
             operation: NativeOperationSpec::ExtendLogicalVolume {
