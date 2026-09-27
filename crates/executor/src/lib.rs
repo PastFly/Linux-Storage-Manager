@@ -18,6 +18,7 @@ mod precondition_evidence;
 mod preconditions;
 mod privileged_argv;
 mod privileged_continue;
+mod privileged_continue_start;
 mod privileged_exec;
 mod privileged_launch;
 mod privileged_permit;
@@ -106,6 +107,10 @@ pub use privileged_continue::{
     classify_privileged_durable_transition, persist_privileged_durable_transition,
     PrivilegedDurableDisposition, PrivilegedDurableTransitionError,
 };
+pub use privileged_continue_start::{
+    bind_prepared_privileged_continuation, PrivilegedContinuationStartError,
+    PrivilegedContinuationStartReceipt,
+};
 pub use privileged_exec::{
     execute_privileged_descriptor_launch, DescriptorExecOutcome, PrivilegedDescriptorExecError,
     PrivilegedDescriptorSequenceOutcome,
@@ -115,7 +120,8 @@ pub use privileged_launch::{
     ElfExecutionIdentity, PrivilegedDescriptorLaunchSpec, PrivilegedLaunchSpecError,
 };
 pub use privileged_permit::{
-    seal_privileged_launch_permit, PrivilegedLaunchPermit, PrivilegedLaunchPermitError,
+    seal_privileged_continuation_launch_permit, seal_privileged_launch_permit,
+    PrivilegedLaunchPermit, PrivilegedLaunchPermitError,
 };
 pub use privileged_pin::{
     pin_privileged_tools_for_spawn, PinnedPrivilegedTools, PinnedToolReceipt,
@@ -135,7 +141,8 @@ pub use privileged_result::{
     PrivilegedRuntimeDisposition,
 };
 pub use privileged_spawn::{
-    authorize_privileged_spawn, PrivilegedSpawnAuthorization, PrivilegedSpawnAuthorizationError,
+    authorize_privileged_continuation_spawn, authorize_privileged_spawn,
+    PrivilegedSpawnAuthorization, PrivilegedSpawnAuthorizationError,
 };
 pub use privileged_start::{
     persist_prepared_privileged_execution_start, PrivilegedExecutionStartError,

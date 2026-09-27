@@ -3,8 +3,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    PrivilegedDescriptorLaunchSpec, PrivilegedExecutionStartReceipt, PrivilegedSpawnAuthorization,
-    MUTATION_ENABLED,
+    PrivilegedContinuationStartReceipt, PrivilegedDescriptorLaunchSpec,
+    PrivilegedExecutionStartReceipt, PrivilegedSpawnAuthorization, MUTATION_ENABLED,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -48,6 +48,8 @@ pub enum PrivilegedLaunchPermitError {
     MutationEnabled,
     #[error("execution-start receipt integrity check failed")]
     ExecutionStartIntegrityMismatch,
+    #[error("continuation-start receipt integrity check failed")]
+    ContinuationStartIntegrityMismatch,
     #[error("spawn authorization integrity check failed")]
     AuthorizationIntegrityMismatch,
     #[error("descriptor launch specification integrity check failed")]
@@ -89,6 +91,55 @@ pub fn seal_privileged_launch_permit(
     if start.execution_id != authorization.execution_id
         || start.receipt_id != authorization.execution_start_receipt_id
         || start.first_plan_step_id != authorization.plan_step_id
+        || authorization.authorization_id != launch.authorization_id
+        || authorization.plan_step_id != launch.plan_step_id
+        || authorization.command_digest != launch.command_digest
+    {
+        return Err(PrivilegedLaunchPermitError::BindingMismatch);
+    }
+
+    let mut permit = PrivilegedLaunchPermit {
+        schema_version: 1,
+        permit_id: String::new(),
+        execution_id: start.execution_id.clone(),
+        execution_start_receipt_id: start.receipt_id.clone(),
+        authorization_id: authorization.authorization_id.clone(),
+        launch_id: launch.launch_id.clone(),
+        plan_step_id: launch.plan_step_id,
+        command_digest: launch.command_digest.clone(),
+        mutation_enabled: false,
+        process_spawned: false,
+    };
+    permit.permit_id = permit.expected_permit_id()?;
+    Ok(permit)
+}
+
+/// Seal the same descriptor launch chain for a later step that was bound to a
+/// durable verified continuation boundary.
+pub fn seal_privileged_continuation_launch_permit(
+    start: &PrivilegedContinuationStartReceipt,
+    authorization: &PrivilegedSpawnAuthorization,
+    launch: &PrivilegedDescriptorLaunchSpec,
+) -> Result<PrivilegedLaunchPermit, PrivilegedLaunchPermitError> {
+    if MUTATION_ENABLED {
+        return Err(PrivilegedLaunchPermitError::MutationEnabled);
+    }
+    if !start.integrity_matches()? {
+        return Err(PrivilegedLaunchPermitError::ContinuationStartIntegrityMismatch);
+    }
+    if !authorization.integrity_matches()? {
+        return Err(PrivilegedLaunchPermitError::AuthorizationIntegrityMismatch);
+    }
+    if !launch.integrity_matches()? {
+        return Err(PrivilegedLaunchPermitError::LaunchIntegrityMismatch);
+    }
+    if launch.process_spawned {
+        return Err(PrivilegedLaunchPermitError::AlreadySpawned);
+    }
+
+    if start.execution_id != authorization.execution_id
+        || start.receipt_id != authorization.execution_start_receipt_id
+        || start.plan_step_id != authorization.plan_step_id
         || authorization.authorization_id != launch.authorization_id
         || authorization.plan_step_id != launch.plan_step_id
         || authorization.command_digest != launch.command_digest
@@ -246,6 +297,41 @@ mod tests {
         assert!(!permit.mutation_enabled);
         assert!(!permit.process_spawned);
         assert_eq!(permit.plan_step_id, 7);
+    }
+
+    fn continuation_start(
+        authorization: &PrivilegedSpawnAuthorization,
+    ) -> PrivilegedContinuationStartReceipt {
+        let mut value = PrivilegedContinuationStartReceipt {
+            schema_version: 1,
+            receipt_id: String::new(),
+            execution_id: authorization.execution_id.clone(),
+            verified_boundary_id: digest('a'),
+            prepared_id: authorization.prepared_id.clone(),
+            journal_id: digest('b'),
+            plan_step_id: authorization.plan_step_id,
+            live_identity_digest: digest('c'),
+            executing_journal_digest: digest('d'),
+        };
+        value.receipt_id = value.expected_receipt_id().unwrap();
+        value
+    }
+
+    #[test]
+    fn seals_exact_continuation_launch_chain_without_spawning() {
+        let initial = start();
+        let mut authorization = authorization(&initial);
+        let continuation = continuation_start(&authorization);
+        authorization.execution_start_receipt_id = continuation.receipt_id.clone();
+        authorization.authorization_id = authorization.expected_authorization_id().unwrap();
+        let launch = launch(&authorization);
+
+        let permit =
+            seal_privileged_continuation_launch_permit(&continuation, &authorization, &launch)
+                .unwrap();
+        assert!(permit.integrity_matches().unwrap());
+        assert_eq!(permit.execution_start_receipt_id, continuation.receipt_id);
+        assert_eq!(permit.plan_step_id, continuation.plan_step_id);
     }
 
     #[test]
