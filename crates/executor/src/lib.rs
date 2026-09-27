@@ -16,7 +16,6 @@ mod locked_session;
 mod native_operation;
 mod precondition_evidence;
 mod preconditions;
-mod production_activation;
 mod privileged_argv;
 mod privileged_continue;
 mod privileged_continue_start;
@@ -31,6 +30,7 @@ mod privileged_spawn;
 mod privileged_start;
 mod privileged_tools;
 mod privileged_verify;
+mod production_activation;
 
 pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError};
 pub use backup_capture::{
@@ -100,11 +100,6 @@ pub use precondition_evidence::{
 pub use preconditions::{
     verify_preconditions, PreconditionsVerification, PreconditionsVerificationError,
 };
-pub use production_activation::{
-    inspect_production_activation_readiness, seal_production_mutation_activation_intent,
-    ProductionActivationError, ProductionActivationReadiness, ProductionMutationActivationIntent,
-    ProductionMutationProfile, PRODUCTION_MUTATION_ACTIVATION_COMPILED,
-};
 pub use privileged_argv::{
     compile_privileged_helper_command, PrivilegedArgvError, PrivilegedCommandSpec,
     PrivilegedKernelRefreshSpec, PrivilegedProgram,
@@ -161,6 +156,11 @@ pub use privileged_tools::{
 pub use privileged_verify::{
     verify_privileged_layer_post_state, PrivilegedLayerVerificationError,
     PrivilegedLayerVerificationReceipt,
+};
+pub use production_activation::{
+    inspect_production_activation_readiness, seal_production_mutation_activation_intent,
+    ProductionActivationError, ProductionActivationReadiness, ProductionMutationActivationIntent,
+    ProductionMutationProfile, PRODUCTION_MUTATION_ACTIVATION_COMPILED,
 };
 
 use std::fs::{self, File, OpenOptions};
