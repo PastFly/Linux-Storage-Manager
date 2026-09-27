@@ -117,7 +117,7 @@ fn mutation_steps(
 fn exact_profile(
     validated: &ValidatedNativeManifest,
     execution: &ExecutionStartBinding,
-) -> Result<(u32, u32, String, Option<String>), ProductionActivationError> {
+) -> Result<(u32, u32, String, String, Option<String>), ProductionActivationError> {
     let mutations = mutation_steps(validated);
     if mutations.len() != 2 || execution.mutation_step_ids.len() != 2 {
         return Err(ProductionActivationError::MutationSequenceMismatch);
@@ -134,7 +134,7 @@ fn exact_profile(
 
     match (&lv.operation, &filesystem.operation) {
         (
-            NativeOperationSpec::ExtendLogicalVolume { .. },
+            NativeOperationSpec::ExtendLogicalVolume { lv_uuid, .. },
             NativeOperationSpec::GrowFilesystem {
                 fs_type,
                 mountpoint,
@@ -145,6 +145,7 @@ fn exact_profile(
             Ok((
                 lv.plan_step_id,
                 filesystem.plan_step_id,
+                lv_uuid.clone(),
                 fs_type.clone(),
                 mountpoint.clone(),
             ))
@@ -170,6 +171,7 @@ fn validate_execution_binding(
 fn validate_identity_binding(
     execution: &ExecutionStartBinding,
     identity: &TargetIdentityManifest,
+    lv_uuid: &str,
     filesystem_type: &str,
     filesystem_mountpoint: Option<&str>,
 ) -> Result<(), ProductionActivationError> {
@@ -178,6 +180,27 @@ fn validate_identity_binding(
         || identity.target.is_empty()
         || identity.resolved_device.is_empty()
     {
+        return Err(ProductionActivationError::FreshIdentityMismatch);
+    }
+
+    let logical_volumes = identity
+        .lvm
+        .iter()
+        .filter(|entry| {
+            entry.kind == lsm_planner::LvmIdentityKind::LogicalVolume
+                && entry.uuid.as_deref() == Some(lv_uuid)
+        })
+        .count();
+    let physical_volumes = identity
+        .lvm
+        .iter()
+        .filter(|entry| entry.kind == lsm_planner::LvmIdentityKind::PhysicalVolume)
+        .count();
+    let single_pv_vg = identity.lvm.iter().any(|entry| {
+        entry.kind == lsm_planner::LvmIdentityKind::VolumeGroup
+            && entry.pv_count == Some(1)
+    });
+    if logical_volumes != 1 || physical_volumes != 1 || !single_pv_vg {
         return Err(ProductionActivationError::FreshIdentityMismatch);
     }
 
@@ -239,9 +262,10 @@ pub fn inspect_production_activation_readiness(
     }
 
     let identity_ok = match &profile {
-        Ok((_, _, fs_type, mountpoint)) => validate_identity_binding(
+        Ok((_, _, lv_uuid, fs_type, mountpoint)) => validate_identity_binding(
             execution,
             identity,
+            lv_uuid,
             fs_type,
             mountpoint.as_deref(),
         )
@@ -282,11 +306,17 @@ pub fn seal_production_mutation_activation_intent(
         return Err(ProductionActivationError::FeatureDisabled);
     }
     validate_execution_binding(validated, execution)?;
-    let (lv_step_id, filesystem_step_id, filesystem_type, filesystem_mountpoint) =
-        exact_profile(validated, execution)?;
+    let (
+        lv_step_id,
+        filesystem_step_id,
+        lv_uuid,
+        filesystem_type,
+        filesystem_mountpoint,
+    ) = exact_profile(validated, execution)?;
     validate_identity_binding(
         execution,
         identity,
+        &lv_uuid,
         &filesystem_type,
         filesystem_mountpoint.as_deref(),
     )?;
@@ -435,30 +465,60 @@ mod tests {
             route_issue_codes: vec![],
             devices: vec![],
             partitions: vec![],
-            lvm: vec![LvmIdentity {
-                kind: LvmIdentityKind::LogicalVolume,
-                name: "/dev/mapper/vg-data".into(),
-                uuid: Some("lv-uuid".into()),
-                size_bytes: 1024 * 1024 * 1024,
-                free_bytes: None,
-                pe_start_bytes: None,
-                extent_size_bytes: Some(4 * 1024 * 1024),
-                free_extent_count: None,
-                pv_count: Some(1),
-                lv_count: None,
-                attributes: None,
-                layout: None,
-                role: None,
-            }],
+            lvm: vec![
+                LvmIdentity {
+                    kind: LvmIdentityKind::PhysicalVolume,
+                    name: "/dev/sda1".into(),
+                    uuid: Some("pv-uuid".into()),
+                    size_bytes: 4 * 1024 * 1024 * 1024,
+                    free_bytes: None,
+                    pe_start_bytes: Some(1024 * 1024),
+                    extent_size_bytes: Some(4 * 1024 * 1024),
+                    free_extent_count: None,
+                    pv_count: None,
+                    lv_count: None,
+                    attributes: None,
+                    layout: None,
+                    role: None,
+                },
+                LvmIdentity {
+                    kind: LvmIdentityKind::VolumeGroup,
+                    name: "vg".into(),
+                    uuid: Some("vg-uuid".into()),
+                    size_bytes: 4 * 1024 * 1024 * 1024,
+                    free_bytes: Some(2 * 1024 * 1024 * 1024),
+                    pe_start_bytes: None,
+                    extent_size_bytes: Some(4 * 1024 * 1024),
+                    free_extent_count: Some(512),
+                    pv_count: Some(1),
+                    lv_count: Some(1),
+                    attributes: None,
+                    layout: None,
+                    role: None,
+                },
+                LvmIdentity {
+                    kind: LvmIdentityKind::LogicalVolume,
+                    name: "/dev/mapper/vg-data".into(),
+                    uuid: Some("lv-uuid".into()),
+                    size_bytes: 1024 * 1024 * 1024,
+                    free_bytes: None,
+                    pe_start_bytes: None,
+                    extent_size_bytes: Some(4 * 1024 * 1024),
+                    free_extent_count: None,
+                    pv_count: None,
+                    lv_count: None,
+                    attributes: None,
+                    layout: None,
+                    role: None,
+                },
+            ],
             filesystem: Some(FilesystemIdentity {
                 device: "/dev/mapper/vg-data".into(),
                 fs_type: "ext4".into(),
                 fs_version: Some("1.0".into()),
                 uuid: Some("fs-uuid".into()),
-                block_size_bytes: Some(4096),
-                block_count: Some(262144),
-                observed_filesystem_size_bytes: Some(1024 * 1024 * 1024),
                 backing_device_size_bytes: 1024 * 1024 * 1024,
+                observed_filesystem_size_bytes: Some(1024 * 1024 * 1024),
             }),
             mounts: vec![MountIdentity {
                 source: Some("/dev/mapper/vg-data".into()),
