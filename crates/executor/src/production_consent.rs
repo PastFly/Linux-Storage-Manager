@@ -416,12 +416,7 @@ mod tests {
         let mut identity = file_identity(&bytes);
         identity.mode = libc::S_IFREG | 0o640;
         assert!(matches!(
-            bind_consent_receipt(
-                &intent,
-                PRODUCTION_MUTATION_CONSENT_PATH,
-                &bytes,
-                identity,
-            ),
+            bind_consent_receipt(&intent, PRODUCTION_MUTATION_CONSENT_PATH, &bytes, identity,),
             Err(ProductionMutationConsentError::UnsafeFile)
         ));
     }
