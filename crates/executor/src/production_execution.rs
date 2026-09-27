@@ -173,23 +173,24 @@ pub fn seal_production_mutation_execution_permit(
         mutation_enabled: false,
         process_spawned: false,
     };
-    permit.permit_id = permit
-        .expected_permit_id()
-        .map_err(|error| ProductionMutationExecutionPermitError::Serialization(error.to_string()))?;
+    permit.permit_id = permit.expected_permit_id().map_err(|error| {
+        ProductionMutationExecutionPermitError::Serialization(error.to_string())
+    })?;
     Ok(permit)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        ProductionMutationConsentFileIdentity, PRODUCTION_MUTATION_CONSENT_PATH,
-    };
+    #[cfg(feature = "production-mutation-execution-permit")]
+    use crate::{ProductionMutationConsentFileIdentity, PRODUCTION_MUTATION_CONSENT_PATH};
 
+    #[cfg(feature = "production-mutation-execution-permit")]
     fn digest(ch: char) -> String {
         std::iter::repeat_n(ch, 64).collect()
     }
 
+    #[cfg(feature = "production-mutation-execution-permit")]
     fn activation() -> ProductionMutationActivationIntent {
         let mut value = ProductionMutationActivationIntent {
             schema_version: 1,
@@ -229,6 +230,7 @@ mod tests {
         value
     }
 
+    #[cfg(feature = "production-mutation-execution-permit")]
     fn consent(
         activation: &ProductionMutationActivationIntent,
     ) -> ProductionMutationConsentReceipt {
@@ -269,6 +271,7 @@ mod tests {
         value
     }
 
+    #[cfg(feature = "production-mutation-execution-permit")]
     fn launch(
         activation: &ProductionMutationActivationIntent,
         plan_step_id: u32,
