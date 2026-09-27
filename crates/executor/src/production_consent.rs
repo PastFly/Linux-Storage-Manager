@@ -433,6 +433,30 @@ mod tests {
     }
 
     #[test]
+    fn unknown_consent_fields_are_rejected() {
+        let intent = intent();
+        let mut raw = serde_json::to_value(
+            serde_json::from_slice::<ProductionMutationConsentDocument>(&document(&intent))
+                .unwrap(),
+        )
+        .unwrap();
+        raw.as_object_mut()
+            .unwrap()
+            .insert("shell".into(), serde_json::Value::String("/bin/sh".into()));
+        let bytes = serde_json::to_vec(&raw).unwrap();
+
+        assert!(matches!(
+            bind_consent_receipt(
+                &intent,
+                PRODUCTION_MUTATION_CONSENT_PATH,
+                &bytes,
+                file_identity(&bytes),
+            ),
+            Err(ProductionMutationConsentError::Decode(_))
+        ));
+    }
+
+    #[test]
     fn compile_features_remain_separate_gates() {
         if PRODUCTION_MUTATION_CONSENT_COMPILED {
             assert!(PRODUCTION_MUTATION_ACTIVATION_COMPILED);
