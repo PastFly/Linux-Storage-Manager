@@ -11,6 +11,7 @@ disposable-executor = []
 disposable-loop-harness = ["disposable-executor", "dep:lsm-discovery"]
 production-helper-protocol = ["dep:lsm-discovery"]
 production-mutation-activation = []
+production-mutation-consent = ["production-mutation-activation"]
 
 [[bin]]
 name = "lsm-disposable-loop-harness"
