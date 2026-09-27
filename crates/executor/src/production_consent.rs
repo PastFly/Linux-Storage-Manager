@@ -11,8 +11,7 @@ use crate::ProductionMutationActivationIntent;
 
 pub const PRODUCTION_MUTATION_CONSENT_PATH: &str =
     "/etc/linux-storage-manager/production-mutation-consent.json";
-pub const PRODUCTION_MUTATION_CONSENT_PHRASE: &str =
-    "I UNDERSTAND THIS WILL MODIFY STORAGE";
+pub const PRODUCTION_MUTATION_CONSENT_PHRASE: &str = "I UNDERSTAND THIS WILL MODIFY STORAGE";
 pub const PRODUCTION_MUTATION_CONSENT_COMPILED: bool =
     cfg!(feature = "production-mutation-consent");
 const MAX_CONSENT_BYTES: u64 = 4096;
@@ -410,12 +409,7 @@ mod tests {
         let mut identity = file_identity(&bytes);
         identity.uid = 1000;
         assert!(matches!(
-            bind_consent_receipt(
-                &intent,
-                PRODUCTION_MUTATION_CONSENT_PATH,
-                &bytes,
-                identity,
-            ),
+            bind_consent_receipt(&intent, PRODUCTION_MUTATION_CONSENT_PATH, &bytes, identity,),
             Err(ProductionMutationConsentError::UnsafeFile)
         ));
 
