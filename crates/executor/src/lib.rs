@@ -32,6 +32,7 @@ mod privileged_tools;
 mod privileged_verify;
 mod production_activation;
 mod production_consent;
+mod production_execution;
 
 pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError};
 pub use backup_capture::{
@@ -168,6 +169,10 @@ pub use production_consent::{
     ProductionMutationConsentError, ProductionMutationConsentFileIdentity,
     ProductionMutationConsentReceipt, PRODUCTION_MUTATION_CONSENT_COMPILED,
     PRODUCTION_MUTATION_CONSENT_PATH, PRODUCTION_MUTATION_CONSENT_PHRASE,
+};
+pub use production_execution::{
+    seal_production_mutation_execution_permit, ProductionMutationExecutionPermit,
+    ProductionMutationExecutionPermitError, PRODUCTION_MUTATION_EXECUTION_PERMIT_COMPILED,
 };
 
 use std::fs::{self, File, OpenOptions};
