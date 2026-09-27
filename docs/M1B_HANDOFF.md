@@ -234,6 +234,8 @@ M1B36 adds an independent runtime-consent boundary on top of the M1B35 activatio
 
 M1B37 seals the M1B35 activation intent, M1B36 root-consent receipt and one exact M1B27/M1B34 descriptor launch permit into a final non-spawning production execution permit. The three layers must agree on execution ID, activation ID, target/device and the launch must be one of the two explicitly activated mutation steps. Upstream objects that already claim execution/mutation or process spawn are rejected. The new feature depends on the consent feature, but the resulting permit still records `mutation_enabled=false` and `process_spawned=false`; descriptor execution remains blocked until a separately reviewed crossing gate consumes this exact permit.
 
+M1B38 closes the last replay window before a real production spawn by durably consuming each M1B37 execution permit exactly once. A root-only `create_new` claim under `/var/lib/linux-storage-manager/journal/spawn-claims` is keyed by execution ID and plan step, binds the full activation/consent/launch/command/target scope and records `mutation_may_have_started=true` before any future process creation. Claims are intentionally never deleted. If the host crashes after pathname creation but before a complete write, the surviving pathname still blocks replay and forces reconciliation. Descriptor execution remains closed in this layer.
+
 Semantic actions are typed as pre-execution evidence, mutation candidates or verification.
 No `pvresize` or other absent mutation is synthesized. Every mutation candidate receives a
 read-only barrier requiring fresh target identity, fresh capabilities, expected-state validation
