@@ -242,6 +242,8 @@ M1B40 removes raw child exit status from the public production API. The M1B38/M1
 
 M1B41 closes the successful production mutation boundary synchronously. The classify-only M1B40 call becomes crate-private; the exported production API now requires the exact pre-spawn live identity, executes the descriptor sequence, rediscoveries a fresh full host snapshot, requires the capability inventory to remain identical to the frozen handoff, captures the fresh target identity, proves the exact M1B32 layer transition, and persists the M1B33 verified continuation/completion before returning. Rediscovery, capability, identity or verification failure durably enters RecoveryRequired. The `production-mutation-execution` feature now explicitly carries the discovery dependency needed for this mandatory post-state gate.
 
+M1B42 hardens that synchronous close against bounded Linux rediscovery lag. After a successful production process receipt, the executor retries full snapshot/target capture and only the expected partition/PV/LV/filesystem post-state mismatches for up to 20 attempts at 50 ms intervals. Capability drift, target-identity drift, receipt/binding failures and unsupported operations remain immediate fail-closed conditions. Exhausting the bounded convergence window durably enters RecoveryRequired instead of silently accepting stale state.
+
 Semantic actions are typed as pre-execution evidence, mutation candidates or verification.
 No `pvresize` or other absent mutation is synthesized. Every mutation candidate receives a
 read-only barrier requiring fresh target identity, fresh capabilities, expected-state validation
