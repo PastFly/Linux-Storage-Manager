@@ -33,6 +33,7 @@ mod privileged_verify;
 mod production_activation;
 mod production_consent;
 mod production_consent_lease;
+mod production_chained_execution;
 mod production_descriptor_exec;
 mod production_execution;
 #[cfg(feature = "production-mutation-execution")]
@@ -185,6 +186,11 @@ pub use production_consent_lease::{
     revalidate_pinned_production_chained_mutation_consent,
     revalidate_pinned_production_mutation_consent, PinnedProductionMutationConsent,
     ProductionMutationConsentLeaseError,
+};
+pub use production_chained_execution::{
+    seal_production_chained_mutation_execution_permit,
+    ProductionChainedMutationExecutionPermit, ProductionChainedMutationExecutionPermitError,
+    PRODUCTION_CHAINED_MUTATION_EXECUTION_PERMIT_COMPILED,
 };
 pub use production_descriptor_exec::{
     ProductionDescriptorExecutionChain, ProductionDescriptorExecutionError,
