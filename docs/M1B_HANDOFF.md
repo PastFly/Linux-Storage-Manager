@@ -246,6 +246,8 @@ M1B42 hardens that synchronous close against bounded Linux rediscovery lag. Afte
 
 M1B43 collapses the remaining pre-spawn integration surface into typed first-step and continuation builders. The first builder resolves request/command/tool provenance before the durable Executing transition, then binds authorization, pinned executable descriptors, descriptor launch, launch permit and production permit; any failure after Executing is persisted as RecoveryRequired. The continuation builder consumes only the latest M1B33 verified boundary and applies the same fail-closed construction for the exact filesystem step. Callers no longer need to manually assemble the production descriptor chain.
 
+M1B44 proves the narrow production path end to end on a harness-owned Linux loop fixture. The test creates a single-PV LVM ext4 target with existing VG free extents, builds the exact production activation and root-owned runtime consent, prepares the typed first LV step, crosses the real production descriptor-exec gate, requires bounded live rediscovery and durable verified continuation, prepares the filesystem continuation from the rolling identity boundary, and requires terminal Completed with the sentinel preserved. CI runs this only in the disposable root loop matrix and removes the exact temporary consent file afterward.
+
 Semantic actions are typed as pre-execution evidence, mutation candidates or verification.
 No `pvresize` or other absent mutation is synthesized. Every mutation candidate receives a
 read-only barrier requiring fresh target identity, fresh capabilities, expected-state validation
