@@ -258,12 +258,16 @@ mod tests {
             compile_feature_enabled: value.compile_feature_enabled,
             execution_enabled: value.execution_enabled,
         };
-        value.activation_id =
-            format!("{:x}", Sha256::digest(serde_json::to_vec(&payload).unwrap()));
+        value.activation_id = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&payload).unwrap())
+        );
         value
     }
 
-    fn consent(activation: &ProductionChainedMutationActivationIntent) -> ProductionMutationConsentReceipt {
+    fn consent(
+        activation: &ProductionChainedMutationActivationIntent,
+    ) -> ProductionMutationConsentReceipt {
         let file = ProductionMutationConsentFileIdentity {
             device_id: 1,
             inode: 2,
