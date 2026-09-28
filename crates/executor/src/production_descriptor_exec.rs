@@ -3,11 +3,13 @@ use thiserror::Error;
 
 use crate::privileged_exec::execute_authorized_privileged_descriptor_launch;
 use crate::{
-    verify_default_production_mutation_consent, LockedExecutionSession, LockedSessionError,
-    PinnedPrivilegedTools, PrivilegedCommandSpec, PrivilegedDescriptorExecError,
+    revalidate_pinned_production_mutation_consent, LockedExecutionSession, LockedSessionError,
+    PinnedPrivilegedTools, PinnedProductionMutationConsent, PrivilegedCommandSpec,
+    PrivilegedDescriptorExecError,
     PrivilegedDescriptorLaunchSpec, PrivilegedDescriptorSequenceOutcome, PrivilegedHelperRequest,
-    PrivilegedLaunchPermit, ProductionMutationActivationIntent, ProductionMutationConsentError,
-    ProductionMutationConsentReceipt, ProductionMutationExecutionPermit,
+    PrivilegedLaunchPermit, ProductionMutationActivationIntent,
+    ProductionMutationConsentLeaseError, ProductionMutationConsentReceipt,
+    ProductionMutationExecutionPermit,
 };
 
 /// M1B38 is the first compile-time gate that can cross the descriptor-exec
@@ -24,6 +26,7 @@ pub struct ProductionDescriptorExecutionChain<'a> {
     pub launch: &'a PrivilegedDescriptorLaunchSpec,
     pub pinned: &'a PinnedPrivilegedTools,
     pub command: &'a PrivilegedCommandSpec,
+    pub consent_lease: &'a PinnedProductionMutationConsent,
 }
 
 #[derive(Debug, Error)]
@@ -46,8 +49,8 @@ pub enum ProductionDescriptorExecutionError {
     StepBoundaryMismatch,
     #[error("privileged launch chain does not match the production execution permit")]
     LaunchBindingMismatch,
-    #[error("production runtime consent verification failed: {0}")]
-    Consent(#[from] ProductionMutationConsentError),
+    #[error("production runtime consent lease validation failed: {0}")]
+    ConsentLease(#[from] ProductionMutationConsentLeaseError),
     #[error("durable journal access failed: {0}")]
     Session(#[from] LockedSessionError),
     #[error("descriptor execution failed: {0}")]
@@ -213,15 +216,16 @@ pub fn execute_production_descriptor_launch(
     }
 
     session.require_current_durable_journal()?;
-    let fresh_consent = match verify_default_production_mutation_consent(activation) {
-        Ok(receipt) => receipt,
-        Err(error) => {
-            session.persist_interrupted(
-                "production runtime consent could not be revalidated immediately before spawn",
-            )?;
-            return Err(error.into());
-        }
-    };
+    let fresh_consent =
+        match revalidate_pinned_production_mutation_consent(activation, chain.consent_lease) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                session.persist_interrupted(
+                    "production runtime consent lease could not be revalidated immediately before spawn",
+                )?;
+                return Err(error.into());
+            }
+        };
 
     if let Err(error) = validate_gate(session.journal(), &fresh_consent, chain) {
         session.persist_interrupted(
