@@ -14,6 +14,7 @@ production-mutation-activation = []
 production-mutation-consent = ["production-mutation-activation"]
 production-mutation-execution-permit = ["production-mutation-consent"]
 production-chained-mutation-execution-permit = ["production-mutation-consent"]
+production-chained-mutation-execution = ["production-chained-mutation-execution-permit"]
 production-mutation-execution = ["production-mutation-execution-permit", "dep:lsm-discovery"]
 production-loop-harness = ["production-mutation-execution", "disposable-loop-harness"]
 
