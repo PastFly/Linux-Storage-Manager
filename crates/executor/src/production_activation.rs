@@ -329,6 +329,408 @@ pub fn seal_production_mutation_activation_intent(
     Ok(intent)
 }
 
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductionChainedMutationProfile {
+    SinglePvPartitionTailLvmFilesystem,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProductionChainedActivationReadiness {
+    pub schema_version: u32,
+    pub profile: ProductionChainedMutationProfile,
+    pub compile_feature_enabled: bool,
+    pub topology_eligible: bool,
+    pub exact_execution_binding: bool,
+    pub exact_identity_binding: bool,
+    pub mutation_step_ids: Vec<u32>,
+    pub blockers: Vec<String>,
+}
+
+impl ProductionChainedActivationReadiness {
+    pub fn ready(&self) -> bool {
+        self.compile_feature_enabled
+            && self.topology_eligible
+            && self.exact_execution_binding
+            && self.exact_identity_binding
+            && self.blockers.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProductionChainedMutationActivationIntent {
+    pub schema_version: u32,
+    pub activation_id: String,
+    pub profile: ProductionChainedMutationProfile,
+    pub execution_id: String,
+    pub source_manifest_id: String,
+    pub native_manifest_digest: String,
+    pub fresh_identity_digest: String,
+    pub target: String,
+    pub resolved_device: String,
+    pub partition_step_id: u32,
+    pub pv_step_id: u32,
+    pub lv_step_id: u32,
+    pub filesystem_step_id: u32,
+    pub partition: String,
+    pub pv_uuid: String,
+    pub lv_uuid: String,
+    pub filesystem_type: String,
+    pub filesystem_mountpoint: Option<String>,
+    pub compile_feature_enabled: bool,
+    pub execution_enabled: bool,
+}
+
+impl ProductionChainedMutationActivationIntent {
+    pub fn integrity_matches(&self) -> Result<bool, serde_json::Error> {
+        Ok(self.activation_id == self.expected_activation_id()?)
+    }
+
+    fn expected_activation_id(&self) -> Result<String, serde_json::Error> {
+        let bytes = serde_json::to_vec(&(
+            self.schema_version,
+            self.profile,
+            &self.execution_id,
+            &self.source_manifest_id,
+            &self.native_manifest_digest,
+            &self.fresh_identity_digest,
+            &self.target,
+            &self.resolved_device,
+            self.partition_step_id,
+            self.pv_step_id,
+            self.lv_step_id,
+            self.filesystem_step_id,
+            &self.partition,
+            &self.pv_uuid,
+            &self.lv_uuid,
+            &self.filesystem_type,
+            &self.filesystem_mountpoint,
+            self.compile_feature_enabled,
+            self.execution_enabled,
+        ))?;
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ProductionChainedActivationError {
+    #[error("production mutation activation feature is not compiled")]
+    FeatureDisabled,
+    #[error("execution binding is invalid or does not match the validated manifest")]
+    ExecutionBindingMismatch,
+    #[error("production chained activation requires exact partition -> PV -> LV -> filesystem mutations")]
+    MutationSequenceMismatch,
+    #[error("production chained activation dependencies are not strictly ordered")]
+    DependencyMismatch,
+    #[error("production chained activation contains an unsupported operation profile")]
+    UnsupportedProfile,
+    #[error("fresh target identity does not match the exact chained pre-mutation state")]
+    FreshIdentityMismatch,
+    #[error("filesystem identity does not match the authorized chained filesystem mutation")]
+    FilesystemIdentityMismatch,
+    #[error("chained activation intent serialization failed: {0}")]
+    Serialization(String),
+}
+
+#[derive(Debug, Clone)]
+struct ChainedProfileSpec {
+    partition_step_id: u32,
+    pv_step_id: u32,
+    lv_step_id: u32,
+    filesystem_step_id: u32,
+    partition: String,
+    start_sector: u64,
+    old_size_sectors: u64,
+    sector_size_bytes: u64,
+    pv_uuid: String,
+    expected_pv_size_bytes: u64,
+    lv_uuid: String,
+    expected_lv_size_bytes: u64,
+    filesystem_type: String,
+    filesystem_mountpoint: Option<String>,
+}
+
+fn exact_chained_profile(
+    validated: &ValidatedNativeManifest,
+    execution: &ExecutionStartBinding,
+) -> Result<ChainedProfileSpec, ProductionChainedActivationError> {
+    let mutations = mutation_steps(validated);
+    if mutations.len() != 4 || execution.mutation_step_ids.len() != 4 {
+        return Err(ProductionChainedActivationError::MutationSequenceMismatch);
+    }
+
+    let partition = mutations[0];
+    let pv = mutations[1];
+    let lv = mutations[2];
+    let filesystem = mutations[3];
+    let exact_ids = [
+        partition.plan_step_id,
+        pv.plan_step_id,
+        lv.plan_step_id,
+        filesystem.plan_step_id,
+    ];
+    if execution.mutation_step_ids.as_slice() != exact_ids {
+        return Err(ProductionChainedActivationError::MutationSequenceMismatch);
+    }
+    if !pv.depends_on.contains(&partition.plan_step_id)
+        || !lv.depends_on.contains(&pv.plan_step_id)
+        || !filesystem.depends_on.contains(&lv.plan_step_id)
+    {
+        return Err(ProductionChainedActivationError::DependencyMismatch);
+    }
+
+    match (
+        &partition.operation,
+        &pv.operation,
+        &lv.operation,
+        &filesystem.operation,
+    ) {
+        (
+            NativeOperationSpec::ExtendPartition {
+                partition,
+                start_sector,
+                old_size_sectors,
+                new_size_sectors,
+                sector_size_bytes,
+            },
+            NativeOperationSpec::ResizePhysicalVolume {
+                pv_uuid,
+                expected_pv_size_bytes,
+            },
+            NativeOperationSpec::ExtendLogicalVolume {
+                lv_uuid,
+                expected_lv_size_bytes,
+                ..
+            },
+            NativeOperationSpec::GrowFilesystem {
+                fs_type,
+                mountpoint,
+            },
+        ) if *new_size_sectors > *old_size_sectors
+            && matches!(*sector_size_bytes, 512 | 4096)
+            && matches!(fs_type.as_str(), "ext4" | "xfs")
+            && (fs_type == "ext4" || mountpoint.is_some()) =>
+        {
+            Ok(ChainedProfileSpec {
+                partition_step_id: mutations[0].plan_step_id,
+                pv_step_id: mutations[1].plan_step_id,
+                lv_step_id: mutations[2].plan_step_id,
+                filesystem_step_id: mutations[3].plan_step_id,
+                partition: partition.clone(),
+                start_sector: *start_sector,
+                old_size_sectors: *old_size_sectors,
+                sector_size_bytes: *sector_size_bytes,
+                pv_uuid: pv_uuid.clone(),
+                expected_pv_size_bytes: *expected_pv_size_bytes,
+                lv_uuid: lv_uuid.clone(),
+                expected_lv_size_bytes: *expected_lv_size_bytes,
+                filesystem_type: fs_type.clone(),
+                filesystem_mountpoint: mountpoint.clone(),
+            })
+        }
+        _ => Err(ProductionChainedActivationError::UnsupportedProfile),
+    }
+}
+
+fn validate_chained_execution_binding(
+    validated: &ValidatedNativeManifest,
+    execution: &ExecutionStartBinding,
+) -> Result<(), ProductionChainedActivationError> {
+    if execution.schema_version != 1
+        || !execution.integrity_matches().unwrap_or(false)
+        || execution.source_manifest_id != validated.manifest().source_manifest_id
+        || execution.native_manifest_digest != validated.digest()
+    {
+        return Err(ProductionChainedActivationError::ExecutionBindingMismatch);
+    }
+    Ok(())
+}
+
+fn validate_chained_identity_binding(
+    execution: &ExecutionStartBinding,
+    identity: &TargetIdentityManifest,
+    profile: &ChainedProfileSpec,
+) -> Result<(), ProductionChainedActivationError> {
+    if identity.manifest_digest != execution.fresh_identity_digest
+        || identity.route_status != LayerRouteStatus::SupportedProfile
+        || identity.target.is_empty()
+        || identity.resolved_device.is_empty()
+    {
+        return Err(ProductionChainedActivationError::FreshIdentityMismatch);
+    }
+
+    let partitions = identity
+        .partitions
+        .iter()
+        .filter(|entry| entry.partition == profile.partition)
+        .collect::<Vec<_>>();
+    if partitions.len() != 1 {
+        return Err(ProductionChainedActivationError::FreshIdentityMismatch);
+    }
+    let partition = partitions[0];
+    if partition.start_sector != Some(profile.start_sector)
+        || partition.size_sectors != Some(profile.old_size_sectors)
+        || partition.sector_size_bytes != Some(profile.sector_size_bytes)
+        || partition.disk.is_none()
+    {
+        return Err(ProductionChainedActivationError::FreshIdentityMismatch);
+    }
+
+    let physical_volumes = identity
+        .lvm
+        .iter()
+        .filter(|entry| {
+            entry.kind == lsm_planner::LvmIdentityKind::PhysicalVolume
+                && entry.uuid.as_deref() == Some(profile.pv_uuid.as_str())
+        })
+        .collect::<Vec<_>>();
+    let logical_volumes = identity
+        .lvm
+        .iter()
+        .filter(|entry| {
+            entry.kind == lsm_planner::LvmIdentityKind::LogicalVolume
+                && entry.uuid.as_deref() == Some(profile.lv_uuid.as_str())
+        })
+        .collect::<Vec<_>>();
+    let single_pv_vg = identity.lvm.iter().any(|entry| {
+        entry.kind == lsm_planner::LvmIdentityKind::VolumeGroup && entry.pv_count == Some(1)
+    });
+    if physical_volumes.len() != 1
+        || logical_volumes.len() != 1
+        || !single_pv_vg
+        || physical_volumes[0].name != profile.partition
+        || physical_volumes[0].size_bytes >= profile.expected_pv_size_bytes
+        || logical_volumes[0].size_bytes >= profile.expected_lv_size_bytes
+    {
+        return Err(ProductionChainedActivationError::FreshIdentityMismatch);
+    }
+
+    let filesystem = identity
+        .filesystem
+        .as_ref()
+        .ok_or(ProductionChainedActivationError::FilesystemIdentityMismatch)?;
+    if filesystem.device != identity.resolved_device
+        || filesystem.fs_type != profile.filesystem_type
+        || filesystem.uuid.is_none()
+    {
+        return Err(ProductionChainedActivationError::FilesystemIdentityMismatch);
+    }
+
+    match profile.filesystem_mountpoint.as_deref() {
+        Some(expected) => {
+            let matches = identity
+                .mounts
+                .iter()
+                .filter(|mount| {
+                    mount.target == expected
+                        && mount.fs_type.as_deref() == Some(profile.filesystem_type.as_str())
+                })
+                .count();
+            if matches != 1 {
+                return Err(ProductionChainedActivationError::FilesystemIdentityMismatch);
+            }
+        }
+        None => {
+            if profile.filesystem_type != "ext4" || !identity.mounts.is_empty() {
+                return Err(ProductionChainedActivationError::FilesystemIdentityMismatch);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Inspect the second production candidate without enabling any new execution
+/// path. This profile admits only an already-existing single-PV LVM filesystem
+/// whose backing partition has exact adjacent tail capacity and whose frozen
+/// mutation order is partition -> PV -> LV -> filesystem.
+pub fn inspect_production_chained_activation_readiness(
+    validated: &ValidatedNativeManifest,
+    execution: &ExecutionStartBinding,
+    identity: &TargetIdentityManifest,
+) -> ProductionChainedActivationReadiness {
+    let mut blockers = Vec::new();
+
+    let execution_ok = validate_chained_execution_binding(validated, execution).is_ok();
+    if !execution_ok {
+        blockers.push("execution-binding-mismatch".to_owned());
+    }
+
+    let profile = exact_chained_profile(validated, execution);
+    let topology_eligible = profile.is_ok();
+    if !topology_eligible {
+        blockers.push("unsupported-partition-pv-production-profile".to_owned());
+    }
+
+    let identity_ok = match profile.as_ref() {
+        Ok(profile) => validate_chained_identity_binding(execution, identity, profile).is_ok(),
+        Err(_) => false,
+    };
+    if !identity_ok {
+        blockers.push("fresh-chained-identity-mismatch".to_owned());
+    }
+
+    if !PRODUCTION_MUTATION_ACTIVATION_COMPILED {
+        blockers.push("production-activation-feature-disabled".to_owned());
+    }
+
+    ProductionChainedActivationReadiness {
+        schema_version: 1,
+        profile: ProductionChainedMutationProfile::SinglePvPartitionTailLvmFilesystem,
+        compile_feature_enabled: PRODUCTION_MUTATION_ACTIVATION_COMPILED,
+        topology_eligible,
+        exact_execution_binding: execution_ok,
+        exact_identity_binding: identity_ok,
+        mutation_step_ids: execution.mutation_step_ids.clone(),
+        blockers,
+    }
+}
+
+/// Seal the exact non-executing activation contract for partition -> PV -> LV
+/// -> filesystem growth. No downstream production execution permit consumes
+/// this intent yet; M1B45 therefore expands eligibility evidence only and does
+/// not broaden the M1B44 descriptor-execution scope.
+pub fn seal_production_chained_mutation_activation_intent(
+    validated: &ValidatedNativeManifest,
+    execution: &ExecutionStartBinding,
+    identity: &TargetIdentityManifest,
+) -> Result<ProductionChainedMutationActivationIntent, ProductionChainedActivationError> {
+    if !PRODUCTION_MUTATION_ACTIVATION_COMPILED {
+        return Err(ProductionChainedActivationError::FeatureDisabled);
+    }
+    validate_chained_execution_binding(validated, execution)?;
+    let profile = exact_chained_profile(validated, execution)?;
+    validate_chained_identity_binding(execution, identity, &profile)?;
+
+    let mut intent = ProductionChainedMutationActivationIntent {
+        schema_version: 1,
+        activation_id: String::new(),
+        profile: ProductionChainedMutationProfile::SinglePvPartitionTailLvmFilesystem,
+        execution_id: execution.execution_id.clone(),
+        source_manifest_id: execution.source_manifest_id.clone(),
+        native_manifest_digest: execution.native_manifest_digest.clone(),
+        fresh_identity_digest: execution.fresh_identity_digest.clone(),
+        target: identity.target.clone(),
+        resolved_device: identity.resolved_device.clone(),
+        partition_step_id: profile.partition_step_id,
+        pv_step_id: profile.pv_step_id,
+        lv_step_id: profile.lv_step_id,
+        filesystem_step_id: profile.filesystem_step_id,
+        partition: profile.partition,
+        pv_uuid: profile.pv_uuid,
+        lv_uuid: profile.lv_uuid,
+        filesystem_type: profile.filesystem_type,
+        filesystem_mountpoint: profile.filesystem_mountpoint,
+        compile_feature_enabled: true,
+        execution_enabled: false,
+    };
+    intent.activation_id = intent
+        .expected_activation_id()
+        .map_err(|error| ProductionChainedActivationError::Serialization(error.to_string()))?;
+    Ok(intent)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
