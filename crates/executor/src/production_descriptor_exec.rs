@@ -5,11 +5,10 @@ use crate::privileged_exec::execute_authorized_privileged_descriptor_launch;
 use crate::{
     revalidate_pinned_production_mutation_consent, LockedExecutionSession, LockedSessionError,
     PinnedPrivilegedTools, PinnedProductionMutationConsent, PrivilegedCommandSpec,
-    PrivilegedDescriptorExecError,
-    PrivilegedDescriptorLaunchSpec, PrivilegedDescriptorSequenceOutcome, PrivilegedHelperRequest,
-    PrivilegedLaunchPermit, ProductionMutationActivationIntent,
-    ProductionMutationConsentLeaseError, ProductionMutationConsentReceipt,
-    ProductionMutationExecutionPermit,
+    PrivilegedDescriptorExecError, PrivilegedDescriptorLaunchSpec,
+    PrivilegedDescriptorSequenceOutcome, PrivilegedHelperRequest, PrivilegedLaunchPermit,
+    ProductionMutationActivationIntent, ProductionMutationConsentLeaseError,
+    ProductionMutationConsentReceipt, ProductionMutationExecutionPermit,
 };
 
 /// M1B38 is the first compile-time gate that can cross the descriptor-exec
@@ -127,6 +126,7 @@ fn validate_gate(
         launch,
         pinned,
         command,
+        consent_lease: _,
     } = chain;
     if activation.schema_version != 1
         || !activation.integrity_matches().unwrap_or(false)
@@ -216,16 +216,18 @@ pub fn execute_production_descriptor_launch(
     }
 
     session.require_current_durable_journal()?;
-    let fresh_consent =
-        match revalidate_pinned_production_mutation_consent(activation, chain.consent_lease) {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                session.persist_interrupted(
-                    "production runtime consent lease could not be revalidated immediately before spawn",
-                )?;
-                return Err(error.into());
-            }
-        };
+    let fresh_consent = match revalidate_pinned_production_mutation_consent(
+        activation,
+        chain.consent_lease,
+    ) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            session.persist_interrupted(
+                "production runtime consent lease could not be revalidated immediately before spawn",
+            )?;
+            return Err(error.into());
+        }
+    };
 
     if let Err(error) = validate_gate(session.journal(), &fresh_consent, chain) {
         session.persist_interrupted(
