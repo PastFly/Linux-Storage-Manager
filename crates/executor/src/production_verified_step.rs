@@ -1,11 +1,14 @@
 use lsm_discovery::{discover_capabilities, discover_snapshot, SnapshotDiscoveryError};
-use lsm_planner::{capture_target_identity, IdentityGuardError, PlannerError, TargetIdentityManifest};
+use lsm_planner::{
+    capture_target_identity, IdentityGuardError, PlannerError, TargetIdentityManifest,
+};
 use thiserror::Error;
 
+use crate::production_descriptor_exec::execute_and_classify_production_descriptor_launch;
 use crate::{
-    execute_and_classify_production_descriptor_launch, persist_privileged_durable_transition,
-    verify_privileged_layer_post_state, LockedExecutionSession, LockedSessionError,
-    PrivilegedDurableDisposition, PrivilegedDurableTransitionError, PrivilegedLayerVerificationError,
+    persist_privileged_durable_transition, verify_privileged_layer_post_state,
+    LockedExecutionSession, LockedSessionError, PrivilegedDurableDisposition,
+    PrivilegedDurableTransitionError, PrivilegedLayerVerificationError,
     PrivilegedLayerVerificationReceipt, PrivilegedProcessReceipt, PrivilegedRuntimeDisposition,
     ProductionDescriptorExecutionChain, ProductionDescriptorExecutionError,
 };
@@ -165,8 +168,6 @@ pub fn execute_verify_and_persist_production_step(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn production_verified_step_feature_is_explicit() {
         assert!(cfg!(feature = "production-mutation-execution"));
