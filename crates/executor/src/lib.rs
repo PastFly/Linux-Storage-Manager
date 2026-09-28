@@ -32,6 +32,7 @@ mod privileged_tools;
 mod privileged_verify;
 mod production_activation;
 mod production_consent;
+mod production_consent_lease;
 mod production_descriptor_exec;
 mod production_execution;
 
@@ -170,6 +171,10 @@ pub use production_consent::{
     ProductionMutationConsentError, ProductionMutationConsentFileIdentity,
     ProductionMutationConsentReceipt, PRODUCTION_MUTATION_CONSENT_COMPILED,
     PRODUCTION_MUTATION_CONSENT_PATH, PRODUCTION_MUTATION_CONSENT_PHRASE,
+};
+pub use production_consent_lease::{
+    pin_default_production_mutation_consent, revalidate_pinned_production_mutation_consent,
+    PinnedProductionMutationConsent, ProductionMutationConsentLeaseError,
 };
 pub use production_descriptor_exec::{
     execute_production_descriptor_launch, ProductionDescriptorExecutionChain,
