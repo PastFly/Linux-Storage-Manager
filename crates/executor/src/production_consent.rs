@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::ProductionMutationActivationIntent;
+use crate::{ProductionChainedMutationActivationIntent, ProductionMutationActivationIntent};
 
 pub const PRODUCTION_MUTATION_CONSENT_PATH: &str =
     "/etc/linux-storage-manager/production-mutation-consent.json";
@@ -124,8 +124,52 @@ fn validate_activation_intent(
     Ok(())
 }
 
+fn validate_chained_activation_intent(
+    intent: &ProductionChainedMutationActivationIntent,
+) -> Result<(), ProductionMutationConsentError> {
+    if !intent.integrity_matches()? || !intent.compile_feature_enabled {
+        return Err(ProductionMutationConsentError::ActivationIntentInvalid);
+    }
+    if intent.execution_enabled {
+        return Err(ProductionMutationConsentError::ActivationAlreadyEnabled);
+    }
+    Ok(())
+}
+
 fn validate_document(
     intent: &ProductionMutationActivationIntent,
+    bytes: &[u8],
+) -> Result<ProductionMutationConsentDocument, ProductionMutationConsentError> {
+    if bytes.is_empty() || bytes.len() as u64 > MAX_CONSENT_BYTES {
+        return Err(ProductionMutationConsentError::InvalidFileSize);
+    }
+
+    let raw: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|error| ProductionMutationConsentError::Decode(error.to_string()))?;
+    let document: ProductionMutationConsentDocument = serde_json::from_value(raw.clone())
+        .map_err(|error| ProductionMutationConsentError::Decode(error.to_string()))?;
+    let canonical = serde_json::to_value(&document)?;
+    if raw != canonical {
+        return Err(ProductionMutationConsentError::NonCanonicalDocument);
+    }
+
+    if document.schema_version != 1
+        || document.activation_id != intent.activation_id
+        || document.execution_id != intent.execution_id
+        || document.target != intent.target
+        || document.resolved_device != intent.resolved_device
+    {
+        return Err(ProductionMutationConsentError::BindingMismatch);
+    }
+    if document.consent_phrase != PRODUCTION_MUTATION_CONSENT_PHRASE {
+        return Err(ProductionMutationConsentError::ConsentPhraseMismatch);
+    }
+
+    Ok(document)
+}
+
+fn validate_chained_document(
+    intent: &ProductionChainedMutationActivationIntent,
     bytes: &[u8],
 ) -> Result<ProductionMutationConsentDocument, ProductionMutationConsentError> {
     if bytes.is_empty() || bytes.len() as u64 > MAX_CONSENT_BYTES {
@@ -201,6 +245,32 @@ fn bind_consent_receipt(
     Ok(receipt)
 }
 
+fn bind_chained_consent_receipt(
+    intent: &ProductionChainedMutationActivationIntent,
+    consent_path: &str,
+    bytes: &[u8],
+    file_identity: ProductionMutationConsentFileIdentity,
+) -> Result<ProductionMutationConsentReceipt, ProductionMutationConsentError> {
+    validate_chained_activation_intent(intent)?;
+    validate_file_identity(&file_identity)?;
+    validate_chained_document(intent, bytes)?;
+
+    let mut receipt = ProductionMutationConsentReceipt {
+        schema_version: 1,
+        receipt_id: String::new(),
+        activation_id: intent.activation_id.clone(),
+        execution_id: intent.execution_id.clone(),
+        target: intent.target.clone(),
+        resolved_device: intent.resolved_device.clone(),
+        consent_path: consent_path.to_owned(),
+        consent_file: file_identity,
+        consent_verified: true,
+        execution_enabled: false,
+    };
+    receipt.receipt_id = receipt.expected_receipt_id()?;
+    Ok(receipt)
+}
+
 fn validate_secure_parent(path: &Path) -> Result<(), ProductionMutationConsentError> {
     let parent = path
         .parent()
@@ -227,14 +297,8 @@ fn validate_secure_parent(path: &Path) -> Result<(), ProductionMutationConsentEr
 ///
 /// Even after success, the receipt records execution_enabled=false. The next
 /// reviewed gate must consume both M1B35 activation and this consent receipt.
-pub fn verify_default_production_mutation_consent(
-    intent: &ProductionMutationActivationIntent,
-) -> Result<ProductionMutationConsentReceipt, ProductionMutationConsentError> {
-    if !PRODUCTION_MUTATION_CONSENT_COMPILED {
-        return Err(ProductionMutationConsentError::FeatureDisabled);
-    }
-    validate_activation_intent(intent)?;
-
+fn read_default_production_mutation_consent_file(
+) -> Result<(Vec<u8>, ProductionMutationConsentFileIdentity), ProductionMutationConsentError> {
     let path = Path::new(PRODUCTION_MUTATION_CONSENT_PATH);
     validate_secure_parent(path)?;
 
@@ -272,13 +336,46 @@ pub fn verify_default_production_mutation_consent(
         size_bytes: metadata.len(),
         sha256: format!("{:x}", Sha256::digest(&bytes)),
     };
+    Ok((bytes, identity))
+}
+
+/// Verify the explicit root-owned runtime consent for the exact narrow
+/// LV -> filesystem activation. This remains read-only and returns a receipt
+/// with execution_enabled=false.
+pub fn verify_default_production_mutation_consent(
+    intent: &ProductionMutationActivationIntent,
+) -> Result<ProductionMutationConsentReceipt, ProductionMutationConsentError> {
+    if !PRODUCTION_MUTATION_CONSENT_COMPILED {
+        return Err(ProductionMutationConsentError::FeatureDisabled);
+    }
+    validate_activation_intent(intent)?;
+    let (bytes, identity) = read_default_production_mutation_consent_file()?;
     bind_consent_receipt(intent, PRODUCTION_MUTATION_CONSENT_PATH, &bytes, identity)
+}
+
+/// Verify the same fixed root-owned runtime consent boundary for the M1B45
+/// partition -> PV -> LV -> filesystem activation contract.
+///
+/// This does not make the chained profile executable. It only proves that the
+/// operator consent document is bound to this exact chained activation.
+pub fn verify_default_production_chained_mutation_consent(
+    intent: &ProductionChainedMutationActivationIntent,
+) -> Result<ProductionMutationConsentReceipt, ProductionMutationConsentError> {
+    if !PRODUCTION_MUTATION_CONSENT_COMPILED {
+        return Err(ProductionMutationConsentError::FeatureDisabled);
+    }
+    validate_chained_activation_intent(intent)?;
+    let (bytes, identity) = read_default_production_mutation_consent_file()?;
+    bind_chained_consent_receipt(intent, PRODUCTION_MUTATION_CONSENT_PATH, &bytes, identity)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ProductionMutationProfile, PRODUCTION_MUTATION_ACTIVATION_COMPILED};
+    use crate::{
+        ProductionChainedMutationProfile, ProductionMutationProfile,
+        PRODUCTION_MUTATION_ACTIVATION_COMPILED,
+    };
 
     fn digest(ch: char) -> String {
         std::iter::repeat_n(ch, 64).collect()
@@ -442,6 +539,129 @@ mod tests {
                 file_identity(&bytes),
             ),
             Err(ProductionMutationConsentError::Decode(_))
+        ));
+    }
+
+    #[derive(Serialize)]
+    struct ChainedIntentDigestPayload<'a> {
+        schema_version: u32,
+        profile: ProductionChainedMutationProfile,
+        execution_id: &'a str,
+        source_manifest_id: &'a str,
+        native_manifest_digest: &'a str,
+        fresh_identity_digest: &'a str,
+        target: &'a str,
+        resolved_device: &'a str,
+        partition_step_id: u32,
+        pv_step_id: u32,
+        lv_step_id: u32,
+        filesystem_step_id: u32,
+        partition: &'a str,
+        pv_uuid: &'a str,
+        lv_uuid: &'a str,
+        filesystem_type: &'a str,
+        filesystem_mountpoint: &'a Option<String>,
+        compile_feature_enabled: bool,
+        execution_enabled: bool,
+    }
+
+    fn chained_intent() -> ProductionChainedMutationActivationIntent {
+        let mut intent = ProductionChainedMutationActivationIntent {
+            schema_version: 1,
+            activation_id: String::new(),
+            profile: ProductionChainedMutationProfile::SinglePvPartitionTailLvmFilesystem,
+            execution_id: digest('1'),
+            source_manifest_id: digest('2'),
+            native_manifest_digest: digest('3'),
+            fresh_identity_digest: digest('4'),
+            target: "/mnt/data".into(),
+            resolved_device: "/dev/mapper/vg-data".into(),
+            partition_step_id: 3,
+            pv_step_id: 4,
+            lv_step_id: 5,
+            filesystem_step_id: 6,
+            partition: "/dev/sda1".into(),
+            pv_uuid: "pv-uuid".into(),
+            lv_uuid: "lv-uuid".into(),
+            filesystem_type: "ext4".into(),
+            filesystem_mountpoint: Some("/mnt/data".into()),
+            compile_feature_enabled: true,
+            execution_enabled: false,
+        };
+        let payload = ChainedIntentDigestPayload {
+            schema_version: intent.schema_version,
+            profile: intent.profile,
+            execution_id: &intent.execution_id,
+            source_manifest_id: &intent.source_manifest_id,
+            native_manifest_digest: &intent.native_manifest_digest,
+            fresh_identity_digest: &intent.fresh_identity_digest,
+            target: &intent.target,
+            resolved_device: &intent.resolved_device,
+            partition_step_id: intent.partition_step_id,
+            pv_step_id: intent.pv_step_id,
+            lv_step_id: intent.lv_step_id,
+            filesystem_step_id: intent.filesystem_step_id,
+            partition: &intent.partition,
+            pv_uuid: &intent.pv_uuid,
+            lv_uuid: &intent.lv_uuid,
+            filesystem_type: &intent.filesystem_type,
+            filesystem_mountpoint: &intent.filesystem_mountpoint,
+            compile_feature_enabled: intent.compile_feature_enabled,
+            execution_enabled: intent.execution_enabled,
+        };
+        intent.activation_id = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&payload).unwrap())
+        );
+        intent
+    }
+
+    fn chained_document(intent: &ProductionChainedMutationActivationIntent) -> Vec<u8> {
+        serde_json::to_vec(&ProductionMutationConsentDocument {
+            schema_version: 1,
+            activation_id: intent.activation_id.clone(),
+            execution_id: intent.execution_id.clone(),
+            target: intent.target.clone(),
+            resolved_device: intent.resolved_device.clone(),
+            consent_phrase: PRODUCTION_MUTATION_CONSENT_PHRASE.into(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn chained_consent_binds_to_exact_chained_activation() {
+        let intent = chained_intent();
+        let bytes = chained_document(&intent);
+        let receipt = bind_chained_consent_receipt(
+            &intent,
+            PRODUCTION_MUTATION_CONSENT_PATH,
+            &bytes,
+            file_identity(&bytes),
+        )
+        .unwrap();
+
+        assert!(receipt.integrity_matches().unwrap());
+        assert_eq!(receipt.activation_id, intent.activation_id);
+        assert_eq!(receipt.execution_id, intent.execution_id);
+        assert!(!receipt.execution_enabled);
+    }
+
+    #[test]
+    fn chained_consent_rejects_another_activation_id() {
+        let intent = chained_intent();
+        let mut document: ProductionMutationConsentDocument =
+            serde_json::from_slice(&chained_document(&intent)).unwrap();
+        document.activation_id = digest('f');
+        let bytes = serde_json::to_vec(&document).unwrap();
+
+        assert!(matches!(
+            bind_chained_consent_receipt(
+                &intent,
+                PRODUCTION_MUTATION_CONSENT_PATH,
+                &bytes,
+                file_identity(&bytes),
+            ),
+            Err(ProductionMutationConsentError::BindingMismatch)
         ));
     }
 

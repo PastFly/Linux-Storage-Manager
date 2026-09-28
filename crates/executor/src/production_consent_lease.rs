@@ -6,7 +6,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    verify_default_production_mutation_consent, ProductionMutationActivationIntent,
+    verify_default_production_chained_mutation_consent, verify_default_production_mutation_consent,
+    ProductionChainedMutationActivationIntent, ProductionMutationActivationIntent,
     ProductionMutationConsentError, ProductionMutationConsentFileIdentity,
     ProductionMutationConsentReceipt, PRODUCTION_MUTATION_CONSENT_PATH,
 };
@@ -118,16 +119,22 @@ pub fn pin_default_production_mutation_consent(
     open_pinned_default_consent(receipt)
 }
 
+pub fn pin_default_production_chained_mutation_consent(
+    intent: &ProductionChainedMutationActivationIntent,
+) -> Result<PinnedProductionMutationConsent, ProductionMutationConsentLeaseError> {
+    let receipt = verify_default_production_chained_mutation_consent(intent)?;
+    open_pinned_default_consent(receipt)
+}
+
 /// Revalidate both the current consent pathname and the still-open pinned file.
 ///
 /// This catches pathname replacement/removal as well as in-place metadata or
 /// content changes after the lease was created. The caller should invoke this
 /// as the final consent check immediately before descriptor execution.
-pub fn revalidate_pinned_production_mutation_consent(
-    intent: &ProductionMutationActivationIntent,
+fn validate_current_receipt_against_lease(
+    current: ProductionMutationConsentReceipt,
     lease: &PinnedProductionMutationConsent,
 ) -> Result<ProductionMutationConsentReceipt, ProductionMutationConsentLeaseError> {
-    let current = verify_default_production_mutation_consent(intent)?;
     if current.receipt_id != lease.receipt.receipt_id
         || current.consent_file != lease.receipt.consent_file
     {
@@ -137,6 +144,22 @@ pub fn revalidate_pinned_production_mutation_consent(
         return Err(ProductionMutationConsentLeaseError::PinnedFileMismatch);
     }
     Ok(current)
+}
+
+pub fn revalidate_pinned_production_mutation_consent(
+    intent: &ProductionMutationActivationIntent,
+    lease: &PinnedProductionMutationConsent,
+) -> Result<ProductionMutationConsentReceipt, ProductionMutationConsentLeaseError> {
+    let current = verify_default_production_mutation_consent(intent)?;
+    validate_current_receipt_against_lease(current, lease)
+}
+
+pub fn revalidate_pinned_production_chained_mutation_consent(
+    intent: &ProductionChainedMutationActivationIntent,
+    lease: &PinnedProductionMutationConsent,
+) -> Result<ProductionMutationConsentReceipt, ProductionMutationConsentLeaseError> {
+    let current = verify_default_production_chained_mutation_consent(intent)?;
+    validate_current_receipt_against_lease(current, lease)
 }
 
 #[cfg(test)]
