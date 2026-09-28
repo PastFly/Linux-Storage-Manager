@@ -33,6 +33,8 @@ mod privileged_verify;
 mod production_activation;
 mod production_chained_descriptor_exec;
 mod production_chained_execution;
+#[cfg(feature = "production-chained-verified-execution")]
+mod production_chained_verified_step;
 mod production_consent;
 mod production_consent_lease;
 mod production_descriptor_exec;
@@ -183,6 +185,11 @@ pub use production_chained_execution::{
     seal_production_chained_mutation_execution_permit, ProductionChainedMutationExecutionPermit,
     ProductionChainedMutationExecutionPermitError,
     PRODUCTION_CHAINED_MUTATION_EXECUTION_PERMIT_COMPILED,
+};
+#[cfg(feature = "production-chained-verified-execution")]
+pub use production_chained_verified_step::{
+    execute_verify_and_persist_production_chained_step, ProductionChainedVerifiedMutationStep,
+    ProductionChainedVerifiedMutationStepError,
 };
 pub use production_consent::{
     verify_default_production_chained_mutation_consent, verify_default_production_mutation_consent,
