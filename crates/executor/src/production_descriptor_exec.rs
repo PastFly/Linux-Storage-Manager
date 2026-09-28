@@ -4,19 +4,19 @@ use thiserror::Error;
 
 #[cfg(feature = "production-mutation-execution")]
 use crate::privileged_exec::execute_authorized_privileged_descriptor_launch;
-use crate::{
-    LockedSessionError, PinnedPrivilegedTools, PinnedProductionMutationConsent,
-    PrivilegedCommandSpec, PrivilegedDescriptorExecError, PrivilegedDescriptorLaunchSpec,
-    PrivilegedDurableTransitionError, PrivilegedHelperRequest, PrivilegedLaunchPermit,
-    PrivilegedProcessReceiptError, ProductionMutationActivationIntent,
-    ProductionMutationConsentLeaseError, ProductionMutationExecutionPermit,
-};
 #[cfg(feature = "production-mutation-execution")]
 use crate::{
     classify_privileged_process_outcome, persist_privileged_durable_transition,
     revalidate_pinned_production_mutation_consent, LockedExecutionSession,
     PrivilegedDescriptorSequenceOutcome, PrivilegedProcessReceipt, PrivilegedRuntimeDisposition,
     ProductionMutationConsentReceipt,
+};
+use crate::{
+    LockedSessionError, PinnedPrivilegedTools, PinnedProductionMutationConsent,
+    PrivilegedCommandSpec, PrivilegedDescriptorExecError, PrivilegedDescriptorLaunchSpec,
+    PrivilegedDurableTransitionError, PrivilegedHelperRequest, PrivilegedLaunchPermit,
+    PrivilegedProcessReceiptError, ProductionMutationActivationIntent,
+    ProductionMutationConsentLeaseError, ProductionMutationExecutionPermit,
 };
 
 /// M1B38 is the first compile-time gate that can cross the descriptor-exec
