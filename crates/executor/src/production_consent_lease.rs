@@ -200,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn pathname_replacement_does_not_change_pinned_inode() {
+    fn pathname_replacement_invalidates_the_original_link_identity() {
         let bytes = b"exact-consent";
         let (path, file) = temp_file("replace", bytes);
         let expected = identity(&file, bytes);
@@ -211,7 +211,7 @@ mod tests {
         fs::set_permissions(&replacement, permissions).unwrap();
         fs::rename(&replacement, &path).unwrap();
 
-        assert!(open_file_matches_identity(&file, &expected).unwrap());
+        assert!(!open_file_matches_identity(&file, &expected).unwrap());
         assert_ne!(fs::metadata(&path).unwrap().ino(), expected.inode);
         fs::remove_file(path).unwrap();
     }
