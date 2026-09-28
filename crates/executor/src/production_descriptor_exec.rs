@@ -3,12 +3,15 @@ use thiserror::Error;
 
 use crate::privileged_exec::execute_authorized_privileged_descriptor_launch;
 use crate::{
+    classify_privileged_process_outcome, persist_privileged_durable_transition,
     revalidate_pinned_production_mutation_consent, LockedExecutionSession, LockedSessionError,
     PinnedPrivilegedTools, PinnedProductionMutationConsent, PrivilegedCommandSpec,
     PrivilegedDescriptorExecError, PrivilegedDescriptorLaunchSpec,
-    PrivilegedDescriptorSequenceOutcome, PrivilegedHelperRequest, PrivilegedLaunchPermit,
-    ProductionMutationActivationIntent, ProductionMutationConsentLeaseError,
-    ProductionMutationConsentReceipt, ProductionMutationExecutionPermit,
+    PrivilegedDescriptorSequenceOutcome, PrivilegedDurableTransitionError, PrivilegedHelperRequest,
+    PrivilegedLaunchPermit, PrivilegedProcessReceipt, PrivilegedProcessReceiptError,
+    PrivilegedRuntimeDisposition, ProductionMutationActivationIntent,
+    ProductionMutationConsentLeaseError, ProductionMutationConsentReceipt,
+    ProductionMutationExecutionPermit,
 };
 
 /// M1B38 is the first compile-time gate that can cross the descriptor-exec
@@ -54,6 +57,10 @@ pub enum ProductionDescriptorExecutionError {
     Session(#[from] LockedSessionError),
     #[error("descriptor execution failed: {0}")]
     Descriptor(#[from] PrivilegedDescriptorExecError),
+    #[error("spawned process could not be classified into a trusted runtime receipt: {0}")]
+    ProcessReceipt(#[from] PrivilegedProcessReceiptError),
+    #[error("recovery-required process outcome could not be persisted durably: {0}")]
+    DurableTransition(#[from] PrivilegedDurableTransitionError),
 }
 
 fn validate_current_step(
@@ -206,7 +213,7 @@ fn validate_gate(
 /// A successful return is still not completion: the caller must classify the
 /// process receipt, rediscover live state, verify the exact layer, and persist
 /// M1B33 continuation/completion before any later mutation.
-pub fn execute_production_descriptor_launch(
+pub(crate) fn execute_production_descriptor_launch_raw(
     session: &mut LockedExecutionSession<'_>,
     chain: ProductionDescriptorExecutionChain<'_>,
 ) -> Result<PrivilegedDescriptorSequenceOutcome, ProductionDescriptorExecutionError> {
@@ -250,6 +257,38 @@ pub fn execute_production_descriptor_launch(
             Err(error.into())
         }
     }
+}
+
+/// Execute one production descriptor sequence and immediately convert the raw
+/// child outcome into the tamper-evident M1B31 process receipt.
+///
+/// Raw exit status is intentionally not exposed through the public production
+/// API. A zero exit can only become RediscoveryRequired, never completion. A
+/// recovery-required runtime receipt is persisted to RecoveryRequired before
+/// this function returns it. A rediscovery-required receipt remains in
+/// Executing until the caller performs exact live rediscovery/M1B32
+/// verification and M1B33 durable continuation.
+pub fn execute_and_classify_production_descriptor_launch(
+    session: &mut LockedExecutionSession<'_>,
+    chain: ProductionDescriptorExecutionChain<'_>,
+) -> Result<PrivilegedProcessReceipt, ProductionDescriptorExecutionError> {
+    let outcome = execute_production_descriptor_launch_raw(session, chain)?;
+    let receipt =
+        match classify_privileged_process_outcome(chain.launch_permit, chain.launch, &outcome) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                session.persist_interrupted(
+                    "production process outcome could not be bound to a trusted runtime receipt",
+                )?;
+                return Err(error.into());
+            }
+        };
+
+    if receipt.disposition == PrivilegedRuntimeDisposition::RecoveryRequired {
+        persist_privileged_durable_transition(session, chain.request, &receipt, None)?;
+    }
+
+    Ok(receipt)
 }
 
 #[cfg(test)]
