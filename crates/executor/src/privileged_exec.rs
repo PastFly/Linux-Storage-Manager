@@ -387,7 +387,6 @@ fn execute_privileged_descriptor_launch_inner(
     })
 }
 
-
 /// Legacy/default production entry point. It remains disabled because the
 /// project-wide default MUTATION_ENABLED constant is still false.
 pub fn execute_privileged_descriptor_launch(
@@ -396,13 +395,7 @@ pub fn execute_privileged_descriptor_launch(
     pinned: &PinnedPrivilegedTools,
     command: &PrivilegedCommandSpec,
 ) -> Result<PrivilegedDescriptorSequenceOutcome, PrivilegedDescriptorExecError> {
-    execute_privileged_descriptor_launch_inner(
-        permit,
-        launch,
-        pinned,
-        command,
-        MUTATION_ENABLED,
-    )
+    execute_privileged_descriptor_launch_inner(permit, launch, pinned, command, MUTATION_ENABLED)
 }
 
 /// Crate-private crossing point for the separately reviewed production gate.
