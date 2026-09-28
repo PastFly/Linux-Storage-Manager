@@ -71,6 +71,9 @@ jobs:
       - name: Check gated chained production descriptor execution boundary
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-chained-mutation-execution --lib
+      - name: Check chained production verified execution boundary
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo test --locked -p lsm-executor --features production-chained-verified-execution --lib
       - name: Check isolated production loop harness feature
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo clippy --locked -p lsm-executor --features production-loop-harness --bin lsm-production-loop-harness -- -D warnings
