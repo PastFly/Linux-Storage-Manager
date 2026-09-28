@@ -244,6 +244,8 @@ M1B41 closes the successful production mutation boundary synchronously. The clas
 
 M1B42 hardens that synchronous close against bounded Linux rediscovery lag. After a successful production process receipt, the executor retries full snapshot/target capture and only the expected partition/PV/LV/filesystem post-state mismatches for up to 20 attempts at 50 ms intervals. Capability drift, target-identity drift, receipt/binding failures and unsupported operations remain immediate fail-closed conditions. Exhausting the bounded convergence window durably enters RecoveryRequired instead of silently accepting stale state.
 
+M1B43 collapses the remaining pre-spawn integration surface into typed first-step and continuation builders. The first builder resolves request/command/tool provenance before the durable Executing transition, then binds authorization, pinned executable descriptors, descriptor launch, launch permit and production permit; any failure after Executing is persisted as RecoveryRequired. The continuation builder consumes only the latest M1B33 verified boundary and applies the same fail-closed construction for the exact filesystem step. Callers no longer need to manually assemble the production descriptor chain.
+
 Semantic actions are typed as pre-execution evidence, mutation candidates or verification.
 No `pvresize` or other absent mutation is synthesized. Every mutation candidate receives a
 read-only barrier requiring fresh target identity, fresh capabilities, expected-state validation

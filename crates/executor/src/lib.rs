@@ -36,6 +36,8 @@ mod production_consent_lease;
 mod production_descriptor_exec;
 mod production_execution;
 #[cfg(feature = "production-mutation-execution")]
+mod production_prepare;
+#[cfg(feature = "production-mutation-execution")]
 mod production_verified_step;
 
 pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError};
@@ -185,6 +187,11 @@ pub use production_descriptor_exec::{
 pub use production_execution::{
     seal_production_mutation_execution_permit, ProductionMutationExecutionPermit,
     ProductionMutationExecutionPermitError, PRODUCTION_MUTATION_EXECUTION_PERMIT_COMPILED,
+};
+#[cfg(feature = "production-mutation-execution")]
+pub use production_prepare::{
+    prepare_continuation_production_mutation_step, prepare_first_production_mutation_step,
+    PreparedProductionMutationStep, ProductionMutationPreparationError,
 };
 #[cfg(feature = "production-mutation-execution")]
 pub use production_verified_step::{
