@@ -739,7 +739,8 @@ mod tests {
         NativeCompiledStep, NativeVerificationBarrier,
     };
     use lsm_planner::{
-        FilesystemIdentity, LvmIdentity, LvmIdentityKind, MountIdentity, Reversibility,
+        FilesystemIdentity, LvmIdentity, LvmIdentityKind, MountIdentity,
+        PartitionGeometryIdentity, Reversibility,
     };
 
     fn digest(ch: char) -> String {
@@ -965,5 +966,150 @@ mod tests {
         assert!(!intent.execution_enabled);
         assert_eq!(intent.filesystem_type, "ext4");
         assert_eq!(intent.filesystem_mountpoint.as_deref(), Some("/mnt/data"));
+    }
+
+    fn chained_validated() -> ValidatedNativeManifest {
+        let gib = 1024 * 1024 * 1024_u64;
+        let steps = vec![
+            NativeCompiledStep {
+                plan_step_id: 3,
+                depends_on: vec![],
+                reversibility: Reversibility::Irreversible,
+                role: FrozenIntentRole::MutationCandidate,
+                operation: NativeOperationSpec::ExtendPartition {
+                    partition: "/dev/sda1".into(),
+                    start_sector: 2048,
+                    old_size_sectors: 8_388_608,
+                    new_size_sectors: 12_582_912,
+                    sector_size_bytes: 512,
+                },
+            },
+            NativeCompiledStep {
+                plan_step_id: 4,
+                depends_on: vec![3],
+                reversibility: Reversibility::Irreversible,
+                role: FrozenIntentRole::MutationCandidate,
+                operation: NativeOperationSpec::ResizePhysicalVolume {
+                    pv_uuid: "pv-uuid".into(),
+                    expected_pv_size_bytes: 6 * gib,
+                },
+            },
+            NativeCompiledStep {
+                plan_step_id: 5,
+                depends_on: vec![4],
+                reversibility: Reversibility::Irreversible,
+                role: FrozenIntentRole::MutationCandidate,
+                operation: NativeOperationSpec::ExtendLogicalVolume {
+                    lv_uuid: "lv-uuid".into(),
+                    additional_extents: 256,
+                    expected_lv_size_bytes: 2 * gib,
+                },
+            },
+            NativeCompiledStep {
+                plan_step_id: 6,
+                depends_on: vec![5],
+                reversibility: Reversibility::Irreversible,
+                role: FrozenIntentRole::MutationCandidate,
+                operation: NativeOperationSpec::GrowFilesystem {
+                    fs_type: "ext4".into(),
+                    mountpoint: Some("/mnt/data".into()),
+                },
+            },
+        ];
+        let verification_barriers = [3_u32, 4, 5, 6]
+            .into_iter()
+            .map(|after_plan_step_id| NativeVerificationBarrier {
+                after_plan_step_id,
+                before_next_mutation: true,
+                require_fresh_target_identity: true,
+                require_fresh_capabilities: true,
+                require_expected_state_check: true,
+                stop_on_mismatch: true,
+            })
+            .collect();
+
+        validate_and_bind_native_manifest(NativeCompiledManifest {
+            source_manifest_id: digest('a'),
+            steps,
+            verification_barriers,
+        })
+        .unwrap()
+    }
+
+    fn chained_identity() -> TargetIdentityManifest {
+        let mut value = identity();
+        value.partitions = vec![PartitionGeometryIdentity {
+            partition: "/dev/sda1".into(),
+            disk: Some("/dev/sda".into()),
+            table_label: Some("gpt".into()),
+            table_id: Some("gpt-test".into()),
+            sector_size_bytes: Some(512),
+            start_sector: Some(2048),
+            size_sectors: Some(8_388_608),
+            record_uuid: Some("part-uuid".into()),
+        }];
+        value
+    }
+
+    #[test]
+    fn chained_partition_pv_profile_is_recognized_but_not_execution_enabled() {
+        let validated = chained_validated();
+        let execution = execution(&validated);
+        let readiness = inspect_production_chained_activation_readiness(
+            &validated,
+            &execution,
+            &chained_identity(),
+        );
+
+        assert!(readiness.topology_eligible);
+        assert!(readiness.exact_execution_binding);
+        assert!(readiness.exact_identity_binding);
+        assert_eq!(readiness.mutation_step_ids, vec![3, 4, 5, 6]);
+        if !PRODUCTION_MUTATION_ACTIVATION_COMPILED {
+            assert!(!readiness.ready());
+            assert!(readiness
+                .blockers
+                .contains(&"production-activation-feature-disabled".to_owned()));
+        }
+    }
+
+    #[test]
+    fn chained_profile_rejects_stale_partition_geometry() {
+        let validated = chained_validated();
+        let execution = execution(&validated);
+        let mut stale = chained_identity();
+        stale.partitions[0].start_sector = Some(4096);
+
+        let readiness =
+            inspect_production_chained_activation_readiness(&validated, &execution, &stale);
+        assert!(readiness.topology_eligible);
+        assert!(!readiness.exact_identity_binding);
+        assert!(readiness
+            .blockers
+            .contains(&"fresh-chained-identity-mismatch".to_owned()));
+    }
+
+    #[cfg(feature = "production-mutation-activation")]
+    #[test]
+    fn chained_activation_seals_only_a_nonexecuting_scope_contract() {
+        let validated = chained_validated();
+        let execution = execution(&validated);
+        let intent = seal_production_chained_mutation_activation_intent(
+            &validated,
+            &execution,
+            &chained_identity(),
+        )
+        .unwrap();
+
+        assert!(intent.integrity_matches().unwrap());
+        assert!(intent.compile_feature_enabled);
+        assert!(!intent.execution_enabled);
+        assert_eq!(intent.partition_step_id, 3);
+        assert_eq!(intent.pv_step_id, 4);
+        assert_eq!(intent.lv_step_id, 5);
+        assert_eq!(intent.filesystem_step_id, 6);
+        assert_eq!(intent.partition, "/dev/sda1");
+        assert_eq!(intent.pv_uuid, "pv-uuid");
+        assert_eq!(intent.lv_uuid, "lv-uuid");
     }
 }
