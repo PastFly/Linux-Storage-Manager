@@ -14,6 +14,7 @@ production-mutation-activation = []
 production-mutation-consent = ["production-mutation-activation"]
 production-mutation-execution-permit = ["production-mutation-consent"]
 production-mutation-execution = ["production-mutation-execution-permit", "dep:lsm-discovery"]
+production-loop-harness = ["production-mutation-execution", "disposable-loop-harness"]
 
 [[bin]]
 name = "lsm-disposable-loop-harness"
@@ -24,6 +25,11 @@ required-features = ["disposable-loop-harness"]
 name = "lsm-privileged-helper-protocol"
 path = "src/bin/privileged_helper_protocol.rs"
 required-features = ["production-helper-protocol"]
+
+[[bin]]
+name = "lsm-production-loop-harness"
+path = "src/bin/production_loop_harness.rs"
+required-features = ["production-loop-harness"]
 
 [dependencies]
 libc = "0.2"
