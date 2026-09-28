@@ -172,8 +172,8 @@ pub use production_consent::{
     PRODUCTION_MUTATION_CONSENT_PATH, PRODUCTION_MUTATION_CONSENT_PHRASE,
 };
 pub use production_descriptor_exec::{
-    execute_production_descriptor_launch, ProductionDescriptorExecutionError,
-    PRODUCTION_MUTATION_DESCRIPTOR_EXEC_COMPILED,
+    execute_production_descriptor_launch, ProductionDescriptorExecutionChain,
+    ProductionDescriptorExecutionError, PRODUCTION_MUTATION_DESCRIPTOR_EXEC_COMPILED,
 };
 pub use production_execution::{
     seal_production_mutation_execution_permit, ProductionMutationExecutionPermit,
