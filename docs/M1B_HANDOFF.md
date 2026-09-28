@@ -252,6 +252,8 @@ M1B45 defines the next production scope as a separate non-executing activation c
 
 M1B46 extends the existing M1B36/M1B39 root-consent boundary to that chained activation without making it executable. The same fixed root-owned one-link mode-0600 consent document is validated against the exact chained activation/execution/target/device binding, and the same opened-file lease model can pin and revalidate the consent object against path replacement, metadata drift or in-place content changes. The receipt format remains shared and still records `execution_enabled=false`; M1B37-M1B44 still cannot consume the chained activation or cross descriptor execution for partition/PV steps.
 
+M1B47 adds a separate compile-time-gated, non-spawning execution-permit type for the chained activation. It binds one exact root-consent receipt and one exact privileged launch permit to the chained activation, allows only the four frozen partition/PV/LV/filesystem mutation step IDs, and retains `mutation_enabled=false` plus `process_spawned=false` in the permit digest. The existing M1B38 descriptor-execution chain accepts only the narrow M1B37 permit type, so merely compiling M1B47 still cannot execute partition or PV mutations.
+
 Semantic actions are typed as pre-execution evidence, mutation candidates or verification.
 No `pvresize` or other absent mutation is synthesized. Every mutation candidate receives a
 read-only barrier requiring fresh target identity, fresh capabilities, expected-state validation
