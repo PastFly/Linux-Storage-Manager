@@ -232,6 +232,8 @@ M1B35 introduces the first explicit production-activation contract without enabl
 
 M1B36 adds an independent runtime-consent boundary on top of the M1B35 activation intent. A future production build must read one fixed `/etc/linux-storage-manager/production-mutation-consent.json` document through `O_NOFOLLOW|O_CLOEXEC`; the parent must be root-owned and not group/world-writable, while the file must be a one-link root-owned regular file with mode 0600. Its exact activation ID, execution ID, target, resolved device and destructive-action phrase are validated and bound together with file device/inode/mode/size/SHA-256 into a receipt. The consent receipt still records `execution_enabled=false`, so compile-time activation plus filesystem consent are necessary but not sufficient to spawn a storage command.
 
+M1B37 seals the M1B35 activation intent, M1B36 root-consent receipt and one exact M1B27/M1B34 descriptor launch permit into a final non-spawning production execution permit. The three layers must agree on execution ID, activation ID, target/device and the launch must be one of the two explicitly activated mutation steps. Upstream objects that already claim execution/mutation or process spawn are rejected. The new feature depends on the consent feature, but the resulting permit still records `mutation_enabled=false` and `process_spawned=false`; descriptor execution remains blocked until a separately reviewed crossing gate consumes this exact permit.
+
 Semantic actions are typed as pre-execution evidence, mutation candidates or verification.
 No `pvresize` or other absent mutation is synthesized. Every mutation candidate receives a
 read-only barrier requiring fresh target identity, fresh capabilities, expected-state validation
