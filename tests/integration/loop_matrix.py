@@ -27,7 +27,8 @@ class SafetyError(RuntimeError):
 
 
 class Runner:
-    def __init__(self, binary: Path, executor_binary: Path):
+    def __init__(self, binary: Path, executor_binary: Path,
+                 production_executor_binary: Path | None = None):
         names = ("losetup", "sfdisk", "partx", "mkfs.ext4", "mkfs.xfs", "pvcreate",
                  "vgcreate", "vgchange", "lvcreate", "lvrename", "vgremove", "vgs", "pvs", "lvs",
                  "mount", "umount", "findmnt", "vgcfgbackup", "vgcfgrestore", "pvresize", "lvextend",
@@ -40,6 +41,10 @@ class Runner:
             self.tools[name] = path
         self.tools["storagemgr"] = str(binary.resolve(strict=True))
         self.tools["disposable-executor"] = str(executor_binary.resolve(strict=True))
+        if production_executor_binary is not None:
+            self.tools["production-executor"] = str(
+                production_executor_binary.resolve(strict=True)
+            )
 
     def run(self, name: str, *args: str, input: str | None = None,
             allowed: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess[str]:
@@ -2050,6 +2055,92 @@ def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loo
         print("XFS_ONLINE_EXECUTOR_OK=xfs-growfs-mounted-rw", flush=True)
 
 
+
+def exercise_production_lvm_growth(resources: Resources, binary: Runner, loop: Loop,
+                                   source: str, target: Path, vg: str) -> None:
+    resources.check_loop(loop)
+    if "production-executor" not in binary.tools:
+        raise SafetyError("production loop harness binary is not configured")
+    if source != f"/dev/{vg}/data":
+        raise SafetyError("unexpected production LV path")
+
+    before = ready_snapshot(binary, loop.device, vg)
+    lvm = before.get("lvm")
+    if not isinstance(lvm, dict):
+        raise SafetyError("LVM inventory missing before production mutation")
+    lvs = [row for row in lvm.get("logical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg and row.get("path") == source]
+    vgs = [row for row in lvm.get("volume_groups", [])
+           if isinstance(row, dict) and row.get("name") == vg]
+    if len(lvs) != 1 or len(vgs) != 1:
+        raise SafetyError("production LV/VG identity is ambiguous before mutation")
+
+    current_lv_size = lvs[0].get("size_bytes")
+    extent = vgs[0].get("extent_size_bytes")
+    free_extents = vgs[0].get("free_extent_count")
+    if (type(current_lv_size) is not int or type(extent) is not int
+            or type(free_extents) is not int or extent <= 0 or free_extents < 8):
+        raise SafetyError("insufficient exact extents for production mutation E2E")
+
+    growth_extents = 8
+    growth_bytes = growth_extents * extent
+    expected_lv_size = current_lv_size + growth_bytes
+    before_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    sentinel = (target / "readonly-sentinel").read_bytes()
+
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    if not association_row:
+        raise SafetyError("exact loop association row is unavailable before production E2E")
+
+    journal_root = resources.root / f"{vg}-production-journal"
+    backup_root = resources.root / f"{vg}-production-backup"
+
+    resources.uncertain = True
+    result = binary.run(
+        "production-executor",
+        "--allow-production-loop-execution",
+        "--target", str(target),
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--journal-root", str(journal_root),
+        "--backup-root", str(backup_root),
+        "--growth-bytes", str(growth_bytes),
+        "--xfs-scrub", binary.tools["xfs_scrub"],
+    )
+    outcome = json.loads(result.stdout)
+    if (not isinstance(outcome, dict) or outcome.get("status") != "completed"
+            or outcome.get("profile") != "production_lv_filesystem"
+            or outcome.get("sentinel_preserved") is not True
+            or not isinstance(outcome.get("execution_id"), str)
+            or not isinstance(outcome.get("final_identity_digest"), str)):
+        raise SafetyError(f"invalid production loop completion evidence: {outcome!r}")
+
+    refresh_fixture_udev(binary, Path(source).resolve(strict=True).name)
+    final = ready_snapshot(binary, loop.device, vg)
+    final_lvs = [row for row in final["lvm"]["logical_volumes"]
+                 if row.get("vg_name") == vg and row.get("path") == source]
+    if len(final_lvs) != 1 or final_lvs[0].get("size_bytes") != expected_lv_size:
+        raise SafetyError("production E2E lost the exact final LV size")
+
+    after_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    if after_fs_bytes <= before_fs_bytes:
+        raise SafetyError("production E2E filesystem capacity did not increase")
+    if after_fs_bytes > expected_lv_size:
+        raise SafetyError("production E2E filesystem capacity exceeds LV backing")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("production E2E changed filesystem sentinel")
+    if journal_root.exists() or backup_root.exists():
+        raise SafetyError("production loop harness did not clean owned evidence")
+    if Path("/etc/linux-storage-manager/production-mutation-consent.json").exists():
+        raise SafetyError("production loop harness left runtime consent behind")
+
+    resources.uncertain = False
+    print("PRODUCTION_LOOP_E2E_OK=lvextend-resize2fs-verified-completed", flush=True)
+
 def storage_facts(snapshot: dict[str, Any], loop: str, vg: str | None) -> Any:
     """Compare only the owned fixture's geometry/identity, not volatile host usage."""
     tables = [table for table in snapshot["partition_tables"] if table["device"] == loop]
@@ -2211,6 +2302,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="acknowledge that this dedicated VM can be discarded")
     parser.add_argument("binary", type=Path)
     parser.add_argument("executor_binary", type=Path)
+    parser.add_argument("--production-executor-binary", type=Path)
     args = parser.parse_args(argv)
     if not args.allow_disposable_loop_tests:
         parser.error("explicit --allow-disposable-loop-tests is required; never use on a production host")
@@ -2220,12 +2312,16 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("binary is absent or not executable")
     if not args.executor_binary.is_file() or not os.access(args.executor_binary, os.X_OK):
         parser.error("disposable executor binary is absent or not executable")
+    if (args.production_executor_binary is not None
+            and (not args.production_executor_binary.is_file()
+                 or not os.access(args.production_executor_binary, os.X_OK))):
+        parser.error("production executor binary is absent or not executable")
     def interrupted(signum: int, frame: Any) -> None:
         raise KeyboardInterrupt(f"received signal {signum}")
     for signum in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, interrupted)
     os.umask(0o077)
-    runner = Runner(args.binary, args.executor_binary)
+    runner = Runner(args.binary, args.executor_binary, args.production_executor_binary)
     root = Path(tempfile.mkdtemp(prefix="lsm-loop-matrix-"))
     resources = Resources(root, runner)
     failed = False
@@ -2350,6 +2446,34 @@ def main(argv: list[str] | None = None) -> int:
             offline_target,
             offline_vg,
         )
+
+        if args.production_executor_binary is not None:
+            print("==> lvm-ext4-production-e2e", flush=True)
+            production_loop = resources.create_loop(
+                "lvm-ext4-production-e2e", 1024 * 1024 * 1024
+            )
+            production_partition = resources.create_partition(
+                production_loop, 896, True
+            )
+            production_vg = "lsmtest" + os.urandom(12).hex()
+            production_source = resources.create_vg(
+                production_loop, production_partition, production_vg
+            )
+            runner.run("mkfs.ext4", "-F", production_source)
+            refresh_fixture_udev(
+                runner, Path(production_source).resolve(strict=True).name
+            )
+            production_target = resources.mount(
+                production_source, "lvm-ext4-production-e2e-mount"
+            )
+            exercise_production_lvm_growth(
+                resources,
+                runner,
+                production_loop,
+                production_source,
+                production_target,
+                production_vg,
+            )
 
         print("==> lvm-ext4-filesystem-post-write-recovery", flush=True)
         fs_fault_loop = resources.create_loop(
@@ -2512,7 +2636,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-offline-growth,plain-ext4-multi-partition-selection,lvm-ext4-multi-target-isolation,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-offline-growth,lvm-ext4-production-e2e,plain-ext4-multi-partition-selection,lvm-ext4-multi-target-isolation,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
     return int(failed)
 
 

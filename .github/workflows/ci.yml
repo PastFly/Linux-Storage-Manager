@@ -65,6 +65,9 @@ jobs:
       - name: Check gated production descriptor execution boundary
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-mutation-execution --lib
+      - name: Check isolated production loop harness feature
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo clippy --locked -p lsm-executor --features production-loop-harness --bin lsm-production-loop-harness -- -D warnings
       # Preserve generated formatting and dependency evidence for review.
       # This runs AFTER checks and cannot turn failed checks into success.
       - name: Collect source and formatting diagnostics
@@ -109,10 +112,11 @@ jobs:
           cargo test --locked -p lsm-executor --features production-helper-protocol \
             privileged_tools::tests::resolves_installed_storage_tools_with_root_owned_provenance \
             -- --ignored --exact --nocapture
-      - name: Build storagemgr and isolated disposable executor harness
+      - name: Build storagemgr and isolated executor harnesses
         run: |
           cargo build --locked --release --workspace
           cargo build --locked --release -p lsm-executor --features disposable-loop-harness --bin lsm-disposable-loop-harness
+          cargo build --locked --release -p lsm-executor --features production-loop-harness --bin lsm-production-loop-harness
       - name: Test planning and partition/LVM recovery on disposable fixtures
         run: |
           for attempt in 1 2 3; do
