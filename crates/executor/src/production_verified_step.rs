@@ -21,6 +21,7 @@ pub struct ProductionVerifiedMutationStep {
     pub process_receipt: PrivilegedProcessReceipt,
     pub verification_receipt: PrivilegedLayerVerificationReceipt,
     pub durable_disposition: PrivilegedDurableDisposition,
+    pub fresh_identity: TargetIdentityManifest,
     pub fresh_identity_digest: String,
 }
 
@@ -195,11 +196,13 @@ pub fn execute_verify_and_persist_production_step(
         Some(&verification_receipt),
     )?;
 
+    let fresh_identity_digest = fresh_identity.manifest_digest.clone();
     Ok(ProductionVerifiedMutationStep {
         process_receipt,
         verification_receipt,
         durable_disposition,
-        fresh_identity_digest: fresh_identity.manifest_digest,
+        fresh_identity,
+        fresh_identity_digest,
     })
 }
 
