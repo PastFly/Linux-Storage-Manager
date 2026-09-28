@@ -13,7 +13,7 @@ production-helper-protocol = ["dep:lsm-discovery"]
 production-mutation-activation = []
 production-mutation-consent = ["production-mutation-activation"]
 production-mutation-execution-permit = ["production-mutation-consent"]
-production-mutation-execution = ["production-mutation-execution-permit"]
+production-mutation-execution = ["production-mutation-execution-permit", "dep:lsm-discovery"]
 
 [[bin]]
 name = "lsm-disposable-loop-harness"
