@@ -309,11 +309,12 @@ fn kernel_refresh_matches_launch(
 /// stage. The low-level descriptor runner is unit-tested with benign ELF
 /// utilities, but production storage-tool spawning remains hard-disabled while
 /// MUTATION_ENABLED is false.
-pub fn execute_privileged_descriptor_launch(
+fn execute_privileged_descriptor_launch_inner(
     permit: &PrivilegedLaunchPermit,
     launch: &PrivilegedDescriptorLaunchSpec,
     pinned: &PinnedPrivilegedTools,
     command: &PrivilegedCommandSpec,
+    execution_enabled: bool,
 ) -> Result<PrivilegedDescriptorSequenceOutcome, PrivilegedDescriptorExecError> {
     if !permit.integrity_matches()? {
         return Err(PrivilegedDescriptorExecError::PermitIntegrityMismatch);
@@ -350,7 +351,7 @@ pub fn execute_privileged_descriptor_launch(
         return Err(PrivilegedDescriptorExecError::KernelRefreshBindingMismatch);
     }
 
-    if !MUTATION_ENABLED {
+    if !execution_enabled {
         return Err(PrivilegedDescriptorExecError::ProductionMutationDisabled);
     }
 
@@ -384,6 +385,29 @@ pub fn execute_privileged_descriptor_launch(
         primary,
         kernel_refresh,
     })
+}
+
+/// Legacy/default production entry point. It remains disabled because the
+/// project-wide default MUTATION_ENABLED constant is still false.
+pub fn execute_privileged_descriptor_launch(
+    permit: &PrivilegedLaunchPermit,
+    launch: &PrivilegedDescriptorLaunchSpec,
+    pinned: &PinnedPrivilegedTools,
+    command: &PrivilegedCommandSpec,
+) -> Result<PrivilegedDescriptorSequenceOutcome, PrivilegedDescriptorExecError> {
+    execute_privileged_descriptor_launch_inner(permit, launch, pinned, command, MUTATION_ENABLED)
+}
+
+/// Crate-private crossing point for the separately reviewed production gate.
+/// Callers outside lsm-executor cannot bypass the production authorization
+/// contract by selecting this function directly.
+pub(crate) fn execute_authorized_privileged_descriptor_launch(
+    permit: &PrivilegedLaunchPermit,
+    launch: &PrivilegedDescriptorLaunchSpec,
+    pinned: &PinnedPrivilegedTools,
+    command: &PrivilegedCommandSpec,
+) -> Result<PrivilegedDescriptorSequenceOutcome, PrivilegedDescriptorExecError> {
+    execute_privileged_descriptor_launch_inner(permit, launch, pinned, command, true)
 }
 
 #[cfg(test)]
