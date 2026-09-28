@@ -240,6 +240,8 @@ M1B39 narrows the runtime-consent TOCTOU window further. After M1B36 verifies th
 
 M1B40 removes raw child exit status from the public production API. The M1B38/M1B39 crossing is crate-private; the exported production call immediately classifies its descriptor sequence through M1B31 and returns only the tamper-evident `PrivilegedProcessReceipt`. A zero primary/refresh result therefore means only `RediscoveryRequired`, never completion. A `RecoveryRequired` process receipt is durably persisted through M1B33 before return, while any inability to bind the raw outcome to the exact launch permit/launch contract also forces the journal into recovery. Successful rediscovery-required receipts still require M1B32 live verification and M1B33 continuation.
 
+M1B41 closes the successful production mutation boundary synchronously. The classify-only M1B40 call becomes crate-private; the exported production API now requires the exact pre-spawn live identity, executes the descriptor sequence, rediscoveries a fresh full host snapshot, requires the capability inventory to remain identical to the frozen handoff, captures the fresh target identity, proves the exact M1B32 layer transition, and persists the M1B33 verified continuation/completion before returning. Rediscovery, capability, identity or verification failure durably enters RecoveryRequired. The `production-mutation-execution` feature now explicitly carries the discovery dependency needed for this mandatory post-state gate.
+
 Semantic actions are typed as pre-execution evidence, mutation candidates or verification.
 No `pvresize` or other absent mutation is synthesized. Every mutation candidate receives a
 read-only barrier requiring fresh target identity, fresh capabilities, expected-state validation

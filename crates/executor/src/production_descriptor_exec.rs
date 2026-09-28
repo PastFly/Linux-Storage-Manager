@@ -1,17 +1,22 @@
+#[cfg(feature = "production-mutation-execution")]
 use lsm_planner::{JournalPhase, OperationJournal};
 use thiserror::Error;
 
+#[cfg(feature = "production-mutation-execution")]
 use crate::privileged_exec::execute_authorized_privileged_descriptor_launch;
+#[cfg(feature = "production-mutation-execution")]
 use crate::{
     classify_privileged_process_outcome, persist_privileged_durable_transition,
-    revalidate_pinned_production_mutation_consent, LockedExecutionSession, LockedSessionError,
-    PinnedPrivilegedTools, PinnedProductionMutationConsent, PrivilegedCommandSpec,
-    PrivilegedDescriptorExecError, PrivilegedDescriptorLaunchSpec,
-    PrivilegedDescriptorSequenceOutcome, PrivilegedDurableTransitionError, PrivilegedHelperRequest,
-    PrivilegedLaunchPermit, PrivilegedProcessReceipt, PrivilegedProcessReceiptError,
-    PrivilegedRuntimeDisposition, ProductionMutationActivationIntent,
-    ProductionMutationConsentLeaseError, ProductionMutationConsentReceipt,
-    ProductionMutationExecutionPermit,
+    revalidate_pinned_production_mutation_consent, LockedExecutionSession,
+    PrivilegedDescriptorSequenceOutcome, PrivilegedProcessReceipt, PrivilegedRuntimeDisposition,
+    ProductionMutationConsentReceipt,
+};
+use crate::{
+    LockedSessionError, PinnedPrivilegedTools, PinnedProductionMutationConsent,
+    PrivilegedCommandSpec, PrivilegedDescriptorExecError, PrivilegedDescriptorLaunchSpec,
+    PrivilegedDurableTransitionError, PrivilegedHelperRequest, PrivilegedLaunchPermit,
+    PrivilegedProcessReceiptError, ProductionMutationActivationIntent,
+    ProductionMutationConsentLeaseError, ProductionMutationExecutionPermit,
 };
 
 /// M1B38 is the first compile-time gate that can cross the descriptor-exec
@@ -63,6 +68,7 @@ pub enum ProductionDescriptorExecutionError {
     DurableTransition(#[from] PrivilegedDurableTransitionError),
 }
 
+#[cfg(feature = "production-mutation-execution")]
 fn validate_current_step(
     journal: &OperationJournal,
     request: &PrivilegedHelperRequest,
@@ -120,6 +126,7 @@ fn validate_current_step(
     Ok(())
 }
 
+#[cfg(feature = "production-mutation-execution")]
 fn validate_gate(
     journal: &OperationJournal,
     fresh_consent: &ProductionMutationConsentReceipt,
@@ -213,6 +220,7 @@ fn validate_gate(
 /// A successful return is still not completion: the caller must classify the
 /// process receipt, rediscover live state, verify the exact layer, and persist
 /// M1B33 continuation/completion before any later mutation.
+#[cfg(feature = "production-mutation-execution")]
 pub(crate) fn execute_production_descriptor_launch_raw(
     session: &mut LockedExecutionSession<'_>,
     chain: ProductionDescriptorExecutionChain<'_>,
@@ -268,7 +276,8 @@ pub(crate) fn execute_production_descriptor_launch_raw(
 /// this function returns it. A rediscovery-required receipt remains in
 /// Executing until the caller performs exact live rediscovery/M1B32
 /// verification and M1B33 durable continuation.
-pub fn execute_and_classify_production_descriptor_launch(
+#[cfg(feature = "production-mutation-execution")]
+pub(crate) fn execute_and_classify_production_descriptor_launch(
     session: &mut LockedExecutionSession<'_>,
     chain: ProductionDescriptorExecutionChain<'_>,
 ) -> Result<PrivilegedProcessReceipt, ProductionDescriptorExecutionError> {

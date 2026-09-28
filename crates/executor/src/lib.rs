@@ -35,6 +35,8 @@ mod production_consent;
 mod production_consent_lease;
 mod production_descriptor_exec;
 mod production_execution;
+#[cfg(feature = "production-mutation-execution")]
+mod production_verified_step;
 
 pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError};
 pub use backup_capture::{
@@ -177,12 +179,17 @@ pub use production_consent_lease::{
     PinnedProductionMutationConsent, ProductionMutationConsentLeaseError,
 };
 pub use production_descriptor_exec::{
-    execute_and_classify_production_descriptor_launch, ProductionDescriptorExecutionChain,
-    ProductionDescriptorExecutionError, PRODUCTION_MUTATION_DESCRIPTOR_EXEC_COMPILED,
+    ProductionDescriptorExecutionChain, ProductionDescriptorExecutionError,
+    PRODUCTION_MUTATION_DESCRIPTOR_EXEC_COMPILED,
 };
 pub use production_execution::{
     seal_production_mutation_execution_permit, ProductionMutationExecutionPermit,
     ProductionMutationExecutionPermitError, PRODUCTION_MUTATION_EXECUTION_PERMIT_COMPILED,
+};
+#[cfg(feature = "production-mutation-execution")]
+pub use production_verified_step::{
+    execute_verify_and_persist_production_step, ProductionVerifiedMutationStep,
+    ProductionVerifiedMutationStepError,
 };
 
 use std::fs::{self, File, OpenOptions};
