@@ -175,21 +175,17 @@ pub fn execute_verify_and_persist_production_step(
         return Err(ProductionVerifiedMutationStepError::RecoveryRequired);
     }
 
-    let (fresh_identity, verification_receipt) = match discover_verified_post_state(
-        session,
-        chain,
-        &process_receipt,
-        before_identity,
-    ) {
-        Ok(verified) => verified,
-        Err(error) => {
-            enter_recovery(
-                session,
-                "production post-mutation state did not converge to the exact verified boundary",
-            )?;
-            return Err(error);
-        }
-    };
+    let (fresh_identity, verification_receipt) =
+        match discover_verified_post_state(session, chain, &process_receipt, before_identity) {
+            Ok(verified) => verified,
+            Err(error) => {
+                enter_recovery(
+                    session,
+                    "production post-mutation state did not converge to the exact verified boundary",
+                )?;
+                return Err(error);
+            }
+        };
 
     let durable_disposition = persist_privileged_durable_transition(
         session,
