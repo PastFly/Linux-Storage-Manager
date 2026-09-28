@@ -174,6 +174,11 @@ pub use production_activation::{
     ProductionChainedMutationProfile, ProductionMutationActivationIntent,
     ProductionMutationProfile, PRODUCTION_MUTATION_ACTIVATION_COMPILED,
 };
+pub use production_chained_execution::{
+    seal_production_chained_mutation_execution_permit, ProductionChainedMutationExecutionPermit,
+    ProductionChainedMutationExecutionPermitError,
+    PRODUCTION_CHAINED_MUTATION_EXECUTION_PERMIT_COMPILED,
+};
 pub use production_consent::{
     verify_default_production_chained_mutation_consent, verify_default_production_mutation_consent,
     ProductionMutationConsentDocument, ProductionMutationConsentError,
@@ -186,11 +191,6 @@ pub use production_consent_lease::{
     revalidate_pinned_production_chained_mutation_consent,
     revalidate_pinned_production_mutation_consent, PinnedProductionMutationConsent,
     ProductionMutationConsentLeaseError,
-};
-pub use production_chained_execution::{
-    seal_production_chained_mutation_execution_permit,
-    ProductionChainedMutationExecutionPermit, ProductionChainedMutationExecutionPermitError,
-    PRODUCTION_CHAINED_MUTATION_EXECUTION_PERMIT_COMPILED,
 };
 pub use production_descriptor_exec::{
     ProductionDescriptorExecutionChain, ProductionDescriptorExecutionError,
