@@ -1,20 +1,31 @@
 use lsm_planner::{JournalPhase, OperationJournal};
 use thiserror::Error;
 
+use crate::privileged_exec::execute_authorized_privileged_descriptor_launch;
 use crate::{
-    verify_default_production_mutation_consent,
-    LockedExecutionSession, LockedSessionError, PinnedPrivilegedTools, PrivilegedCommandSpec,
-    PrivilegedDescriptorExecError, PrivilegedDescriptorLaunchSpec,
-    PrivilegedDescriptorSequenceOutcome, PrivilegedHelperRequest, PrivilegedLaunchPermit,
-    ProductionMutationActivationIntent, ProductionMutationConsentError,
+    verify_default_production_mutation_consent, LockedExecutionSession, LockedSessionError,
+    PinnedPrivilegedTools, PrivilegedCommandSpec, PrivilegedDescriptorExecError,
+    PrivilegedDescriptorLaunchSpec, PrivilegedDescriptorSequenceOutcome, PrivilegedHelperRequest,
+    PrivilegedLaunchPermit, ProductionMutationActivationIntent, ProductionMutationConsentError,
     ProductionMutationConsentReceipt, ProductionMutationExecutionPermit,
 };
-use crate::privileged_exec::execute_authorized_privileged_descriptor_launch;
 
 /// M1B38 is the first compile-time gate that can cross the descriptor-exec
 /// boundary. It remains absent from default builds.
 pub const PRODUCTION_MUTATION_DESCRIPTOR_EXEC_COMPILED: bool =
     cfg!(feature = "production-mutation-execution");
+
+
+#[derive(Debug, Clone, Copy)]
+pub struct ProductionDescriptorExecutionChain<'a> {
+    pub activation: &'a ProductionMutationActivationIntent,
+    pub production_permit: &'a ProductionMutationExecutionPermit,
+    pub request: &'a PrivilegedHelperRequest,
+    pub launch_permit: &'a PrivilegedLaunchPermit,
+    pub launch: &'a PrivilegedDescriptorLaunchSpec,
+    pub pinned: &'a PinnedPrivilegedTools,
+    pub command: &'a PrivilegedCommandSpec,
+}
 
 #[derive(Debug, Error)]
 pub enum ProductionDescriptorExecutionError {
@@ -103,15 +114,18 @@ fn validate_current_step(
 
 fn validate_gate(
     journal: &OperationJournal,
-    activation: &ProductionMutationActivationIntent,
-    production_permit: &ProductionMutationExecutionPermit,
     fresh_consent: &ProductionMutationConsentReceipt,
-    request: &PrivilegedHelperRequest,
-    launch_permit: &PrivilegedLaunchPermit,
-    launch: &PrivilegedDescriptorLaunchSpec,
-    pinned: &PinnedPrivilegedTools,
-    command: &PrivilegedCommandSpec,
+    chain: ProductionDescriptorExecutionChain<'_>,
 ) -> Result<(), ProductionDescriptorExecutionError> {
+    let ProductionDescriptorExecutionChain {
+        activation,
+        production_permit,
+        request,
+        launch_permit,
+        launch,
+        pinned,
+        command,
+    } = chain;
     if activation.schema_version != 1
         || !activation.integrity_matches().unwrap_or(false)
         || !activation.compile_feature_enabled
@@ -192,14 +206,9 @@ fn validate_gate(
 /// M1B33 continuation/completion before any later mutation.
 pub fn execute_production_descriptor_launch(
     session: &mut LockedExecutionSession<'_>,
-    activation: &ProductionMutationActivationIntent,
-    production_permit: &ProductionMutationExecutionPermit,
-    request: &PrivilegedHelperRequest,
-    launch_permit: &PrivilegedLaunchPermit,
-    launch: &PrivilegedDescriptorLaunchSpec,
-    pinned: &PinnedPrivilegedTools,
-    command: &PrivilegedCommandSpec,
+    chain: ProductionDescriptorExecutionChain<'_>,
 ) -> Result<PrivilegedDescriptorSequenceOutcome, ProductionDescriptorExecutionError> {
+    let activation = chain.activation;
     if !PRODUCTION_MUTATION_DESCRIPTOR_EXEC_COMPILED {
         return Err(ProductionDescriptorExecutionError::FeatureDisabled);
     }
@@ -215,24 +224,19 @@ pub fn execute_production_descriptor_launch(
         }
     };
 
-    if let Err(error) = validate_gate(
-        session.journal(),
-        activation,
-        production_permit,
-        &fresh_consent,
-        request,
-        launch_permit,
-        launch,
-        pinned,
-        command,
-    ) {
+    if let Err(error) = validate_gate(session.journal(), &fresh_consent, chain) {
         session.persist_interrupted(
             "production descriptor execution authorization drifted before spawn",
         )?;
         return Err(error);
     }
 
-    match execute_authorized_privileged_descriptor_launch(launch_permit, launch, pinned, command) {
+    match execute_authorized_privileged_descriptor_launch(
+        chain.launch_permit,
+        chain.launch,
+        chain.pinned,
+        chain.command,
+    ) {
         Ok(outcome) => Ok(outcome),
         Err(error) => {
             session.persist_interrupted(
