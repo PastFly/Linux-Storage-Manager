@@ -382,33 +382,57 @@ pub struct ProductionChainedMutationActivationIntent {
     pub execution_enabled: bool,
 }
 
+#[derive(Serialize)]
+struct ProductionChainedActivationDigestPayload<'a> {
+    schema_version: u32,
+    profile: ProductionChainedMutationProfile,
+    execution_id: &'a str,
+    source_manifest_id: &'a str,
+    native_manifest_digest: &'a str,
+    fresh_identity_digest: &'a str,
+    target: &'a str,
+    resolved_device: &'a str,
+    partition_step_id: u32,
+    pv_step_id: u32,
+    lv_step_id: u32,
+    filesystem_step_id: u32,
+    partition: &'a str,
+    pv_uuid: &'a str,
+    lv_uuid: &'a str,
+    filesystem_type: &'a str,
+    filesystem_mountpoint: &'a Option<String>,
+    compile_feature_enabled: bool,
+    execution_enabled: bool,
+}
+
 impl ProductionChainedMutationActivationIntent {
     pub fn integrity_matches(&self) -> Result<bool, serde_json::Error> {
         Ok(self.activation_id == self.expected_activation_id()?)
     }
 
     fn expected_activation_id(&self) -> Result<String, serde_json::Error> {
-        let bytes = serde_json::to_vec(&(
-            self.schema_version,
-            self.profile,
-            &self.execution_id,
-            &self.source_manifest_id,
-            &self.native_manifest_digest,
-            &self.fresh_identity_digest,
-            &self.target,
-            &self.resolved_device,
-            self.partition_step_id,
-            self.pv_step_id,
-            self.lv_step_id,
-            self.filesystem_step_id,
-            &self.partition,
-            &self.pv_uuid,
-            &self.lv_uuid,
-            &self.filesystem_type,
-            &self.filesystem_mountpoint,
-            self.compile_feature_enabled,
-            self.execution_enabled,
-        ))?;
+        let payload = ProductionChainedActivationDigestPayload {
+            schema_version: self.schema_version,
+            profile: self.profile,
+            execution_id: &self.execution_id,
+            source_manifest_id: &self.source_manifest_id,
+            native_manifest_digest: &self.native_manifest_digest,
+            fresh_identity_digest: &self.fresh_identity_digest,
+            target: &self.target,
+            resolved_device: &self.resolved_device,
+            partition_step_id: self.partition_step_id,
+            pv_step_id: self.pv_step_id,
+            lv_step_id: self.lv_step_id,
+            filesystem_step_id: self.filesystem_step_id,
+            partition: &self.partition,
+            pv_uuid: &self.pv_uuid,
+            lv_uuid: &self.lv_uuid,
+            filesystem_type: &self.filesystem_type,
+            filesystem_mountpoint: &self.filesystem_mountpoint,
+            compile_feature_enabled: self.compile_feature_enabled,
+            execution_enabled: self.execution_enabled,
+        };
+        let bytes = serde_json::to_vec(&payload)?;
         Ok(format!("{:x}", Sha256::digest(bytes)))
     }
 }
