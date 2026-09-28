@@ -168,7 +168,6 @@ fn validate_document(
     Ok(document)
 }
 
-
 fn validate_chained_document(
     intent: &ProductionChainedMutationActivationIntent,
     bytes: &[u8],
@@ -245,7 +244,6 @@ fn bind_consent_receipt(
     receipt.receipt_id = receipt.expected_receipt_id()?;
     Ok(receipt)
 }
-
 
 fn bind_chained_consent_receipt(
     intent: &ProductionChainedMutationActivationIntent,
@@ -368,12 +366,7 @@ pub fn verify_default_production_chained_mutation_consent(
     }
     validate_chained_activation_intent(intent)?;
     let (bytes, identity) = read_default_production_mutation_consent_file()?;
-    bind_chained_consent_receipt(
-        intent,
-        PRODUCTION_MUTATION_CONSENT_PATH,
-        &bytes,
-        identity,
-    )
+    bind_chained_consent_receipt(intent, PRODUCTION_MUTATION_CONSENT_PATH, &bytes, identity)
 }
 
 #[cfg(test)]
