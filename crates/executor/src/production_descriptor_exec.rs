@@ -268,7 +268,7 @@ pub(crate) fn execute_production_descriptor_launch_raw(
 /// this function returns it. A rediscovery-required receipt remains in
 /// Executing until the caller performs exact live rediscovery/M1B32
 /// verification and M1B33 durable continuation.
-pub fn execute_and_classify_production_descriptor_launch(
+pub(crate) fn execute_and_classify_production_descriptor_launch(
     session: &mut LockedExecutionSession<'_>,
     chain: ProductionDescriptorExecutionChain<'_>,
 ) -> Result<PrivilegedProcessReceipt, ProductionDescriptorExecutionError> {
