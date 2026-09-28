@@ -31,9 +31,9 @@ mod privileged_start;
 mod privileged_tools;
 mod privileged_verify;
 mod production_activation;
+mod production_chained_execution;
 mod production_consent;
 mod production_consent_lease;
-mod production_chained_execution;
 mod production_descriptor_exec;
 mod production_execution;
 #[cfg(feature = "production-mutation-execution")]
