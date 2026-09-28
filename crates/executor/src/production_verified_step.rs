@@ -67,7 +67,6 @@ fn verify_before_identity(
     Ok(())
 }
 
-
 const POST_MUTATION_REDISCOVERY_ATTEMPTS: usize = 20;
 const POST_MUTATION_REDISCOVERY_DELAY: Duration = Duration::from_millis(50);
 
@@ -142,9 +141,8 @@ fn discover_verified_post_state(
         }
     }
 
-    Err(last_transient_error.unwrap_or(
-        ProductionVerifiedMutationStepError::CapabilityInventoryMismatch,
-    ))
+    Err(last_transient_error
+        .unwrap_or(ProductionVerifiedMutationStepError::CapabilityInventoryMismatch))
 }
 
 /// Execute one production mutation and synchronously close its verification
@@ -177,17 +175,21 @@ pub fn execute_verify_and_persist_production_step(
         return Err(ProductionVerifiedMutationStepError::RecoveryRequired);
     }
 
-    let (fresh_identity, verification_receipt) =
-        match discover_verified_post_state(session, chain, &process_receipt, before_identity) {
-            Ok(verified) => verified,
-            Err(error) => {
-                enter_recovery(
-                    session,
-                    "production post-mutation state did not converge to the exact verified boundary",
-                )?;
-                return Err(error);
-            }
-        };
+    let (fresh_identity, verification_receipt) = match discover_verified_post_state(
+        session,
+        chain,
+        &process_receipt,
+        before_identity,
+    ) {
+        Ok(verified) => verified,
+        Err(error) => {
+            enter_recovery(
+                session,
+                "production post-mutation state did not converge to the exact verified boundary",
+            )?;
+            return Err(error);
+        }
+    };
 
     let durable_disposition = persist_privileged_durable_transition(
         session,
