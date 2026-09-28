@@ -9,9 +9,9 @@ use crate::{
     PrivilegedDescriptorExecError, PrivilegedDescriptorLaunchSpec,
     PrivilegedDescriptorSequenceOutcome, PrivilegedDurableTransitionError, PrivilegedHelperRequest,
     PrivilegedLaunchPermit, PrivilegedProcessReceipt, PrivilegedProcessReceiptError,
-    PrivilegedRuntimeDisposition,
-    ProductionMutationActivationIntent, ProductionMutationConsentLeaseError,
-    ProductionMutationConsentReceipt, ProductionMutationExecutionPermit,
+    PrivilegedRuntimeDisposition, ProductionMutationActivationIntent,
+    ProductionMutationConsentLeaseError, ProductionMutationConsentReceipt,
+    ProductionMutationExecutionPermit,
 };
 
 /// M1B38 is the first compile-time gate that can cross the descriptor-exec
@@ -259,7 +259,6 @@ pub(crate) fn execute_production_descriptor_launch_raw(
     }
 }
 
-
 /// Execute one production descriptor sequence and immediately convert the raw
 /// child outcome into the tamper-evident M1B31 process receipt.
 ///
@@ -274,19 +273,16 @@ pub fn execute_and_classify_production_descriptor_launch(
     chain: ProductionDescriptorExecutionChain<'_>,
 ) -> Result<PrivilegedProcessReceipt, ProductionDescriptorExecutionError> {
     let outcome = execute_production_descriptor_launch_raw(session, chain)?;
-    let receipt = match classify_privileged_process_outcome(
-        chain.launch_permit,
-        chain.launch,
-        &outcome,
-    ) {
-        Ok(receipt) => receipt,
-        Err(error) => {
-            session.persist_interrupted(
-                "production process outcome could not be bound to a trusted runtime receipt",
-            )?;
-            return Err(error.into());
-        }
-    };
+    let receipt =
+        match classify_privileged_process_outcome(chain.launch_permit, chain.launch, &outcome) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                session.persist_interrupted(
+                    "production process outcome could not be bound to a trusted runtime receipt",
+                )?;
+                return Err(error.into());
+            }
+        };
 
     if receipt.disposition == PrivilegedRuntimeDisposition::RecoveryRequired {
         persist_privileged_durable_transition(session, chain.request, &receipt, None)?;
