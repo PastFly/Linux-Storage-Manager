@@ -1,3 +1,6 @@
+use std::thread;
+use std::time::Duration;
+
 use lsm_discovery::{discover_capabilities, discover_snapshot, SnapshotDiscoveryError};
 use lsm_planner::{
     capture_target_identity, IdentityGuardError, PlannerError, TargetIdentityManifest,
@@ -18,6 +21,7 @@ pub struct ProductionVerifiedMutationStep {
     pub process_receipt: PrivilegedProcessReceipt,
     pub verification_receipt: PrivilegedLayerVerificationReceipt,
     pub durable_disposition: PrivilegedDurableDisposition,
+    pub fresh_identity: TargetIdentityManifest,
     pub fresh_identity_digest: String,
 }
 
@@ -64,6 +68,84 @@ fn verify_before_identity(
     Ok(())
 }
 
+const POST_MUTATION_REDISCOVERY_ATTEMPTS: usize = 20;
+const POST_MUTATION_REDISCOVERY_DELAY: Duration = Duration::from_millis(50);
+
+fn retryable_post_state_error(error: &PrivilegedLayerVerificationError) -> bool {
+    matches!(
+        error,
+        PrivilegedLayerVerificationError::PartitionStateMismatch
+            | PrivilegedLayerVerificationError::PhysicalVolumeStateMismatch
+            | PrivilegedLayerVerificationError::LogicalVolumeStateMismatch
+            | PrivilegedLayerVerificationError::FilesystemStateMismatch
+    )
+}
+
+fn discover_verified_post_state(
+    session: &LockedExecutionSession<'_>,
+    chain: ProductionDescriptorExecutionChain<'_>,
+    process_receipt: &PrivilegedProcessReceipt,
+    before_identity: &TargetIdentityManifest,
+) -> Result<
+    (TargetIdentityManifest, PrivilegedLayerVerificationReceipt),
+    ProductionVerifiedMutationStepError,
+> {
+    let mut last_transient_error = None;
+
+    for attempt in 0..POST_MUTATION_REDISCOVERY_ATTEMPTS {
+        let snapshot = match discover_snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                last_transient_error = Some(ProductionVerifiedMutationStepError::Discovery(error));
+                if attempt + 1 < POST_MUTATION_REDISCOVERY_ATTEMPTS {
+                    thread::sleep(POST_MUTATION_REDISCOVERY_DELAY);
+                    continue;
+                }
+                break;
+            }
+        };
+
+        let capabilities = discover_capabilities();
+        if !session.handoff().matches_capabilities(&capabilities)? {
+            return Err(ProductionVerifiedMutationStepError::CapabilityInventoryMismatch);
+        }
+
+        let fresh_identity = match capture_target_identity(&snapshot, &chain.request.target) {
+            Ok(identity) => identity,
+            Err(error) => {
+                last_transient_error = Some(ProductionVerifiedMutationStepError::Identity(error));
+                if attempt + 1 < POST_MUTATION_REDISCOVERY_ATTEMPTS {
+                    thread::sleep(POST_MUTATION_REDISCOVERY_DELAY);
+                    continue;
+                }
+                break;
+            }
+        };
+
+        match verify_privileged_layer_post_state(
+            chain.request,
+            process_receipt,
+            before_identity,
+            &fresh_identity,
+        ) {
+            Ok(receipt) => return Ok((fresh_identity, receipt)),
+            Err(error) if retryable_post_state_error(&error) => {
+                last_transient_error =
+                    Some(ProductionVerifiedMutationStepError::Verification(error));
+                if attempt + 1 < POST_MUTATION_REDISCOVERY_ATTEMPTS {
+                    thread::sleep(POST_MUTATION_REDISCOVERY_DELAY);
+                    continue;
+                }
+                break;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Err(last_transient_error
+        .unwrap_or(ProductionVerifiedMutationStepError::CapabilityInventoryMismatch))
+}
+
 /// Execute one production mutation and synchronously close its verification
 /// boundary before returning.
 ///
@@ -94,60 +176,16 @@ pub fn execute_verify_and_persist_production_step(
         return Err(ProductionVerifiedMutationStepError::RecoveryRequired);
     }
 
-    let snapshot = match discover_snapshot() {
-        Ok(snapshot) => snapshot,
+    let verified_post_state =
+        discover_verified_post_state(session, chain, &process_receipt, before_identity);
+    let (fresh_identity, verification_receipt) = match verified_post_state {
+        Ok(verified) => verified,
         Err(error) => {
             enter_recovery(
                 session,
-                "production post-mutation storage rediscovery failed; reconciliation required",
+                "production post-mutation state did not converge to the exact verified boundary",
             )?;
-            return Err(error.into());
-        }
-    };
-
-    let capabilities = discover_capabilities();
-    let capabilities_match = match session.handoff().matches_capabilities(&capabilities) {
-        Ok(matches) => matches,
-        Err(error) => {
-            enter_recovery(
-                session,
-                "production post-mutation capability comparison failed; reconciliation required",
-            )?;
-            return Err(error.into());
-        }
-    };
-    if !capabilities_match {
-        enter_recovery(
-            session,
-            "production post-mutation capability inventory changed; reconciliation required",
-        )?;
-        return Err(ProductionVerifiedMutationStepError::CapabilityInventoryMismatch);
-    }
-
-    let fresh_identity = match capture_target_identity(&snapshot, &chain.request.target) {
-        Ok(identity) => identity,
-        Err(error) => {
-            enter_recovery(
-                session,
-                "production post-mutation target identity could not be captured; reconciliation required",
-            )?;
-            return Err(error.into());
-        }
-    };
-
-    let verification_receipt = match verify_privileged_layer_post_state(
-        chain.request,
-        &process_receipt,
-        before_identity,
-        &fresh_identity,
-    ) {
-        Ok(receipt) => receipt,
-        Err(error) => {
-            enter_recovery(
-                session,
-                "production post-mutation layer verification failed; reconciliation required",
-            )?;
-            return Err(error.into());
+            return Err(error);
         }
     };
 
@@ -158,18 +196,44 @@ pub fn execute_verify_and_persist_production_step(
         Some(&verification_receipt),
     )?;
 
+    let fresh_identity_digest = fresh_identity.manifest_digest.clone();
     Ok(ProductionVerifiedMutationStep {
         process_receipt,
         verification_receipt,
         durable_disposition,
-        fresh_identity_digest: fresh_identity.manifest_digest,
+        fresh_identity,
+        fresh_identity_digest,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn production_verified_step_feature_is_explicit() {
         assert!(cfg!(feature = "production-mutation-execution"));
+    }
+
+    #[test]
+    fn only_live_state_convergence_mismatches_are_retryable() {
+        assert!(retryable_post_state_error(
+            &PrivilegedLayerVerificationError::LogicalVolumeStateMismatch
+        ));
+        assert!(retryable_post_state_error(
+            &PrivilegedLayerVerificationError::FilesystemStateMismatch
+        ));
+        assert!(!retryable_post_state_error(
+            &PrivilegedLayerVerificationError::TargetIdentityMismatch
+        ));
+        assert!(!retryable_post_state_error(
+            &PrivilegedLayerVerificationError::ProcessBindingMismatch
+        ));
+    }
+
+    #[test]
+    fn convergence_window_is_bounded() {
+        assert_eq!(POST_MUTATION_REDISCOVERY_ATTEMPTS, 20);
+        assert_eq!(POST_MUTATION_REDISCOVERY_DELAY, Duration::from_millis(50));
     }
 }
