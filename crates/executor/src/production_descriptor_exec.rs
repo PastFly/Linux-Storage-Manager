@@ -15,7 +15,6 @@ use crate::{
 pub const PRODUCTION_MUTATION_DESCRIPTOR_EXEC_COMPILED: bool =
     cfg!(feature = "production-mutation-execution");
 
-
 #[derive(Debug, Clone, Copy)]
 pub struct ProductionDescriptorExecutionChain<'a> {
     pub activation: &'a ProductionMutationActivationIntent,
