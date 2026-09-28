@@ -270,3 +270,6 @@ Filesystem growth intent is additionally bound to the exact frozen filesystem de
 and device, not only its filesystem type and mountpoint. CI #547 and #549 are the retained RED
 proofs for the device- and target-drift guards. Final completion evidence must be read live from
 the exact PR #27 head.
+
+
+M1B50 adds typed chained production preparation on top of the M1B45-M1B49 execution stack. The first builder resolves the exact partition request/command/tool provenance before entering durable Executing, then seals the pinned launch and chained production permit. Continuations never accept a caller-selected step ID: they consume the latest verified durable boundary and admit only the exact PV, LV or filesystem successor. Any failure after the mutation boundary is durably forced to RecoveryRequired. This removes manual low-level pre-spawn wiring from the future chained production E2E harness. M1B50 is restacked on the merged M1B49 master baseline.
