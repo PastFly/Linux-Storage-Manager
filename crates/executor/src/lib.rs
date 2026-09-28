@@ -31,6 +31,7 @@ mod privileged_start;
 mod privileged_tools;
 mod privileged_verify;
 mod production_activation;
+mod production_chained_descriptor_exec;
 mod production_chained_execution;
 mod production_consent;
 mod production_consent_lease;
@@ -173,6 +174,10 @@ pub use production_activation::{
     ProductionChainedActivationReadiness, ProductionChainedMutationActivationIntent,
     ProductionChainedMutationProfile, ProductionMutationActivationIntent,
     ProductionMutationProfile, PRODUCTION_MUTATION_ACTIVATION_COMPILED,
+};
+pub use production_chained_descriptor_exec::{
+    ProductionChainedDescriptorExecutionChain, ProductionChainedDescriptorExecutionError,
+    PRODUCTION_CHAINED_MUTATION_DESCRIPTOR_EXEC_COMPILED,
 };
 pub use production_chained_execution::{
     seal_production_chained_mutation_execution_permit, ProductionChainedMutationExecutionPermit,
