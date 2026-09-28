@@ -401,7 +401,10 @@ pub fn execute_privileged_descriptor_launch(
 /// Crate-private crossing point for the separately reviewed production gate.
 /// Callers outside lsm-executor cannot bypass the production authorization
 /// contract by selecting this function directly.
-#[cfg(feature = "production-mutation-execution")]
+#[cfg(any(
+    feature = "production-mutation-execution",
+    feature = "production-chained-mutation-execution"
+))]
 pub(crate) fn execute_authorized_privileged_descriptor_launch(
     permit: &PrivilegedLaunchPermit,
     launch: &PrivilegedDescriptorLaunchSpec,
