@@ -64,9 +64,7 @@ fn sha256_file(file: &File, expected_size: u64) -> Result<String, std::io::Error
 
     let mut probe = [0_u8; 1];
     if file.read_at(&mut probe, expected_size)? != 0 {
-        return Err(std::io::Error::other(
-            "consent file grew while hashing",
-        ));
+        return Err(std::io::Error::other("consent file grew while hashing"));
     }
 
     Ok(format!("{:x}", hasher.finalize()))
