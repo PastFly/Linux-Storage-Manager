@@ -250,6 +250,8 @@ M1B44 proves the narrow production path end to end on a harness-owned Linux loop
 
 M1B45 defines the next production scope as a separate non-executing activation contract for an exact single-PV partition-backed chain: `ExtendPartition -> ResizePhysicalVolume -> ExtendLogicalVolume -> GrowFilesystem`. The frozen execution order and dependencies must be exact; fresh identity must still show the authorized partition start/old size/sector size, the exact PV and LV UUIDs below their approved target sizes, one-PV VG topology, and the same ext4/XFS filesystem/mount identity. The sealed chained intent remains `execution_enabled=false` and is a different type from the M1B35 activation intent, so M1B37-M1B44 cannot consume it yet. Production partition/PV execution therefore remains impossible until a later reviewed permit/execution gate explicitly adopts this contract.
 
+M1B46 extends the existing M1B36/M1B39 root-consent boundary to that chained activation without making it executable. The same fixed root-owned one-link mode-0600 consent document is validated against the exact chained activation/execution/target/device binding, and the same opened-file lease model can pin and revalidate the consent object against path replacement, metadata drift or in-place content changes. The receipt format remains shared and still records `execution_enabled=false`; M1B37-M1B44 still cannot consume the chained activation or cross descriptor execution for partition/PV steps.
+
 Semantic actions are typed as pre-execution evidence, mutation candidates or verification.
 No `pvresize` or other absent mutation is synthesized. Every mutation candidate receives a
 read-only barrier requiring fresh target identity, fresh capabilities, expected-state validation
