@@ -2,13 +2,14 @@ use lsm_planner::{JournalPhase, OperationJournal};
 use thiserror::Error;
 
 use crate::{
-    execute_authorized_privileged_descriptor_launch, verify_default_production_mutation_consent,
+    verify_default_production_mutation_consent,
     LockedExecutionSession, LockedSessionError, PinnedPrivilegedTools, PrivilegedCommandSpec,
     PrivilegedDescriptorExecError, PrivilegedDescriptorLaunchSpec,
     PrivilegedDescriptorSequenceOutcome, PrivilegedHelperRequest, PrivilegedLaunchPermit,
     ProductionMutationActivationIntent, ProductionMutationConsentError,
     ProductionMutationConsentReceipt, ProductionMutationExecutionPermit,
 };
+use crate::privileged_exec::execute_authorized_privileged_descriptor_launch;
 
 /// M1B38 is the first compile-time gate that can cross the descriptor-exec
 /// boundary. It remains absent from default builds.
