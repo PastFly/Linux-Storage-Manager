@@ -232,12 +232,7 @@ pub fn execute_production_descriptor_launch(
         return Err(error);
     }
 
-    match execute_authorized_privileged_descriptor_launch(
-        launch_permit,
-        launch,
-        pinned,
-        command,
-    ) {
+    match execute_authorized_privileged_descriptor_launch(launch_permit, launch, pinned, command) {
         Ok(outcome) => Ok(outcome),
         Err(error) => {
             session.persist_interrupted(
