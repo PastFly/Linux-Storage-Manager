@@ -238,6 +238,8 @@ M1B38 introduces the first actual production descriptor-exec crossing, but only 
 
 M1B39 narrows the runtime-consent TOCTOU window further. After M1B36 verifies the fixed root-owned consent document, the executor reopens that exact file with `O_NOFOLLOW|O_CLOEXEC`, requires its device/inode/uid/mode/link-count/size/SHA-256 identity to match the verified receipt, and retains the open descriptor. Immediately before the M1B38 descriptor crossing it verifies that the current fixed pathname still produces the same consent receipt and independently re-hashes/rechecks the pinned file object. Path replacement/removal, metadata drift, or in-place content changes therefore fail closed into recovery rather than allowing a stale consent receipt to authorize spawn.
 
+M1B40 removes raw child exit status from the public production API. The M1B38/M1B39 crossing is crate-private; the exported production call immediately classifies its descriptor sequence through M1B31 and returns only the tamper-evident `PrivilegedProcessReceipt`. A zero primary/refresh result therefore means only `RediscoveryRequired`, never completion. A `RecoveryRequired` process receipt is durably persisted through M1B33 before return, while any inability to bind the raw outcome to the exact launch permit/launch contract also forces the journal into recovery. Successful rediscovery-required receipts still require M1B32 live verification and M1B33 continuation.
+
 Semantic actions are typed as pre-execution evidence, mutation candidates or verification.
 No `pvresize` or other absent mutation is synthesized. Every mutation candidate receives a
 read-only barrier requiring fresh target identity, fresh capabilities, expected-state validation
