@@ -166,8 +166,12 @@ pub use privileged_verify::{
     PrivilegedLayerVerificationReceipt,
 };
 pub use production_activation::{
-    inspect_production_activation_readiness, seal_production_mutation_activation_intent,
-    ProductionActivationError, ProductionActivationReadiness, ProductionMutationActivationIntent,
+    inspect_production_activation_readiness, inspect_production_chained_activation_readiness,
+    seal_production_chained_mutation_activation_intent,
+    seal_production_mutation_activation_intent, ProductionActivationError,
+    ProductionActivationReadiness, ProductionChainedActivationError,
+    ProductionChainedActivationReadiness, ProductionChainedMutationActivationIntent,
+    ProductionChainedMutationProfile, ProductionMutationActivationIntent,
     ProductionMutationProfile, PRODUCTION_MUTATION_ACTIVATION_COMPILED,
 };
 pub use production_consent::{
