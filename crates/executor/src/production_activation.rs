@@ -329,7 +329,6 @@ pub fn seal_production_mutation_activation_intent(
     Ok(intent)
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProductionChainedMutationProfile {
@@ -763,8 +762,8 @@ mod tests {
         NativeCompiledStep, NativeVerificationBarrier,
     };
     use lsm_planner::{
-        FilesystemIdentity, LvmIdentity, LvmIdentityKind, MountIdentity,
-        PartitionGeometryIdentity, Reversibility,
+        FilesystemIdentity, LvmIdentity, LvmIdentityKind, MountIdentity, PartitionGeometryIdentity,
+        Reversibility,
     };
 
     fn digest(ch: char) -> String {
