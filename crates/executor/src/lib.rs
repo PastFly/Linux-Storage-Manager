@@ -177,7 +177,7 @@ pub use production_consent_lease::{
     PinnedProductionMutationConsent, ProductionMutationConsentLeaseError,
 };
 pub use production_descriptor_exec::{
-    execute_production_descriptor_launch, ProductionDescriptorExecutionChain,
+    execute_and_classify_production_descriptor_launch, ProductionDescriptorExecutionChain,
     ProductionDescriptorExecutionError, PRODUCTION_MUTATION_DESCRIPTOR_EXEC_COMPILED,
 };
 pub use production_execution::{
