@@ -108,8 +108,11 @@ fn run() -> HarnessResult<()> {
     )?;
 
     let sentinel_path = Path::new(&args.target).join("readonly-sentinel");
-    let sentinel_before = fs::read(&sentinel_path)
-        .map_err(|error| boxed(format!("production fixture sentinel is unavailable: {error}")))?;
+    let sentinel_before = fs::read(&sentinel_path).map_err(|error| {
+        boxed(format!(
+            "production fixture sentinel is unavailable: {error}"
+        ))
+    })?;
 
     let snapshot = discover_snapshot()?;
     let capabilities = discover_capabilities();
