@@ -22,6 +22,7 @@ production-swap-replacement-runtime-launch = ["production-swap-replacement-runti
 production-swap-replacement-runtime-journal = ["production-swap-replacement-runtime-launch"]
 production-swap-replacement-runtime-execution = ["production-swap-replacement-runtime-journal"]
 production-swap-replacement-persistent-config = ["production-swap-replacement-runtime-execution"]
+production-swap-replacement-partition-removal-preflight = ["production-swap-replacement-persistent-config", "dep:lsm-discovery"]
 production-mutation-consent = ["production-mutation-activation"]
 production-mutation-execution-permit = ["production-mutation-consent"]
 production-chained-mutation-execution-permit = ["production-mutation-consent"]
