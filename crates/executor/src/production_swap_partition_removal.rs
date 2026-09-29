@@ -77,7 +77,7 @@ impl ProductionSwapPartitionRemovalPreflight {
         Ok(self.preflight_id == self.expected_preflight_id()?)
     }
 
-    fn expected_preflight_id(&self) -> Result<String, serde_json::Error> {
+    pub(crate) fn expected_preflight_id(&self) -> Result<String, serde_json::Error> {
         let payload = PreflightDigestPayload {
             schema_version: self.schema_version,
             journal_id: &self.journal_id,
