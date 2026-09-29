@@ -184,7 +184,8 @@ verified route automatically; the user must not have to manually compose `sfdisk
   - [x] Freeze the exact descriptor-based runtime launch contract after pinned-tool revalidation: mkswap -> swapon -> mandatory dual-active verification -> swapoff, with fixed argv/environment and no process spawned.
   - [x] Require a durable fsync-persisted swap-runtime state machine before the first production crossing; persist a Started phase before every mutation-capable syscall/exec, derive exact mutation/persistent-config/partition risk scope, and fail into RecoveryRequired after any ambiguous interruption.
   - [x] Add the separately feature-gated runtime crossing through replacement swapfile creation, mkswap, swapon, mandatory dual-active verification and old-partition swapoff; every mutation-capable action is journaled before crossing and any ambiguous failure enters durable RecoveryRequired.
-  - [ ] Prove atomic persistent-config rewrite and implement final old swap/extended-partition removal with durable recovery before enabling automatic migration.
+  - [x] Atomically replace the exact frozen retiring swap entry in /etc/fstab only after M1B64 proves OldSwapDeactivated: exact pre-write backup, intent-before-write journal transition, same-directory fsynced temp + inode recheck + atomic rename + directory fsync, followed by parse/readback verification and PersistentConfigUpdated.
+  - [ ] Implement final old swap/extended-partition removal with durable recovery before enabling automatic migration.
 
 - [x] Re-discover and verify after every destructive boundary in every currently executable disposable profile, including partition -> PV -> LV -> filesystem.
 - [ ] Keep shrink unsupported until it is separately designed and reviewed.
