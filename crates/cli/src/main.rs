@@ -2,12 +2,13 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use lsm_core::BlockDevice;
 use lsm_discovery::{
-    analyze_extendability, discover_capabilities, discover_fstab,
+    analyze_extendability, discover_capabilities, discover_filesystem_space, discover_fstab,
     discover_hibernation_resume_evidence, discover_lvm, discover_mounts, discover_partition_tables,
     discover_snapshot, discover_storage, discover_swaps,
 };
 use lsm_planner::{
-    analyze_layer_route, analyze_swap_migration_safety, decide_filesystem_growth,
+    analyze_layer_route, analyze_swap_migration_safety, analyze_swapfile_destination,
+    decide_filesystem_growth,
     list_extend_targets, list_provisioning_opportunities, parse_growth_size, plan_create,
     plan_extend, CreatePartitionTablePolicy, CreatePurpose, CreateRequest, ExtendRequest,
     FilesystemDecisionState, Growth, PlanStatus,
@@ -95,6 +96,9 @@ enum PlanCommand {
     SwapMigration {
         /// Filesystem target whose growth is blocked by the tail swap layout.
         target: String,
+        /// Optional mounted ext4 filesystem on which a replacement swapfile should be planned.
+        #[arg(long)]
+        swapfile_on: Option<String>,
         /// Emit structured JSON.
         #[arg(long)]
         json: bool,
@@ -331,11 +335,51 @@ fn run() -> Result<ExitCode> {
             });
         }
         Some(Command::Plan {
-            command: PlanCommand::SwapMigration { target, json },
+            command:
+                PlanCommand::SwapMigration {
+                    target,
+                    swapfile_on,
+                    json,
+                },
         }) => {
             let snapshot = discover_snapshot()?;
             let resume = discover_hibernation_resume_evidence()?;
             let safety = analyze_swap_migration_safety(&snapshot, &resume, &target);
+
+            if let Some(destination) = swapfile_on {
+                let space = discover_filesystem_space(&destination)?;
+                let capabilities = discover_capabilities();
+                let readiness =
+                    analyze_swapfile_destination(&snapshot, &capabilities, &safety, &space, &destination);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&readiness)?);
+                } else {
+                    println!("Target: {}", safety.target);
+                    println!("Destination: {}", readiness.destination_mount);
+                    println!("Swapfile: {}", readiness.swapfile_path);
+                    println!("Status: {:?}", readiness.status);
+                    println!("Available bytes: {}", readiness.available_bytes);
+                    println!(
+                        "Replacement bytes: {}",
+                        readiness
+                            .replacement_swap_bytes
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_owned())
+                    );
+                    for blocker in &readiness.blockers {
+                        println!("BLOCKED [{}]: {}", blocker.code, blocker.message);
+                    }
+                    for step in &readiness.ordered_future_steps {
+                        println!("Future step: {step}");
+                    }
+                }
+                return Ok(if readiness.ready_for_planning() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(2)
+                });
+            }
+
             if json {
                 println!("{}", serde_json::to_string_pretty(&safety)?);
             } else {
@@ -557,6 +601,15 @@ mod tests {
             Cli::try_parse_from(["storagemgr", "plan", "swap-migration", "/data", "--json"])
                 .is_ok()
         );
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "swap-migration",
+            "/data",
+            "--swapfile-on",
+            "/var"
+        ])
+        .is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "filesystem", "/"]).is_ok());
         assert!(
             Cli::try_parse_from(["storagemgr", "plan", "filesystem", "/dev/sda1", "--json"])
