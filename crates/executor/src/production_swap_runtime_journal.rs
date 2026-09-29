@@ -496,12 +496,14 @@ fn transition_target(
         (P::DeactivatingOldSwap, T::OldSwapDeactivatedVerified) => {
             Some((P::OldSwapDeactivated, "old-swap-deactivated-verified"))
         }
-        (P::OldSwapDeactivated, T::BeginPersistentConfigUpdate) => {
-            Some((P::UpdatingPersistentConfig, "persistent-config-update-started"))
-        }
-        (P::UpdatingPersistentConfig, T::PersistentConfigUpdatedVerified) => {
-            Some((P::PersistentConfigUpdated, "persistent-config-updated-verified"))
-        }
+        (P::OldSwapDeactivated, T::BeginPersistentConfigUpdate) => Some((
+            P::UpdatingPersistentConfig,
+            "persistent-config-update-started",
+        )),
+        (P::UpdatingPersistentConfig, T::PersistentConfigUpdatedVerified) => Some((
+            P::PersistentConfigUpdated,
+            "persistent-config-updated-verified",
+        )),
         (P::PersistentConfigUpdated, T::BeginPartitionRemoval) => {
             Some((P::RemovingPartitions, "partition-removal-started"))
         }
@@ -552,7 +554,9 @@ fn apply_transition(
     validate_journal(journal)
 }
 
-fn transition_phase_hint(transition: ProductionSwapRuntimeTransition) -> ProductionSwapRuntimePhase {
+fn transition_phase_hint(
+    transition: ProductionSwapRuntimeTransition,
+) -> ProductionSwapRuntimePhase {
     use ProductionSwapRuntimePhase as P;
     use ProductionSwapRuntimeTransition as T;
     match transition {
@@ -574,9 +578,10 @@ fn transition_phase_hint(transition: ProductionSwapRuntimeTransition) -> Product
 }
 
 fn recompute_flags(journal: &mut ProductionSwapRuntimeJournal) {
-    journal.mutation_may_have_started = journal.events.iter().any(|event| {
-        !matches!(event.to, ProductionSwapRuntimePhase::Prepared)
-    });
+    journal.mutation_may_have_started = journal
+        .events
+        .iter()
+        .any(|event| !matches!(event.to, ProductionSwapRuntimePhase::Prepared));
     journal.persistent_config_may_have_changed = journal.events.iter().any(|event| {
         matches!(
             event.to,
@@ -609,7 +614,10 @@ fn validate_journal(
     for (value, label) in [
         (journal.activation_id.as_str(), "activation ID"),
         (journal.execution_permit_id.as_str(), "execution permit ID"),
-        (journal.preflight_receipt_id.as_str(), "preflight receipt ID"),
+        (
+            journal.preflight_receipt_id.as_str(),
+            "preflight receipt ID",
+        ),
         (journal.launch_id.as_str(), "launch ID"),
         (
             journal.swap_replacement_intent_id.as_str(),
@@ -621,7 +629,10 @@ fn validate_journal(
     for (value, label) in [
         (journal.target.as_str(), "target"),
         (journal.disk.as_str(), "disk"),
-        (journal.retiring_swap_device.as_str(), "retiring swap device"),
+        (
+            journal.retiring_swap_device.as_str(),
+            "retiring swap device",
+        ),
         (journal.swapfile_path.as_str(), "swapfile path"),
     ] {
         if value.is_empty()
@@ -762,9 +773,10 @@ fn validate_journal(
         ));
     }
 
-    let mutation_expected = journal.events.iter().any(|event| {
-        !matches!(event.to, ProductionSwapRuntimePhase::Prepared)
-    });
+    let mutation_expected = journal
+        .events
+        .iter()
+        .any(|event| !matches!(event.to, ProductionSwapRuntimePhase::Prepared));
     let persistent_expected = journal.events.iter().any(|event| {
         matches!(
             event.to,
@@ -993,7 +1005,10 @@ mod tests {
             ProductionSwapRuntimeTransition::BeginPartitionRemoval,
         )
         .unwrap();
-        assert_eq!(journal.phase, ProductionSwapRuntimePhase::RemovingPartitions);
+        assert_eq!(
+            journal.phase,
+            ProductionSwapRuntimePhase::RemovingPartitions
+        );
         assert!(journal.partition_table_may_have_changed);
         apply_transition(
             &mut journal,
