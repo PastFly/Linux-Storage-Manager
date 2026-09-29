@@ -948,44 +948,86 @@ mod tests {
         let mut journal = fixture_journal();
         apply_transition(
             &mut journal,
-            ProductionSwapRuntimeTransition::SwapfileCreated,
+            ProductionSwapRuntimeTransition::BeginSwapfileCreation,
         )
         .unwrap();
+        assert_eq!(journal.phase, ProductionSwapRuntimePhase::CreatingSwapfile);
         assert!(journal.mutation_may_have_started);
         assert!(!journal.persistent_config_may_have_changed);
         assert!(!journal.partition_table_may_have_changed);
+        apply_transition(
+            &mut journal,
+            ProductionSwapRuntimeTransition::SwapfileCreatedVerified,
+        )
+        .unwrap();
 
-        apply_transition(
-            &mut journal,
-            ProductionSwapRuntimeTransition::ReplacementFormatted,
-        )
-        .unwrap();
-        apply_transition(
-            &mut journal,
+        for transition in [
+            ProductionSwapRuntimeTransition::BeginReplacementFormatting,
+            ProductionSwapRuntimeTransition::ReplacementFormattedVerified,
+            ProductionSwapRuntimeTransition::BeginReplacementActivation,
             ProductionSwapRuntimeTransition::ReplacementActiveVerified,
-        )
-        .unwrap();
+            ProductionSwapRuntimeTransition::BeginOldSwapDeactivation,
+            ProductionSwapRuntimeTransition::OldSwapDeactivatedVerified,
+        ] {
+            apply_transition(&mut journal, transition).unwrap();
+        }
         apply_transition(
             &mut journal,
-            ProductionSwapRuntimeTransition::OldSwapDeactivatedVerified,
+            ProductionSwapRuntimeTransition::BeginPersistentConfigUpdate,
         )
         .unwrap();
+        assert_eq!(
+            journal.phase,
+            ProductionSwapRuntimePhase::UpdatingPersistentConfig
+        );
+        assert!(journal.persistent_config_may_have_changed);
+        assert!(!journal.partition_table_may_have_changed);
         apply_transition(
             &mut journal,
             ProductionSwapRuntimeTransition::PersistentConfigUpdatedVerified,
         )
         .unwrap();
-        assert!(journal.persistent_config_may_have_changed);
-        assert!(!journal.partition_table_may_have_changed);
 
+        apply_transition(
+            &mut journal,
+            ProductionSwapRuntimeTransition::BeginPartitionRemoval,
+        )
+        .unwrap();
+        assert_eq!(journal.phase, ProductionSwapRuntimePhase::RemovingPartitions);
+        assert!(journal.partition_table_may_have_changed);
         apply_transition(
             &mut journal,
             ProductionSwapRuntimeTransition::PartitionsRemovedVerified,
         )
         .unwrap();
-        assert!(journal.partition_table_may_have_changed);
         apply_transition(&mut journal, ProductionSwapRuntimeTransition::Completed).unwrap();
         assert_eq!(journal.phase, ProductionSwapRuntimePhase::Completed);
+    }
+
+    #[test]
+    fn durable_started_phase_closes_the_pre_syscall_crash_window() {
+        let mut journal = fixture_journal();
+        apply_transition(
+            &mut journal,
+            ProductionSwapRuntimeTransition::BeginReplacementFormatting,
+        )
+        .unwrap_err();
+
+        apply_transition(
+            &mut journal,
+            ProductionSwapRuntimeTransition::BeginSwapfileCreation,
+        )
+        .unwrap();
+        assert_eq!(journal.phase, ProductionSwapRuntimePhase::CreatingSwapfile);
+        assert!(journal.mutation_may_have_started);
+
+        apply_transition(
+            &mut journal,
+            ProductionSwapRuntimeTransition::RecoveryRequired,
+        )
+        .unwrap();
+        assert_eq!(journal.phase, ProductionSwapRuntimePhase::RecoveryRequired);
+        assert!(journal.mutation_may_have_started);
     }
 
     #[test]
@@ -1006,8 +1048,11 @@ mod tests {
     fn recovery_after_replacement_activation_preserves_precise_risk_scope() {
         let mut journal = fixture_journal();
         for transition in [
-            ProductionSwapRuntimeTransition::SwapfileCreated,
-            ProductionSwapRuntimeTransition::ReplacementFormatted,
+            ProductionSwapRuntimeTransition::BeginSwapfileCreation,
+            ProductionSwapRuntimeTransition::SwapfileCreatedVerified,
+            ProductionSwapRuntimeTransition::BeginReplacementFormatting,
+            ProductionSwapRuntimeTransition::ReplacementFormattedVerified,
+            ProductionSwapRuntimeTransition::BeginReplacementActivation,
             ProductionSwapRuntimeTransition::ReplacementActiveVerified,
         ] {
             apply_transition(&mut journal, transition).unwrap();
@@ -1034,13 +1079,13 @@ mod tests {
         persist_production_swap_runtime_transition(
             &store,
             &mut journal,
-            ProductionSwapRuntimeTransition::SwapfileCreated,
+            ProductionSwapRuntimeTransition::BeginSwapfileCreation,
         )
         .unwrap();
-        assert_eq!(journal.phase, ProductionSwapRuntimePhase::SwapfileCreated);
+        assert_eq!(journal.phase, ProductionSwapRuntimePhase::CreatingSwapfile);
         assert_eq!(
             store.load(&journal.journal_id).unwrap().phase,
-            ProductionSwapRuntimePhase::SwapfileCreated
+            ProductionSwapRuntimePhase::CreatingSwapfile
         );
 
         fs::remove_dir_all(root).unwrap();
