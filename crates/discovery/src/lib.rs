@@ -1,6 +1,7 @@
 mod analysis;
 mod diagnostics;
 mod filesystem_preflight;
+mod filesystem_space;
 mod fstab;
 mod hibernation;
 mod lvm;
@@ -21,6 +22,7 @@ use thiserror::Error;
 pub use analysis::{analyze_extendability, ExtendAnalysisError};
 pub use diagnostics::diagnose_storage;
 pub use filesystem_preflight::discover_filesystem_preflight;
+pub use filesystem_space::{discover_filesystem_space, FilesystemSpaceDiscoveryError};
 pub use fstab::{discover_fstab, parse_fstab, FstabDiscoveryError};
 pub use hibernation::{
     discover_hibernation_resume_evidence, parse_kernel_resume_evidence, parse_sysfs_resume,
