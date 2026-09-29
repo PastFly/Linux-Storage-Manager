@@ -6,6 +6,7 @@ mod fstab;
 mod hibernation;
 mod lvm;
 mod mounts;
+mod path_occupancy;
 mod partition_table;
 mod reconcile;
 mod snapshot;
@@ -30,6 +31,7 @@ pub use hibernation::{
 };
 pub use lvm::{discover_lvm, parse_lvs_json, parse_pvs_json, parse_vgs_json, LvmDiscoveryError};
 pub use mounts::{discover_mounts, parse_findmnt_json, MountDiscoveryError};
+pub use path_occupancy::{discover_path_occupancy, PathOccupancyDiscoveryError};
 pub use partition_table::{
     discover_partition_tables, parse_sfdisk_json, PartitionTableDiscoveryError,
 };
