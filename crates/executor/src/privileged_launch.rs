@@ -103,7 +103,7 @@ pub enum PrivilegedLaunchSpecError {
     Serialization(#[from] serde_json::Error),
 }
 
-fn inspect_elf(file: &File) -> Result<ElfExecutionIdentity, PrivilegedLaunchSpecError> {
+pub(crate) fn inspect_elf(file: &File) -> Result<ElfExecutionIdentity, PrivilegedLaunchSpecError> {
     let mut ident = [0_u8; 16];
     let read = file.read_at(&mut ident, 0)?;
     if read != ident.len() || ident[0..4] != [0x7f, b'E', b'L', b'F'] || ident[6] != 1 {
