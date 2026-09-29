@@ -36,17 +36,21 @@ pub fn discover_filesystem_space(
     }
     let stats = unsafe { stats.assume_init() };
     let block_size_bytes = if stats.f_frsize > 0 {
-        stats.f_frsize as u64
+        u64::try_from(stats.f_frsize).map_err(|_| FilesystemSpaceDiscoveryError::SizeOverflow)?
     } else {
-        stats.f_bsize as u64
+        u64::try_from(stats.f_bsize).map_err(|_| FilesystemSpaceDiscoveryError::SizeOverflow)?
     };
     if block_size_bytes == 0 {
         return Err(FilesystemSpaceDiscoveryError::SizeOverflow);
     }
-    let total_bytes = (stats.f_blocks as u64)
+    let blocks =
+        u64::try_from(stats.f_blocks).map_err(|_| FilesystemSpaceDiscoveryError::SizeOverflow)?;
+    let available_blocks =
+        u64::try_from(stats.f_bavail).map_err(|_| FilesystemSpaceDiscoveryError::SizeOverflow)?;
+    let total_bytes = blocks
         .checked_mul(block_size_bytes)
         .ok_or(FilesystemSpaceDiscoveryError::SizeOverflow)?;
-    let available_bytes = (stats.f_bavail as u64)
+    let available_bytes = available_blocks
         .checked_mul(block_size_bytes)
         .ok_or(FilesystemSpaceDiscoveryError::SizeOverflow)?;
 
