@@ -321,3 +321,9 @@ M1B65 atomically crosses the persistent-config boundary but still performs no pa
 
 
 M1B65 is restacked on the merged M1B64 master baseline.
+
+
+M1B66 freezes the final partition-removal boundary without changing the partition table. It requires the exact M1B65 PersistentConfigUpdated journal and receipt, revalidates pinned production swap consent and live replacement-swap state, then discovers exactly one DOS type-82 retiring logical partition inside exactly one containing extended partition with no sibling logical partitions. The swap size must still equal the frozen activation size. A fresh root-owned 0600 fsynced sfdisk dump is captured under the swap-runtime journal root and its digest plus exact partition numbers/geometry are sealed into a non-mutating preflight receipt. The journal remains PersistentConfigUpdated; actual sfdisk deletion and Completed transition remain separately gated.
+
+
+M1B66 is restacked on the merged M1B65 master baseline.
