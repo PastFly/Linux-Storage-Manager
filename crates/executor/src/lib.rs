@@ -8,6 +8,8 @@ mod disposable_loop_association;
 mod disposable_ownership;
 mod disposable_permit;
 mod disposable_start;
+#[cfg(feature = "disposable-swap-migration-harness")]
+mod disposable_swap;
 mod disposable_verify;
 mod execution_intent;
 mod filesystem_health;
@@ -82,6 +84,12 @@ pub use disposable_permit::{
     DisposableExecutionPermit, DisposablePermitError,
 };
 pub use disposable_start::{persist_disposable_execution_start, DisposableExecutionStartError};
+#[cfg(feature = "disposable-swap-migration-harness")]
+pub use disposable_swap::{
+    execute_disposable_swap_replacement, DisposableSwapActivationError,
+    DisposableSwapActivationOptions, DisposableSwapExecutionReceipt, DisposableSwapExecutionStage,
+    DisposableSwapToolPaths,
+};
 pub use disposable_verify::{
     verify_and_complete_disposable_execution, verify_and_continue_disposable_boundary,
     DisposableBoundaryVerificationError, DisposableVerifiedBoundary, DisposableVerifiedCompletion,
