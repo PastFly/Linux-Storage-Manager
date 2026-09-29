@@ -87,8 +87,8 @@ pub use disposable_start::{persist_disposable_execution_start, DisposableExecuti
 #[cfg(feature = "disposable-swap-migration-harness")]
 pub use disposable_swap::{
     execute_disposable_swap_replacement, DisposableSwapActivationError,
-    DisposableSwapActivationOptions, DisposableSwapExecutionReceipt,
-    DisposableSwapExecutionStage, DisposableSwapToolPaths,
+    DisposableSwapActivationOptions, DisposableSwapExecutionReceipt, DisposableSwapExecutionStage,
+    DisposableSwapToolPaths,
 };
 pub use disposable_verify::{
     verify_and_complete_disposable_execution, verify_and_continue_disposable_boundary,
