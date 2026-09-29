@@ -24,11 +24,17 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[serde(rename_all = "snake_case")]
 pub enum ProductionSwapRuntimePhase {
     Prepared,
+    CreatingSwapfile,
     SwapfileCreated,
+    FormattingReplacement,
     ReplacementFormatted,
+    ActivatingReplacement,
     ReplacementActive,
+    DeactivatingOldSwap,
     OldSwapDeactivated,
+    UpdatingPersistentConfig,
     PersistentConfigUpdated,
+    RemovingPartitions,
     PartitionsRemoved,
     Completed,
     RecoveryRequired,
@@ -36,11 +42,17 @@ pub enum ProductionSwapRuntimePhase {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProductionSwapRuntimeTransition {
-    SwapfileCreated,
-    ReplacementFormatted,
+    BeginSwapfileCreation,
+    SwapfileCreatedVerified,
+    BeginReplacementFormatting,
+    ReplacementFormattedVerified,
+    BeginReplacementActivation,
     ReplacementActiveVerified,
+    BeginOldSwapDeactivation,
     OldSwapDeactivatedVerified,
+    BeginPersistentConfigUpdate,
     PersistentConfigUpdatedVerified,
+    BeginPartitionRemoval,
     PartitionsRemovedVerified,
     Completed,
     RecoveryRequired,
@@ -460,29 +472,55 @@ fn transition_target(
     use ProductionSwapRuntimeTransition as T;
 
     match (phase, transition) {
-        (P::Prepared, T::SwapfileCreated) => Some((P::SwapfileCreated, "swapfile-created")),
-        (P::SwapfileCreated, T::ReplacementFormatted) => {
-            Some((P::ReplacementFormatted, "replacement-formatted"))
+        (P::Prepared, T::BeginSwapfileCreation) => {
+            Some((P::CreatingSwapfile, "swapfile-create-started"))
         }
-        (P::ReplacementFormatted, T::ReplacementActiveVerified) => {
+        (P::CreatingSwapfile, T::SwapfileCreatedVerified) => {
+            Some((P::SwapfileCreated, "swapfile-created-verified"))
+        }
+        (P::SwapfileCreated, T::BeginReplacementFormatting) => {
+            Some((P::FormattingReplacement, "replacement-format-started"))
+        }
+        (P::FormattingReplacement, T::ReplacementFormattedVerified) => {
+            Some((P::ReplacementFormatted, "replacement-formatted-verified"))
+        }
+        (P::ReplacementFormatted, T::BeginReplacementActivation) => {
+            Some((P::ActivatingReplacement, "replacement-activation-started"))
+        }
+        (P::ActivatingReplacement, T::ReplacementActiveVerified) => {
             Some((P::ReplacementActive, "replacement-active-verified"))
         }
-        (P::ReplacementActive, T::OldSwapDeactivatedVerified) => {
+        (P::ReplacementActive, T::BeginOldSwapDeactivation) => {
+            Some((P::DeactivatingOldSwap, "old-swap-deactivation-started"))
+        }
+        (P::DeactivatingOldSwap, T::OldSwapDeactivatedVerified) => {
             Some((P::OldSwapDeactivated, "old-swap-deactivated-verified"))
         }
-        (P::OldSwapDeactivated, T::PersistentConfigUpdatedVerified) => {
+        (P::OldSwapDeactivated, T::BeginPersistentConfigUpdate) => {
+            Some((P::UpdatingPersistentConfig, "persistent-config-update-started"))
+        }
+        (P::UpdatingPersistentConfig, T::PersistentConfigUpdatedVerified) => {
             Some((P::PersistentConfigUpdated, "persistent-config-updated-verified"))
         }
-        (P::PersistentConfigUpdated, T::PartitionsRemovedVerified) => {
+        (P::PersistentConfigUpdated, T::BeginPartitionRemoval) => {
+            Some((P::RemovingPartitions, "partition-removal-started"))
+        }
+        (P::RemovingPartitions, T::PartitionsRemovedVerified) => {
             Some((P::PartitionsRemoved, "partitions-removed-verified"))
         }
         (P::PartitionsRemoved, T::Completed) => Some((P::Completed, "completed")),
         (
-            P::SwapfileCreated
+            P::CreatingSwapfile
+            | P::SwapfileCreated
+            | P::FormattingReplacement
             | P::ReplacementFormatted
+            | P::ActivatingReplacement
             | P::ReplacementActive
+            | P::DeactivatingOldSwap
             | P::OldSwapDeactivated
+            | P::UpdatingPersistentConfig
             | P::PersistentConfigUpdated
+            | P::RemovingPartitions
             | P::PartitionsRemoved,
             T::RecoveryRequired,
         ) => Some((P::RecoveryRequired, "recovery-required")),
@@ -518,11 +556,17 @@ fn transition_phase_hint(transition: ProductionSwapRuntimeTransition) -> Product
     use ProductionSwapRuntimePhase as P;
     use ProductionSwapRuntimeTransition as T;
     match transition {
-        T::SwapfileCreated => P::SwapfileCreated,
-        T::ReplacementFormatted => P::ReplacementFormatted,
+        T::BeginSwapfileCreation => P::CreatingSwapfile,
+        T::SwapfileCreatedVerified => P::SwapfileCreated,
+        T::BeginReplacementFormatting => P::FormattingReplacement,
+        T::ReplacementFormattedVerified => P::ReplacementFormatted,
+        T::BeginReplacementActivation => P::ActivatingReplacement,
         T::ReplacementActiveVerified => P::ReplacementActive,
+        T::BeginOldSwapDeactivation => P::DeactivatingOldSwap,
         T::OldSwapDeactivatedVerified => P::OldSwapDeactivated,
+        T::BeginPersistentConfigUpdate => P::UpdatingPersistentConfig,
         T::PersistentConfigUpdatedVerified => P::PersistentConfigUpdated,
+        T::BeginPartitionRemoval => P::RemovingPartitions,
         T::PartitionsRemovedVerified => P::PartitionsRemoved,
         T::Completed => P::Completed,
         T::RecoveryRequired => P::RecoveryRequired,
@@ -530,11 +574,15 @@ fn transition_phase_hint(transition: ProductionSwapRuntimeTransition) -> Product
 }
 
 fn recompute_flags(journal: &mut ProductionSwapRuntimeJournal) {
-    journal.mutation_may_have_started = !journal.events.is_empty();
+    journal.mutation_may_have_started = journal.events.iter().any(|event| {
+        !matches!(event.to, ProductionSwapRuntimePhase::Prepared)
+    });
     journal.persistent_config_may_have_changed = journal.events.iter().any(|event| {
         matches!(
             event.to,
-            ProductionSwapRuntimePhase::PersistentConfigUpdated
+            ProductionSwapRuntimePhase::UpdatingPersistentConfig
+                | ProductionSwapRuntimePhase::PersistentConfigUpdated
+                | ProductionSwapRuntimePhase::RemovingPartitions
                 | ProductionSwapRuntimePhase::PartitionsRemoved
                 | ProductionSwapRuntimePhase::Completed
         )
@@ -542,7 +590,9 @@ fn recompute_flags(journal: &mut ProductionSwapRuntimeJournal) {
     journal.partition_table_may_have_changed = journal.events.iter().any(|event| {
         matches!(
             event.to,
-            ProductionSwapRuntimePhase::PartitionsRemoved | ProductionSwapRuntimePhase::Completed
+            ProductionSwapRuntimePhase::RemovingPartitions
+                | ProductionSwapRuntimePhase::PartitionsRemoved
+                | ProductionSwapRuntimePhase::Completed
         )
     });
 }
@@ -607,19 +657,83 @@ fn validate_journal(
             ));
         }
         let allowed = match (event.from, event.to, event.code.as_str()) {
-            (ProductionSwapRuntimePhase::Prepared, ProductionSwapRuntimePhase::SwapfileCreated, "swapfile-created") => true,
-            (ProductionSwapRuntimePhase::SwapfileCreated, ProductionSwapRuntimePhase::ReplacementFormatted, "replacement-formatted") => true,
-            (ProductionSwapRuntimePhase::ReplacementFormatted, ProductionSwapRuntimePhase::ReplacementActive, "replacement-active-verified") => true,
-            (ProductionSwapRuntimePhase::ReplacementActive, ProductionSwapRuntimePhase::OldSwapDeactivated, "old-swap-deactivated-verified") => true,
-            (ProductionSwapRuntimePhase::OldSwapDeactivated, ProductionSwapRuntimePhase::PersistentConfigUpdated, "persistent-config-updated-verified") => true,
-            (ProductionSwapRuntimePhase::PersistentConfigUpdated, ProductionSwapRuntimePhase::PartitionsRemoved, "partitions-removed-verified") => true,
-            (ProductionSwapRuntimePhase::PartitionsRemoved, ProductionSwapRuntimePhase::Completed, "completed") => true,
             (
-                ProductionSwapRuntimePhase::SwapfileCreated
+                ProductionSwapRuntimePhase::Prepared,
+                ProductionSwapRuntimePhase::CreatingSwapfile,
+                "swapfile-create-started",
+            ) => true,
+            (
+                ProductionSwapRuntimePhase::CreatingSwapfile,
+                ProductionSwapRuntimePhase::SwapfileCreated,
+                "swapfile-created-verified",
+            ) => true,
+            (
+                ProductionSwapRuntimePhase::SwapfileCreated,
+                ProductionSwapRuntimePhase::FormattingReplacement,
+                "replacement-format-started",
+            ) => true,
+            (
+                ProductionSwapRuntimePhase::FormattingReplacement,
+                ProductionSwapRuntimePhase::ReplacementFormatted,
+                "replacement-formatted-verified",
+            ) => true,
+            (
+                ProductionSwapRuntimePhase::ReplacementFormatted,
+                ProductionSwapRuntimePhase::ActivatingReplacement,
+                "replacement-activation-started",
+            ) => true,
+            (
+                ProductionSwapRuntimePhase::ActivatingReplacement,
+                ProductionSwapRuntimePhase::ReplacementActive,
+                "replacement-active-verified",
+            ) => true,
+            (
+                ProductionSwapRuntimePhase::ReplacementActive,
+                ProductionSwapRuntimePhase::DeactivatingOldSwap,
+                "old-swap-deactivation-started",
+            ) => true,
+            (
+                ProductionSwapRuntimePhase::DeactivatingOldSwap,
+                ProductionSwapRuntimePhase::OldSwapDeactivated,
+                "old-swap-deactivated-verified",
+            ) => true,
+            (
+                ProductionSwapRuntimePhase::OldSwapDeactivated,
+                ProductionSwapRuntimePhase::UpdatingPersistentConfig,
+                "persistent-config-update-started",
+            ) => true,
+            (
+                ProductionSwapRuntimePhase::UpdatingPersistentConfig,
+                ProductionSwapRuntimePhase::PersistentConfigUpdated,
+                "persistent-config-updated-verified",
+            ) => true,
+            (
+                ProductionSwapRuntimePhase::PersistentConfigUpdated,
+                ProductionSwapRuntimePhase::RemovingPartitions,
+                "partition-removal-started",
+            ) => true,
+            (
+                ProductionSwapRuntimePhase::RemovingPartitions,
+                ProductionSwapRuntimePhase::PartitionsRemoved,
+                "partitions-removed-verified",
+            ) => true,
+            (
+                ProductionSwapRuntimePhase::PartitionsRemoved,
+                ProductionSwapRuntimePhase::Completed,
+                "completed",
+            ) => true,
+            (
+                ProductionSwapRuntimePhase::CreatingSwapfile
+                | ProductionSwapRuntimePhase::SwapfileCreated
+                | ProductionSwapRuntimePhase::FormattingReplacement
                 | ProductionSwapRuntimePhase::ReplacementFormatted
+                | ProductionSwapRuntimePhase::ActivatingReplacement
                 | ProductionSwapRuntimePhase::ReplacementActive
+                | ProductionSwapRuntimePhase::DeactivatingOldSwap
                 | ProductionSwapRuntimePhase::OldSwapDeactivated
+                | ProductionSwapRuntimePhase::UpdatingPersistentConfig
                 | ProductionSwapRuntimePhase::PersistentConfigUpdated
+                | ProductionSwapRuntimePhase::RemovingPartitions
                 | ProductionSwapRuntimePhase::PartitionsRemoved,
                 ProductionSwapRuntimePhase::RecoveryRequired,
                 "recovery-required",
@@ -648,11 +762,15 @@ fn validate_journal(
         ));
     }
 
-    let mutation_expected = !journal.events.is_empty();
+    let mutation_expected = journal.events.iter().any(|event| {
+        !matches!(event.to, ProductionSwapRuntimePhase::Prepared)
+    });
     let persistent_expected = journal.events.iter().any(|event| {
         matches!(
             event.to,
-            ProductionSwapRuntimePhase::PersistentConfigUpdated
+            ProductionSwapRuntimePhase::UpdatingPersistentConfig
+                | ProductionSwapRuntimePhase::PersistentConfigUpdated
+                | ProductionSwapRuntimePhase::RemovingPartitions
                 | ProductionSwapRuntimePhase::PartitionsRemoved
                 | ProductionSwapRuntimePhase::Completed
         )
@@ -660,7 +778,9 @@ fn validate_journal(
     let partition_expected = journal.events.iter().any(|event| {
         matches!(
             event.to,
-            ProductionSwapRuntimePhase::PartitionsRemoved | ProductionSwapRuntimePhase::Completed
+            ProductionSwapRuntimePhase::RemovingPartitions
+                | ProductionSwapRuntimePhase::PartitionsRemoved
+                | ProductionSwapRuntimePhase::Completed
         )
     });
     if journal.mutation_may_have_started != mutation_expected
