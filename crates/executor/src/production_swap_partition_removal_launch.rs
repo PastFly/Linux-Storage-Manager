@@ -143,11 +143,7 @@ fn build_from_identities(
     };
     let partx_update = ProductionSwapPartitionRemovalLaunchStage {
         program: PrivilegedProgram::Partx,
-        argv: vec![
-            "partx".into(),
-            "--update".into(),
-            preflight.disk.clone(),
-        ],
+        argv: vec!["partx".into(), "--update".into(), preflight.disk.clone()],
         tool: partx,
     };
 
@@ -196,7 +192,11 @@ mod tests {
             requested_path: format!("/usr/sbin/{name}"),
             canonical_path: format!("/usr/sbin/{name}"),
             device_id: 1,
-            inode: if program == PrivilegedProgram::Sfdisk { 2 } else { 3 },
+            inode: if program == PrivilegedProgram::Sfdisk {
+                2
+            } else {
+                3
+            },
             uid: 0,
             mode: 0o100755,
             size_bytes: 4096,
@@ -223,7 +223,8 @@ mod tests {
             extended_partition_number: 2,
             extended_start_sector: 1_002_048,
             extended_size_sectors: 600_000,
-            partition_backup_path: "/var/lib/linux-storage-manager/swap-runtime/backup.sfdisk".into(),
+            partition_backup_path: "/var/lib/linux-storage-manager/swap-runtime/backup.sfdisk"
+                .into(),
             partition_backup_sha256: "b".repeat(64),
             mutation_enabled: false,
             partition_table_changed: false,
