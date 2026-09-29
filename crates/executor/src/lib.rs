@@ -249,8 +249,8 @@ pub use production_swap_consent::{
     PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH, PRODUCTION_SWAP_REPLACEMENT_CONSENT_PHRASE,
 };
 pub use production_swap_execution::{
-    seal_production_swap_replacement_execution_permit,
-    ProductionSwapReplacementExecutionPermit, ProductionSwapReplacementExecutionPermitError,
+    seal_production_swap_replacement_execution_permit, ProductionSwapReplacementExecutionPermit,
+    ProductionSwapReplacementExecutionPermitError,
     PRODUCTION_SWAP_REPLACEMENT_EXECUTION_PERMIT_COMPILED,
 };
 #[cfg(feature = "production-mutation-execution")]
