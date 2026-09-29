@@ -303,3 +303,6 @@ M1B59 pins the M1B57 swap consent by retaining the exact opened file descriptor 
 
 
 M1B60 adds the final fresh read-only runtime preflight before any production swap process crossing. It revalidates the pinned M1B59 consent lease against the M1B58 non-spawning permit, re-reads hibernation/resume state, active retiring-swap size/priority, exact fstab entry, RW ext4 destination, live capacity and swapfile-path vacancy, then resolves root-owned non-writable trusted identities for mkswap/swapon/swapoff. The resulting receipt is independently digested and remains mutation_enabled=false/process_spawned=false. No swapfile creation, mkswap, swapon, swapoff, fstab edit or partition mutation is enabled.
+
+
+M1B61 pins the M1B60 trusted swap runtime executables by open descriptor without spawning them. Each canonical mkswap/swapon/swapoff file is opened O_NOFOLLOW/O_CLOEXEC and must still match the frozen device/inode/uid/mode/size/content hash; in-place edits and pathname replacement fail closed. The descriptors are held privately only to stabilize the future runtime crossing. No swapfile creation, process execution, swap-state change, persistent-config edit or partition mutation occurs.
