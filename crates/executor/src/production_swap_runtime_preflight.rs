@@ -1,4 +1,6 @@
-use lsm_core::{FilesystemSpaceEvidence, HibernationResumeEvidence, HostSnapshot, PathOccupancyEvidence};
+use lsm_core::{
+    FilesystemSpaceEvidence, HibernationResumeEvidence, HostSnapshot, PathOccupancyEvidence,
+};
 use lsm_discovery::{
     discover_filesystem_space, discover_hibernation_resume_evidence, discover_path_occupancy,
     discover_snapshot,
@@ -8,7 +10,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    revalidate_pinned_production_swap_replacement_consent, resolve_trusted_privileged_tool,
+    resolve_trusted_privileged_tool, revalidate_pinned_production_swap_replacement_consent,
     PinnedProductionSwapReplacementConsent, PrivilegedProgram,
     ProductionSwapReplacementActivationIntent, ProductionSwapReplacementConsentLeaseError,
     ProductionSwapReplacementExecutionPermit, TrustedToolError, TrustedToolIdentity,
@@ -239,8 +241,7 @@ pub fn prepare_production_swap_runtime_preflight(
     }
     validate_authorization(activation, permit)?;
 
-    let consent =
-        revalidate_pinned_production_swap_replacement_consent(activation, consent_lease)?;
+    let consent = revalidate_pinned_production_swap_replacement_consent(activation, consent_lease)?;
     if consent.receipt_id != permit.consent_receipt_id {
         return Err(ProductionSwapRuntimePreflightError::AuthorizationBindingMismatch);
     }
