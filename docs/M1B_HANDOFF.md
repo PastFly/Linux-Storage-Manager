@@ -330,3 +330,6 @@ M1B66 is restacked on the merged M1B65 master baseline.
 
 
 M1B67 pins the final partition-removal executables without spawning anything. After an integrity-valid M1B66 preflight, trusted fixed-system `sfdisk` and `partx` identities are resolved, opened with `O_NOFOLLOW`, and retained by descriptor. Revalidation hashes the already-open executable objects and requires the same device/inode/uid/mode/size/content before the future removal crossing, preventing pathname replacement or in-place binary mutation. No partition-table or kernel partition state changes occur in this layer.
+
+
+M1B68 freezes the final partition-removal command sequence without spawning it. After the M1B66 geometry/backup preflight and M1B67 descriptor-pinned tools are revalidated, the executor seals one exact `sfdisk --lock=yes --delete DISK LOGICAL_SWAP EXTENDED` stage followed by one exact `partx --update DISK` stage. The logical swap partition number is ordered before its containing extended partition, trusted executable identities and fixed environment are part of the launch digest, and the contract records `process_spawned=false` / `partition_table_changed=false`. A later M1B69 layer must durably enter RemovingPartitions before executing this launch and must verify both partitions absent plus the replacement swap/persistent configuration intact before Completed.
