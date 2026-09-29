@@ -173,7 +173,8 @@ pub fn analyze_swap_migration_safety(
         "prove current memory/swap pressure permits safe swapoff of the old partition".to_owned(),
         "atomically rewrite and verify persistent swap configuration before partition removal"
             .to_owned(),
-        "back up partition-table, fstab and boot/resume configuration before any mutation".to_owned(),
+        "back up partition-table, fstab and boot/resume configuration before any mutation"
+            .to_owned(),
     ];
 
     SwapMigrationSafety {
@@ -254,7 +255,10 @@ mod tests {
         );
         assert!(result.clear_for_planning());
         assert_eq!(result.swap_device.as_deref(), Some("/dev/sda5"));
-        assert_eq!(result.persistent_swap_source.as_deref(), Some("UUID=swap-uuid"));
+        assert_eq!(
+            result.persistent_swap_source.as_deref(),
+            Some("UUID=swap-uuid")
+        );
         assert_eq!(result.active_swap_used_bytes, Some(4096));
         assert!(!result.future_checks.is_empty());
     }
