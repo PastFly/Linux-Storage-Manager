@@ -146,9 +146,7 @@ fn sysfs_raw_device_bytes(device: &str) -> Result<u64, DisposableSwapActivationE
         .ok_or(DisposableSwapActivationError::OldSwapSizeInvalid)
 }
 
-fn exact_swap_entry(
-    name: &str,
-) -> Result<lsm_core::SwapEntry, DisposableSwapActivationError> {
+fn exact_swap_entry(name: &str) -> Result<lsm_core::SwapEntry, DisposableSwapActivationError> {
     let matches = discover_swaps()
         .map_err(|error| {
             DisposableSwapActivationError::FileIo(io::Error::other(error.to_string()))
@@ -385,7 +383,10 @@ pub fn execute_disposable_swap_replacement(
     if let Err(error) = run_tool(
         "mkswap",
         &mkswap,
-        &["--force".to_owned(), swapfile_path.to_string_lossy().into_owned()],
+        &[
+            "--force".to_owned(),
+            swapfile_path.to_string_lossy().into_owned(),
+        ],
     ) {
         remove_unactivated_swapfile(swapfile_path, file_identity)?;
         return Err(error);
@@ -403,8 +404,7 @@ pub fn execute_disposable_swap_replacement(
         return Err(error);
     }
 
-    let (old_after_activation, replacement) =
-        replacement_and_old(old_swap_device, swapfile_path)?;
+    let (old_after_activation, replacement) = replacement_and_old(old_swap_device, swapfile_path)?;
     if old_after_activation.priority != priority
         || replacement.priority != priority
         || replacement.size_bytes != old_after_activation.size_bytes
