@@ -1,6 +1,6 @@
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -213,7 +213,12 @@ impl ProductionSwapRuntimeJournalStore {
 
         match fs::symlink_metadata(&final_path) {
             Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                if metadata.file_type().is_symlink()
+                    || !metadata.is_file()
+                    || metadata.uid() != unsafe { libc::geteuid() }
+                    || metadata.mode() & 0o777 != 0o600
+                    || metadata.nlink() != 1
+                {
                     return Err(ProductionSwapRuntimeJournalError::NotRegularFile(
                         final_path,
                     ));
@@ -271,7 +276,12 @@ impl ProductionSwapRuntimeJournalStore {
             }
             Err(source) => return Err(io_error(&path, source)),
         };
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o777 != 0o600
+            || metadata.nlink() != 1
+        {
             return Err(ProductionSwapRuntimeJournalError::NotRegularFile(path));
         }
         if metadata.len() > MAX_SWAP_RUNTIME_JOURNAL_BYTES {
@@ -878,6 +888,17 @@ fn ensure_secure_directory(
             Err(source) => return Err(io_error(&current, source)),
         }
     }
+
+    let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o022 != 0
+    {
+        return Err(ProductionSwapRuntimeJournalError::UnsafeDirectory(
+            path.to_path_buf(),
+        ));
+    }
     Ok(())
 }
 
@@ -1102,6 +1123,28 @@ mod tests {
             store.load(&journal.journal_id).unwrap().phase,
             ProductionSwapRuntimePhase::CreatingSwapfile
         );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn loose_journal_permissions_are_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_root("loose-file");
+        let store = ProductionSwapRuntimeJournalStore::at(&root);
+        let journal = fixture_journal();
+        store.persist_new(&journal).unwrap();
+
+        let path = root.join(format!("{}.json", journal.journal_id));
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o644);
+        fs::set_permissions(&path, permissions).unwrap();
+
+        assert!(matches!(
+            store.load(&journal.journal_id),
+            Err(ProductionSwapRuntimeJournalError::NotRegularFile(_))
+        ));
 
         fs::remove_dir_all(root).unwrap();
     }
