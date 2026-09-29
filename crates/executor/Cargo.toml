@@ -9,6 +9,7 @@ publish.workspace = true
 default = []
 disposable-executor = []
 disposable-loop-harness = ["disposable-executor", "dep:lsm-discovery"]
+disposable-swap-migration-harness = ["disposable-executor", "dep:lsm-discovery"]
 production-helper-protocol = ["dep:lsm-discovery"]
 production-mutation-activation = []
 production-mutation-consent = ["production-mutation-activation"]
@@ -23,6 +24,11 @@ production-loop-harness = ["production-mutation-execution", "production-chained-
 name = "lsm-disposable-loop-harness"
 path = "src/bin/disposable_loop_harness.rs"
 required-features = ["disposable-loop-harness"]
+
+[[bin]]
+name = "lsm-disposable-swap-loop-harness"
+path = "src/bin/disposable_swap_loop_harness.rs"
+required-features = ["disposable-swap-migration-harness"]
 
 [[bin]]
 name = "lsm-privileged-helper-protocol"
