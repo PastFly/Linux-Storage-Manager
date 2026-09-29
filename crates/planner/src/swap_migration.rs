@@ -21,6 +21,7 @@ pub struct SwapMigrationSafety {
     pub disk: Option<String>,
     pub swap_device: Option<String>,
     pub swap_bytes: Option<u64>,
+    pub active_swap_reported_bytes: Option<u64>,
     pub active_swap_used_bytes: Option<u64>,
     pub persistent_swap_source: Option<String>,
     pub blockers: Vec<Blocker>,
@@ -77,6 +78,7 @@ pub fn analyze_swap_migration_safety(
             disk: None,
             swap_device: None,
             swap_bytes: None,
+            active_swap_reported_bytes: None,
             active_swap_used_bytes: None,
             persistent_swap_source: None,
             blockers: vec![Blocker {
@@ -162,13 +164,11 @@ pub fn analyze_swap_migration_safety(
         None
     };
 
-    let active_swap_used_bytes = swap_device.as_deref().and_then(|device| {
-        snapshot
-            .swaps
-            .iter()
-            .find(|entry| entry.name == device)
-            .map(|entry| entry.used_bytes)
+    let active_swap = swap_device.as_deref().and_then(|device| {
+        snapshot.swaps.iter().find(|entry| entry.name == device)
     });
+    let active_swap_reported_bytes = active_swap.map(|entry| entry.size_bytes);
+    let active_swap_used_bytes = active_swap.map(|entry| entry.used_bytes);
 
     let future_checks = vec![
         "choose a swapfile filesystem with explicitly verified free capacity and swapfile support"
@@ -191,6 +191,7 @@ pub fn analyze_swap_migration_safety(
         disk: Some(opportunity.disk),
         swap_device,
         swap_bytes: Some(opportunity.swap_bytes),
+        active_swap_reported_bytes,
         active_swap_used_bytes,
         persistent_swap_source,
         blockers,
@@ -381,6 +382,7 @@ struct SwapReplacementIntentDigestPayload<'a> {
     disk: &'a Option<String>,
     retiring_swap_device: &'a Option<String>,
     retiring_swap_bytes: Option<u64>,
+    retiring_swap_reported_bytes: Option<u64>,
     retiring_swap_used_bytes: Option<u64>,
     retiring_swap_priority: Option<i32>,
     persistent_swap_source: &'a Option<String>,
@@ -407,6 +409,7 @@ pub struct SwapReplacementIntent {
     pub disk: Option<String>,
     pub retiring_swap_device: Option<String>,
     pub retiring_swap_bytes: Option<u64>,
+    pub retiring_swap_reported_bytes: Option<u64>,
     pub retiring_swap_used_bytes: Option<u64>,
     pub retiring_swap_priority: Option<i32>,
     pub persistent_swap_source: Option<String>,
@@ -441,6 +444,7 @@ impl SwapReplacementIntent {
             disk: &self.disk,
             retiring_swap_device: &self.retiring_swap_device,
             retiring_swap_bytes: self.retiring_swap_bytes,
+            retiring_swap_reported_bytes: self.retiring_swap_reported_bytes,
             retiring_swap_used_bytes: self.retiring_swap_used_bytes,
             retiring_swap_priority: self.retiring_swap_priority,
             persistent_swap_source: &self.persistent_swap_source,
@@ -545,14 +549,14 @@ pub fn build_swap_replacement_intent(
         None
     };
 
-    if let (Some(entry), Some(expected_bytes)) = (swap_entry, safety.swap_bytes) {
-        if entry.size_bytes != expected_bytes
+    if let Some(entry) = swap_entry {
+        if Some(entry.size_bytes) != safety.active_swap_reported_bytes
             || Some(entry.used_bytes) != safety.active_swap_used_bytes
         {
             push_blocker(
                 &mut blockers,
                 "retiring-swap-runtime-state-changed",
-                "active swap size or usage changed after the migration safety proof",
+                "active swap reported capacity or usage changed after the migration safety proof",
             );
         }
     }
@@ -572,6 +576,7 @@ pub fn build_swap_replacement_intent(
         disk: safety.disk.clone(),
         retiring_swap_device: safety.swap_device.clone(),
         retiring_swap_bytes: safety.swap_bytes,
+        retiring_swap_reported_bytes: safety.active_swap_reported_bytes,
         retiring_swap_used_bytes: swap_entry.map(|entry| entry.used_bytes),
         retiring_swap_priority: swap_entry.map(|entry| entry.priority),
         persistent_swap_source: persistent.map(|entry| entry.source.clone()),
