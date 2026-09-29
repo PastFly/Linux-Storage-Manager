@@ -333,7 +333,7 @@ mod tests {
             compile_feature_enabled: true,
             execution_enabled: false,
         };
-        activation.activation_id = activation.expected_activation_id_for_test().unwrap();
+        activation.activation_id = activation.expected_activation_id().unwrap();
         activation
     }
 
