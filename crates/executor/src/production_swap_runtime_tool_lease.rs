@@ -21,6 +21,36 @@ impl PinnedProductionSwapRuntimeTools {
     pub fn preflight_receipt_id(&self) -> &str {
         &self.preflight_receipt_id
     }
+
+    pub(crate) fn mkswap_file(&self) -> &File {
+        &self._mkswap
+    }
+
+    pub(crate) fn swapon_file(&self) -> &File {
+        &self._swapon
+    }
+
+    pub(crate) fn swapoff_file(&self) -> &File {
+        &self._swapoff
+    }
+
+    /// Revalidate the exact already-open executable objects against the fresh
+    /// M1B60 identities immediately before building or crossing the descriptor
+    /// launch boundary. This catches in-place inode/content mutation even
+    /// though the descriptors themselves remain pinned.
+    pub fn revalidate(
+        &self,
+        preflight: &ProductionSwapRuntimePreflightReceipt,
+    ) -> Result<(), ProductionSwapRuntimeToolLeaseError> {
+        validate_preflight(preflight)?;
+        if self.preflight_receipt_id != preflight.receipt_id {
+            return Err(ProductionSwapRuntimeToolLeaseError::PreflightInvalid);
+        }
+        validate_open_tool(self.mkswap_file(), &preflight.mkswap)?;
+        validate_open_tool(self.swapon_file(), &preflight.swapon)?;
+        validate_open_tool(self.swapoff_file(), &preflight.swapoff)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Error)]
@@ -67,6 +97,24 @@ fn sha256_file(file: &File, expected_size: u64) -> Result<String, std::io::Error
     Ok(format!("{:x}", digest.finalize()))
 }
 
+fn validate_open_tool(
+    file: &File,
+    identity: &TrustedToolIdentity,
+) -> Result<(), ProductionSwapRuntimeToolLeaseError> {
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file()
+        || metadata.dev() != identity.device_id
+        || metadata.ino() != identity.inode
+        || metadata.uid() != identity.uid
+        || metadata.mode() != identity.mode
+        || metadata.len() != identity.size_bytes
+        || sha256_file(file, identity.size_bytes)? != identity.sha256
+    {
+        return Err(ProductionSwapRuntimeToolLeaseError::ToolIdentityMismatch);
+    }
+    Ok(())
+}
+
 fn open_exact_tool(
     identity: &TrustedToolIdentity,
 ) -> Result<File, ProductionSwapRuntimeToolLeaseError> {
@@ -74,19 +122,7 @@ fn open_exact_tool(
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
         .open(Path::new(&identity.canonical_path))?;
-    let metadata = file.metadata()?;
-
-    if !metadata.file_type().is_file()
-        || metadata.dev() != identity.device_id
-        || metadata.ino() != identity.inode
-        || metadata.uid() != identity.uid
-        || metadata.mode() != identity.mode
-        || metadata.len() != identity.size_bytes
-        || sha256_file(&file, identity.size_bytes)? != identity.sha256
-    {
-        return Err(ProductionSwapRuntimeToolLeaseError::ToolIdentityMismatch);
-    }
-
+    validate_open_tool(&file, identity)?;
     Ok(file)
 }
 
