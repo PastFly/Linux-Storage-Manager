@@ -10,15 +10,18 @@ use lsm_executor::{
     approve_exact_plan, build_metadata_backup_manifest, build_pre_mutation_evidence,
     build_pre_mutation_evidence_with_filesystem_health, capture_disposable_loop_ownership,
     capture_metadata_backups_at_disposable_root, compile_native_manifest,
-    execute_explicit_filesystem_health_check, execute_verify_and_persist_production_step,
-    freeze_execution_intent, inspect_production_activation_readiness,
-    pin_default_production_mutation_consent, prepare_continuation_production_mutation_step,
+    execute_explicit_filesystem_health_check, execute_verify_and_persist_production_chained_step,
+    execute_verify_and_persist_production_step, freeze_execution_intent,
+    inspect_production_activation_readiness, inspect_production_chained_activation_readiness,
+    pin_default_production_chained_mutation_consent, pin_default_production_mutation_consent,
+    prepare_continuation_production_chained_mutation_step,
+    prepare_continuation_production_mutation_step, prepare_first_production_chained_mutation_step,
     prepare_first_production_mutation_step, revalidate_metadata_backup_receipt_at_disposable_root,
-    seal_production_mutation_activation_intent, verify_disposable_loop_association_row,
-    verify_preconditions, DurableJournalStore, FrozenIntentRole, LockedExecutionSession,
-    LockedRevalidationStatus, PreMutationEvidenceStatus, PrivilegedDurableDisposition,
-    ProductionMutationConsentDocument, PRODUCTION_MUTATION_CONSENT_PATH,
-    PRODUCTION_MUTATION_CONSENT_PHRASE,
+    seal_production_chained_mutation_activation_intent, seal_production_mutation_activation_intent,
+    verify_disposable_loop_association_row, verify_preconditions, DurableJournalStore,
+    FrozenIntentRole, LockedExecutionSession, LockedRevalidationStatus, PreMutationEvidenceStatus,
+    PrivilegedDurableDisposition, ProductionMutationConsentDocument,
+    PRODUCTION_MUTATION_CONSENT_PATH, PRODUCTION_MUTATION_CONSENT_PHRASE,
 };
 use lsm_planner::{
     build_execution_start_binding, build_frozen_execution_handoff, capture_target_identity,
@@ -45,6 +48,14 @@ struct Args {
     growth_bytes: u64,
     xfs_scrub: PathBuf,
     e2fsck: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct ProductionProfileOutcome {
+    profile: &'static str,
+    first_step_id: u32,
+    final_step_id: u32,
+    final_identity_digest: String,
 }
 
 #[derive(Debug)]
@@ -233,9 +244,9 @@ fn run() -> HarnessResult<()> {
         .filter(|step| step.role == FrozenIntentRole::MutationCandidate)
         .map(|step| step.plan_step_id)
         .collect::<Vec<_>>();
-    if mutation_step_ids.len() != 2 {
+    if !matches!(mutation_step_ids.len(), 2 | 4) {
         return Err(boxed(
-            "production loop E2E requires the exact two-step LV -> filesystem profile",
+            "production loop E2E requires an exact two-step LV -> filesystem or four-step partition -> PV -> LV -> filesystem profile",
         ));
     }
 
@@ -247,64 +258,22 @@ fn run() -> HarnessResult<()> {
         &mutation_step_ids,
     )?;
 
-    let readiness =
-        inspect_production_activation_readiness(&validated, &execution, &initial_identity);
-    if !readiness.ready() {
-        return Err(boxed(format!(
-            "production activation is not ready: {}",
-            readiness.blockers.join("; ")
-        )));
-    }
-    let activation =
-        seal_production_mutation_activation_intent(&validated, &execution, &initial_identity)?;
+    let profile_outcome = match mutation_step_ids.len() {
+        2 => execute_narrow_production_profile(
+            &mut session,
+            &validated,
+            &execution,
+            &initial_identity,
+        )?,
+        4 => execute_chained_production_profile(
+            &mut session,
+            &validated,
+            &execution,
+            &initial_identity,
+        )?,
+        _ => unreachable!("mutation step count was validated above"),
+    };
 
-    let consent_guard = create_exact_runtime_consent(&activation)?;
-    let consent_lease = pin_default_production_mutation_consent(&activation)?;
-    let consent_receipt = consent_lease.receipt().clone();
-
-    let first = prepare_first_production_mutation_step(
-        &mut session,
-        &validated,
-        &execution,
-        &initial_identity,
-        &activation,
-        &consent_receipt,
-    )?;
-    let first_result = execute_verify_and_persist_production_step(
-        &mut session,
-        first.descriptor_chain(&activation, &consent_lease),
-        &initial_identity,
-    )?;
-
-    match first_result.durable_disposition {
-        PrivilegedDurableDisposition::Continue { next_step_id }
-            if next_step_id == activation.filesystem_step_id => {}
-        ref other => {
-            return Err(boxed(format!(
-                "first production step did not authorize the exact filesystem continuation: {other:?}"
-            )));
-        }
-    }
-
-    let second = prepare_continuation_production_mutation_step(
-        &mut session,
-        &validated,
-        &first_result.fresh_identity,
-        &activation,
-        &consent_receipt,
-    )?;
-    let second_result = execute_verify_and_persist_production_step(
-        &mut session,
-        second.descriptor_chain(&activation, &consent_lease),
-        &first_result.fresh_identity,
-    )?;
-
-    if second_result.durable_disposition != PrivilegedDurableDisposition::Complete {
-        return Err(boxed(format!(
-            "terminal production step did not complete durable execution: {:?}",
-            second_result.durable_disposition
-        )));
-    }
     if session.journal().phase != JournalPhase::Completed {
         return Err(boxed(
             "successful production loop E2E did not end in Completed",
@@ -325,12 +294,7 @@ fn run() -> HarnessResult<()> {
 
     let execution_id = execution.execution_id.clone();
     let journal_id = persisted.journal_id.clone();
-    let final_identity_digest = second_result.fresh_identity_digest.clone();
 
-    drop(second);
-    drop(first);
-    drop(consent_lease);
-    drop(consent_guard);
     drop(session);
 
     remove_owned_directory(&args.backup_root, &owned_root)?;
@@ -340,20 +304,251 @@ fn run() -> HarnessResult<()> {
         "{}",
         serde_json::to_string(&json!({
             "status": "completed",
-            "profile": "production_lv_filesystem",
+            "profile": profile_outcome.profile,
             "execution_id": execution_id,
             "journal_id": journal_id,
-            "first_step_id": activation.lv_step_id,
-            "final_step_id": activation.filesystem_step_id,
-            "final_identity_digest": final_identity_digest,
+            "first_step_id": profile_outcome.first_step_id,
+            "final_step_id": profile_outcome.final_step_id,
+            "final_identity_digest": profile_outcome.final_identity_digest,
             "sentinel_preserved": true
         }))?
     );
     Ok(())
 }
 
+fn execute_narrow_production_profile(
+    session: &mut LockedExecutionSession<'_>,
+    validated: &lsm_executor::ValidatedNativeManifest,
+    execution: &lsm_planner::ExecutionStartBinding,
+    initial_identity: &lsm_planner::TargetIdentityManifest,
+) -> HarnessResult<ProductionProfileOutcome> {
+    let readiness = inspect_production_activation_readiness(validated, execution, initial_identity);
+    if !readiness.ready() {
+        return Err(boxed(format!(
+            "production activation is not ready: {}",
+            readiness.blockers.join("; ")
+        )));
+    }
+    let activation =
+        seal_production_mutation_activation_intent(validated, execution, initial_identity)?;
+
+    let consent_guard = create_exact_runtime_consent(&activation)?;
+    let consent_lease = pin_default_production_mutation_consent(&activation)?;
+    let consent_receipt = consent_lease.receipt().clone();
+
+    let first = prepare_first_production_mutation_step(
+        session,
+        validated,
+        execution,
+        initial_identity,
+        &activation,
+        &consent_receipt,
+    )?;
+    let first_result = execute_verify_and_persist_production_step(
+        session,
+        first.descriptor_chain(&activation, &consent_lease),
+        initial_identity,
+    )?;
+
+    match first_result.durable_disposition {
+        PrivilegedDurableDisposition::Continue { next_step_id }
+            if next_step_id == activation.filesystem_step_id => {}
+        ref other => {
+            return Err(boxed(format!(
+                "first production step did not authorize the exact filesystem continuation: {other:?}"
+            )));
+        }
+    }
+
+    let second = prepare_continuation_production_mutation_step(
+        session,
+        validated,
+        &first_result.fresh_identity,
+        &activation,
+        &consent_receipt,
+    )?;
+    let second_result = execute_verify_and_persist_production_step(
+        session,
+        second.descriptor_chain(&activation, &consent_lease),
+        &first_result.fresh_identity,
+    )?;
+
+    if second_result.durable_disposition != PrivilegedDurableDisposition::Complete {
+        return Err(boxed(format!(
+            "terminal production step did not complete durable execution: {:?}",
+            second_result.durable_disposition
+        )));
+    }
+
+    let outcome = ProductionProfileOutcome {
+        profile: "production_lv_filesystem",
+        first_step_id: activation.lv_step_id,
+        final_step_id: activation.filesystem_step_id,
+        final_identity_digest: second_result.fresh_identity_digest.clone(),
+    };
+
+    drop(second);
+    drop(first);
+    drop(consent_lease);
+    drop(consent_guard);
+    Ok(outcome)
+}
+
+fn require_next_step(
+    disposition: &PrivilegedDurableDisposition,
+    expected_step_id: u32,
+    label: &str,
+) -> HarnessResult<()> {
+    match disposition {
+        PrivilegedDurableDisposition::Continue { next_step_id }
+            if *next_step_id == expected_step_id =>
+        {
+            Ok(())
+        }
+        other => Err(boxed(format!(
+            "{label} did not authorize exact next chained step {expected_step_id}: {other:?}"
+        ))),
+    }
+}
+
+fn execute_chained_production_profile(
+    session: &mut LockedExecutionSession<'_>,
+    validated: &lsm_executor::ValidatedNativeManifest,
+    execution: &lsm_planner::ExecutionStartBinding,
+    initial_identity: &lsm_planner::TargetIdentityManifest,
+) -> HarnessResult<ProductionProfileOutcome> {
+    let readiness =
+        inspect_production_chained_activation_readiness(validated, execution, initial_identity);
+    if !readiness.ready() {
+        return Err(boxed(format!(
+            "chained production activation is not ready: {}",
+            readiness.blockers.join("; ")
+        )));
+    }
+    let activation =
+        seal_production_chained_mutation_activation_intent(validated, execution, initial_identity)?;
+
+    let consent_guard = create_exact_runtime_chained_consent(&activation)?;
+    let consent_lease = pin_default_production_chained_mutation_consent(&activation)?;
+    let consent_receipt = consent_lease.receipt().clone();
+
+    let partition = prepare_first_production_chained_mutation_step(
+        session,
+        validated,
+        execution,
+        initial_identity,
+        &activation,
+        &consent_receipt,
+    )?;
+    let partition_result = execute_verify_and_persist_production_chained_step(
+        session,
+        partition.descriptor_chain(&activation, &consent_lease),
+        initial_identity,
+    )?;
+    require_next_step(
+        &partition_result.durable_disposition,
+        activation.pv_step_id,
+        "partition mutation",
+    )?;
+    drop(partition);
+
+    let pv = prepare_continuation_production_chained_mutation_step(
+        session,
+        validated,
+        &partition_result.fresh_identity,
+        &activation,
+        &consent_receipt,
+    )?;
+    let pv_result = execute_verify_and_persist_production_chained_step(
+        session,
+        pv.descriptor_chain(&activation, &consent_lease),
+        &partition_result.fresh_identity,
+    )?;
+    require_next_step(
+        &pv_result.durable_disposition,
+        activation.lv_step_id,
+        "PV mutation",
+    )?;
+    drop(pv);
+
+    let lv = prepare_continuation_production_chained_mutation_step(
+        session,
+        validated,
+        &pv_result.fresh_identity,
+        &activation,
+        &consent_receipt,
+    )?;
+    let lv_result = execute_verify_and_persist_production_chained_step(
+        session,
+        lv.descriptor_chain(&activation, &consent_lease),
+        &pv_result.fresh_identity,
+    )?;
+    require_next_step(
+        &lv_result.durable_disposition,
+        activation.filesystem_step_id,
+        "LV mutation",
+    )?;
+    drop(lv);
+
+    let filesystem = prepare_continuation_production_chained_mutation_step(
+        session,
+        validated,
+        &lv_result.fresh_identity,
+        &activation,
+        &consent_receipt,
+    )?;
+    let filesystem_result = execute_verify_and_persist_production_chained_step(
+        session,
+        filesystem.descriptor_chain(&activation, &consent_lease),
+        &lv_result.fresh_identity,
+    )?;
+    if filesystem_result.durable_disposition != PrivilegedDurableDisposition::Complete {
+        return Err(boxed(format!(
+            "terminal chained filesystem mutation did not complete execution: {:?}",
+            filesystem_result.durable_disposition
+        )));
+    }
+
+    let outcome = ProductionProfileOutcome {
+        profile: "production_partition_pv_lv_filesystem",
+        first_step_id: activation.partition_step_id,
+        final_step_id: activation.filesystem_step_id,
+        final_identity_digest: filesystem_result.fresh_identity_digest.clone(),
+    };
+
+    drop(filesystem);
+    drop(consent_lease);
+    drop(consent_guard);
+    Ok(outcome)
+}
+
 fn create_exact_runtime_consent(
     activation: &lsm_executor::ProductionMutationActivationIntent,
+) -> HarnessResult<ConsentGuard> {
+    create_exact_runtime_consent_document(
+        &activation.activation_id,
+        &activation.execution_id,
+        &activation.target,
+        &activation.resolved_device,
+    )
+}
+
+fn create_exact_runtime_chained_consent(
+    activation: &lsm_executor::ProductionChainedMutationActivationIntent,
+) -> HarnessResult<ConsentGuard> {
+    create_exact_runtime_consent_document(
+        &activation.activation_id,
+        &activation.execution_id,
+        &activation.target,
+        &activation.resolved_device,
+    )
+}
+
+fn create_exact_runtime_consent_document(
+    activation_id: &str,
+    execution_id: &str,
+    target: &str,
+    resolved_device: &str,
 ) -> HarnessResult<ConsentGuard> {
     let path = PathBuf::from(PRODUCTION_MUTATION_CONSENT_PATH);
     let parent = path
@@ -391,10 +586,10 @@ fn create_exact_runtime_consent(
 
     let document = ProductionMutationConsentDocument {
         schema_version: 1,
-        activation_id: activation.activation_id.clone(),
-        execution_id: activation.execution_id.clone(),
-        target: activation.target.clone(),
-        resolved_device: activation.resolved_device.clone(),
+        activation_id: activation_id.to_owned(),
+        execution_id: execution_id.to_owned(),
+        target: target.to_owned(),
+        resolved_device: resolved_device.to_owned(),
         consent_phrase: PRODUCTION_MUTATION_CONSENT_PHRASE.into(),
     };
     let bytes = serde_json::to_vec(&document)?;
