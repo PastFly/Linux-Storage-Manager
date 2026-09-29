@@ -183,7 +183,8 @@ verified route automatically; the user must not have to manually compose `sfdisk
   - [x] Pin the freshly validated mkswap/swapon/swapoff executables by open descriptor and revalidate exact inode/metadata/content so path replacement cannot alter the future runtime tools.
   - [x] Freeze the exact descriptor-based runtime launch contract after pinned-tool revalidation: mkswap -> swapon -> mandatory dual-active verification -> swapoff, with fixed argv/environment and no process spawned.
   - [x] Require a durable fsync-persisted swap-runtime state machine before the first production crossing; persist a Started phase before every mutation-capable syscall/exec, derive exact mutation/persistent-config/partition risk scope, and fail into RecoveryRequired after any ambiguous interruption.
-  - [ ] Add the separately reviewed runtime crossing, prove atomic persistent-config rewrite, and implement final old swap/extended-partition removal with durable recovery before enabling automatic migration.
+  - [x] Add the separately feature-gated runtime crossing through replacement swapfile creation, mkswap, swapon, mandatory dual-active verification and old-partition swapoff; every mutation-capable action is journaled before crossing and any ambiguous failure enters durable RecoveryRequired.
+  - [ ] Prove atomic persistent-config rewrite and implement final old swap/extended-partition removal with durable recovery before enabling automatic migration.
 
 - [x] Re-discover and verify after every destructive boundary in every currently executable disposable profile, including partition -> PV -> LV -> filesystem.
 - [ ] Keep shrink unsupported until it is separately designed and reviewed.

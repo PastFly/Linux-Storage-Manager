@@ -124,7 +124,7 @@ fn close_fd(fd: libc::c_int) {
     }
 }
 
-fn execute_descriptor_stage(
+pub(crate) fn execute_descriptor_stage(
     file: &File,
     program: PrivilegedProgram,
     argv: &[String],
