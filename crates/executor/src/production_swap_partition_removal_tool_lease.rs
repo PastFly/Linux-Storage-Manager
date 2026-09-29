@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    resolve_trusted_privileged_tool, PrivilegedProgram,
-    ProductionSwapPartitionRemovalPreflight, TrustedToolError, TrustedToolIdentity,
+    resolve_trusted_privileged_tool, PrivilegedProgram, ProductionSwapPartitionRemovalPreflight,
+    TrustedToolError, TrustedToolIdentity,
 };
 
 const TOOL_READ_CHUNK: usize = 64 * 1024;
