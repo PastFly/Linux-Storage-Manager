@@ -17,7 +17,7 @@ production-chained-mutation-execution-permit = ["production-mutation-consent"]
 production-chained-mutation-execution = ["production-chained-mutation-execution-permit"]
 production-chained-verified-execution = ["production-chained-mutation-execution", "dep:lsm-discovery"]
 production-mutation-execution = ["production-mutation-execution-permit", "dep:lsm-discovery"]
-production-loop-harness = ["production-mutation-execution", "disposable-loop-harness"]
+production-loop-harness = ["production-mutation-execution", "production-chained-verified-execution", "disposable-loop-harness"]
 
 [[bin]]
 name = "lsm-disposable-loop-harness"
