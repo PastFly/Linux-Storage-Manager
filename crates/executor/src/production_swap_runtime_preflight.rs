@@ -30,6 +30,7 @@ pub struct ProductionSwapRuntimePreflightReceipt {
     pub target: String,
     pub retiring_swap_device: String,
     pub retiring_swap_bytes: u64,
+    pub retiring_swap_reported_bytes: u64,
     pub retiring_swap_priority: i32,
     pub destination_mount: String,
     pub swapfile_path: String,
@@ -52,6 +53,7 @@ struct ReceiptDigestPayload<'a> {
     target: &'a str,
     retiring_swap_device: &'a str,
     retiring_swap_bytes: u64,
+    retiring_swap_reported_bytes: u64,
     retiring_swap_priority: i32,
     destination_mount: &'a str,
     swapfile_path: &'a str,
@@ -79,6 +81,7 @@ impl ProductionSwapRuntimePreflightReceipt {
             target: &self.target,
             retiring_swap_device: &self.retiring_swap_device,
             retiring_swap_bytes: self.retiring_swap_bytes,
+            retiring_swap_reported_bytes: self.retiring_swap_reported_bytes,
             retiring_swap_priority: self.retiring_swap_priority,
             destination_mount: &self.destination_mount,
             swapfile_path: &self.swapfile_path,
@@ -151,6 +154,7 @@ fn validate_authorization(
         || permit.disk != activation.disk
         || permit.retiring_swap_device != activation.retiring_swap_device
         || permit.retiring_swap_bytes != activation.retiring_swap_bytes
+        || permit.retiring_swap_reported_bytes != activation.retiring_swap_reported_bytes
         || permit.retiring_swap_priority != activation.retiring_swap_priority
         || permit.swapfile_path != activation.swapfile_path
         || permit.swapfile_mode != activation.swapfile_mode
@@ -178,7 +182,7 @@ fn validate_runtime_evidence(
         .collect::<Vec<_>>();
     if swaps.len() != 1
         || swaps[0].kind != "partition"
-        || swaps[0].size_bytes != activation.retiring_swap_bytes
+        || swaps[0].size_bytes != activation.retiring_swap_reported_bytes
         || swaps[0].priority != activation.retiring_swap_priority
     {
         return Err(ProductionSwapRuntimePreflightError::RetiringSwapChanged);
@@ -270,6 +274,7 @@ pub fn prepare_production_swap_runtime_preflight(
         target: activation.target.clone(),
         retiring_swap_device: activation.retiring_swap_device.clone(),
         retiring_swap_bytes: activation.retiring_swap_bytes,
+        retiring_swap_reported_bytes: activation.retiring_swap_reported_bytes,
         retiring_swap_priority: activation.retiring_swap_priority,
         destination_mount: activation.destination_mount.clone(),
         swapfile_path: activation.swapfile_path.clone(),
@@ -300,6 +305,7 @@ mod tests {
             disk: "/dev/sda".into(),
             retiring_swap_device: "/dev/sda5".into(),
             retiring_swap_bytes: 64 * 1024 * 1024,
+            retiring_swap_reported_bytes: 64 * 1024 * 1024 - 4096,
             retiring_swap_priority: 7,
             persistent_swap_source: "UUID=swap".into(),
             persistent_swap_target: "none".into(),
@@ -341,7 +347,7 @@ mod tests {
             swaps: vec![SwapEntry {
                 name: "/dev/sda5".into(),
                 kind: "partition".into(),
-                size_bytes: 64 * 1024 * 1024,
+                size_bytes: 64 * 1024 * 1024 - 4096,
                 used_bytes: 4096,
                 priority: 7,
             }],
