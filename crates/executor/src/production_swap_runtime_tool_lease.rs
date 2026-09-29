@@ -237,6 +237,23 @@ mod tests {
     }
 
     #[test]
+    fn already_open_descriptor_detects_in_place_content_change() {
+        let bytes = b"trusted-tool-bytes";
+        let (path, file) = temp_executable("open-changed", bytes);
+        let expected = identity(PrivilegedProgram::Mkswap, &path, &file, bytes);
+        let pinned = open_exact_tool(&expected).unwrap();
+
+        fs::write(&path, b"different-tool-bytes").unwrap();
+
+        assert!(matches!(
+            validate_open_tool(&pinned, &expected),
+            Err(ProductionSwapRuntimeToolLeaseError::ToolIdentityMismatch)
+        ));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn pathname_replacement_is_rejected_by_inode_binding() {
         let bytes = b"trusted-tool-bytes";
         let (path, file) = temp_executable("replaced", bytes);
