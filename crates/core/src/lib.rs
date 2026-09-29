@@ -143,6 +143,25 @@ pub struct FilesystemSpaceEvidence {
     pub available_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathObjectKind {
+    RegularFile,
+    Directory,
+    Symlink,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PathOccupancyEvidence {
+    pub path: String,
+    pub exists: bool,
+    pub kind: Option<PathObjectKind>,
+    pub uid: Option<u32>,
+    pub mode: Option<u32>,
+    pub size_bytes: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LvmInventory {
     pub physical_volumes: Vec<LvmPhysicalVolume>,
