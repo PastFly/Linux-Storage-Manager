@@ -37,9 +37,9 @@ pub fn parse_kernel_resume_evidence(
                 targets.push(value.to_owned());
             }
         } else if let Some(value) = token.strip_prefix("resume_offset=") {
-            let parsed = value
-                .parse::<u64>()
-                .map_err(|_| HibernationResumeDiscoveryError::InvalidKernelResumeOffset(value.to_owned()))?;
+            let parsed = value.parse::<u64>().map_err(|_| {
+                HibernationResumeDiscoveryError::InvalidKernelResumeOffset(value.to_owned())
+            })?;
             offsets.push(parsed);
         }
     }
@@ -54,7 +54,9 @@ pub fn parse_kernel_resume_evidence(
 pub fn parse_sysfs_resume(value: &str) -> Result<Option<String>, HibernationResumeDiscoveryError> {
     let value = value.trim();
     let Some((major, minor)) = value.split_once(':') else {
-        return Err(HibernationResumeDiscoveryError::InvalidSysfsResume(value.to_owned()));
+        return Err(HibernationResumeDiscoveryError::InvalidSysfsResume(
+            value.to_owned(),
+        ));
     };
     let major = major
         .parse::<u64>()
@@ -93,12 +95,11 @@ fn read_optional(path: &'static str) -> Result<Option<String>, HibernationResume
 
 pub fn discover_hibernation_resume_evidence(
 ) -> Result<HibernationResumeEvidence, HibernationResumeDiscoveryError> {
-    let cmdline = fs::read_to_string(PROC_CMDLINE).map_err(|source| {
-        HibernationResumeDiscoveryError::Io {
+    let cmdline =
+        fs::read_to_string(PROC_CMDLINE).map_err(|source| HibernationResumeDiscoveryError::Io {
             path: PROC_CMDLINE,
             source,
-        }
-    })?;
+        })?;
     let (kernel_resume_targets, kernel_resume_offsets) = parse_kernel_resume_evidence(&cmdline)?;
 
     let sysfs_resume = match read_optional(SYS_POWER_RESUME)? {
@@ -146,7 +147,9 @@ mod tests {
     fn malformed_kernel_resume_offset_fails_closed() {
         assert!(matches!(
             parse_kernel_resume_evidence("resume_offset=not-a-number"),
-            Err(HibernationResumeDiscoveryError::InvalidKernelResumeOffset(_))
+            Err(HibernationResumeDiscoveryError::InvalidKernelResumeOffset(
+                _
+            ))
         ));
     }
 
