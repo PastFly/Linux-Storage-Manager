@@ -86,11 +86,8 @@ fn parse_args() -> Result<Args, Box<dyn Error>> {
 
 fn run() -> Result<(lsm_executor::DisposableSwapExecutionReceipt, ExitCode), Box<dyn Error>> {
     let args = parse_args()?;
-    let ownership = capture_disposable_loop_ownership(
-        &args.loop_device,
-        &args.backing_file,
-        &args.owned_root,
-    )?;
+    let ownership =
+        capture_disposable_loop_ownership(&args.loop_device, &args.backing_file, &args.owned_root)?;
     let association = verify_disposable_loop_association_row(
         &args.loop_device,
         &args.backing_file,
