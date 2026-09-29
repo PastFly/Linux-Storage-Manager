@@ -68,6 +68,9 @@ jobs:
       - name: Check non-executing swap production activation boundary
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-swap-replacement-activation --lib
+      - name: Check root-owned swap production consent boundary
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo test --locked -p lsm-executor --features production-swap-replacement-consent --lib
       - name: Check gated production descriptor execution boundary
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-mutation-execution --lib

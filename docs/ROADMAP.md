@@ -176,7 +176,8 @@ verified route automatically; the user must not have to manually compose `sfdisk
   - [x] Freeze a deterministic non-executing replacement-swap intent only after exact path vacancy, runtime swap identity/priority and persistent fstab binding are revalidated; existing files/symlinks fail closed.
   - [x] Prove replacement swapfile creation/activation and the pre-old-swapoff fault boundary on an explicitly owned disposable DOS loop: both swaps must remain active on injected interruption, successful old swapoff must leave the replacement active, and partition geometry/sentinel data must remain unchanged.
   - [x] Bind the frozen M1B54 intent to a separate compile-time production activation contract; exact ext4 swapfile profile/integrity must revalidate and the sealed activation remains `execution_enabled=false`.
-  - [ ] Add separately reviewed runtime consent/execution, prove atomic persistent-config rewrite, and implement final old swap/extended-partition removal with durable recovery before enabling automatic migration.
+  - [x] Bind M1B56 activation to a dedicated fixed-path root-owned 0600 runtime-consent document; exact activation/intent/target/old-swap/swapfile identity and an exact phrase are required, and the receipt remains execution_enabled=false.
+  - [ ] Add separately reviewed runtime execution permit, prove atomic persistent-config rewrite, and implement final old swap/extended-partition removal with durable recovery before enabling automatic migration.
 
 - [x] Re-discover and verify after every destructive boundary in every currently executable disposable profile, including partition -> PV -> LV -> filesystem.
 - [ ] Keep shrink unsupported until it is separately designed and reviewed.
