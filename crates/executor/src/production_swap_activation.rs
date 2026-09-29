@@ -322,11 +322,9 @@ pub fn seal_production_swap_replacement_activation_intent(
         compile_feature_enabled: true,
         execution_enabled: false,
     };
-    activation.activation_id = activation
-        .expected_activation_id()
-        .map_err(|error| {
-            ProductionSwapReplacementActivationError::Serialization(error.to_string())
-        })?;
+    activation.activation_id = activation.expected_activation_id().map_err(|error| {
+        ProductionSwapReplacementActivationError::Serialization(error.to_string())
+    })?;
     Ok(activation)
 }
 
@@ -381,13 +379,9 @@ mod tests {
     fn exact_intent_seals_nonexecuting_activation_when_feature_is_compiled() {
         let intent = valid_swap_intent();
         if PRODUCTION_SWAP_REPLACEMENT_ACTIVATION_COMPILED {
-            let activation =
-                seal_production_swap_replacement_activation_intent(&intent).unwrap();
+            let activation = seal_production_swap_replacement_activation_intent(&intent).unwrap();
             assert!(activation.integrity_matches().unwrap());
-            assert_eq!(
-                activation.swap_replacement_intent_id,
-                intent.intent_id
-            );
+            assert_eq!(activation.swap_replacement_intent_id, intent.intent_id);
             assert!(!activation.execution_enabled);
             assert!(activation.compile_feature_enabled);
         } else {
