@@ -283,17 +283,16 @@ pub use production_swap_partition_removal::{
     ProductionSwapPartitionRemovalPreflightError,
     PRODUCTION_SWAP_PARTITION_REMOVAL_PREFLIGHT_COMPILED,
 };
+#[cfg(feature = "production-swap-replacement-partition-removal-launch")]
+pub use production_swap_partition_removal_launch::{
+    build_production_swap_partition_removal_launch_spec, ProductionSwapPartitionRemovalLaunchError,
+    ProductionSwapPartitionRemovalLaunchSpec, ProductionSwapPartitionRemovalLaunchStage,
+    PRODUCTION_SWAP_PARTITION_REMOVAL_LAUNCH_COMPILED,
+};
 #[cfg(feature = "production-swap-replacement-partition-removal-tool-lease")]
 pub use production_swap_partition_removal_tool_lease::{
     pin_production_swap_partition_removal_tools, PinnedProductionSwapPartitionRemovalTools,
     ProductionSwapPartitionRemovalToolLeaseError,
-};
-#[cfg(feature = "production-swap-replacement-partition-removal-launch")]
-pub use production_swap_partition_removal_launch::{
-    build_production_swap_partition_removal_launch_spec,
-    ProductionSwapPartitionRemovalLaunchError, ProductionSwapPartitionRemovalLaunchSpec,
-    ProductionSwapPartitionRemovalLaunchStage,
-    PRODUCTION_SWAP_PARTITION_REMOVAL_LAUNCH_COMPILED,
 };
 #[cfg(feature = "production-swap-replacement-persistent-config")]
 pub use production_swap_persistent_config::{
