@@ -6,10 +6,14 @@ mod execution_handoff;
 mod filesystem_policy;
 mod identity_guard;
 mod route_graph;
+mod swap_migration;
 
 pub use route_graph::{
     analyze_layer_route, LayerRoute, LayerRouteStatus, RouteIssue, RouteIssueKind, RouteLayer,
     RouteLayerKind,
+};
+pub use swap_migration::{
+    analyze_swap_migration_safety, SwapMigrationSafety, SwapMigrationSafetyStatus,
 };
 
 pub use identity_guard::{
