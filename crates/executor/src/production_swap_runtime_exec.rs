@@ -1,4 +1,4 @@
-use std::fs::{self, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
@@ -276,7 +276,7 @@ fn verify_swap_signature(file: &File) -> Result<(), ProductionSwapRuntimeExecuti
     let mut signature = [0_u8; 10];
     let read = file.read_at(&mut signature, offset)?;
     if read != signature.len()
-        || !matches!(&signature, b"SWAPSPACE2" | b"SWAP-SPACE")
+        || (signature != *b"SWAPSPACE2" && signature != *b"SWAP-SPACE")
     {
         return Err(ProductionSwapRuntimeExecutionError::SwapSignatureMismatch);
     }
@@ -556,6 +556,7 @@ pub fn execute_production_swap_runtime_replacement(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
