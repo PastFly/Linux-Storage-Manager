@@ -2,13 +2,14 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use lsm_core::BlockDevice;
 use lsm_discovery::{
-    analyze_extendability, discover_capabilities, discover_fstab, discover_lvm, discover_mounts,
-    discover_partition_tables, discover_snapshot, discover_storage, discover_swaps,
+    analyze_extendability, discover_capabilities, discover_fstab,
+    discover_hibernation_resume_evidence, discover_lvm, discover_mounts, discover_partition_tables,
+    discover_snapshot, discover_storage, discover_swaps,
 };
 use lsm_planner::{
-    analyze_layer_route, decide_filesystem_growth, list_extend_targets,
-    list_provisioning_opportunities, parse_growth_size, plan_create, plan_extend,
-    CreatePartitionTablePolicy, CreatePurpose, CreateRequest, ExtendRequest,
+    analyze_layer_route, analyze_swap_migration_safety, decide_filesystem_growth,
+    list_extend_targets, list_provisioning_opportunities, parse_growth_size, plan_create,
+    plan_extend, CreatePartitionTablePolicy, CreatePurpose, CreateRequest, ExtendRequest,
     FilesystemDecisionState, Growth, PlanStatus,
 };
 use std::process::ExitCode;
@@ -85,6 +86,14 @@ enum PlanCommand {
     /// Explain the discovered storage-layer route for a selected target.
     Route {
         /// Exact mountpoint or block-device/LV path.
+        target: String,
+        /// Emit structured JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Assess whether a detected tail swap partition is safe to advance into migration planning.
+    SwapMigration {
+        /// Filesystem target whose growth is blocked by the tail swap layout.
         target: String,
         /// Emit structured JSON.
         #[arg(long)]
@@ -322,6 +331,39 @@ fn run() -> Result<ExitCode> {
             });
         }
         Some(Command::Plan {
+            command: PlanCommand::SwapMigration { target, json },
+        }) => {
+            let snapshot = discover_snapshot()?;
+            let resume = discover_hibernation_resume_evidence()?;
+            let safety = analyze_swap_migration_safety(&snapshot, &resume, &target);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&safety)?);
+            } else {
+                println!("Target: {}", safety.target);
+                println!("Status: {:?}", safety.status);
+                println!("Disk: {}", safety.disk.as_deref().unwrap_or("-"));
+                println!(
+                    "Swap device: {}",
+                    safety.swap_device.as_deref().unwrap_or("-")
+                );
+                println!(
+                    "Persistent swap: {}",
+                    safety.persistent_swap_source.as_deref().unwrap_or("-")
+                );
+                for blocker in &safety.blockers {
+                    println!("BLOCKED [{}]: {}", blocker.code, blocker.message);
+                }
+                for check in &safety.future_checks {
+                    println!("Future gate: {check}");
+                }
+            }
+            return Ok(if safety.clear_for_planning() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(2)
+            });
+        }
+        Some(Command::Plan {
             command: PlanCommand::Filesystem { target, json },
         }) => {
             let snapshot = discover_snapshot()?;
@@ -510,6 +552,11 @@ mod tests {
         assert!(Cli::try_parse_from(["storagemgr", "plan", "targets"]).is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "targets", "--json"]).is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "route", "/"]).is_ok());
+        assert!(Cli::try_parse_from(["storagemgr", "plan", "swap-migration", "/data"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["storagemgr", "plan", "swap-migration", "/data", "--json"])
+                .is_ok()
+        );
         assert!(Cli::try_parse_from(["storagemgr", "plan", "filesystem", "/"]).is_ok());
         assert!(
             Cli::try_parse_from(["storagemgr", "plan", "filesystem", "/dev/sda1", "--json"])

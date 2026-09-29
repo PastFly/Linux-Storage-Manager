@@ -2,6 +2,7 @@ mod analysis;
 mod diagnostics;
 mod filesystem_preflight;
 mod fstab;
+mod hibernation;
 mod lvm;
 mod mounts;
 mod partition_table;
@@ -21,6 +22,10 @@ pub use analysis::{analyze_extendability, ExtendAnalysisError};
 pub use diagnostics::diagnose_storage;
 pub use filesystem_preflight::discover_filesystem_preflight;
 pub use fstab::{discover_fstab, parse_fstab, FstabDiscoveryError};
+pub use hibernation::{
+    discover_hibernation_resume_evidence, parse_kernel_resume_evidence, parse_sysfs_resume,
+    parse_sysfs_resume_offset, HibernationResumeDiscoveryError,
+};
 pub use lvm::{discover_lvm, parse_lvs_json, parse_pvs_json, parse_vgs_json, LvmDiscoveryError};
 pub use mounts::{discover_mounts, parse_findmnt_json, MountDiscoveryError};
 pub use partition_table::{
