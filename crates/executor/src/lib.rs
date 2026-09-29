@@ -51,6 +51,8 @@ mod production_swap_consent_lease;
 mod production_swap_execution;
 #[cfg(feature = "production-swap-replacement-runtime-preflight")]
 mod production_swap_runtime_preflight;
+#[cfg(feature = "production-swap-replacement-runtime-tool-lease")]
+mod production_swap_runtime_tool_lease;
 #[cfg(feature = "production-mutation-execution")]
 mod production_verified_step;
 
@@ -265,6 +267,11 @@ pub use production_swap_execution::{
 pub use production_swap_runtime_preflight::{
     prepare_production_swap_runtime_preflight, ProductionSwapRuntimePreflightError,
     ProductionSwapRuntimePreflightReceipt, PRODUCTION_SWAP_RUNTIME_PREFLIGHT_COMPILED,
+};
+#[cfg(feature = "production-swap-replacement-runtime-tool-lease")]
+pub use production_swap_runtime_tool_lease::{
+    pin_production_swap_runtime_tools, PinnedProductionSwapRuntimeTools,
+    ProductionSwapRuntimeToolLeaseError,
 };
 #[cfg(feature = "production-mutation-execution")]
 pub use production_verified_step::{
