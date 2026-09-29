@@ -20,6 +20,7 @@ production-swap-replacement-runtime-preflight = ["production-swap-replacement-co
 production-swap-replacement-runtime-tool-lease = ["production-swap-replacement-runtime-preflight"]
 production-swap-replacement-runtime-launch = ["production-swap-replacement-runtime-tool-lease"]
 production-swap-replacement-runtime-journal = ["production-swap-replacement-runtime-launch"]
+production-swap-replacement-runtime-dual-active = ["production-swap-replacement-runtime-journal"]
 production-mutation-consent = ["production-mutation-activation"]
 production-mutation-execution-permit = ["production-mutation-consent"]
 production-chained-mutation-execution-permit = ["production-mutation-consent"]
