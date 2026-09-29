@@ -43,9 +43,9 @@ mod production_consent;
 mod production_consent_lease;
 mod production_descriptor_exec;
 mod production_execution;
-mod production_swap_activation;
 #[cfg(feature = "production-mutation-execution")]
 mod production_prepare;
+mod production_swap_activation;
 #[cfg(feature = "production-mutation-execution")]
 mod production_verified_step;
 
@@ -229,17 +229,16 @@ pub use production_execution::{
     seal_production_mutation_execution_permit, ProductionMutationExecutionPermit,
     ProductionMutationExecutionPermitError, PRODUCTION_MUTATION_EXECUTION_PERMIT_COMPILED,
 };
-pub use production_swap_activation::{
-    inspect_production_swap_replacement_activation_readiness,
-    seal_production_swap_replacement_activation_intent,
-    ProductionSwapReplacementActivationError, ProductionSwapReplacementActivationIntent,
-    ProductionSwapReplacementActivationReadiness, ProductionSwapReplacementProfile,
-    PRODUCTION_SWAP_REPLACEMENT_ACTIVATION_COMPILED,
-};
 #[cfg(feature = "production-mutation-execution")]
 pub use production_prepare::{
     prepare_continuation_production_mutation_step, prepare_first_production_mutation_step,
     PreparedProductionMutationStep, ProductionMutationPreparationError,
+};
+pub use production_swap_activation::{
+    inspect_production_swap_replacement_activation_readiness,
+    seal_production_swap_replacement_activation_intent, ProductionSwapReplacementActivationError,
+    ProductionSwapReplacementActivationIntent, ProductionSwapReplacementActivationReadiness,
+    ProductionSwapReplacementProfile, PRODUCTION_SWAP_REPLACEMENT_ACTIVATION_COMPILED,
 };
 #[cfg(feature = "production-mutation-execution")]
 pub use production_verified_step::{
