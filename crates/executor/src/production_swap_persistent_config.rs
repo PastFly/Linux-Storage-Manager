@@ -617,13 +617,12 @@ mod tests {
     #[test]
     fn rewrite_preserves_comments_and_unrelated_lines() {
         let activation = activation();
-        let input = b"# header\nUUID=root / ext4 defaults 0 1\nUUID=old-swap none swap sw,pri=7 0 0\n\n";
+        let input =
+            b"# header\nUUID=root / ext4 defaults 0 1\nUUID=old-swap none swap sw,pri=7 0 0\n\n";
         let output = rewrite_exact_swap_entry(input, &activation).unwrap();
         let text = String::from_utf8(output).unwrap();
         assert!(text.starts_with("# header\nUUID=root / ext4 defaults 0 1\n"));
-        assert!(text.contains(
-            "/data/.linux-storage-manager.swap\tnone\tswap\tsw,pri=7\t0\t0\n"
-        ));
+        assert!(text.contains("/data/.linux-storage-manager.swap\tnone\tswap\tsw,pri=7\t0\t0\n"));
         assert!(!text.contains("UUID=old-swap none swap"));
         verify_rewritten(text.as_bytes(), &activation).unwrap();
     }
