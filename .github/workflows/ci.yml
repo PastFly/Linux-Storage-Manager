@@ -65,6 +65,9 @@ jobs:
       - name: Check non-mutating privileged-helper protocol boundary
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo clippy --locked -p lsm-executor --features production-helper-protocol --bin lsm-privileged-helper-protocol -- -D warnings
+      - name: Check non-executing swap production activation boundary
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo test --locked -p lsm-executor --features production-swap-replacement-activation --lib
       - name: Check gated production descriptor execution boundary
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-mutation-execution --lib
