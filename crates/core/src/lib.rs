@@ -115,6 +115,27 @@ pub struct SwapEntry {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HibernationResumeEvidence {
+    #[serde(default)]
+    pub kernel_resume_targets: Vec<String>,
+    #[serde(default)]
+    pub kernel_resume_offsets: Vec<u64>,
+    #[serde(default)]
+    pub sysfs_resume: Option<String>,
+    #[serde(default)]
+    pub sysfs_resume_offset: Option<u64>,
+}
+
+impl HibernationResumeEvidence {
+    pub fn configured(&self) -> bool {
+        !self.kernel_resume_targets.is_empty()
+            || !self.kernel_resume_offsets.is_empty()
+            || self.sysfs_resume.is_some()
+            || self.sysfs_resume_offset.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LvmInventory {
     pub physical_volumes: Vec<LvmPhysicalVolume>,
     pub volume_groups: Vec<LvmVolumeGroup>,
