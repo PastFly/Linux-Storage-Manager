@@ -133,7 +133,8 @@ jobs:
             sudo python3 -I tests/integration/loop_matrix.py \
               --allow-disposable-loop-tests \
               "${GITHUB_WORKSPACE}/target/release/storagemgr" \
-              "${GITHUB_WORKSPACE}/target/release/lsm-disposable-loop-harness"
+              "${GITHUB_WORKSPACE}/target/release/lsm-disposable-loop-harness" \
+              --production-executor-binary "${GITHUB_WORKSPACE}/target/release/lsm-production-loop-harness"
           done
 
       - name: Package tested read-only prototype
