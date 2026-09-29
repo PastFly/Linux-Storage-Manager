@@ -1,9 +1,10 @@
 use lsm_core::{
     BlockDevice, FilesystemSpaceEvidence, HibernationResumeEvidence, HostCapabilities, HostSnapshot,
+    PathOccupancyEvidence,
 };
 use serde::Serialize;
 
-use crate::{analyze_layout_opportunity, Blocker};
+use crate::{analyze_layout_opportunity, fingerprint, Blocker, PlanStatus, PlannerError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -368,6 +369,203 @@ pub fn analyze_swapfile_destination(
         blockers,
         ordered_future_steps,
     }
+}
+
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SwapReplacementIntent {
+    pub schema_version: u32,
+    pub intent_id: String,
+    pub executable: bool,
+    pub status: PlanStatus,
+    pub target: String,
+    pub disk: Option<String>,
+    pub retiring_swap_device: Option<String>,
+    pub retiring_swap_bytes: Option<u64>,
+    pub retiring_swap_used_bytes: Option<u64>,
+    pub retiring_swap_priority: Option<i32>,
+    pub persistent_swap_source: Option<String>,
+    pub persistent_swap_target: Option<String>,
+    pub persistent_swap_options: Vec<String>,
+    pub persistent_swap_dump: Option<u32>,
+    pub persistent_swap_pass: Option<u32>,
+    pub destination_mount: String,
+    pub swapfile_path: String,
+    pub destination_filesystem: Option<String>,
+    pub destination_available_bytes: u64,
+    pub swapfile_mode: u32,
+    pub blockers: Vec<Blocker>,
+    pub ordered_steps: Vec<String>,
+}
+
+impl SwapReplacementIntent {
+    pub fn ready(&self) -> bool {
+        self.status == PlanStatus::Preview && self.blockers.is_empty() && !self.executable
+    }
+}
+
+/// Freeze the exact read-only swap-replacement evidence into a deterministic,
+/// non-executing intent. This does not create the swapfile or authorize any
+/// runtime/persistent mutation.
+pub fn build_swap_replacement_intent(
+    snapshot: &HostSnapshot,
+    safety: &SwapMigrationSafety,
+    readiness: &SwapfileDestinationReadiness,
+    path_state: &PathOccupancyEvidence,
+) -> Result<SwapReplacementIntent, PlannerError> {
+    let mut blockers = Vec::new();
+    if !safety.clear_for_planning() {
+        blockers.extend(safety.blockers.iter().cloned());
+    }
+    if !readiness.ready_for_planning() {
+        blockers.extend(readiness.blockers.iter().cloned());
+    }
+
+    if path_state.path != readiness.swapfile_path {
+        push_blocker(
+            &mut blockers,
+            "swapfile-path-evidence-mismatch",
+            "path occupancy evidence does not match the frozen replacement swapfile path",
+        );
+    }
+    if path_state.exists {
+        push_blocker(
+            &mut blockers,
+            "swapfile-path-occupied",
+            "replacement swapfile path already exists; automatic migration refuses to replace or reuse it",
+        );
+    }
+
+    if readiness.replacement_swap_bytes != safety.swap_bytes {
+        push_blocker(
+            &mut blockers,
+            "swapfile-size-binding-mismatch",
+            "destination readiness no longer matches the exact retiring swap-partition size",
+        );
+    }
+
+    let swap_matches = safety
+        .swap_device
+        .as_deref()
+        .map(|device| {
+            snapshot
+                .swaps
+                .iter()
+                .filter(|entry| entry.name == device)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let swap_entry = if swap_matches.len() == 1 {
+        Some(swap_matches[0])
+    } else {
+        push_blocker(
+            &mut blockers,
+            "retiring-swap-runtime-identity-mismatch",
+            "the retiring active swap entry is absent or ambiguous",
+        );
+        None
+    };
+
+    let persistent_matches = safety
+        .persistent_swap_source
+        .as_deref()
+        .map(|source| {
+            snapshot
+                .fstab
+                .iter()
+                .filter(|entry| entry.fs_type == "swap" && entry.source == source)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let persistent = if persistent_matches.len() == 1 {
+        Some(persistent_matches[0])
+    } else {
+        push_blocker(
+            &mut blockers,
+            "retiring-swap-persistence-identity-mismatch",
+            "the persistent swap entry changed or became ambiguous after safety analysis",
+        );
+        None
+    };
+
+    if let (Some(entry), Some(expected_bytes)) = (swap_entry, safety.swap_bytes) {
+        if entry.size_bytes != expected_bytes
+            || Some(entry.used_bytes) != safety.active_swap_used_bytes
+        {
+            push_blocker(
+                &mut blockers,
+                "retiring-swap-runtime-state-changed",
+                "active swap size or usage changed after the migration safety proof",
+            );
+        }
+    }
+
+    let status = if blockers.is_empty() {
+        PlanStatus::Preview
+    } else {
+        PlanStatus::Blocked
+    };
+
+    let mut intent = SwapReplacementIntent {
+        schema_version: 1,
+        intent_id: String::new(),
+        executable: false,
+        status,
+        target: safety.target.clone(),
+        disk: safety.disk.clone(),
+        retiring_swap_device: safety.swap_device.clone(),
+        retiring_swap_bytes: safety.swap_bytes,
+        retiring_swap_used_bytes: swap_entry.map(|entry| entry.used_bytes),
+        retiring_swap_priority: swap_entry.map(|entry| entry.priority),
+        persistent_swap_source: persistent.map(|entry| entry.source.clone()),
+        persistent_swap_target: persistent.map(|entry| entry.target.clone()),
+        persistent_swap_options: persistent
+            .map(|entry| entry.options.clone())
+            .unwrap_or_default(),
+        persistent_swap_dump: persistent.map(|entry| entry.dump),
+        persistent_swap_pass: persistent.map(|entry| entry.pass),
+        destination_mount: readiness.destination_mount.clone(),
+        swapfile_path: readiness.swapfile_path.clone(),
+        destination_filesystem: readiness.filesystem_type.clone(),
+        destination_available_bytes: readiness.available_bytes,
+        swapfile_mode: 0o600,
+        blockers,
+        ordered_steps: vec![
+            "revalidate hibernation/resume, active swap, fstab, destination mount, free space and swapfile-path vacancy".to_owned(),
+            "create the replacement swapfile with create-new semantics, exact size, no holes and mode 0600".to_owned(),
+            "run mkswap and verify the replacement signature before activation".to_owned(),
+            "activate the replacement with the frozen priority while keeping the old swap partition active".to_owned(),
+            "rediscover active swap and require both old and new swap areas before any swapoff attempt".to_owned(),
+            "attempt swapoff of the old partition; on failure leave the replacement active and make no partition-table changes".to_owned(),
+            "after successful swapoff, atomically replace the persistent swap entry and verify the parsed result".to_owned(),
+            "only after runtime and persistent replacement are proven may a later executor remove the old swap/extended partitions".to_owned(),
+        ],
+    };
+
+    intent.intent_id = fingerprint(&(
+        intent.schema_version,
+        intent.executable,
+        intent.status,
+        &intent.target,
+        &intent.disk,
+        &intent.retiring_swap_device,
+        intent.retiring_swap_bytes,
+        intent.retiring_swap_used_bytes,
+        intent.retiring_swap_priority,
+        &intent.persistent_swap_source,
+        &intent.persistent_swap_target,
+        &intent.persistent_swap_options,
+        intent.persistent_swap_dump,
+        intent.persistent_swap_pass,
+        &intent.destination_mount,
+        &intent.swapfile_path,
+        &intent.destination_filesystem,
+        intent.destination_available_bytes,
+        intent.swapfile_mode,
+        &intent.blockers,
+        &intent.ordered_steps,
+    ))?;
+    Ok(intent)
 }
 
 #[cfg(test)]
