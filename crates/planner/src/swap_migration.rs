@@ -1,4 +1,6 @@
-use lsm_core::{BlockDevice, HibernationResumeEvidence, HostSnapshot};
+use lsm_core::{
+    BlockDevice, FilesystemSpaceEvidence, HibernationResumeEvidence, HostCapabilities, HostSnapshot,
+};
 use serde::Serialize;
 
 use crate::{analyze_layout_opportunity, Blocker};
@@ -194,10 +196,182 @@ pub fn analyze_swap_migration_safety(
     }
 }
 
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwapfileDestinationStatus {
+    ReadyForPlanning,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SwapfileDestinationReadiness {
+    pub status: SwapfileDestinationStatus,
+    pub destination_mount: String,
+    pub swapfile_path: String,
+    pub filesystem_type: Option<String>,
+    pub available_bytes: u64,
+    pub replacement_swap_bytes: Option<u64>,
+    pub blockers: Vec<Blocker>,
+    pub ordered_future_steps: Vec<String>,
+}
+
+impl SwapfileDestinationReadiness {
+    pub fn ready_for_planning(&self) -> bool {
+        self.status == SwapfileDestinationStatus::ReadyForPlanning
+    }
+}
+
+fn required_tool_available(capabilities: &HostCapabilities, name: &str) -> bool {
+    let matches = capabilities
+        .tools
+        .iter()
+        .filter(|tool| tool.name == name)
+        .collect::<Vec<_>>();
+    matches.len() == 1 && matches[0].available
+}
+
+fn swapfile_path_for_mount(mountpoint: &str) -> String {
+    if mountpoint == "/" {
+        "/.linux-storage-manager.swap".to_owned()
+    } else {
+        format!("{}/.linux-storage-manager.swap", mountpoint.trim_end_matches('/'))
+    }
+}
+
+/// Prove a concrete replacement-swapfile destination has enough currently
+/// available space and a deliberately supported filesystem/mount profile.
+///
+/// This remains read-only. The initial automatic profile is ext4 only; XFS
+/// swapfile constraints are left blocked until a separate filesystem-specific
+/// contract is implemented.
+pub fn analyze_swapfile_destination(
+    snapshot: &HostSnapshot,
+    capabilities: &HostCapabilities,
+    safety: &SwapMigrationSafety,
+    space: &FilesystemSpaceEvidence,
+    destination_mount: &str,
+) -> SwapfileDestinationReadiness {
+    let mut blockers = Vec::new();
+    if !safety.clear_for_planning() {
+        blockers.extend(safety.blockers.iter().cloned());
+    }
+
+    if space.path != destination_mount {
+        push_blocker(
+            &mut blockers,
+            "swapfile-space-evidence-mismatch",
+            "filesystem-space evidence does not match the selected swapfile destination mount",
+        );
+    }
+
+    let mounts = snapshot
+        .mounts
+        .iter()
+        .filter(|mount| mount.target == destination_mount)
+        .collect::<Vec<_>>();
+    let mount = if mounts.len() == 1 {
+        Some(mounts[0])
+    } else {
+        push_blocker(
+            &mut blockers,
+            "swapfile-mount-not-unique",
+            "replacement swapfile destination must resolve to exactly one current mount",
+        );
+        None
+    };
+
+    let filesystem_type = mount.and_then(|mount| mount.fs_type.clone());
+    if filesystem_type.as_deref() != Some("ext4") {
+        push_blocker(
+            &mut blockers,
+            "swapfile-filesystem-unsupported",
+            "the first automatic swapfile migration profile requires an ext4 destination",
+        );
+    }
+    if let Some(mount) = mount {
+        if !mount.options.iter().any(|option| option == "rw")
+            || mount.options.iter().any(|option| option == "ro")
+        {
+            push_blocker(
+                &mut blockers,
+                "swapfile-destination-not-rw",
+                "replacement swapfile destination must be mounted read-write",
+            );
+        }
+        if mount.source.as_deref() == safety.swap_device.as_deref() {
+            push_blocker(
+                &mut blockers,
+                "swapfile-destination-is-retiring-swap",
+                "replacement swapfile destination cannot be the swap partition being retired",
+            );
+        }
+    }
+
+    let replacement_swap_bytes = safety.swap_bytes;
+    if let Some(required) = replacement_swap_bytes {
+        if space.available_bytes < required {
+            push_blocker(
+                &mut blockers,
+                "swapfile-capacity-insufficient",
+                "selected destination does not have enough currently available bytes for an equal-sized replacement swapfile",
+            );
+        }
+    } else {
+        push_blocker(
+            &mut blockers,
+            "swapfile-required-size-unknown",
+            "exact replacement swap size is not available from the migration safety proof",
+        );
+    }
+
+    for tool in ["mkswap", "swapon", "swapoff"] {
+        if !required_tool_available(capabilities, tool) {
+            push_blocker(
+                &mut blockers,
+                "swapfile-tool-unavailable",
+                &format!("required tool {tool} is unavailable or ambiguous"),
+            );
+        }
+    }
+
+    let swapfile_path = swapfile_path_for_mount(destination_mount);
+    let ordered_future_steps = vec![
+        format!(
+            "create a non-sparse root-owned 0600 file at {swapfile_path} with the exact replacement size"
+        ),
+        format!("run mkswap on {swapfile_path} and verify the resulting swap signature"),
+        format!("swapon {swapfile_path} before any attempt to deactivate the old swap partition"),
+        "rediscover active swap and require the replacement to be active at the intended priority"
+            .to_owned(),
+        "attempt swapoff of the old partition; if it fails, keep both swaps and abort partition changes"
+            .to_owned(),
+        "rewrite persistent swap configuration atomically only after the runtime replacement is proven"
+            .to_owned(),
+        "remove the old swap/extended partitions only after all runtime and persistence checks pass"
+            .to_owned(),
+    ];
+
+    SwapfileDestinationReadiness {
+        status: if blockers.is_empty() {
+            SwapfileDestinationStatus::ReadyForPlanning
+        } else {
+            SwapfileDestinationStatus::Blocked
+        },
+        destination_mount: destination_mount.to_owned(),
+        swapfile_path,
+        filesystem_type,
+        available_bytes: space.available_bytes,
+        replacement_swap_bytes,
+        blockers,
+        ordered_future_steps,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lsm_core::HostSnapshot;
+    use lsm_core::{FilesystemSpaceEvidence, HostCapabilities, HostSnapshot, ToolCapability};
     use serde_json::json;
 
     fn snapshot() -> HostSnapshot {
@@ -246,6 +420,27 @@ mod tests {
         .unwrap()
     }
 
+    fn capabilities() -> HostCapabilities {
+        HostCapabilities {
+            tools: ["mkswap", "swapon", "swapoff"]
+                .into_iter()
+                .map(|name| ToolCapability {
+                    name: name.to_owned(),
+                    available: true,
+                })
+                .collect(),
+        }
+    }
+
+    fn space(available_bytes: u64) -> FilesystemSpaceEvidence {
+        FilesystemSpaceEvidence {
+            path: "/data".into(),
+            block_size_bytes: 4096,
+            total_bytes: 512_000_000,
+            available_bytes,
+        }
+    }
+
     #[test]
     fn clear_resume_state_and_unique_fstab_swap_allow_future_planning() {
         let result = analyze_swap_migration_safety(
@@ -288,6 +483,60 @@ mod tests {
             .blockers
             .iter()
             .any(|blocker| blocker.code == "sysfs-resume-offset-configured"));
+    }
+
+    #[test]
+    fn ext4_destination_with_exact_capacity_and_tools_is_ready() {
+        let snapshot = snapshot();
+        let safety = analyze_swap_migration_safety(
+            &snapshot,
+            &HibernationResumeEvidence::default(),
+            "/data",
+        );
+        let readiness =
+            analyze_swapfile_destination(&snapshot, &capabilities(), &safety, &space(150_000_000), "/data");
+        assert!(readiness.ready_for_planning());
+        assert_eq!(readiness.swapfile_path, "/data/.linux-storage-manager.swap");
+        assert_eq!(readiness.replacement_swap_bytes, Some(102_400_000));
+    }
+
+    #[test]
+    fn insufficient_destination_capacity_blocks_before_any_mutation() {
+        let snapshot = snapshot();
+        let safety = analyze_swap_migration_safety(
+            &snapshot,
+            &HibernationResumeEvidence::default(),
+            "/data",
+        );
+        let readiness =
+            analyze_swapfile_destination(&snapshot, &capabilities(), &safety, &space(64_000_000), "/data");
+        assert!(readiness
+            .blockers
+            .iter()
+            .any(|blocker| blocker.code == "swapfile-capacity-insufficient"));
+    }
+
+    #[test]
+    fn missing_swap_tool_blocks_destination_readiness() {
+        let snapshot = snapshot();
+        let safety = analyze_swap_migration_safety(
+            &snapshot,
+            &HibernationResumeEvidence::default(),
+            "/data",
+        );
+        let mut capabilities = capabilities();
+        capabilities
+            .tools
+            .iter_mut()
+            .find(|tool| tool.name == "swapoff")
+            .unwrap()
+            .available = false;
+        let readiness =
+            analyze_swapfile_destination(&snapshot, &capabilities, &safety, &space(150_000_000), "/data");
+        assert!(readiness
+            .blockers
+            .iter()
+            .any(|blocker| blocker.code == "swapfile-tool-unavailable"));
     }
 
     #[test]
