@@ -28,11 +28,13 @@ class SafetyError(RuntimeError):
 
 class Runner:
     def __init__(self, binary: Path, executor_binary: Path,
-                 production_executor_binary: Path | None = None):
+                 production_executor_binary: Path | None = None,
+                 swap_executor_binary: Path | None = None):
         names = ("losetup", "sfdisk", "partx", "mkfs.ext4", "mkfs.xfs", "pvcreate",
                  "vgcreate", "vgchange", "lvcreate", "lvrename", "vgremove", "vgs", "pvs", "lvs",
                  "mount", "umount", "findmnt", "vgcfgbackup", "vgcfgrestore", "pvresize", "lvextend",
-                 "resize2fs", "e2fsck", "xfs_growfs", "xfs_scrub", "udevadm")
+                 "resize2fs", "e2fsck", "xfs_growfs", "xfs_scrub", "udevadm",
+                 "mkswap", "swapon", "swapoff")
         self.tools = {}
         for name in names:
             path = shutil.which(name)
@@ -44,6 +46,10 @@ class Runner:
         if production_executor_binary is not None:
             self.tools["production-executor"] = str(
                 production_executor_binary.resolve(strict=True)
+            )
+        if swap_executor_binary is not None:
+            self.tools["swap-executor"] = str(
+                swap_executor_binary.resolve(strict=True)
             )
 
     def run(self, name: str, *args: str, input: str | None = None,
@@ -203,6 +209,44 @@ class Resources:
                 raise SafetyError("multi-partition parent identity could not be verified")
         self.check_loop(loop)
         return partitions
+
+    def create_tail_swap_layout(
+        self, loop: Loop, data_mib: int = 384, swap_mib: int = 64
+    ) -> tuple[str, str]:
+        self.check_loop(loop)
+        if data_mib <= 0 or swap_mib <= 0:
+            raise SafetyError("invalid tail-swap fixture geometry")
+        disk_sectors = loop.image.stat().st_size // 512
+        data_start = 2048
+        data_sectors = data_mib * 1024 * 1024 // 512
+        extended_start = data_start + data_sectors + 2048
+        swap_start = extended_start + 2048
+        swap_sectors = swap_mib * 1024 * 1024 // 512
+        extended_sectors = swap_sectors + 8192
+        if extended_start + extended_sectors + 8192 >= disk_sectors:
+            raise SafetyError("tail-swap fixture lacks guarded raw disk tail")
+
+        p1 = loop.device + "p1"
+        p2 = loop.device + "p2"
+        p5 = loop.device + "p5"
+        script = (
+            "label: dos\n"
+            "unit: sectors\n"
+            f"{p1} : start={data_start}, size={data_sectors}, type=83\n"
+            f"{p2} : start={extended_start}, size={extended_sectors}, type=5\n"
+            f"{p5} : start={swap_start}, size={swap_sectors}, type=82\n"
+        )
+        self.runner.run("sfdisk", loop.device, input=script)
+        self.runner.run("partx", "--update", loop.device)
+        for partition in (p1, p2, p5):
+            wait_block(partition)
+        for partition in (p1, p5):
+            sys_path = Path("/sys/class/block") / Path(partition).name
+            if (not (sys_path / "partition").is_file()
+                    or sys_path.resolve().parent.name != Path(loop.device).name):
+                raise SafetyError("tail-swap partition parent identity could not be verified")
+        self.check_loop(loop)
+        return p1, p5
 
     def create_vg(self, loop: Loop, partition: str, name: str,
                   pv_size_mib: int | None = None) -> str:
