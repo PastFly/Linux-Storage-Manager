@@ -320,6 +320,7 @@ mod tests {
             disk: "/dev/loop7".into(),
             retiring_swap_device: "/dev/loop7p5".into(),
             retiring_swap_bytes: 64 * 1024 * 1024,
+            retiring_swap_reported_bytes: 64 * 1024 * 1024 - 4096,
             retiring_swap_priority: 7,
             persistent_swap_source: "UUID=swap-uuid".into(),
             persistent_swap_target: "none".into(),
