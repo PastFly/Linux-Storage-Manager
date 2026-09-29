@@ -318,3 +318,6 @@ M1B64 crosses the production swap runtime boundary only through the runtime repl
 
 
 M1B65 atomically crosses the persistent-config boundary but still performs no partition-table mutation. It requires a held HostStorageLock, the exact M1B64 execution receipt, fresh runtime proof that the old swap is absent and the replacement remains active at the frozen priority/size, and a revalidated pinned production swap consent. The current root-owned, non-writable, single-link /etc/fstab is read via O_NOFOLLOW and the exact retiring swap entry must occur once. Before the journal enters UpdatingPersistentConfig, the complete original fstab bytes are stored as a deterministic 0600 fsynced recovery backup beside the M1B63 journal. The replacement is written to a same-directory create-new temp file, fsynced, and the original fstab inode/metadata is rechecked immediately before atomic rename; the /etc directory is then fsynced. The installed file is reread and parsed, requiring the old binding to be absent and exactly one replacement swapfile binding to match the frozen target/options/dump/pass before the journal advances to PersistentConfigUpdated. Any ambiguity after the started phase persists RecoveryRequired. Partition removal and journal completion remain outside M1B65.
+
+
+M1B65 is restacked on the merged M1B64 master baseline.
