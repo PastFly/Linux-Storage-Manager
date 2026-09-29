@@ -170,6 +170,10 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Keep every discovered filesystem selectable when several partitions/LVs exist; live loop coverage proves two mounted LV targets remain isolated and two mounted partition targets remain visible even when one is blocked by its neighbor.
 - [x] Present blocked paths with exact structured blocker code/message instead of silently omitting the target; the target catalog remains machine-readable and text CLI renders the same evidence.
 - [ ] Support safe disk-tail migration strategies such as swap-partition -> swapfile only after dedicated hibernation/resume checks.
+  - [x] Discover kernel hibernation/resume evidence read-only from `/proc/cmdline`, `/sys/power/resume` and `/sys/power/resume_offset`; malformed/ambiguous evidence fails closed.
+  - [x] Add a read-only `plan swap-migration TARGET` safety gate that requires the exact detected tail-swap layout, no configured resume target/offset, and one persistent fstab binding before future migration planning.
+  - [ ] Prove replacement swapfile capacity/filesystem suitability, memory-pressure-safe swapoff, persistent-config rewrite and rollback before enabling mutation.
+
 - [x] Re-discover and verify after every destructive boundary in every currently executable disposable profile, including partition -> PV -> LV -> filesystem.
 - [ ] Keep shrink unsupported until it is separately designed and reviewed.
 
