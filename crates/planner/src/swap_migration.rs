@@ -571,7 +571,10 @@ pub fn build_swap_replacement_intent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lsm_core::{FilesystemSpaceEvidence, HostCapabilities, HostSnapshot, ToolCapability};
+    use lsm_core::{
+        FilesystemSpaceEvidence, HostCapabilities, HostSnapshot, PathObjectKind,
+        PathOccupancyEvidence, ToolCapability,
+    };
     use serde_json::json;
 
     fn snapshot() -> HostSnapshot {
@@ -752,6 +755,110 @@ mod tests {
             .blockers
             .iter()
             .any(|blocker| blocker.code == "swapfile-tool-unavailable"));
+    }
+
+    fn vacant_swapfile_path() -> PathOccupancyEvidence {
+        PathOccupancyEvidence {
+            path: "/data/.linux-storage-manager.swap".into(),
+            exists: false,
+            kind: None,
+            uid: None,
+            mode: None,
+            size_bytes: None,
+        }
+    }
+
+    #[test]
+    fn exact_readiness_and_vacant_path_freeze_nonexecuting_intent() {
+        let snapshot = snapshot();
+        let safety = analyze_swap_migration_safety(
+            &snapshot,
+            &HibernationResumeEvidence::default(),
+            "/data",
+        );
+        let readiness = analyze_swapfile_destination(
+            &snapshot,
+            &capabilities(),
+            &safety,
+            &space(150_000_000),
+            "/data",
+        );
+        let first =
+            build_swap_replacement_intent(&snapshot, &safety, &readiness, &vacant_swapfile_path())
+                .unwrap();
+        let second =
+            build_swap_replacement_intent(&snapshot, &safety, &readiness, &vacant_swapfile_path())
+                .unwrap();
+
+        assert!(first.ready());
+        assert!(!first.executable);
+        assert_eq!(first.intent_id, second.intent_id);
+        assert_eq!(first.retiring_swap_priority, Some(-2));
+        assert_eq!(first.persistent_swap_source.as_deref(), Some("UUID=swap-uuid"));
+        assert_eq!(first.swapfile_mode, 0o600);
+    }
+
+    #[test]
+    fn existing_or_symlink_swapfile_path_blocks_intent() {
+        let snapshot = snapshot();
+        let safety = analyze_swap_migration_safety(
+            &snapshot,
+            &HibernationResumeEvidence::default(),
+            "/data",
+        );
+        let readiness = analyze_swapfile_destination(
+            &snapshot,
+            &capabilities(),
+            &safety,
+            &space(150_000_000),
+            "/data",
+        );
+        let occupied = PathOccupancyEvidence {
+            path: readiness.swapfile_path.clone(),
+            exists: true,
+            kind: Some(PathObjectKind::Symlink),
+            uid: Some(1000),
+            mode: Some(0o120777),
+            size_bytes: Some(4),
+        };
+
+        let intent =
+            build_swap_replacement_intent(&snapshot, &safety, &readiness, &occupied).unwrap();
+        assert!(!intent.ready());
+        assert!(intent
+            .blockers
+            .iter()
+            .any(|blocker| blocker.code == "swapfile-path-occupied"));
+    }
+
+    #[test]
+    fn runtime_swap_drift_after_safety_analysis_blocks_intent() {
+        let mut snapshot = snapshot();
+        let safety = analyze_swap_migration_safety(
+            &snapshot,
+            &HibernationResumeEvidence::default(),
+            "/data",
+        );
+        let readiness = analyze_swapfile_destination(
+            &snapshot,
+            &capabilities(),
+            &safety,
+            &space(150_000_000),
+            "/data",
+        );
+        snapshot.swaps[0].used_bytes += 4096;
+
+        let intent = build_swap_replacement_intent(
+            &snapshot,
+            &safety,
+            &readiness,
+            &vacant_swapfile_path(),
+        )
+        .unwrap();
+        assert!(intent
+            .blockers
+            .iter()
+            .any(|blocker| blocker.code == "retiring-swap-runtime-state-changed"));
     }
 
     #[test]
