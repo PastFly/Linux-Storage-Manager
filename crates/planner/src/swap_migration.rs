@@ -426,6 +426,36 @@ impl SwapReplacementIntent {
     pub fn ready(&self) -> bool {
         self.status == PlanStatus::Preview && self.blockers.is_empty() && !self.executable
     }
+
+    pub fn integrity_matches(&self) -> Result<bool, serde_json::Error> {
+        Ok(self.intent_id == self.expected_intent_id()?)
+    }
+
+    pub fn expected_intent_id(&self) -> Result<String, serde_json::Error> {
+        fingerprint(&SwapReplacementIntentDigestPayload {
+            schema_version: self.schema_version,
+            executable: self.executable,
+            status: self.status,
+            target: &self.target,
+            disk: &self.disk,
+            retiring_swap_device: &self.retiring_swap_device,
+            retiring_swap_bytes: self.retiring_swap_bytes,
+            retiring_swap_used_bytes: self.retiring_swap_used_bytes,
+            retiring_swap_priority: self.retiring_swap_priority,
+            persistent_swap_source: &self.persistent_swap_source,
+            persistent_swap_target: &self.persistent_swap_target,
+            persistent_swap_options: &self.persistent_swap_options,
+            persistent_swap_dump: self.persistent_swap_dump,
+            persistent_swap_pass: self.persistent_swap_pass,
+            destination_mount: &self.destination_mount,
+            swapfile_path: &self.swapfile_path,
+            destination_filesystem: &self.destination_filesystem,
+            destination_available_bytes: self.destination_available_bytes,
+            swapfile_mode: self.swapfile_mode,
+            blockers: &self.blockers,
+            ordered_steps: &self.ordered_steps,
+        })
+    }
 }
 
 /// Freeze the exact read-only swap-replacement evidence into a deterministic,
@@ -566,29 +596,7 @@ pub fn build_swap_replacement_intent(
         ],
     };
 
-    intent.intent_id = fingerprint(&SwapReplacementIntentDigestPayload {
-        schema_version: intent.schema_version,
-        executable: intent.executable,
-        status: intent.status,
-        target: &intent.target,
-        disk: &intent.disk,
-        retiring_swap_device: &intent.retiring_swap_device,
-        retiring_swap_bytes: intent.retiring_swap_bytes,
-        retiring_swap_used_bytes: intent.retiring_swap_used_bytes,
-        retiring_swap_priority: intent.retiring_swap_priority,
-        persistent_swap_source: &intent.persistent_swap_source,
-        persistent_swap_target: &intent.persistent_swap_target,
-        persistent_swap_options: &intent.persistent_swap_options,
-        persistent_swap_dump: intent.persistent_swap_dump,
-        persistent_swap_pass: intent.persistent_swap_pass,
-        destination_mount: &intent.destination_mount,
-        swapfile_path: &intent.swapfile_path,
-        destination_filesystem: &intent.destination_filesystem,
-        destination_available_bytes: intent.destination_available_bytes,
-        swapfile_mode: intent.swapfile_mode,
-        blockers: &intent.blockers,
-        ordered_steps: &intent.ordered_steps,
-    })?;
+    intent.intent_id = intent.expected_intent_id()?;
     Ok(intent)
 }
 
