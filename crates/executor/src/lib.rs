@@ -47,6 +47,7 @@ mod production_execution;
 mod production_prepare;
 mod production_swap_activation;
 mod production_swap_consent;
+mod production_swap_execution;
 #[cfg(feature = "production-mutation-execution")]
 mod production_verified_step;
 
@@ -246,6 +247,11 @@ pub use production_swap_consent::{
     ProductionSwapReplacementConsentError, ProductionSwapReplacementConsentFileIdentity,
     ProductionSwapReplacementConsentReceipt, PRODUCTION_SWAP_REPLACEMENT_CONSENT_COMPILED,
     PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH, PRODUCTION_SWAP_REPLACEMENT_CONSENT_PHRASE,
+};
+pub use production_swap_execution::{
+    seal_production_swap_replacement_execution_permit, ProductionSwapReplacementExecutionPermit,
+    ProductionSwapReplacementExecutionPermitError,
+    PRODUCTION_SWAP_REPLACEMENT_EXECUTION_PERMIT_COMPILED,
 };
 #[cfg(feature = "production-mutation-execution")]
 pub use production_verified_step::{

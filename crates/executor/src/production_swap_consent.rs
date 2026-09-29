@@ -74,7 +74,7 @@ impl ProductionSwapReplacementConsentReceipt {
         Ok(self.receipt_id == self.expected_receipt_id()?)
     }
 
-    fn expected_receipt_id(&self) -> Result<String, serde_json::Error> {
+    pub(crate) fn expected_receipt_id(&self) -> Result<String, serde_json::Error> {
         let payload = ConsentReceiptDigestPayload {
             schema_version: self.schema_version,
             activation_id: &self.activation_id,
