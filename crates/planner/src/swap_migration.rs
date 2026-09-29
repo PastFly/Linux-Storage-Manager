@@ -432,7 +432,7 @@ impl SwapReplacementIntent {
     }
 
     pub fn expected_intent_id(&self) -> Result<String, serde_json::Error> {
-        fingerprint(&SwapReplacementIntentDigestPayload {
+        let payload = SwapReplacementIntentDigestPayload {
             schema_version: self.schema_version,
             executable: self.executable,
             status: self.status,
@@ -454,7 +454,9 @@ impl SwapReplacementIntent {
             swapfile_mode: self.swapfile_mode,
             blockers: &self.blockers,
             ordered_steps: &self.ordered_steps,
-        })
+        };
+        let bytes = serde_json::to_vec(&payload)?;
+        Ok(format!("{:x}", Sha256::digest(bytes)))
     }
 }
 
