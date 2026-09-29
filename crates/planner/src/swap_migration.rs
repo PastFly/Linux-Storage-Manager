@@ -196,7 +196,6 @@ pub fn analyze_swap_migration_safety(
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SwapfileDestinationStatus {
@@ -235,7 +234,10 @@ fn swapfile_path_for_mount(mountpoint: &str) -> String {
     if mountpoint == "/" {
         "/.linux-storage-manager.swap".to_owned()
     } else {
-        format!("{}/.linux-storage-manager.swap", mountpoint.trim_end_matches('/'))
+        format!(
+            "{}/.linux-storage-manager.swap",
+            mountpoint.trim_end_matches('/')
+        )
     }
 }
 
@@ -493,8 +495,13 @@ mod tests {
             &HibernationResumeEvidence::default(),
             "/data",
         );
-        let readiness =
-            analyze_swapfile_destination(&snapshot, &capabilities(), &safety, &space(150_000_000), "/data");
+        let readiness = analyze_swapfile_destination(
+            &snapshot,
+            &capabilities(),
+            &safety,
+            &space(150_000_000),
+            "/data",
+        );
         assert!(readiness.ready_for_planning());
         assert_eq!(readiness.swapfile_path, "/data/.linux-storage-manager.swap");
         assert_eq!(readiness.replacement_swap_bytes, Some(102_400_000));
@@ -508,8 +515,13 @@ mod tests {
             &HibernationResumeEvidence::default(),
             "/data",
         );
-        let readiness =
-            analyze_swapfile_destination(&snapshot, &capabilities(), &safety, &space(64_000_000), "/data");
+        let readiness = analyze_swapfile_destination(
+            &snapshot,
+            &capabilities(),
+            &safety,
+            &space(64_000_000),
+            "/data",
+        );
         assert!(readiness
             .blockers
             .iter()
@@ -531,8 +543,13 @@ mod tests {
             .find(|tool| tool.name == "swapoff")
             .unwrap()
             .available = false;
-        let readiness =
-            analyze_swapfile_destination(&snapshot, &capabilities, &safety, &space(150_000_000), "/data");
+        let readiness = analyze_swapfile_destination(
+            &snapshot,
+            &capabilities,
+            &safety,
+            &space(150_000_000),
+            "/data",
+        );
         assert!(readiness
             .blockers
             .iter()
