@@ -2141,6 +2141,139 @@ def exercise_production_lvm_growth(resources: Resources, binary: Runner, loop: L
     resources.uncertain = False
     print("PRODUCTION_LOOP_E2E_OK=lvextend-resize2fs-verified-completed", flush=True)
 
+
+def exercise_production_chained_growth(
+    resources: Resources,
+    binary: Runner,
+    loop: Loop,
+    partition: str,
+    source: str,
+    target: Path,
+    vg: str,
+) -> None:
+    resources.check_loop(loop)
+    if "production-executor" not in binary.tools:
+        raise SafetyError("production loop harness binary is not configured")
+    if partition != loop.device + "p1" or source != f"/dev/{vg}/data":
+        raise SafetyError("unexpected chained production fixture identity")
+
+    before = ready_snapshot(binary, loop.device, vg)
+    tables = [table for table in before["partition_tables"]
+              if table.get("device") == loop.device]
+    if len(tables) != 1:
+        raise SafetyError("chained production partition table is ambiguous")
+    records = [row for row in tables[0].get("partitions", [])
+               if row.get("node") == partition]
+    if len(records) != 1:
+        raise SafetyError("chained production partition record is ambiguous")
+
+    lvm = before.get("lvm")
+    if not isinstance(lvm, dict):
+        raise SafetyError("chained production LVM inventory is unavailable")
+    pvs = [row for row in lvm.get("physical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg
+           and row.get("name") == partition]
+    vgs = [row for row in lvm.get("volume_groups", [])
+           if isinstance(row, dict) and row.get("name") == vg]
+    lvs = [row for row in lvm.get("logical_volumes", [])
+           if isinstance(row, dict) and row.get("vg_name") == vg
+           and row.get("path") == source]
+    if len(pvs) != 1 or len(vgs) != 1 or len(lvs) != 1:
+        raise SafetyError("chained production PV/VG/LV identity is ambiguous")
+
+    old_partition_sectors = records[0].get("size_sectors")
+    old_pv_size = pvs[0].get("size_bytes")
+    old_lv_size = lvs[0].get("size_bytes")
+    extent = vgs[0].get("extent_size_bytes")
+    free_extents = vgs[0].get("free_extent_count")
+    if (type(old_partition_sectors) is not int
+            or type(old_pv_size) is not int
+            or type(old_lv_size) is not int
+            or type(extent) is not int
+            or type(free_extents) is not int
+            or extent <= 0 or free_extents < 0):
+        raise SafetyError("chained production size evidence is incomplete")
+
+    growth_bytes = 320 * 1024 * 1024
+    if growth_bytes % extent:
+        raise SafetyError("chained production growth must be extent aligned")
+    if growth_bytes <= free_extents * extent:
+        raise SafetyError("chained production fixture would not require backing growth")
+    expected_lv_size = old_lv_size + growth_bytes
+    before_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    sentinel = (target / "readonly-sentinel").read_bytes()
+
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    if not association_row:
+        raise SafetyError("chained production loop association is unavailable")
+
+    journal_root = resources.root / f"{vg}-chained-production-journal"
+    backup_root = resources.root / f"{vg}-chained-production-backup"
+
+    resources.uncertain = True
+    result = binary.run(
+        "production-executor",
+        "--allow-production-loop-execution",
+        "--target", str(target),
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--journal-root", str(journal_root),
+        "--backup-root", str(backup_root),
+        "--growth-bytes", str(growth_bytes),
+        "--xfs-scrub", binary.tools["xfs_scrub"],
+    )
+    outcome = json.loads(result.stdout)
+    if (not isinstance(outcome, dict)
+            or outcome.get("status") != "completed"
+            or outcome.get("profile") != "production_partition_pv_lv_filesystem"
+            or outcome.get("sentinel_preserved") is not True
+            or not isinstance(outcome.get("execution_id"), str)
+            or not isinstance(outcome.get("final_identity_digest"), str)):
+        raise SafetyError(f"invalid chained production completion evidence: {outcome!r}")
+
+    refresh_fixture_udev(binary, Path(source).resolve(strict=True).name)
+    final = ready_snapshot(binary, loop.device, vg)
+    final_tables = [table for table in final["partition_tables"]
+                    if table.get("device") == loop.device]
+    final_records = ([] if len(final_tables) != 1 else
+                     [row for row in final_tables[0].get("partitions", [])
+                      if row.get("node") == partition])
+    final_lvm = final.get("lvm")
+    if len(final_records) != 1 or not isinstance(final_lvm, dict):
+        raise SafetyError("chained production final topology is incomplete")
+    final_pvs = [row for row in final_lvm.get("physical_volumes", [])
+                 if isinstance(row, dict) and row.get("vg_name") == vg
+                 and row.get("name") == partition]
+    final_lvs = [row for row in final_lvm.get("logical_volumes", [])
+                 if isinstance(row, dict) and row.get("vg_name") == vg
+                 and row.get("path") == source]
+    if (final_records[0].get("size_sectors", 0) <= old_partition_sectors
+            or len(final_pvs) != 1
+            or final_pvs[0].get("size_bytes", 0) <= old_pv_size
+            or len(final_lvs) != 1
+            or final_lvs[0].get("size_bytes") != expected_lv_size):
+        raise SafetyError("chained production final partition/PV/LV sizes are incorrect")
+
+    after_fs_bytes = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
+    if after_fs_bytes <= before_fs_bytes or after_fs_bytes > expected_lv_size:
+        raise SafetyError("chained production filesystem size is outside verified backing")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("chained production execution changed filesystem sentinel")
+    if journal_root.exists() or backup_root.exists():
+        raise SafetyError("chained production harness did not clean owned evidence")
+    if Path("/etc/linux-storage-manager/production-mutation-consent.json").exists():
+        raise SafetyError("chained production harness left runtime consent behind")
+
+    resources.uncertain = False
+    print(
+        "PRODUCTION_CHAINED_LOOP_E2E_OK=partition-pv-lv-resize2fs-verified-completed",
+        flush=True,
+    )
+
 def storage_facts(snapshot: dict[str, Any], loop: str, vg: str | None) -> Any:
     """Compare only the owned fixture's geometry/identity, not volatile host usage."""
     tables = [table for table in snapshot["partition_tables"] if table["device"] == loop]
@@ -2475,6 +2608,37 @@ def main(argv: list[str] | None = None) -> int:
                 production_vg,
             )
 
+            print("==> lvm-ext4-production-chained-e2e", flush=True)
+            chained_production_loop = resources.create_loop(
+                "lvm-ext4-production-chained-e2e", 1024 * 1024 * 1024
+            )
+            chained_production_partition = resources.create_partition(
+                chained_production_loop, 640, True
+            )
+            chained_production_vg = "lsmtest" + os.urandom(12).hex()
+            chained_production_source = resources.create_vg(
+                chained_production_loop,
+                chained_production_partition,
+                chained_production_vg,
+            )
+            runner.run("mkfs.ext4", "-F", chained_production_source)
+            refresh_fixture_udev(
+                runner, Path(chained_production_source).resolve(strict=True).name
+            )
+            chained_production_target = resources.mount(
+                chained_production_source,
+                "lvm-ext4-production-chained-e2e-mount",
+            )
+            exercise_production_chained_growth(
+                resources,
+                runner,
+                chained_production_loop,
+                chained_production_partition,
+                chained_production_source,
+                chained_production_target,
+                chained_production_vg,
+            )
+
         print("==> lvm-ext4-filesystem-post-write-recovery", flush=True)
         fs_fault_loop = resources.create_loop(
             "lvm-ext4-filesystem-post-write-recovery", 1024 * 1024 * 1024
@@ -2636,7 +2800,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-offline-growth,lvm-ext4-production-e2e,plain-ext4-multi-partition-selection,lvm-ext4-multi-target-isolation,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-offline-growth,lvm-ext4-production-e2e,lvm-ext4-production-chained-e2e,plain-ext4-multi-partition-selection,lvm-ext4-multi-target-isolation,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
     return int(failed)
 
 
