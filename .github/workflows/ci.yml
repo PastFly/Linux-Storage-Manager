@@ -71,6 +71,9 @@ jobs:
       - name: Check root-owned swap production consent boundary
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-swap-replacement-consent --lib
+      - name: Check pinned swap production consent lease
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo test --locked -p lsm-executor --features production-swap-replacement-consent-lease --lib
       - name: Check non-spawning swap production execution permit
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-swap-replacement-execution-permit --lib
