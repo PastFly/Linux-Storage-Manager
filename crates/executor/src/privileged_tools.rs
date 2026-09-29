@@ -266,6 +266,9 @@ mod tests {
             PrivilegedProgram::Lvextend,
             PrivilegedProgram::Resize2fs,
             PrivilegedProgram::XfsGrowfs,
+            PrivilegedProgram::Mkswap,
+            PrivilegedProgram::Swapon,
+            PrivilegedProgram::Swapoff,
         ] {
             let identity = resolve_trusted_privileged_tool(program).unwrap();
             assert_eq!(identity.program, program);
@@ -285,5 +288,8 @@ mod tests {
         assert_eq!(PrivilegedProgram::Lvextend.as_str(), "lvextend");
         assert_eq!(PrivilegedProgram::Resize2fs.as_str(), "resize2fs");
         assert_eq!(PrivilegedProgram::XfsGrowfs.as_str(), "xfs_growfs");
+        assert_eq!(PrivilegedProgram::Mkswap.as_str(), "mkswap");
+        assert_eq!(PrivilegedProgram::Swapon.as_str(), "swapon");
+        assert_eq!(PrivilegedProgram::Swapoff.as_str(), "swapoff");
     }
 }
