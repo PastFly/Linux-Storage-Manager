@@ -48,6 +48,7 @@ pub struct ProductionSwapReplacementActivationIntent {
     pub disk: String,
     pub retiring_swap_device: String,
     pub retiring_swap_bytes: u64,
+    pub retiring_swap_reported_bytes: u64,
     pub retiring_swap_priority: i32,
     pub persistent_swap_source: String,
     pub persistent_swap_target: String,
@@ -72,6 +73,7 @@ struct ProductionSwapReplacementActivationDigestPayload<'a> {
     disk: &'a str,
     retiring_swap_device: &'a str,
     retiring_swap_bytes: u64,
+    retiring_swap_reported_bytes: u64,
     retiring_swap_priority: i32,
     persistent_swap_source: &'a str,
     persistent_swap_target: &'a str,
@@ -101,6 +103,7 @@ impl ProductionSwapReplacementActivationIntent {
             disk: &self.disk,
             retiring_swap_device: &self.retiring_swap_device,
             retiring_swap_bytes: self.retiring_swap_bytes,
+            retiring_swap_reported_bytes: self.retiring_swap_reported_bytes,
             retiring_swap_priority: self.retiring_swap_priority,
             persistent_swap_source: &self.persistent_swap_source,
             persistent_swap_target: &self.persistent_swap_target,
@@ -172,6 +175,7 @@ fn exact_profile(intent: &SwapReplacementIntent) -> bool {
         Some(disk),
         Some(retiring_swap_device),
         Some(retiring_swap_bytes),
+        Some(retiring_swap_reported_bytes),
         Some(retiring_swap_used_bytes),
         Some(_retiring_swap_priority),
         Some(persistent_swap_source),
@@ -183,6 +187,7 @@ fn exact_profile(intent: &SwapReplacementIntent) -> bool {
         intent.disk.as_deref(),
         intent.retiring_swap_device.as_deref(),
         intent.retiring_swap_bytes,
+        intent.retiring_swap_reported_bytes,
         intent.retiring_swap_used_bytes,
         intent.retiring_swap_priority,
         intent.persistent_swap_source.as_deref(),
@@ -208,7 +213,9 @@ fn exact_profile(intent: &SwapReplacementIntent) -> bool {
         && safe_device_path(retiring_swap_device)
         && disk != retiring_swap_device
         && retiring_swap_bytes > 0
-        && retiring_swap_used_bytes <= retiring_swap_bytes
+        && retiring_swap_reported_bytes > 0
+        && retiring_swap_reported_bytes <= retiring_swap_bytes
+        && retiring_swap_used_bytes <= retiring_swap_reported_bytes
         && no_controls(persistent_swap_source)
         && no_controls(persistent_swap_target)
         && !intent.persistent_swap_options.is_empty()
@@ -293,6 +300,9 @@ pub fn seal_production_swap_replacement_activation_intent(
         retiring_swap_bytes: intent
             .retiring_swap_bytes
             .expect("profile validated retiring swap size"),
+        retiring_swap_reported_bytes: intent
+            .retiring_swap_reported_bytes
+            .expect("profile validated retiring reported swap size"),
         retiring_swap_priority: intent
             .retiring_swap_priority
             .expect("profile validated retiring priority"),
@@ -343,6 +353,7 @@ mod tests {
             disk: Some("/dev/loop7".into()),
             retiring_swap_device: Some("/dev/loop7p5".into()),
             retiring_swap_bytes: Some(64 * 1024 * 1024),
+            retiring_swap_reported_bytes: Some(64 * 1024 * 1024 - 4096),
             retiring_swap_used_bytes: Some(4096),
             retiring_swap_priority: Some(7),
             persistent_swap_source: Some("UUID=swap-uuid".into()),
