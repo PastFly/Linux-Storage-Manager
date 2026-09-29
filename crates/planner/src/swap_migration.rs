@@ -124,7 +124,11 @@ pub fn analyze_swap_migration_safety(
             .copied()
             .filter(|device| source_matches_device(swap_device, device))
             .collect::<Vec<_>>();
-        (matches.len() == 1).then_some(matches[0])
+        if matches.len() == 1 {
+            Some(matches[0])
+        } else {
+            None
+        }
     });
 
     let persistent_matches = match swap_node {
