@@ -294,3 +294,6 @@ M1B56 introduces a separate production activation contract for the swap-migratio
 
 
 M1B57 adds a dedicated root-owned runtime consent for the M1B56 swap-replacement production activation. The fixed `/etc/linux-storage-manager/production-swap-replacement-consent.json` file must be a one-link root-owned mode-0600 regular file under a non-group/world-writable root-owned directory, opened with `O_NOFOLLOW`. Its canonical JSON binds the exact activation ID, frozen replacement-intent ID, target, retiring swap device and replacement swapfile path plus the exact phrase `I UNDERSTAND THIS WILL REPLACE ACTIVE SWAP`. The returned receipt is integrity-digested and remains `execution_enabled=false`; no swapfile creation, swapon/swapoff, fstab mutation or partition removal is enabled by this layer.
+
+
+M1B58 seals the M1B56 activation and M1B57 consent receipt into a separate non-spawning production swap execution permit. The permit rebinds the exact frozen replacement-intent ID, target, disk, retiring swap device/size/priority, swapfile path/mode and consent receipt ID. Both upstream objects must pass integrity checks and report execution disabled. The permit itself keeps `mutation_enabled=false` and `process_spawned=false` in its digest. No process launch or storage mutation is reachable from this feature; the later runtime crossing remains separately gated.
