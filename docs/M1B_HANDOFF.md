@@ -306,3 +306,6 @@ M1B60 adds the final fresh read-only runtime preflight before any production swa
 
 
 M1B61 pins the M1B60 trusted swap runtime executables by open descriptor without spawning them. Each canonical mkswap/swapon/swapoff file is opened O_NOFOLLOW/O_CLOEXEC and must still match the frozen device/inode/uid/mode/size/content hash; in-place edits and pathname replacement fail closed. The descriptors are held privately only to stabilize the future runtime crossing. No swapfile creation, process execution, swap-state change, persistent-config edit or partition mutation occurs.
+
+
+M1B62 freezes the exact future swap runtime descriptor launch without crossing it. The already-open M1B61 mkswap/swapon/swapoff descriptors are revalidated again against the M1B60 trusted device/inode/uid/mode/size/SHA-256 identities immediately before use, closing in-place modification between pin and launch construction. The launch contract accepts native ELF descriptors only, fixes PATH/LC_ALL, freezes exact argv for mkswap --force, swapon --priority and swapoff, binds create-new/no-follow/full-allocation swapfile semantics, and requires explicit dual-active verification before swapoff. The resulting launch remains mutation_enabled=false, process_spawned=false and swapfile_created=false. The production runtime crossing itself remains the next separately gated layer.
