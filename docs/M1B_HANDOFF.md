@@ -300,3 +300,6 @@ M1B58 seals the M1B56 activation and M1B57 consent receipt into a separate non-s
 
 
 M1B59 pins the M1B57 swap consent by retaining the exact opened file descriptor after verification and revalidating both the live fixed pathname and the still-open file immediately before a later runtime crossing. Device/inode/uid/mode/link-count/size/content hash must remain identical; pathname replacement, in-place edits, growth/truncation or metadata drift fail closed. This closes the consent TOCTOU gap but does not enable swapfile creation, mkswap, swapon/swapoff, persistent-config writes or partition removal. M1B59 is based directly on the merged M1B58 master baseline.
+
+
+M1B60 adds the final fresh read-only runtime preflight before any production swap process crossing. It revalidates the pinned M1B59 consent lease against the M1B58 non-spawning permit, re-reads hibernation/resume state, active retiring-swap size/priority, exact fstab entry, RW ext4 destination, live capacity and swapfile-path vacancy, then resolves root-owned non-writable trusted identities for mkswap/swapon/swapoff. The resulting receipt is independently digested and remains mutation_enabled=false/process_spawned=false. No swapfile creation, mkswap, swapon, swapoff, fstab edit or partition mutation is enabled.

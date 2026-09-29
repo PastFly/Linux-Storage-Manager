@@ -19,6 +19,9 @@ pub enum PrivilegedProgram {
     Lvextend,
     Resize2fs,
     XfsGrowfs,
+    Mkswap,
+    Swapon,
+    Swapoff,
 }
 
 impl PrivilegedProgram {
@@ -30,6 +33,9 @@ impl PrivilegedProgram {
             Self::Lvextend => "lvextend",
             Self::Resize2fs => "resize2fs",
             Self::XfsGrowfs => "xfs_growfs",
+            Self::Mkswap => "mkswap",
+            Self::Swapon => "swapon",
+            Self::Swapoff => "swapoff",
         }
     }
 }
