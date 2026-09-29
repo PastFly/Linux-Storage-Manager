@@ -2473,6 +2473,136 @@ def exercise(resources: Resources, binary: Runner, loop: Loop, target: Path, vg:
                 raise SafetyError(f"fixture geometry diagnostic: {item!r}")
 
 
+
+def current_swaps(binary: Runner) -> list[dict[str, Any]]:
+    data = binary.json("storagemgr", "swap")
+    if not isinstance(data, list) or not all(isinstance(row, dict) for row in data):
+        raise SafetyError("storagemgr swap output is not a normalized JSON list")
+    return data
+
+
+def exercise_disposable_swap_replacement(
+    resources: Resources,
+    binary: Runner,
+    loop: Loop,
+    old_swap_device: str,
+    target: Path,
+) -> None:
+    resources.check_loop(loop)
+    if "swap-executor" not in binary.tools:
+        raise SafetyError("disposable swap executor binary is not configured")
+    if old_swap_device != loop.device + "p5":
+        raise SafetyError("tail-swap fixture did not bind the expected logical swap partition")
+
+    sentinel = (target / "readonly-sentinel").read_bytes()
+    table_before = binary.json("sfdisk", "--json", loop.device)
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    if not association_row:
+        raise SafetyError("exact loop association is unavailable before swap replacement")
+
+    old_rows = [row for row in current_swaps(binary)
+                if row.get("name") == old_swap_device]
+    if len(old_rows) != 1 or old_rows[0].get("priority") != 7:
+        raise SafetyError("old disposable swap is not active at the frozen priority")
+
+    swapfile = target / ".linux-storage-manager.swap"
+    if swapfile.exists() or swapfile.is_symlink():
+        raise SafetyError("replacement swapfile path is occupied before the drill")
+
+    base_args = (
+        "--allow-disposable-swap-execution",
+        "--target", str(target),
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--old-swap-device", old_swap_device,
+        "--mkswap", binary.tools["mkswap"],
+        "--swapon", binary.tools["swapon"],
+        "--swapoff", binary.tools["swapoff"],
+    )
+
+    # Fault boundary: replacement is active and verified, but old swapoff has
+    # not happened. The harness must make no partition-table change.
+    resources.uncertain = True
+    injected = binary.run(
+        "swap-executor",
+        *base_args,
+        "--inject-failure-before-old-swapoff",
+        allowed=(20,),
+    )
+    injected_receipt = json.loads(injected.stdout)
+    if (injected_receipt.get("stage") != "replacement_active_old_preserved"
+            or injected_receipt.get("old_swap_active") is not True
+            or injected_receipt.get("replacement_swap_active") is not True
+            or injected_receipt.get("injected_failure_before_old_swapoff") is not True
+            or injected_receipt.get("partition_mutation_performed") is not False
+            or injected_receipt.get("production_enabled") is not False):
+        raise SafetyError(f"invalid injected swap activation receipt: {injected_receipt!r}")
+
+    active = current_swaps(binary)
+    if len([row for row in active if row.get("name") == old_swap_device]) != 1:
+        raise SafetyError("old swap disappeared at the injected pre-swapoff boundary")
+    replacement_rows = [row for row in active if row.get("name") == str(swapfile)]
+    if len(replacement_rows) != 1 or replacement_rows[0].get("priority") != 7:
+        raise SafetyError("replacement swap is not active at the frozen priority")
+    if binary.json("sfdisk", "--json", loop.device) != table_before:
+        raise SafetyError("partition table changed before old swapoff")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("filesystem sentinel changed during injected swap activation")
+
+    info = swapfile.lstat()
+    if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1):
+        raise SafetyError("replacement swapfile ownership/mode is not exact")
+
+    # Reconcile the injected boundary back to the initial state.
+    binary.run("swapoff", str(swapfile))
+    if any(row.get("name") == str(swapfile) for row in current_swaps(binary)):
+        raise SafetyError("replacement swap remained active after injected-boundary cleanup")
+    if not any(row.get("name") == old_swap_device for row in current_swaps(binary)):
+        raise SafetyError("old swap did not remain active after injected-boundary cleanup")
+    swapfile.unlink()
+
+    # Success path: activate replacement, prove both swaps, then deactivate only
+    # the old partition. Partition geometry must still remain byte-for-byte unchanged.
+    result = binary.run("swap-executor", *base_args)
+    receipt = json.loads(result.stdout)
+    if (receipt.get("stage") != "old_swap_deactivated"
+            or receipt.get("old_swap_active") is not False
+            or receipt.get("replacement_swap_active") is not True
+            or receipt.get("injected_failure_before_old_swapoff") is not False
+            or receipt.get("partition_mutation_performed") is not False
+            or receipt.get("production_enabled") is not False):
+        raise SafetyError(f"invalid successful swap activation receipt: {receipt!r}")
+
+    active = current_swaps(binary)
+    if any(row.get("name") == old_swap_device for row in active):
+        raise SafetyError("old swap partition is still active after successful swapoff")
+    replacement_rows = [row for row in active if row.get("name") == str(swapfile)]
+    if len(replacement_rows) != 1 or replacement_rows[0].get("priority") != 7:
+        raise SafetyError("replacement swapfile is not the sole expected replacement")
+    if binary.json("sfdisk", "--json", loop.device) != table_before:
+        raise SafetyError("M1B55 changed partition geometry")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("M1B55 changed filesystem sentinel")
+
+    # Restore a clean fixture: no swap remains active and the replacement file
+    # is removed only after exact runtime deactivation.
+    binary.run("swapoff", str(swapfile))
+    active = current_swaps(binary)
+    if any(row.get("name") in (old_swap_device, str(swapfile)) for row in active):
+        raise SafetyError("swap runtime cleanup did not reach the expected empty fixture state")
+    swapfile.unlink()
+    resources.uncertain = False
+    print(
+        "DISPOSABLE_SWAP_REPLACEMENT_OK=activate-verify-fault-boundary-swapoff-no-partition-mutation",
+        flush=True,
+    )
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--allow-disposable-loop-tests", action="store_true",
@@ -2480,6 +2610,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("binary", type=Path)
     parser.add_argument("executor_binary", type=Path)
     parser.add_argument("--production-executor-binary", type=Path)
+    parser.add_argument("--swap-executor-binary", type=Path)
     args = parser.parse_args(argv)
     if not args.allow_disposable_loop_tests:
         parser.error("explicit --allow-disposable-loop-tests is required; never use on a production host")
@@ -2493,12 +2624,21 @@ def main(argv: list[str] | None = None) -> int:
             and (not args.production_executor_binary.is_file()
                  or not os.access(args.production_executor_binary, os.X_OK))):
         parser.error("production executor binary is absent or not executable")
+    if (args.swap_executor_binary is not None
+            and (not args.swap_executor_binary.is_file()
+                 or not os.access(args.swap_executor_binary, os.X_OK))):
+        parser.error("swap executor binary is absent or not executable")
     def interrupted(signum: int, frame: Any) -> None:
         raise KeyboardInterrupt(f"received signal {signum}")
     for signum in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, interrupted)
     os.umask(0o077)
-    runner = Runner(args.binary, args.executor_binary, args.production_executor_binary)
+    runner = Runner(
+        args.binary,
+        args.executor_binary,
+        args.production_executor_binary,
+        args.swap_executor_binary,
+    )
     root = Path(tempfile.mkdtemp(prefix="lsm-loop-matrix-"))
     resources = Resources(root, runner)
     failed = False
@@ -2623,6 +2763,30 @@ def main(argv: list[str] | None = None) -> int:
             offline_target,
             offline_vg,
         )
+
+        if args.swap_executor_binary is not None:
+            print("==> dos-tail-swap-replacement-e2e", flush=True)
+            swap_loop = resources.create_loop(
+                "dos-tail-swap-replacement", 768 * 1024 * 1024
+            )
+            swap_data, swap_partition = resources.create_tail_swap_layout(
+                swap_loop, data_mib=384, swap_mib=64
+            )
+            runner.run("mkfs.ext4", "-F", swap_data)
+            runner.run("mkswap", "--force", swap_partition)
+            runner.run("swapon", "--priority", "7", swap_partition)
+            refresh_fixture_udev(runner, Path(swap_data).name)
+            refresh_fixture_udev(runner, Path(swap_partition).name)
+            swap_target = resources.mount(
+                swap_data, "dos-tail-swap-replacement-mount"
+            )
+            exercise_disposable_swap_replacement(
+                resources,
+                runner,
+                swap_loop,
+                swap_partition,
+                swap_target,
+            )
 
         if args.production_executor_binary is not None:
             print("==> lvm-ext4-production-e2e", flush=True)
@@ -2844,7 +3008,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
             failed = True
     if not failed:
-        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-offline-growth,lvm-ext4-production-e2e,lvm-ext4-production-chained-e2e,plain-ext4-multi-partition-selection,lvm-ext4-multi-target-isolation,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
+        print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-offline-growth,lvm-ext4-production-e2e,lvm-ext4-production-chained-e2e,dos-tail-swap-replacement-e2e,plain-ext4-multi-partition-selection,lvm-ext4-multi-target-isolation,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")
     return int(failed)
 
 
