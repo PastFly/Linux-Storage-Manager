@@ -9,10 +9,10 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::privileged_exec::execute_descriptor_stage;
 use crate::production_swap_runtime_journal::{
     persist_production_swap_runtime_transition, ProductionSwapRuntimeTransition,
 };
-use crate::privileged_exec::execute_descriptor_stage;
 use crate::{
     revalidate_pinned_production_swap_replacement_consent, DescriptorExecOutcome, HostStorageLock,
     PinnedProductionSwapReplacementConsent, PinnedProductionSwapRuntimeTools,
@@ -20,8 +20,8 @@ use crate::{
     ProductionSwapReplacementConsentLeaseError, ProductionSwapReplacementExecutionPermit,
     ProductionSwapRuntimeJournal, ProductionSwapRuntimeJournalError,
     ProductionSwapRuntimeJournalStore, ProductionSwapRuntimeLaunchError,
-    ProductionSwapRuntimeLaunchSpec, ProductionSwapRuntimePhase, ProductionSwapRuntimePreflightReceipt,
-    ProductionSwapRuntimeToolLeaseError,
+    ProductionSwapRuntimeLaunchSpec, ProductionSwapRuntimePhase,
+    ProductionSwapRuntimePreflightReceipt, ProductionSwapRuntimeToolLeaseError,
 };
 
 pub const PRODUCTION_SWAP_RUNTIME_EXECUTION_COMPILED: bool =
@@ -275,9 +275,7 @@ fn verify_swap_signature(file: &File) -> Result<(), ProductionSwapRuntimeExecuti
         .map_err(|_| ProductionSwapRuntimeExecutionError::SwapSignatureMismatch)?;
     let mut signature = [0_u8; 10];
     let read = file.read_at(&mut signature, offset)?;
-    if read != signature.len()
-        || (signature != *b"SWAPSPACE2" && signature != *b"SWAP-SPACE")
-    {
+    if read != signature.len() || (signature != *b"SWAPSPACE2" && signature != *b"SWAP-SPACE") {
         return Err(ProductionSwapRuntimeExecutionError::SwapSignatureMismatch);
     }
     Ok(())
@@ -312,8 +310,7 @@ fn exact_swap_entries(
     retiring: &str,
     replacement: &str,
 ) -> Result<(lsm_core::SwapEntry, lsm_core::SwapEntry), ProductionSwapRuntimeExecutionError> {
-    let swaps = discover_swaps()
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    let swaps = discover_swaps().map_err(|error| io::Error::other(error.to_string()))?;
     let retiring_matches = swaps
         .iter()
         .filter(|entry| entry.name == retiring)
@@ -359,14 +356,11 @@ fn execute_mutating_runtime(
     )?;
 
     let path = Path::new(&launch.swapfile.path);
-    let (swapfile, identity) = match create_exact_swapfile(
-        path,
-        launch.swapfile.size_bytes,
-        launch.swapfile.mode,
-    ) {
-        Ok(value) => value,
-        Err(error) => return Err(persist_recovery(store, journal, error)),
-    };
+    let (swapfile, identity) =
+        match create_exact_swapfile(path, launch.swapfile.size_bytes, launch.swapfile.mode) {
+            Ok(value) => value,
+            Err(error) => return Err(persist_recovery(store, journal, error)),
+        };
     if let Err(error) = revalidate_swapfile(
         &swapfile,
         identity,
@@ -428,13 +422,11 @@ fn execute_mutating_runtime(
         return Err(persist_recovery(store, journal, error));
     }
 
-    let (old_active, replacement_active) = match exact_swap_entries(
-        &journal.retiring_swap_device,
-        &journal.swapfile_path,
-    ) {
-        Ok(value) => value,
-        Err(error) => return Err(persist_recovery(store, journal, error)),
-    };
+    let (old_active, replacement_active) =
+        match exact_swap_entries(&journal.retiring_swap_device, &journal.swapfile_path) {
+            Ok(value) => value,
+            Err(error) => return Err(persist_recovery(store, journal, error)),
+        };
     if old_active.priority != journal.retiring_swap_priority
         || replacement_active.priority != journal.retiring_swap_priority
         || replacement_active.size_bytes != old_active.size_bytes
