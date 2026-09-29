@@ -3,14 +3,13 @@ use clap::{Parser, Subcommand, ValueEnum};
 use lsm_core::BlockDevice;
 use lsm_discovery::{
     analyze_extendability, discover_capabilities, discover_fstab,
-    discover_hibernation_resume_evidence, discover_lvm, discover_mounts,
-    discover_partition_tables, discover_snapshot, discover_storage, discover_swaps,
+    discover_hibernation_resume_evidence, discover_lvm, discover_mounts, discover_partition_tables,
+    discover_snapshot, discover_storage, discover_swaps,
 };
 use lsm_planner::{
     analyze_layer_route, analyze_swap_migration_safety, decide_filesystem_growth,
-    list_extend_targets,
-    list_provisioning_opportunities, parse_growth_size, plan_create, plan_extend,
-    CreatePartitionTablePolicy, CreatePurpose, CreateRequest, ExtendRequest,
+    list_extend_targets, list_provisioning_opportunities, parse_growth_size, plan_create,
+    plan_extend, CreatePartitionTablePolicy, CreatePurpose, CreateRequest, ExtendRequest,
     FilesystemDecisionState, Growth, PlanStatus,
 };
 use std::process::ExitCode;
@@ -554,14 +553,10 @@ mod tests {
         assert!(Cli::try_parse_from(["storagemgr", "plan", "targets", "--json"]).is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "route", "/"]).is_ok());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "swap-migration", "/data"]).is_ok());
-        assert!(Cli::try_parse_from([
-            "storagemgr",
-            "plan",
-            "swap-migration",
-            "/data",
-            "--json"
-        ])
-        .is_ok());
+        assert!(
+            Cli::try_parse_from(["storagemgr", "plan", "swap-migration", "/data", "--json"])
+                .is_ok()
+        );
         assert!(Cli::try_parse_from(["storagemgr", "plan", "filesystem", "/"]).is_ok());
         assert!(
             Cli::try_parse_from(["storagemgr", "plan", "filesystem", "/dev/sda1", "--json"])
