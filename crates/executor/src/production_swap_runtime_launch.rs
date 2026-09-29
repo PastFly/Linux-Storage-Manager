@@ -317,17 +317,10 @@ mod tests {
             process_spawned: false,
         };
         let (mkswap, swapon, swapoff) = exact_stage_args(&preflight);
-        assert_eq!(
-            mkswap,
-            vec!["--force", "/data/.linux-storage-manager.swap"]
-        );
+        assert_eq!(mkswap, vec!["--force", "/data/.linux-storage-manager.swap"]);
         assert_eq!(
             swapon,
-            vec![
-                "--priority",
-                "7",
-                "/data/.linux-storage-manager.swap"
-            ]
+            vec!["--priority", "7", "/data/.linux-storage-manager.swap"]
         );
         assert_eq!(swapoff, vec!["/dev/loop7p5"]);
     }
