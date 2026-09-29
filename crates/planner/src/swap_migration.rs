@@ -3,8 +3,9 @@ use lsm_core::{
     HostSnapshot, PathOccupancyEvidence,
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
-use crate::{analyze_layout_opportunity, fingerprint, Blocker, PlanStatus, PlannerError};
+use crate::{analyze_layout_opportunity, Blocker, PlanStatus, PlannerError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
