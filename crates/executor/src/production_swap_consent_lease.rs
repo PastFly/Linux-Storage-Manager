@@ -6,10 +6,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    verify_default_production_swap_replacement_consent,
-    ProductionSwapReplacementActivationIntent, ProductionSwapReplacementConsentError,
-    ProductionSwapReplacementConsentFileIdentity, ProductionSwapReplacementConsentReceipt,
-    PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH,
+    verify_default_production_swap_replacement_consent, ProductionSwapReplacementActivationIntent,
+    ProductionSwapReplacementConsentError, ProductionSwapReplacementConsentFileIdentity,
+    ProductionSwapReplacementConsentReceipt, PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH,
 };
 
 const CONSENT_READ_CHUNK: usize = 4096;
