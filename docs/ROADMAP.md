@@ -186,6 +186,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
   - [x] Add the separately feature-gated runtime crossing through replacement swapfile creation, mkswap, swapon, mandatory dual-active verification and old-partition swapoff; every mutation-capable action is journaled before crossing and any ambiguous failure enters durable RecoveryRequired.
   - [x] Atomically replace the exact frozen retiring swap entry in /etc/fstab only after M1B64 proves OldSwapDeactivated: exact pre-write backup, intent-before-write journal transition, same-directory fsynced temp + inode recheck + atomic rename + directory fsync, followed by parse/readback verification and PersistentConfigUpdated.
   - [x] Freeze the exact post-fstab old logical-swap + DOS extended-container removal geometry and capture a fresh fsynced sfdisk recovery artifact while leaving the journal at PersistentConfigUpdated.
+  - [x] Pin trusted sfdisk/partx executables by open descriptor after the exact M1B66 preflight, and revalidate inode/metadata/content immediately before any future delete or kernel-refresh crossing.
   - [ ] Execute final old swap/extended-partition removal from that exact permit, verify authoritative geometry, and complete the durable journal; any ambiguity after the removal boundary must require recovery.
 
 - [x] Re-discover and verify after every destructive boundary in every currently executable disposable profile, including partition -> PV -> LV -> filesystem.
