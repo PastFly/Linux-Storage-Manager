@@ -297,3 +297,6 @@ M1B57 adds a dedicated root-owned runtime consent for the M1B56 swap-replacement
 
 
 M1B58 seals the M1B56 activation and M1B57 consent receipt into a separate non-spawning production swap execution permit. The permit rebinds the exact frozen replacement-intent ID, target, disk, retiring swap device/size/priority, swapfile path/mode and consent receipt ID. Both upstream objects must pass integrity checks and report execution disabled. The permit itself keeps `mutation_enabled=false` and `process_spawned=false` in its digest. No process launch or storage mutation is reachable from this feature; the later runtime crossing remains separately gated.
+
+
+M1B59 pins the M1B57 swap consent by retaining the exact opened file descriptor after verification and revalidating both the live fixed pathname and the still-open file immediately before a later runtime crossing. Device/inode/uid/mode/link-count/size/content hash must remain identical; pathname replacement, in-place edits, growth/truncation or metadata drift fail closed. This closes the consent TOCTOU gap but does not enable swapfile creation, mkswap, swapon/swapoff, persistent-config writes or partition removal.
