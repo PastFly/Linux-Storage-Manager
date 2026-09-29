@@ -174,7 +174,8 @@ verified route automatically; the user must not have to manually compose `sfdisk
   - [x] Add a read-only `plan swap-migration TARGET` safety gate that requires the exact detected tail-swap layout, no configured resume target/offset, and one persistent fstab binding before future migration planning.
   - [x] Prove a concrete replacement swapfile destination read-only: exact available bytes from statvfs, exact old-swap replacement size, unique RW ext4 mount, and required mkswap/swapon/swapoff tools.
   - [x] Freeze a deterministic non-executing replacement-swap intent only after exact path vacancy, runtime swap identity/priority and persistent fstab binding are revalidated; existing files/symlinks fail closed.
-  - [ ] Prove runtime replacement activation, swapoff failure rollback, atomic persistent-config rewrite and final partition-removal recovery before enabling mutation.
+  - [x] Prove replacement swapfile creation/activation and the pre-old-swapoff fault boundary on an explicitly owned disposable DOS loop: both swaps must remain active on injected interruption, successful old swapoff must leave the replacement active, and partition geometry/sentinel data must remain unchanged.
+  - [ ] Bind the frozen M1B54 intent to a separately gated production runtime, prove atomic persistent-config rewrite, and implement final old swap/extended-partition removal with durable recovery before enabling automatic migration.
 
 - [x] Re-discover and verify after every destructive boundary in every currently executable disposable profile, including partition -> PV -> LV -> filesystem.
 - [ ] Keep shrink unsupported until it is separately designed and reviewed.
