@@ -3065,7 +3065,11 @@ pub fn analyze_layout_opportunity(
         .iter()
         .find(|swap| swap.name == swap_record.node)?;
     let swap_bytes = swap_record.size_sectors.checked_mul(sector)?;
-    if active_swap.size_bytes != swap_bytes {
+    if active_swap.kind != "partition"
+        || active_swap.size_bytes == 0
+        || active_swap.size_bytes > swap_bytes
+        || active_swap.used_bytes > active_swap.size_bytes
+    {
         return None;
     }
 
