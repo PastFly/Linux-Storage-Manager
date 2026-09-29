@@ -8,10 +8,9 @@ use lsm_discovery::{
 };
 use lsm_planner::{
     analyze_layer_route, analyze_swap_migration_safety, analyze_swapfile_destination,
-    decide_filesystem_growth,
-    list_extend_targets, list_provisioning_opportunities, parse_growth_size, plan_create,
-    plan_extend, CreatePartitionTablePolicy, CreatePurpose, CreateRequest, ExtendRequest,
-    FilesystemDecisionState, Growth, PlanStatus,
+    decide_filesystem_growth, list_extend_targets, list_provisioning_opportunities,
+    parse_growth_size, plan_create, plan_extend, CreatePartitionTablePolicy, CreatePurpose,
+    CreateRequest, ExtendRequest, FilesystemDecisionState, Growth, PlanStatus,
 };
 use std::process::ExitCode;
 
@@ -349,8 +348,13 @@ fn run() -> Result<ExitCode> {
             if let Some(destination) = swapfile_on {
                 let space = discover_filesystem_space(&destination)?;
                 let capabilities = discover_capabilities();
-                let readiness =
-                    analyze_swapfile_destination(&snapshot, &capabilities, &safety, &space, &destination);
+                let readiness = analyze_swapfile_destination(
+                    &snapshot,
+                    &capabilities,
+                    &safety,
+                    &space,
+                    &destination,
+                );
                 if json {
                     println!("{}", serde_json::to_string_pretty(&readiness)?);
                 } else {
