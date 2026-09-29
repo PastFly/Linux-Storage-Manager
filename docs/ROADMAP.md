@@ -173,6 +173,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
   - [x] Discover kernel hibernation/resume evidence read-only from `/proc/cmdline`, `/sys/power/resume` and `/sys/power/resume_offset`; malformed/ambiguous evidence fails closed.
   - [x] Add a read-only `plan swap-migration TARGET` safety gate that requires the exact detected tail-swap layout, no configured resume target/offset, and one persistent fstab binding before future migration planning.
   - [x] Prove a concrete replacement swapfile destination read-only: exact available bytes from statvfs, exact old-swap replacement size, unique RW ext4 mount, and required mkswap/swapon/swapoff tools.
+  - [x] Freeze a deterministic non-executing replacement-swap intent only after exact path vacancy, runtime swap identity/priority and persistent fstab binding are revalidated; existing files/symlinks fail closed.
   - [ ] Prove runtime replacement activation, swapoff failure rollback, atomic persistent-config rewrite and final partition-removal recovery before enabling mutation.
 
 - [x] Re-discover and verify after every destructive boundary in every currently executable disposable profile, including partition -> PV -> LV -> filesystem.
