@@ -1,6 +1,6 @@
 use lsm_core::{
-    BlockDevice, FilesystemSpaceEvidence, HibernationResumeEvidence, HostCapabilities, HostSnapshot,
-    PathOccupancyEvidence,
+    BlockDevice, FilesystemSpaceEvidence, HibernationResumeEvidence, HostCapabilities,
+    HostSnapshot, PathOccupancyEvidence,
 };
 use serde::Serialize;
 
@@ -370,7 +370,6 @@ pub fn analyze_swapfile_destination(
         ordered_future_steps,
     }
 }
-
 
 #[derive(Serialize)]
 struct SwapReplacementIntentDigestPayload<'a> {
@@ -819,7 +818,10 @@ mod tests {
         assert!(!first.executable);
         assert_eq!(first.intent_id, second.intent_id);
         assert_eq!(first.retiring_swap_priority, Some(-2));
-        assert_eq!(first.persistent_swap_source.as_deref(), Some("UUID=swap-uuid"));
+        assert_eq!(
+            first.persistent_swap_source.as_deref(),
+            Some("UUID=swap-uuid")
+        );
         assert_eq!(first.swapfile_mode, 0o600);
     }
 
@@ -873,13 +875,9 @@ mod tests {
         );
         snapshot.swaps[0].used_bytes += 4096;
 
-        let intent = build_swap_replacement_intent(
-            &snapshot,
-            &safety,
-            &readiness,
-            &vacant_swapfile_path(),
-        )
-        .unwrap();
+        let intent =
+            build_swap_replacement_intent(&snapshot, &safety, &readiness, &vacant_swapfile_path())
+                .unwrap();
         assert!(intent
             .blockers
             .iter()
