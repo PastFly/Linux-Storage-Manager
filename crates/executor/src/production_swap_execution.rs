@@ -141,10 +141,8 @@ fn validate_consent(
 pub fn seal_production_swap_replacement_execution_permit(
     activation: &ProductionSwapReplacementActivationIntent,
     consent: &ProductionSwapReplacementConsentReceipt,
-) -> Result<
-    ProductionSwapReplacementExecutionPermit,
-    ProductionSwapReplacementExecutionPermitError,
-> {
+) -> Result<ProductionSwapReplacementExecutionPermit, ProductionSwapReplacementExecutionPermitError>
+{
     if !PRODUCTION_SWAP_REPLACEMENT_EXECUTION_PERMIT_COMPILED {
         return Err(ProductionSwapReplacementExecutionPermitError::FeatureDisabled);
     }
