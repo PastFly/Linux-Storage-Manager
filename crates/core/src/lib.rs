@@ -135,6 +135,14 @@ impl HibernationResumeEvidence {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilesystemSpaceEvidence {
+    pub path: String,
+    pub block_size_bytes: u64,
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LvmInventory {
     pub physical_volumes: Vec<LvmPhysicalVolume>,
