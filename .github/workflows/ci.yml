@@ -83,6 +83,9 @@ jobs:
       - name: Check frozen swap runtime descriptor launch contract
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-swap-replacement-runtime-launch --lib
+      - name: Check durable swap runtime journal boundary
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo test --locked -p lsm-executor --features production-swap-replacement-runtime-journal --lib
       - name: Check non-spawning swap production execution permit
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-swap-replacement-execution-permit --lib

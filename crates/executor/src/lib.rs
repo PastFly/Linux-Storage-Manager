@@ -49,6 +49,8 @@ mod production_swap_activation;
 mod production_swap_consent;
 mod production_swap_consent_lease;
 mod production_swap_execution;
+#[cfg(feature = "production-swap-replacement-runtime-journal")]
+mod production_swap_runtime_journal;
 #[cfg(feature = "production-swap-replacement-runtime-launch")]
 mod production_swap_runtime_launch;
 #[cfg(feature = "production-swap-replacement-runtime-preflight")]
@@ -264,6 +266,14 @@ pub use production_swap_execution::{
     seal_production_swap_replacement_execution_permit, ProductionSwapReplacementExecutionPermit,
     ProductionSwapReplacementExecutionPermitError,
     PRODUCTION_SWAP_REPLACEMENT_EXECUTION_PERMIT_COMPILED,
+};
+#[cfg(feature = "production-swap-replacement-runtime-journal")]
+pub use production_swap_runtime_journal::{
+    build_production_swap_runtime_journal, persist_new_production_swap_runtime_journal,
+    ProductionSwapRuntimeJournal, ProductionSwapRuntimeJournalError,
+    ProductionSwapRuntimeJournalEvent, ProductionSwapRuntimeJournalStore,
+    ProductionSwapRuntimePhase, PRODUCTION_SWAP_RUNTIME_JOURNAL_COMPILED,
+    PRODUCTION_SWAP_RUNTIME_JOURNAL_DIRECTORY,
 };
 #[cfg(feature = "production-swap-replacement-runtime-launch")]
 pub use production_swap_runtime_launch::{
