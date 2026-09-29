@@ -13,7 +13,8 @@ pub use route_graph::{
     RouteLayerKind,
 };
 pub use swap_migration::{
-    analyze_swap_migration_safety, SwapMigrationSafety, SwapMigrationSafetyStatus,
+    analyze_swap_migration_safety, analyze_swapfile_destination, SwapMigrationSafety,
+    SwapMigrationSafetyStatus, SwapfileDestinationReadiness, SwapfileDestinationStatus,
 };
 
 pub use identity_guard::{

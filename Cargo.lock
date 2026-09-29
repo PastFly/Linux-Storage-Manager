@@ -727,6 +727,7 @@ dependencies = [
 name = "lsm-discovery"
 version = "0.1.0-dev"
 dependencies = [
+ "libc",
  "lsm-core",
  "serde",
  "serde_json",
