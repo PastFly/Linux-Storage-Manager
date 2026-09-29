@@ -4,11 +4,12 @@ use lsm_core::BlockDevice;
 use lsm_discovery::{
     analyze_extendability, discover_capabilities, discover_filesystem_space, discover_fstab,
     discover_hibernation_resume_evidence, discover_lvm, discover_mounts, discover_partition_tables,
-    discover_snapshot, discover_storage, discover_swaps,
+    discover_path_occupancy, discover_snapshot, discover_storage, discover_swaps,
 };
 use lsm_planner::{
     analyze_layer_route, analyze_swap_migration_safety, analyze_swapfile_destination,
-    decide_filesystem_growth, list_extend_targets, list_provisioning_opportunities,
+    build_swap_replacement_intent, decide_filesystem_growth, list_extend_targets,
+    list_provisioning_opportunities,
     parse_growth_size, plan_create, plan_extend, CreatePartitionTablePolicy, CreatePurpose,
     CreateRequest, ExtendRequest, FilesystemDecisionState, Growth, PlanStatus,
 };
@@ -98,6 +99,9 @@ enum PlanCommand {
         /// Optional mounted ext4 filesystem on which a replacement swapfile should be planned.
         #[arg(long)]
         swapfile_on: Option<String>,
+        /// Freeze a deterministic non-executing replacement intent after all read-only checks.
+        #[arg(long, requires = "swapfile_on")]
+        freeze_intent: bool,
         /// Emit structured JSON.
         #[arg(long)]
         json: bool,
@@ -338,6 +342,7 @@ fn run() -> Result<ExitCode> {
                 PlanCommand::SwapMigration {
                     target,
                     swapfile_on,
+                    freeze_intent,
                     json,
                 },
         }) => {
@@ -355,6 +360,35 @@ fn run() -> Result<ExitCode> {
                     &space,
                     &destination,
                 );
+                if freeze_intent {
+                    let path_state = discover_path_occupancy(&readiness.swapfile_path)?;
+                    let intent =
+                        build_swap_replacement_intent(&snapshot, &safety, &readiness, &path_state)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&intent)?);
+                    } else {
+                        println!("Intent: {}", intent.intent_id);
+                        println!("Status: {:?}", intent.status);
+                        println!("Executable: {}", intent.executable);
+                        println!(
+                            "Retiring swap: {}",
+                            intent.retiring_swap_device.as_deref().unwrap_or("-")
+                        );
+                        println!("Replacement: {}", intent.swapfile_path);
+                        for blocker in &intent.blockers {
+                            println!("BLOCKED [{}]: {}", blocker.code, blocker.message);
+                        }
+                        for step in &intent.ordered_steps {
+                            println!("Frozen step: {step}");
+                        }
+                    }
+                    return Ok(if intent.ready() {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::from(2)
+                    });
+                }
+
                 if json {
                     println!("{}", serde_json::to_string_pretty(&readiness)?);
                 } else {
@@ -614,6 +648,25 @@ mod tests {
             "/var"
         ])
         .is_ok());
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "swap-migration",
+            "/data",
+            "--swapfile-on",
+            "/var",
+            "--freeze-intent",
+            "--json"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "swap-migration",
+            "/data",
+            "--freeze-intent"
+        ])
+        .is_err());
         assert!(Cli::try_parse_from(["storagemgr", "plan", "filesystem", "/"]).is_ok());
         assert!(
             Cli::try_parse_from(["storagemgr", "plan", "filesystem", "/dev/sda1", "--json"])
