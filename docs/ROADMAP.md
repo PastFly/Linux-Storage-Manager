@@ -181,6 +181,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
   - [x] Pin the root-owned swap consent file by open descriptor and revalidate both pathname identity and in-place metadata/content immediately before future runtime execution.
   - [x] Revalidate immediately before runtime crossing: pinned consent, exact non-spawning permit, hibernation/resume state, retiring swap size/priority, fstab binding, RW ext4 destination, live capacity, vacant swapfile path, and trusted mkswap/swapon/swapoff provenance.
   - [x] Pin the freshly validated mkswap/swapon/swapoff executables by open descriptor and revalidate exact inode/metadata/content so path replacement cannot alter the future runtime tools.
+  - [x] Separate raw retiring-partition geometry from /proc/swaps reported usable swap capacity throughout the frozen intent, production activation, execution permit and fresh runtime preflight; reported capacity may be smaller but never larger than the raw partition.
   - [ ] Add the separately reviewed runtime crossing, prove atomic persistent-config rewrite, and implement final old swap/extended-partition removal with durable recovery before enabling automatic migration.
 
 - [x] Re-discover and verify after every destructive boundary in every currently executable disposable profile, including partition -> PV -> LV -> filesystem.
