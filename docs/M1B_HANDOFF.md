@@ -273,3 +273,6 @@ the exact PR #27 head.
 
 
 M1B50 adds typed chained production preparation on top of the M1B45-M1B49 execution stack. The first builder resolves the exact partition request/command/tool provenance before entering durable Executing, then seals the pinned launch and chained production permit. Continuations never accept a caller-selected step ID: they consume the latest verified durable boundary and admit only the exact PV, LV or filesystem successor. Any failure after the mutation boundary is durably forced to RecoveryRequired. This removes manual low-level pre-spawn wiring from the future chained production E2E harness. M1B50 is restacked on the merged M1B49 master baseline.
+
+
+M1B51 proves the full chained production path on a root-owned disposable loop fixture. The production loop harness now selects either the existing two-step LV -> filesystem profile or the exact four-step partition -> PV -> LV -> filesystem profile from the frozen mutation graph. The chained fixture forces backing growth beyond current VG free extents, executes every step through the M1B50 typed builders plus M1B49 synchronous live verification, requires durable Completed, verifies partition/PV/LV/filesystem growth and sentinel preservation, removes owned journal/backup evidence and runtime consent, and is invoked by the CI loop matrix.
