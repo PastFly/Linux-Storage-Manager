@@ -372,6 +372,31 @@ pub fn analyze_swapfile_destination(
 }
 
 
+#[derive(Serialize)]
+struct SwapReplacementIntentDigestPayload<'a> {
+    schema_version: u32,
+    executable: bool,
+    status: PlanStatus,
+    target: &'a str,
+    disk: &'a Option<String>,
+    retiring_swap_device: &'a Option<String>,
+    retiring_swap_bytes: Option<u64>,
+    retiring_swap_used_bytes: Option<u64>,
+    retiring_swap_priority: Option<i32>,
+    persistent_swap_source: &'a Option<String>,
+    persistent_swap_target: &'a Option<String>,
+    persistent_swap_options: &'a [String],
+    persistent_swap_dump: Option<u32>,
+    persistent_swap_pass: Option<u32>,
+    destination_mount: &'a str,
+    swapfile_path: &'a str,
+    destination_filesystem: &'a Option<String>,
+    destination_available_bytes: u64,
+    swapfile_mode: u32,
+    blockers: &'a [Blocker],
+    ordered_steps: &'a [String],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SwapReplacementIntent {
     pub schema_version: u32,
@@ -542,29 +567,29 @@ pub fn build_swap_replacement_intent(
         ],
     };
 
-    intent.intent_id = fingerprint(&(
-        intent.schema_version,
-        intent.executable,
-        intent.status,
-        &intent.target,
-        &intent.disk,
-        &intent.retiring_swap_device,
-        intent.retiring_swap_bytes,
-        intent.retiring_swap_used_bytes,
-        intent.retiring_swap_priority,
-        &intent.persistent_swap_source,
-        &intent.persistent_swap_target,
-        &intent.persistent_swap_options,
-        intent.persistent_swap_dump,
-        intent.persistent_swap_pass,
-        &intent.destination_mount,
-        &intent.swapfile_path,
-        &intent.destination_filesystem,
-        intent.destination_available_bytes,
-        intent.swapfile_mode,
-        &intent.blockers,
-        &intent.ordered_steps,
-    ))?;
+    intent.intent_id = fingerprint(&SwapReplacementIntentDigestPayload {
+        schema_version: intent.schema_version,
+        executable: intent.executable,
+        status: intent.status,
+        target: &intent.target,
+        disk: &intent.disk,
+        retiring_swap_device: &intent.retiring_swap_device,
+        retiring_swap_bytes: intent.retiring_swap_bytes,
+        retiring_swap_used_bytes: intent.retiring_swap_used_bytes,
+        retiring_swap_priority: intent.retiring_swap_priority,
+        persistent_swap_source: &intent.persistent_swap_source,
+        persistent_swap_target: &intent.persistent_swap_target,
+        persistent_swap_options: &intent.persistent_swap_options,
+        persistent_swap_dump: intent.persistent_swap_dump,
+        persistent_swap_pass: intent.persistent_swap_pass,
+        destination_mount: &intent.destination_mount,
+        swapfile_path: &intent.swapfile_path,
+        destination_filesystem: &intent.destination_filesystem,
+        destination_available_bytes: intent.destination_available_bytes,
+        swapfile_mode: intent.swapfile_mode,
+        blockers: &intent.blockers,
+        ordered_steps: &intent.ordered_steps,
+    })?;
     Ok(intent)
 }
 
