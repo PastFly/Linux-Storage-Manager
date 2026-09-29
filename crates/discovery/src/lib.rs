@@ -7,6 +7,7 @@ mod hibernation;
 mod lvm;
 mod mounts;
 mod partition_table;
+mod path_occupancy;
 mod reconcile;
 mod snapshot;
 mod swap;
@@ -33,6 +34,7 @@ pub use mounts::{discover_mounts, parse_findmnt_json, MountDiscoveryError};
 pub use partition_table::{
     discover_partition_tables, parse_sfdisk_json, PartitionTableDiscoveryError,
 };
+pub use path_occupancy::{discover_path_occupancy, PathOccupancyDiscoveryError};
 pub use reconcile::reconcile_snapshot;
 pub use snapshot::{discover_snapshot, SnapshotDiscoveryError};
 pub use swap::{discover_swaps, parse_proc_swaps, SwapDiscoveryError};
