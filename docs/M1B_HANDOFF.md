@@ -306,3 +306,6 @@ M1B60 adds the final fresh read-only runtime preflight before any production swa
 
 
 M1B61 pins the M1B60 trusted swap runtime executables by open descriptor without spawning them. Each canonical mkswap/swapon/swapoff file is opened O_NOFOLLOW/O_CLOEXEC and must still match the frozen device/inode/uid/mode/size/content hash; in-place edits and pathname replacement fail closed. The descriptors are held privately only to stabilize the future runtime crossing. No swapfile creation, process execution, swap-state change, persistent-config edit or partition mutation occurs.
+
+
+M1B62 separates raw retiring-partition geometry from the usable swap capacity reported by `/proc/swaps`. The DOS layout proof continues to reserve the full raw partition span for replacement-file allocation, while runtime identity tracks the independently reported swap size/usage/priority and only requires reported capacity to be positive and no larger than the raw partition. The reported value is carried through the frozen replacement intent, M1B56 activation, M1B58 execution permit and M1B60 fresh runtime preflight. This matches the already-proven M1B55 disposable behavior and removes a false equality assumption before any production `swapon`.
