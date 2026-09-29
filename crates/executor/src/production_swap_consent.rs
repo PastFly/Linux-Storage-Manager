@@ -242,9 +242,10 @@ fn validate_secure_parent(path: &Path) -> Result<(), ProductionSwapReplacementCo
     Ok(())
 }
 
-fn read_default_consent_file(
-) -> Result<(Vec<u8>, ProductionSwapReplacementConsentFileIdentity), ProductionSwapReplacementConsentError>
-{
+fn read_default_consent_file() -> Result<
+    (Vec<u8>, ProductionSwapReplacementConsentFileIdentity),
+    ProductionSwapReplacementConsentError,
+> {
     let path = Path::new(PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH);
     validate_secure_parent(path)?;
 
