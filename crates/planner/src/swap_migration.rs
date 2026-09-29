@@ -654,7 +654,7 @@ mod tests {
                 {"source":"UUID=fs-data","target":"/data","fs_type":"ext4","options":["defaults"],"dump":0,"pass":2},
                 {"source":"UUID=swap-uuid","target":"none","fs_type":"swap","options":["sw"],"dump":0,"pass":0}
             ],
-            "swaps":[{"name":"/dev/sda5","kind":"partition","size_bytes":102400000u64,"used_bytes":4096u64,"priority":-2}],
+            "swaps":[{"name":"/dev/sda5","kind":"partition","size_bytes":102395904u64,"used_bytes":4096u64,"priority":-2}],
             "lvm":null,
             "filesystem_preflight":[],
             "diagnostics":[],
@@ -697,6 +697,7 @@ mod tests {
             result.persistent_swap_source.as_deref(),
             Some("UUID=swap-uuid")
         );
+        assert_eq!(result.active_swap_reported_bytes, Some(102_395_904));
         assert_eq!(result.active_swap_used_bytes, Some(4096));
         assert!(!result.future_checks.is_empty());
     }
@@ -833,6 +834,7 @@ mod tests {
         assert!(first.ready());
         assert!(!first.executable);
         assert_eq!(first.intent_id, second.intent_id);
+        assert_eq!(first.retiring_swap_reported_bytes, Some(102_395_904));
         assert_eq!(first.retiring_swap_priority, Some(-2));
         assert_eq!(
             first.persistent_swap_source.as_deref(),
