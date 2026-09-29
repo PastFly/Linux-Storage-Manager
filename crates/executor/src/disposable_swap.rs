@@ -272,7 +272,9 @@ fn create_exact_swapfile(
         .open(path)
         .map_err(DisposableSwapActivationError::FileIo)?;
 
-    let allocation = unsafe { libc::posix_fallocate(file.as_raw_fd(), 0, bytes as libc::off_t) };
+    let length = libc::off_t::try_from(bytes)
+        .map_err(|_| DisposableSwapActivationError::SwapfileAllocationMismatch)?;
+    let allocation = unsafe { libc::posix_fallocate(file.as_raw_fd(), 0, length) };
     if allocation != 0 {
         return Err(DisposableSwapActivationError::FileIo(
             io::Error::from_raw_os_error(allocation),
@@ -330,7 +332,7 @@ fn replacement_and_old(
     let swapfile_name = swapfile_path.to_string_lossy();
     let replacement = swaps
         .iter()
-        .filter(|entry| entry.name == swapfile_name)
+        .filter(|entry| entry.name == swapfile_name.as_ref())
         .collect::<Vec<_>>();
     if old.len() != 1 || replacement.len() != 1 {
         return Err(DisposableSwapActivationError::ReplacementVerificationFailed);
@@ -436,7 +438,7 @@ pub fn execute_disposable_swap_replacement(
     let old_active = swaps.iter().any(|entry| entry.name == old_swap_device);
     let replacement_matches = swaps
         .iter()
-        .filter(|entry| entry.name == swapfile_path.to_string_lossy())
+        .filter(|entry| entry.name == swapfile_path.to_string_lossy().as_ref())
         .collect::<Vec<_>>();
     if old_active
         || replacement_matches.len() != 1
