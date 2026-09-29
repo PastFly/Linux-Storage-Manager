@@ -49,6 +49,8 @@ mod production_swap_activation;
 mod production_swap_consent;
 mod production_swap_consent_lease;
 mod production_swap_execution;
+#[cfg(feature = "production-swap-replacement-runtime-preflight")]
+mod production_swap_runtime_preflight;
 #[cfg(feature = "production-mutation-execution")]
 mod production_verified_step;
 
@@ -258,6 +260,11 @@ pub use production_swap_execution::{
     seal_production_swap_replacement_execution_permit, ProductionSwapReplacementExecutionPermit,
     ProductionSwapReplacementExecutionPermitError,
     PRODUCTION_SWAP_REPLACEMENT_EXECUTION_PERMIT_COMPILED,
+};
+#[cfg(feature = "production-swap-replacement-runtime-preflight")]
+pub use production_swap_runtime_preflight::{
+    prepare_production_swap_runtime_preflight, ProductionSwapRuntimePreflightError,
+    ProductionSwapRuntimePreflightReceipt, PRODUCTION_SWAP_RUNTIME_PREFLIGHT_COMPILED,
 };
 #[cfg(feature = "production-mutation-execution")]
 pub use production_verified_step::{
