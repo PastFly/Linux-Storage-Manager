@@ -327,3 +327,6 @@ M1B66 freezes the final partition-removal boundary without changing the partitio
 
 
 M1B66 is restacked on the merged M1B65 master baseline.
+
+
+M1B67 pins the final partition-removal executables without spawning anything. After an integrity-valid M1B66 preflight, trusted fixed-system `sfdisk` and `partx` identities are resolved, opened with `O_NOFOLLOW`, and retained by descriptor. Revalidation hashes the already-open executable objects and requires the same device/inode/uid/mode/size/content before the future removal crossing, preventing pathname replacement or in-place binary mutation. No partition-table or kernel partition state changes occur in this layer.
