@@ -458,8 +458,7 @@ fn execute_mutating_runtime(
         return Err(persist_recovery(store, journal, error));
     }
 
-    let swaps = discover_swaps()
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    let swaps = discover_swaps().map_err(|error| io::Error::other(error.to_string()))?;
     let old_still_active = swaps
         .iter()
         .any(|entry| entry.name == journal.retiring_swap_device);
