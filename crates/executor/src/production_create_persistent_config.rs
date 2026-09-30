@@ -10,17 +10,15 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::production_create_mount_exec::verify_mounted_snapshot;
-use crate::production_create_persistent_journal::{
-    persist_production_create_persistent_config_transition,
-};
+use crate::production_create_persistent_journal::persist_production_create_persistent_config_transition;
 use crate::{
     build_production_create_persistent_config_journal, HostStorageLock,
     ProductionCreateActivationIntent, ProductionCreateMountActivationIntent,
     ProductionCreateMountRuntimeExecutionReceipt, ProductionCreateMountRuntimeJournal,
     ProductionCreateMountRuntimeJournalError, ProductionCreateMountRuntimeJournalStore,
-    ProductionCreatePersistentConfigJournal,
-    ProductionCreatePersistentConfigJournalError, ProductionCreatePersistentConfigJournalStore,
-    ProductionCreatePersistentConfigPhase, ProductionCreatePersistentConfigTransition,
+    ProductionCreatePersistentConfigJournal, ProductionCreatePersistentConfigJournalError,
+    ProductionCreatePersistentConfigJournalStore, ProductionCreatePersistentConfigPhase,
+    ProductionCreatePersistentConfigTransition,
 };
 
 pub const PRODUCTION_CREATE_PERSISTENT_CONFIG_COMPILED: bool =
@@ -204,7 +202,8 @@ fn read_safe_regular(
 fn parse_entries(bytes: &[u8]) -> Result<Vec<FstabEntry>, ProductionCreatePersistentConfigError> {
     let text = std::str::from_utf8(bytes)
         .map_err(|error| ProductionCreatePersistentConfigError::Parse(error.to_string()))?;
-    parse_fstab(text).map_err(|error| ProductionCreatePersistentConfigError::Parse(error.to_string()))
+    parse_fstab(text)
+        .map_err(|error| ProductionCreatePersistentConfigError::Parse(error.to_string()))
 }
 
 fn source_matches(entry: &FstabEntry, activation: &ProductionCreateMountActivationIntent) -> bool {
@@ -321,8 +320,7 @@ fn ensure_backup(
             {
                 return Err(ProductionCreatePersistentConfigError::BackupMismatch);
             }
-            let existing =
-                fs::read(&backup).map_err(|source| io_error(&backup, source))?;
+            let existing = fs::read(&backup).map_err(|source| io_error(&backup, source))?;
             if existing != before {
                 return Err(ProductionCreatePersistentConfigError::BackupMismatch);
             }
@@ -445,8 +443,12 @@ fn validate_bindings(
         return Err(ProductionCreatePersistentConfigError::AuthorizationInvalid);
     }
 
-    let expected =
-        build_production_create_persistent_config_journal(create, activation, receipt, mount_journal)?;
+    let expected = build_production_create_persistent_config_journal(
+        create,
+        activation,
+        receipt,
+        mount_journal,
+    )?;
     if expected != *journal {
         return Err(ProductionCreatePersistentConfigError::AuthorizationInvalid);
     }
@@ -512,6 +514,7 @@ fn persist_recovery(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_persistent_config_at(
     create: &ProductionCreateActivationIntent,
     activation: &ProductionCreateMountActivationIntent,
@@ -740,9 +743,9 @@ mod tests {
         let before = b"# header\nUUID=root / ext4 defaults 0 1\n";
         let after = append_exact_fstab_entry(before, &activation).unwrap();
         assert!(after.starts_with(before));
-        assert!(String::from_utf8(after.clone())
-            .unwrap()
-            .contains("UUID=123e4567-e89b-12d3-a456-426614174000\t/mnt/data\text4\tdefaults,nofail\t0\t2\n"));
+        assert!(String::from_utf8(after.clone()).unwrap().contains(
+            "UUID=123e4567-e89b-12d3-a456-426614174000\t/mnt/data\text4\tdefaults,nofail\t0\t2\n"
+        ));
         verify_exact_fstab(&after, &activation).unwrap();
     }
 
@@ -750,8 +753,7 @@ mod tests {
     fn conflicting_source_or_mountpoint_fails_closed() {
         let activation = activation();
         for before in [
-            b"UUID=123e4567-e89b-12d3-a456-426614174000 /other ext4 defaults 0 2\n"
-                .as_slice(),
+            b"UUID=123e4567-e89b-12d3-a456-426614174000 /other ext4 defaults 0 2\n".as_slice(),
             b"UUID=other /mnt/data ext4 defaults 0 2\n".as_slice(),
         ] {
             assert!(matches!(
@@ -780,15 +782,7 @@ mod tests {
         let uid = unsafe { libc::geteuid() };
         let (before, metadata) = read_safe_regular(&path, uid).unwrap();
         let after = b"UUID=root / ext4 defaults 0 1\nUUID=data /mnt/data ext4 defaults 0 2\n";
-        atomic_replace(
-            &path,
-            after,
-            &before,
-            &metadata,
-            uid,
-            "0123456789abcdef",
-        )
-        .unwrap();
+        atomic_replace(&path, after, &before, &metadata, uid, "0123456789abcdef").unwrap();
         let (installed, installed_metadata) = read_safe_regular(&path, uid).unwrap();
         assert_eq!(installed, after);
         assert_eq!(installed_metadata.mode() & 0o777, 0o644);
