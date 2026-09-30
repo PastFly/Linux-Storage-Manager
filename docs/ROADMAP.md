@@ -210,7 +210,8 @@ mountpoint. Low-level layout steps are generated automatically.
 - [x] M2A9: persist a typed create runtime journal before mutation, with irreversible boundaries for partition-table write and filesystem format; mkfs cannot be entered until a fresh partition rediscovery is durably verified, and any post-boundary failure can enter RecoveryRequired.
 - [x] M2A10: first gated Create crossing executes only the exact descriptor-pinned sfdisk/partx stages after a durable pre-write boundary, then bounded fresh rediscovery must prove the exact single partition geometry before PartitionMappedVerified is persisted; mkfs is not executed.
 - [x] M2A11: second gated Create crossing starts only from the exact persisted M2A10 PartitionMappedVerified journal and receipt, revalidates the complete authorization/consent/tool chain plus fresh partition geometry, durably enters BeginFilesystemFormat before executing only the exact pinned mkfs descriptor, then requires fresh exact ext4/XFS rediscovery before Completed; mount/fstab remain separate.
-- [ ] Add the guarded mount/persistent-config activation layer for a completed M2A11 filesystem, with exact mountpoint occupancy checks, atomic fstab handling and fresh post-mount verification.
+- [x] M2A12: seal a separate non-executing mount/persistence activation only from an integrity-valid completed M2A11 filesystem; bind the fresh canonical filesystem UUID, exact existing empty mountpoint inode/metadata, portable fstab source/options and absence of mount/fstab/swap conflicts; no mkdir, mount process or fstab write is reachable.
+- [ ] M2A13: add the fresh runtime mount preflight and pinned mount executable lease, including immediate mountpoint identity revalidation and exact descriptor-based mount argv; keep fstab mutation separately gated.
 
 - create GPT/DOS partition tables on verified blank disks;
 - create partitions in verified usable free ranges, including disk tail and later internal gaps;
