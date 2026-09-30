@@ -26,6 +26,7 @@ production-create-mount-activation = ["production-create-filesystem-execution"]
 production-create-mount-runtime-preflight = ["production-create-mount-activation", "dep:lsm-discovery"]
 production-create-mount-runtime-journal = ["production-create-mount-runtime-preflight"]
 production-create-mount-runtime-execution = ["production-create-mount-runtime-journal"]
+production-create-loop-harness = ["production-create-mount-runtime-execution", "disposable-loop-harness", "dep:lsm-discovery"]
 production-swap-replacement-activation = []
 production-swap-replacement-consent = ["production-swap-replacement-activation"]
 production-swap-replacement-consent-lease = ["production-swap-replacement-consent"]
@@ -73,6 +74,11 @@ required-features = ["production-loop-harness"]
 name = "lsm-production-swap-loop-harness"
 path = "src/bin/production_swap_loop_harness.rs"
 required-features = ["production-swap-loop-harness"]
+
+[[bin]]
+name = "lsm-production-create-loop-harness"
+path = "src/bin/production_create_loop_harness.rs"
+required-features = ["production-create-loop-harness"]
 
 [dependencies]
 libc = "0.2"
