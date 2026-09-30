@@ -178,7 +178,8 @@ fn validate_runtime_evidence(
         .collect::<Vec<_>>();
     if swaps.len() != 1
         || swaps[0].kind != "partition"
-        || swaps[0].size_bytes != activation.retiring_swap_bytes
+        || swaps[0].size_bytes == 0
+        || swaps[0].size_bytes > activation.retiring_swap_bytes
         || swaps[0].priority != activation.retiring_swap_priority
     {
         return Err(ProductionSwapRuntimePreflightError::RetiringSwapChanged);
@@ -412,6 +413,32 @@ mod tests {
             mode: None,
             size_bytes: None,
         }
+    }
+
+    #[test]
+    fn header_reduced_runtime_swap_size_is_valid_inside_frozen_partition_geometry() {
+        let activation = activation();
+        let permit = permit(&activation);
+        let mut snapshot = snapshot();
+        snapshot.swaps[0].size_bytes = activation.retiring_swap_bytes - 4096;
+        let resume = HibernationResumeEvidence::default();
+        let space = FilesystemSpaceEvidence {
+            path: activation.destination_mount.clone(),
+            block_size_bytes: 4096,
+            total_bytes: activation.destination_available_bytes * 2,
+            available_bytes: activation.destination_available_bytes,
+        };
+        let path = PathOccupancyEvidence {
+            path: activation.swapfile_path.clone(),
+            exists: false,
+            kind: None,
+            uid: None,
+            mode: None,
+            size_bytes: None,
+        };
+
+        assert!(validate_runtime_evidence(&activation, &snapshot, &resume, &space, &path).is_ok());
+        assert!(permit.integrity_matches().unwrap());
     }
 
     #[test]
