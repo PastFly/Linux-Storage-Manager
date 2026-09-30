@@ -292,8 +292,10 @@ fn expected_mkfs_program(
 
 fn exact_stage_inputs(
     activation: &ProductionCreateActivationIntent,
-) -> Result<(String, String, Vec<String>, Vec<String>, Vec<String>), ProductionCreateRuntimeLaunchError>
-{
+) -> Result<
+    (String, String, Vec<String>, Vec<String>, Vec<String>),
+    ProductionCreateRuntimeLaunchError,
+> {
     let partition = partition_device(&activation.disk)?;
     let script = sfdisk_script(
         activation.partition_table,
@@ -340,8 +342,7 @@ pub fn build_production_create_runtime_launch_spec(
     validate_bindings(activation, permit, preflight)?;
     tools.revalidate(preflight)?;
 
-    let (partition, script, sfdisk_argv, partx_argv, mkfs_argv) =
-        exact_stage_inputs(activation)?;
+    let (partition, script, sfdisk_argv, partx_argv, mkfs_argv) = exact_stage_inputs(activation)?;
     let mkfs_program = expected_mkfs_program(&activation.filesystem)?;
 
     let sfdisk = stage(
@@ -401,7 +402,10 @@ pub fn build_production_create_runtime_launch_spec(
 mod tests {
     use super::*;
 
-    fn activation(policy: CreatePartitionTablePolicy, filesystem: &str) -> ProductionCreateActivationIntent {
+    fn activation(
+        policy: CreatePartitionTablePolicy,
+        filesystem: &str,
+    ) -> ProductionCreateActivationIntent {
         let mut value = ProductionCreateActivationIntent {
             schema_version: 1,
             activation_id: String::new(),
@@ -439,7 +443,13 @@ mod tests {
         );
         assert_eq!(
             sfdisk,
-            ["sfdisk", "--lock=yes", "--no-reread", "--no-tell-kernel", "/dev/loop7"]
+            [
+                "sfdisk",
+                "--lock=yes",
+                "--no-reread",
+                "--no-tell-kernel",
+                "/dev/loop7"
+            ]
         );
         assert_eq!(partx, ["partx", "--add", "--nr", "1", "/dev/loop7"]);
         assert_eq!(mkfs, ["mkfs.ext4", "-F", "/dev/loop7p1"]);
