@@ -689,6 +689,18 @@ def wait_block(path: str) -> None:
     raise SafetyError(f"block device did not appear: {path}")
 
 
+def wait_block_absent(path: str) -> None:
+    for _ in range(100):
+        try:
+            mode = Path(path).stat().st_mode
+        except FileNotFoundError:
+            return
+        if not stat.S_ISBLK(mode):
+            return
+        time.sleep(0.1)
+    raise SafetyError(f"stale block device did not disappear: {path}")
+
+
 def check_preview(plan: Any, expected_status: str) -> None:
     if not isinstance(plan, dict):
         raise SafetyError("plan is not a JSON object")
@@ -2671,6 +2683,14 @@ def exercise_production_swap_replacement(
         raise SafetyError("production swap E2E left p5 or extended p2 behind")
     if loop.device + "p1" not in nodes:
         raise SafetyError("production swap E2E damaged the data partition")
+
+    # The authoritative table is already correct, but the kernel/udev view may
+    # still expose deleted logical/extended partition nodes briefly. Reconcile
+    # the owned loop before any later fixture is allowed to discover storage.
+    binary.run("partx", "--update", loop.device)
+    binary.run("udevadm", "settle", "--timeout=30")
+    wait_block_absent(loop.device + "p2")
+    wait_block_absent(old_swap_device)
     if any(row.get("name") in (old_swap_device, str(target / ".linux-storage-manager.swap"))
            for row in current_swaps(binary)):
         raise SafetyError("production swap E2E cleanup left active swap")
