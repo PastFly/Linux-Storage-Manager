@@ -295,6 +295,8 @@ fn verify_post_state(
 /// descriptor execution. Any failure from that point is persisted as
 /// RecoveryRequired. Completed is reachable only after exact storage, swap and
 /// persistent-config post-state verification.
+// The explicit parameters are the immutable authorization/provenance chain.
+#[allow(clippy::too_many_arguments)]
 pub fn execute_production_swap_partition_removal(
     host_lock: &HostStorageLock,
     activation: &ProductionSwapReplacementActivationIntent,
