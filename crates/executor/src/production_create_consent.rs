@@ -13,8 +13,7 @@ pub const PRODUCTION_CREATE_CONSENT_PATH: &str =
     "/etc/linux-storage-manager/production-create-consent.json";
 pub const PRODUCTION_CREATE_CONSENT_PHRASE: &str =
     "I UNDERSTAND THIS WILL PARTITION AND FORMAT THE DISK";
-pub const PRODUCTION_CREATE_CONSENT_COMPILED: bool =
-    cfg!(feature = "production-create-consent");
+pub const PRODUCTION_CREATE_CONSENT_COMPILED: bool = cfg!(feature = "production-create-consent");
 const MAX_CONSENT_BYTES: u64 = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,12 +288,7 @@ pub fn verify_default_production_create_consent(
     }
     validate_activation(activation)?;
     let (bytes, identity) = read_default_consent_file()?;
-    bind_consent_receipt(
-        activation,
-        PRODUCTION_CREATE_CONSENT_PATH,
-        &bytes,
-        identity,
-    )
+    bind_consent_receipt(activation, PRODUCTION_CREATE_CONSENT_PATH, &bytes, identity)
 }
 
 #[cfg(test)]
@@ -415,24 +409,14 @@ mod tests {
         let mut nonroot = file_identity(&bytes);
         nonroot.uid = 1000;
         assert!(matches!(
-            bind_consent_receipt(
-                &activation,
-                PRODUCTION_CREATE_CONSENT_PATH,
-                &bytes,
-                nonroot,
-            ),
+            bind_consent_receipt(&activation, PRODUCTION_CREATE_CONSENT_PATH, &bytes, nonroot,),
             Err(ProductionCreateConsentError::UnsafeFile)
         ));
 
         let mut loose = file_identity(&bytes);
         loose.mode = libc::S_IFREG | 0o640;
         assert!(matches!(
-            bind_consent_receipt(
-                &activation,
-                PRODUCTION_CREATE_CONSENT_PATH,
-                &bytes,
-                loose,
-            ),
+            bind_consent_receipt(&activation, PRODUCTION_CREATE_CONSENT_PATH, &bytes, loose,),
             Err(ProductionCreateConsentError::UnsafeFile)
         ));
     }
