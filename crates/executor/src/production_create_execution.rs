@@ -108,7 +108,9 @@ pub enum ProductionCreateExecutionPermitError {
     ConsentInvalid,
     #[error("create activation and consent receipt do not bind the same exact operation")]
     ConsentBindingMismatch,
-    #[error("upstream create authorization unexpectedly enables mutation or reports completed writes")]
+    #[error(
+        "upstream create authorization unexpectedly enables mutation or reports completed writes"
+    )]
     UpstreamAlreadyEnabled,
     #[error("create execution-permit serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
@@ -208,9 +210,7 @@ pub fn seal_production_create_execution_permit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        ProductionCreateConsentFileIdentity, PRODUCTION_CREATE_CONSENT_PATH,
-    };
+    use crate::{ProductionCreateConsentFileIdentity, PRODUCTION_CREATE_CONSENT_PATH};
 
     fn activation() -> ProductionCreateActivationIntent {
         let mut value = ProductionCreateActivationIntent {
@@ -265,7 +265,6 @@ mod tests {
         value
     }
 
-    #[cfg(feature = "production-create-execution-permit")]
     #[test]
     fn exact_activation_and_verified_consent_seal_nonspawning_permit() {
         let activation = activation();
@@ -282,7 +281,6 @@ mod tests {
         assert_eq!(permit.partition_size_bytes, activation.partition_size_bytes);
     }
 
-    #[cfg(feature = "production-create-execution-permit")]
     #[test]
     fn consent_for_another_activation_is_rejected() {
         let activation = activation();
@@ -295,7 +293,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "production-create-execution-permit")]
     #[test]
     fn activation_that_claims_prior_mutation_is_rejected() {
         let mut activation = activation();
@@ -306,6 +303,12 @@ mod tests {
             Err(ProductionCreateExecutionPermitError::ActivationInvalid)
                 | Err(ProductionCreateExecutionPermitError::UpstreamAlreadyEnabled)
         ));
+    }
+
+    #[cfg(feature = "production-create-execution-permit")]
+    #[test]
+    fn compiled_public_boundary_requires_a_live_pinned_consent_lease() {
+        assert!(PRODUCTION_CREATE_EXECUTION_PERMIT_COMPILED);
     }
 
     #[test]
