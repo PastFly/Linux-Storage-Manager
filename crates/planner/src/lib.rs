@@ -1,12 +1,17 @@
 //! Read-only, in-memory plan previews. No process, filesystem or device I/O.
 //! A preview is NOT an executable plan or authorization to modify storage.
 
+mod create_intent;
 mod execution_guard;
 mod execution_handoff;
 mod filesystem_policy;
 mod identity_guard;
 mod route_graph;
 mod swap_migration;
+
+pub use create_intent::{
+    freeze_blank_disk_filesystem_create_intent, FrozenBlankDiskFilesystemIntent,
+};
 
 pub use route_graph::{
     analyze_layer_route, LayerRoute, LayerRouteStatus, RouteIssue, RouteIssueKind, RouteLayer,
@@ -430,6 +435,14 @@ impl CreatePlanPreview {
 
     pub fn plan_id(&self) -> &str {
         &self.plan_id
+    }
+
+    pub fn request(&self) -> &CreateRequest {
+        &self.request
+    }
+
+    pub fn executable(&self) -> bool {
+        self.executable
     }
 
     pub fn source(&self) -> Option<&ProvisioningOpportunity> {
