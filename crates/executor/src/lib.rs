@@ -45,6 +45,8 @@ mod production_create_activation;
 mod production_create_consent;
 mod production_create_consent_lease;
 mod production_create_execution;
+#[cfg(feature = "production-create-runtime-journal")]
+mod production_create_journal;
 #[cfg(feature = "production-create-runtime-launch")]
 mod production_create_launch;
 #[cfg(feature = "production-create-runtime-preflight")]
@@ -279,6 +281,14 @@ pub use production_create_launch::{
     build_production_create_runtime_launch_spec, ProductionCreateLaunchStage,
     ProductionCreateRuntimeLaunchError, ProductionCreateRuntimeLaunchSpec,
     PRODUCTION_CREATE_RUNTIME_LAUNCH_COMPILED,
+};
+#[cfg(feature = "production-create-runtime-journal")]
+pub use production_create_journal::{
+    build_production_create_runtime_journal, persist_new_production_create_runtime_journal,
+    ProductionCreateRuntimeJournal, ProductionCreateRuntimeJournalError,
+    ProductionCreateRuntimeJournalEvent, ProductionCreateRuntimeJournalStore,
+    ProductionCreateRuntimePhase, ProductionCreateRuntimeTransition,
+    PRODUCTION_CREATE_RUNTIME_JOURNAL_COMPILED, PRODUCTION_CREATE_RUNTIME_JOURNAL_DIRECTORY,
 };
 #[cfg(feature = "production-create-runtime-preflight")]
 pub use production_create_preflight::{
