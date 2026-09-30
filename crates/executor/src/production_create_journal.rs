@@ -205,10 +205,7 @@ impl ProductionCreateRuntimeJournalStore {
         Ok(final_path)
     }
 
-    fn path_for(
-        &self,
-        journal_id: &str,
-    ) -> Result<PathBuf, ProductionCreateRuntimeJournalError> {
+    fn path_for(&self, journal_id: &str) -> Result<PathBuf, ProductionCreateRuntimeJournalError> {
         validate_digest(journal_id, "journal ID")?;
         Ok(self.root.join(format!("{journal_id}.json")))
     }
@@ -254,10 +251,7 @@ fn io_error(path: &Path, source: io::Error) -> ProductionCreateRuntimeJournalErr
     }
 }
 
-fn validate_digest(
-    value: &str,
-    label: &str,
-) -> Result<(), ProductionCreateRuntimeJournalError> {
+fn validate_digest(value: &str, label: &str) -> Result<(), ProductionCreateRuntimeJournalError> {
     if value.len() != 64
         || !value
             .bytes()
@@ -343,17 +337,22 @@ fn encode_journal(
 
 fn sync_directory(path: &Path) -> Result<(), ProductionCreateRuntimeJournalError> {
     let directory = File::open(path).map_err(|source| io_error(path, source))?;
-    directory.sync_all().map_err(|source| io_error(path, source))
+    directory
+        .sync_all()
+        .map_err(|source| io_error(path, source))
 }
 
 fn sync_parent(path: &Path) -> Result<(), ProductionCreateRuntimeJournalError> {
-    let parent = path.parent().ok_or_else(|| {
-        ProductionCreateRuntimeJournalError::UnsafeDirectory(path.to_path_buf())
-    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| ProductionCreateRuntimeJournalError::UnsafeDirectory(path.to_path_buf()))?;
     sync_directory(parent)
 }
 
-fn temp_path(root: &Path, final_path: &Path) -> Result<PathBuf, ProductionCreateRuntimeJournalError> {
+fn temp_path(
+    root: &Path,
+    final_path: &Path,
+) -> Result<PathBuf, ProductionCreateRuntimeJournalError> {
     let name = final_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -515,7 +514,10 @@ fn validate_journal(
         .iter()
         .enumerate()
         .any(|(index, event)| event.sequence != index as u32 + 1)
-        || journal.events.last().is_some_and(|event| event.sequence != expected_sequence)
+        || journal
+            .events
+            .last()
+            .is_some_and(|event| event.sequence != expected_sequence)
     {
         return Err(ProductionCreateRuntimeJournalError::InvalidRecord(
             "journal event sequence is invalid".into(),
@@ -528,9 +530,7 @@ fn validate_journal(
             "mutation-start flag does not match durable phase".into(),
         ));
     }
-    if journal.filesystem_may_have_changed
-        && !journal.partition_table_may_have_changed
-    {
+    if journal.filesystem_may_have_changed && !journal.partition_table_may_have_changed {
         return Err(ProductionCreateRuntimeJournalError::InvalidRecord(
             "filesystem mutation cannot precede partition-table mutation".into(),
         ));
@@ -638,9 +638,8 @@ fn apply_transition(
     transition: ProductionCreateRuntimeTransition,
 ) -> Result<(), ProductionCreateRuntimeJournalError> {
     let from = journal.phase;
-    let (phase, code) = transition_target(from, transition).ok_or(
-        ProductionCreateRuntimeJournalError::InvalidTransition { from, transition },
-    )?;
+    let (phase, code) = transition_target(from, transition)
+        .ok_or(ProductionCreateRuntimeJournalError::InvalidTransition { from, transition })?;
 
     journal.phase = phase;
     if matches!(
@@ -777,7 +776,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(journal.phase, ProductionCreateRuntimePhase::WritingPartitionTable);
+        assert_eq!(
+            journal.phase,
+            ProductionCreateRuntimePhase::WritingPartitionTable
+        );
         assert_eq!(
             store.load(&journal.journal_id).unwrap().phase,
             ProductionCreateRuntimePhase::WritingPartitionTable
@@ -804,7 +806,10 @@ mod tests {
             ProductionCreateRuntimeTransition::RecoveryRequired,
         )
         .unwrap();
-        assert_eq!(journal.phase, ProductionCreateRuntimePhase::RecoveryRequired);
+        assert_eq!(
+            journal.phase,
+            ProductionCreateRuntimePhase::RecoveryRequired
+        );
     }
 
     #[test]
