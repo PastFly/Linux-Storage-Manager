@@ -612,6 +612,8 @@ fn recompute_flags(journal: &mut ProductionSwapRuntimeJournal) {
     });
 }
 
+// Keep the transition matrix as an explicit table for auditability.
+#[allow(clippy::match_like_matches_macro)]
 fn validate_journal(
     journal: &ProductionSwapRuntimeJournal,
 ) -> Result<(), ProductionSwapRuntimeJournalError> {
