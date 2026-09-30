@@ -104,6 +104,9 @@ jobs:
       - name: Check gated final partition-removal execution
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-swap-replacement-partition-removal-execution --lib
+      - name: Check full production swap loop harness feature
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo clippy --locked -p lsm-executor --features production-swap-loop-harness --bin lsm-production-swap-loop-harness -- -D warnings
       - name: Check non-spawning swap production execution permit
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-swap-replacement-execution-permit --lib
@@ -172,6 +175,7 @@ jobs:
           cargo build --locked --release -p lsm-executor --features disposable-loop-harness --bin lsm-disposable-loop-harness
           cargo build --locked --release -p lsm-executor --features disposable-swap-migration-harness --bin lsm-disposable-swap-loop-harness
           cargo build --locked --release -p lsm-executor --features production-loop-harness --bin lsm-production-loop-harness
+          cargo build --locked --release -p lsm-executor --features production-swap-loop-harness --bin lsm-production-swap-loop-harness
       - name: Test planning and partition/LVM recovery on disposable fixtures
         run: |
           for attempt in 1 2 3; do
@@ -181,7 +185,8 @@ jobs:
               "${GITHUB_WORKSPACE}/target/release/storagemgr" \
               "${GITHUB_WORKSPACE}/target/release/lsm-disposable-loop-harness" \
               --swap-executor-binary "${GITHUB_WORKSPACE}/target/release/lsm-disposable-swap-loop-harness" \
-              --production-executor-binary "${GITHUB_WORKSPACE}/target/release/lsm-production-loop-harness"
+              --production-executor-binary "${GITHUB_WORKSPACE}/target/release/lsm-production-loop-harness" \
+              --production-swap-executor-binary "${GITHUB_WORKSPACE}/target/release/lsm-production-swap-loop-harness"
           done
 
       - name: Package tested read-only prototype
