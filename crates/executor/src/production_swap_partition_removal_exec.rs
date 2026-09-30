@@ -324,8 +324,10 @@ pub fn execute_production_swap_partition_removal(
     launch: &ProductionSwapPartitionRemovalLaunchSpec,
     store: &ProductionSwapRuntimeJournalStore,
     journal: &mut ProductionSwapRuntimeJournal,
-) -> Result<ProductionSwapPartitionRemovalExecutionReceipt, ProductionSwapPartitionRemovalExecutionError>
-{
+) -> Result<
+    ProductionSwapPartitionRemovalExecutionReceipt,
+    ProductionSwapPartitionRemovalExecutionError,
+> {
     if !PRODUCTION_SWAP_PARTITION_REMOVAL_EXECUTION_COMPILED {
         return Err(ProductionSwapPartitionRemovalExecutionError::FeatureDisabled);
     }
