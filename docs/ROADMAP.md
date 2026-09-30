@@ -169,7 +169,8 @@ verified route automatically; the user must not have to manually compose `sfdisk
 - [x] Automatically chain verified single-PV disk-tail growth through disk -> partition -> PV -> VG -> LV -> filesystem on the disposable executor; broader layered profiles remain separately gated.
 - [x] Keep every discovered filesystem selectable when several partitions/LVs exist; live loop coverage proves two mounted LV targets remain isolated and two mounted partition targets remain visible even when one is blocked by its neighbor.
 - [x] Present blocked paths with exact structured blocker code/message instead of silently omitting the target; the target catalog remains machine-readable and text CLI renders the same evidence.
-- [ ] Support safe disk-tail migration strategies such as swap-partition -> swapfile only after dedicated hibernation/resume checks.
+- [x] Support safe disk-tail migration strategies such as swap-partition -> swapfile only after dedicated hibernation/resume checks.
+  - [x] Prove the entire production swap-tail route end-to-end on an owned DOS loop fixture: replacement activation, old swapoff, exact persistent rewrite, logical/extended partition removal, durable Completed, sentinel preservation and cleanup.
   - [x] Discover kernel hibernation/resume evidence read-only from `/proc/cmdline`, `/sys/power/resume` and `/sys/power/resume_offset`; malformed/ambiguous evidence fails closed.
   - [x] Add a read-only `plan swap-migration TARGET` safety gate that requires the exact detected tail-swap layout, no configured resume target/offset, and one persistent fstab binding before future migration planning.
   - [x] Prove a concrete replacement swapfile destination read-only: exact available bytes from statvfs, exact old-swap replacement size, unique RW ext4 mount, and required mkswap/swapon/swapoff tools.
@@ -187,7 +188,7 @@ verified route automatically; the user must not have to manually compose `sfdisk
   - [x] Atomically replace the exact frozen retiring swap entry in /etc/fstab only after M1B64 proves OldSwapDeactivated: exact pre-write backup, intent-before-write journal transition, same-directory fsynced temp + inode recheck + atomic rename + directory fsync, followed by parse/readback verification and PersistentConfigUpdated.
   - [x] Freeze the exact post-fstab old logical-swap + DOS extended-container removal geometry and capture a fresh fsynced sfdisk recovery artifact while leaving the journal at PersistentConfigUpdated.
   - [x] Pin trusted sfdisk/partx executables by open descriptor after the exact M1B66 preflight, and revalidate inode/metadata/content immediately before any future delete or kernel-refresh crossing.
-  - [ ] Execute final old swap/extended-partition removal from that exact permit, verify authoritative geometry, and complete the durable journal; any ambiguity after the removal boundary must require recovery.
+  - [x] Execute final old swap/extended-partition removal from that exact permit, verify authoritative geometry, and complete the durable journal; any ambiguity after the removal boundary must require recovery.
 
 - [x] Re-discover and verify after every destructive boundary in every currently executable disposable profile, including partition -> PV -> LV -> filesystem.
 - [ ] Keep shrink unsupported until it is separately designed and reviewed.

@@ -26,6 +26,7 @@ production-swap-replacement-partition-removal-preflight = ["production-swap-repl
 production-swap-replacement-partition-removal-tool-lease = ["production-swap-replacement-partition-removal-preflight"]
 production-swap-replacement-partition-removal-launch = ["production-swap-replacement-partition-removal-tool-lease"]
 production-swap-replacement-partition-removal-execution = ["production-swap-replacement-partition-removal-launch", "dep:lsm-discovery"]
+production-swap-loop-harness = ["production-swap-replacement-partition-removal-execution", "disposable-loop-harness", "dep:lsm-discovery"]
 production-mutation-consent = ["production-mutation-activation"]
 production-mutation-execution-permit = ["production-mutation-consent"]
 production-chained-mutation-execution-permit = ["production-mutation-consent"]
@@ -53,6 +54,11 @@ required-features = ["production-helper-protocol"]
 name = "lsm-production-loop-harness"
 path = "src/bin/production_loop_harness.rs"
 required-features = ["production-loop-harness"]
+
+[[bin]]
+name = "lsm-production-swap-loop-harness"
+path = "src/bin/production_swap_loop_harness.rs"
+required-features = ["production-swap-loop-harness"]
 
 [dependencies]
 libc = "0.2"

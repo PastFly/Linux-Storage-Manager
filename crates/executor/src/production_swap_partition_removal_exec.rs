@@ -9,6 +9,7 @@ use crate::production_swap_runtime_journal::{
 };
 use crate::{
     prepare_production_swap_partition_removal,
+    production_swap_persistent_config::revalidate_production_swap_persistent_config_receipt,
     revalidate_pinned_production_swap_replacement_consent, DescriptorExecOutcome, HostStorageLock,
     PinnedProductionSwapPartitionRemovalTools, PinnedProductionSwapReplacementConsent,
     PrivilegedDescriptorExecError, ProductionSwapPartitionRemovalLaunchSpec,
@@ -181,9 +182,11 @@ fn validate_authorization(
         || launch.retiring_swap_partition_number != preflight.retiring_swap_partition_number
         || launch.extended_partition_number != preflight.extended_partition_number
         || launch.sfdisk_delete.tool != tools.sfdisk
-        || launch.partx_update.tool != tools.partx
+        || launch.partx_delete_swap.tool != tools.partx
+        || launch.partx_delete_extended.tool != tools.partx
         || launch.sfdisk_delete.program != crate::PrivilegedProgram::Sfdisk
-        || launch.partx_update.program != crate::PrivilegedProgram::Partx
+        || launch.partx_delete_swap.program != crate::PrivilegedProgram::Partx
+        || launch.partx_delete_extended.program != crate::PrivilegedProgram::Partx
     {
         return Err(ProductionSwapPartitionRemovalExecutionError::AuthorizationInvalid);
     }
@@ -235,9 +238,16 @@ fn persist_recovery(
     }
 }
 
+fn storage_contains_path(devices: &[lsm_core::BlockDevice], path: &str) -> bool {
+    devices.iter().any(|device| {
+        device.path.as_deref() == Some(path) || storage_contains_path(&device.children, path)
+    })
+}
+
 fn verify_post_state(
     activation: &ProductionSwapReplacementActivationIntent,
     runtime: &ProductionSwapRuntimeExecutionReceipt,
+    persistent: &ProductionSwapPersistentConfigReceipt,
     preflight: &ProductionSwapPartitionRemovalPreflight,
 ) -> Result<(), ProductionSwapPartitionRemovalExecutionError> {
     let snapshot = discover_snapshot()
@@ -262,6 +272,18 @@ fn verify_post_state(
         return Err(ProductionSwapPartitionRemovalExecutionError::PostStateMismatch);
     }
 
+    // Authoritative table deletion is not enough: stale kernel partition
+    // mappings would poison subsequent discovery and make Completed unsafe.
+    if storage_contains_path(
+        &snapshot.storage.block_devices,
+        &preflight.retiring_swap_device,
+    ) || storage_contains_path(
+        &snapshot.storage.block_devices,
+        &preflight.extended_partition_device,
+    ) {
+        return Err(ProductionSwapPartitionRemovalExecutionError::PostStateMismatch);
+    }
+
     if snapshot
         .swaps
         .iter()
@@ -281,28 +303,8 @@ fn verify_post_state(
         return Err(ProductionSwapPartitionRemovalExecutionError::PostStateMismatch);
     }
 
-    if snapshot
-        .fstab
-        .iter()
-        .any(|entry| entry.fs_type == "swap" && entry.source == activation.persistent_swap_source)
-    {
-        return Err(ProductionSwapPartitionRemovalExecutionError::PostStateMismatch);
-    }
-    let persistent_replacement = snapshot
-        .fstab
-        .iter()
-        .filter(|entry| {
-            entry.fs_type == "swap"
-                && entry.source == activation.swapfile_path
-                && entry.target == activation.persistent_swap_target
-                && entry.options == activation.persistent_swap_options
-                && entry.dump == activation.persistent_swap_dump
-                && entry.pass == activation.persistent_swap_pass
-        })
-        .count();
-    if persistent_replacement != 1 {
-        return Err(ProductionSwapPartitionRemovalExecutionError::PostStateMismatch);
-    }
+    revalidate_production_swap_persistent_config_receipt(activation, persistent)
+        .map_err(|_| ProductionSwapPartitionRemovalExecutionError::PostStateMismatch)?;
 
     Ok(())
 }
@@ -313,6 +315,8 @@ fn verify_post_state(
 /// descriptor execution. Any failure from that point is persisted as
 /// RecoveryRequired. Completed is reachable only after exact storage, swap and
 /// persistent-config post-state verification.
+// The explicit parameters are the immutable authorization/provenance chain.
+#[allow(clippy::too_many_arguments)]
 pub fn execute_production_swap_partition_removal(
     host_lock: &HostStorageLock,
     activation: &ProductionSwapReplacementActivationIntent,
@@ -369,16 +373,26 @@ pub fn execute_production_swap_partition_removal(
     }
 
     if let Err(error) = run_stage(
-        "partx-update",
+        "partx-delete-retiring-swap",
         tools.partx_file(),
-        &launch.partx_update,
+        &launch.partx_delete_swap,
         &launch.fixed_path,
         &launch.fixed_locale,
     ) {
         return Err(persist_recovery(store, journal, error));
     }
 
-    if let Err(error) = verify_post_state(activation, runtime, preflight) {
+    if let Err(error) = run_stage(
+        "partx-delete-extended-container",
+        tools.partx_file(),
+        &launch.partx_delete_extended,
+        &launch.fixed_path,
+        &launch.fixed_locale,
+    ) {
+        return Err(persist_recovery(store, journal, error));
+    }
+
+    if let Err(error) = verify_post_state(activation, runtime, persistent, preflight) {
         return Err(persist_recovery(store, journal, error));
     }
 

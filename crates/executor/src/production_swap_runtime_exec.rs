@@ -509,6 +509,8 @@ fn execute_mutating_runtime(
 /// Every mutation-capable action is preceded by an fsync-persisted M1B63 phase,
 /// and any ambiguous runtime failure after crossing begins is forced into
 /// durable RecoveryRequired.
+// The explicit parameters are the immutable authorization/provenance chain.
+#[allow(clippy::too_many_arguments)]
 pub fn execute_production_swap_runtime_replacement(
     _host_lock: &HostStorageLock,
     activation: &ProductionSwapReplacementActivationIntent,

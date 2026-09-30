@@ -29,7 +29,8 @@ class SafetyError(RuntimeError):
 class Runner:
     def __init__(self, binary: Path, executor_binary: Path,
                  production_executor_binary: Path | None = None,
-                 swap_executor_binary: Path | None = None):
+                 swap_executor_binary: Path | None = None,
+                 production_swap_executor_binary: Path | None = None):
         names = ("losetup", "sfdisk", "partx", "mkfs.ext4", "mkfs.xfs", "pvcreate",
                  "vgcreate", "vgchange", "lvcreate", "lvrename", "vgremove", "vgs", "pvs", "lvs",
                  "mount", "umount", "findmnt", "vgcfgbackup", "vgcfgrestore", "pvresize", "lvextend",
@@ -50,6 +51,10 @@ class Runner:
         if swap_executor_binary is not None:
             self.tools["swap-executor"] = str(
                 swap_executor_binary.resolve(strict=True)
+            )
+        if production_swap_executor_binary is not None:
+            self.tools["production-swap-executor"] = str(
+                production_swap_executor_binary.resolve(strict=True)
             )
 
     def run(self, name: str, *args: str, input: str | None = None,
@@ -2603,6 +2608,85 @@ def exercise_disposable_swap_replacement(
         flush=True,
     )
 
+
+def exercise_production_swap_replacement(
+    resources: Resources,
+    binary: Runner,
+    loop: Loop,
+    old_swap_device: str,
+    target: Path,
+) -> None:
+    resources.check_loop(loop)
+    if "production-swap-executor" not in binary.tools:
+        raise SafetyError("production swap executor binary is not configured")
+    if old_swap_device != loop.device + "p5":
+        raise SafetyError("production tail-swap fixture did not bind p5")
+
+    sentinel = (target / "readonly-sentinel").read_bytes()
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    if not association_row:
+        raise SafetyError("exact loop association is unavailable before production swap E2E")
+
+    old_rows = [row for row in current_swaps(binary)
+                if row.get("name") == old_swap_device]
+    if len(old_rows) != 1 or old_rows[0].get("priority") != 7:
+        raise SafetyError("old production swap is not active at priority 7")
+
+    resources.uncertain = True
+    result = binary.run(
+        "production-swap-executor",
+        "--allow-production-swap-loop-e2e",
+        "--target", str(target),
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--old-swap-device", old_swap_device,
+    )
+    receipt = json.loads(result.stdout)
+    expected = {
+        "profile": "tail_swap_partition_to_ext4_swapfile",
+        "final_phase": "completed",
+        "old_swap_device": old_swap_device,
+        "old_swap_active": False,
+        "replacement_swap_active_before_cleanup": True,
+        "logical_swap_removed": True,
+        "extended_container_removed": True,
+        "persistent_config_updated": True,
+        "partition_table_changed": True,
+        "production_chain_completed": True,
+    }
+    for key, value in expected.items():
+        if receipt.get(key) != value:
+            raise SafetyError(
+                f"production swap E2E receipt mismatch {key}: {receipt!r}"
+            )
+
+    table = binary.json("sfdisk", "--json", loop.device)
+    partitions = table.get("partitiontable", {}).get("partitions", [])
+    nodes = {row.get("node") for row in partitions if isinstance(row, dict)}
+    if old_swap_device in nodes or loop.device + "p2" in nodes:
+        raise SafetyError("production swap E2E left p5 or extended p2 behind")
+    if loop.device + "p1" not in nodes:
+        raise SafetyError("production swap E2E damaged the data partition")
+
+    if any(row.get("name") in (old_swap_device, str(target / ".linux-storage-manager.swap"))
+           for row in current_swaps(binary)):
+        raise SafetyError("production swap E2E cleanup left active swap")
+    if (target / ".linux-storage-manager.swap").exists():
+        raise SafetyError("production swap E2E cleanup left the replacement swapfile")
+    if (target / "readonly-sentinel").read_bytes() != sentinel:
+        raise SafetyError("production swap E2E changed the filesystem sentinel")
+
+    resources.uncertain = False
+    print(
+        "PRODUCTION_SWAP_REPLACEMENT_OK=runtime-persistence-partition-removal-completed",
+        flush=True,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--allow-disposable-loop-tests", action="store_true",
@@ -2611,6 +2695,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("executor_binary", type=Path)
     parser.add_argument("--production-executor-binary", type=Path)
     parser.add_argument("--swap-executor-binary", type=Path)
+    parser.add_argument("--production-swap-executor-binary", type=Path)
     args = parser.parse_args(argv)
     if not args.allow_disposable_loop_tests:
         parser.error("explicit --allow-disposable-loop-tests is required; never use on a production host")
@@ -2628,6 +2713,10 @@ def main(argv: list[str] | None = None) -> int:
             and (not args.swap_executor_binary.is_file()
                  or not os.access(args.swap_executor_binary, os.X_OK))):
         parser.error("swap executor binary is absent or not executable")
+    if (args.production_swap_executor_binary is not None
+            and (not args.production_swap_executor_binary.is_file()
+                 or not os.access(args.production_swap_executor_binary, os.X_OK))):
+        parser.error("production swap executor binary is absent or not executable")
     def interrupted(signum: int, frame: Any) -> None:
         raise KeyboardInterrupt(f"received signal {signum}")
     for signum in (signal.SIGTERM, signal.SIGHUP):
@@ -2638,6 +2727,7 @@ def main(argv: list[str] | None = None) -> int:
         args.executor_binary,
         args.production_executor_binary,
         args.swap_executor_binary,
+        args.production_swap_executor_binary,
     )
     root = Path(tempfile.mkdtemp(prefix="lsm-loop-matrix-"))
     resources = Resources(root, runner)
@@ -2786,6 +2876,35 @@ def main(argv: list[str] | None = None) -> int:
                 swap_loop,
                 swap_partition,
                 swap_target,
+            )
+
+        if args.production_swap_executor_binary is not None:
+            # Production E2E gets its own untouched fixture. The disposable
+            # scenario intentionally changes runtime swap state and must never
+            # become setup for the production safety proof.
+            print("==> dos-tail-swap-production-e2e", flush=True)
+            production_swap_loop = resources.create_loop(
+                "dos-tail-swap-production", 768 * 1024 * 1024
+            )
+            production_swap_data, production_swap_partition = (
+                resources.create_tail_swap_layout(
+                    production_swap_loop, data_mib=384, swap_mib=64
+                )
+            )
+            runner.run("mkfs.ext4", "-F", production_swap_data)
+            runner.run("mkswap", "--force", production_swap_partition)
+            runner.run("swapon", "--priority", "7", production_swap_partition)
+            refresh_fixture_udev(runner, Path(production_swap_data).name)
+            refresh_fixture_udev(runner, Path(production_swap_partition).name)
+            production_swap_target = resources.mount(
+                production_swap_data, "dos-tail-swap-production-mount"
+            )
+            exercise_production_swap_replacement(
+                resources,
+                runner,
+                production_swap_loop,
+                production_swap_partition,
+                production_swap_target,
             )
 
         if args.production_executor_binary is not None:

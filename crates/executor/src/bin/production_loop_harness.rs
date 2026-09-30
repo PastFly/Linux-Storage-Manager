@@ -136,9 +136,15 @@ fn run() -> HarnessResult<()> {
         },
     )?;
     if plan.status() != PlanStatus::Preview {
-        return Err(boxed(
-            "production loop fixture did not produce a preview-ready plan",
-        ));
+        let error_diagnostics = snapshot
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == lsm_core::DiagnosticSeverity::Error)
+            .collect::<Vec<_>>();
+        return Err(boxed(format!(
+            "production loop fixture did not produce a preview-ready plan: blockers={:?} error_diagnostics={error_diagnostics:?}",
+            plan.blockers()
+        )));
     }
 
     let handoff = build_frozen_execution_handoff(&snapshot, &capabilities, &plan)?;

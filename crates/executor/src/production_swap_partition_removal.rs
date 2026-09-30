@@ -4,13 +4,14 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use lsm_core::{HostSnapshot, PartitionRecord, PartitionTable};
+use lsm_core::{HostSnapshot, PartitionRecord};
 use lsm_discovery::discover_snapshot;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
+    production_swap_persistent_config::revalidate_production_swap_persistent_config_receipt,
     revalidate_pinned_production_swap_replacement_consent, HostStorageLock,
     PinnedProductionSwapReplacementConsent, ProductionSwapPersistentConfigReceipt,
     ProductionSwapReplacementActivationIntent, ProductionSwapReplacementConsentLeaseError,
@@ -429,6 +430,8 @@ pub fn prepare_production_swap_partition_removal(
         return Err(ProductionSwapPartitionRemovalPreflightError::JournalMismatch);
     }
     let _consent = revalidate_pinned_production_swap_replacement_consent(activation, consent)?;
+    revalidate_production_swap_persistent_config_receipt(activation, persistent)
+        .map_err(|_| ProductionSwapPartitionRemovalPreflightError::BindingMismatch)?;
 
     let snapshot = discover_snapshot().map_err(|error| {
         ProductionSwapPartitionRemovalPreflightError::Discovery(error.to_string())
@@ -485,6 +488,7 @@ pub fn prepare_production_swap_partition_removal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lsm_core::PartitionTable;
     use serde_json::json;
 
     fn activation() -> ProductionSwapReplacementActivationIntent {

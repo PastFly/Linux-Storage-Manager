@@ -242,11 +242,12 @@ fn validate_secure_parent(path: &Path) -> Result<(), ProductionSwapReplacementCo
     Ok(())
 }
 
-fn read_default_consent_file() -> Result<
+fn read_consent_file(
+    path: &Path,
+) -> Result<
     (Vec<u8>, ProductionSwapReplacementConsentFileIdentity),
     ProductionSwapReplacementConsentError,
 > {
-    let path = Path::new(PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH);
     validate_secure_parent(path)?;
 
     let mut file = OpenOptions::new()
@@ -289,19 +290,24 @@ fn read_default_consent_file() -> Result<
 /// Verify explicit root-owned runtime consent for exactly one M1B56 swap
 /// replacement activation. This remains non-executing and produces a receipt
 /// with execution_enabled=false.
-pub fn verify_default_production_swap_replacement_consent(
+pub(crate) fn verify_production_swap_replacement_consent_at(
     activation: &ProductionSwapReplacementActivationIntent,
+    path: &Path,
 ) -> Result<ProductionSwapReplacementConsentReceipt, ProductionSwapReplacementConsentError> {
     if !PRODUCTION_SWAP_REPLACEMENT_CONSENT_COMPILED {
         return Err(ProductionSwapReplacementConsentError::FeatureDisabled);
     }
     validate_activation(activation)?;
-    let (bytes, identity) = read_default_consent_file()?;
-    bind_consent_receipt(
+    let (bytes, identity) = read_consent_file(path)?;
+    bind_consent_receipt(activation, &path.to_string_lossy(), &bytes, identity)
+}
+
+pub fn verify_default_production_swap_replacement_consent(
+    activation: &ProductionSwapReplacementActivationIntent,
+) -> Result<ProductionSwapReplacementConsentReceipt, ProductionSwapReplacementConsentError> {
+    verify_production_swap_replacement_consent_at(
         activation,
-        PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH,
-        &bytes,
-        identity,
+        Path::new(PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH),
     )
 }
 

@@ -269,6 +269,8 @@ pub use production_swap_consent::{
     ProductionSwapReplacementConsentReceipt, PRODUCTION_SWAP_REPLACEMENT_CONSENT_COMPILED,
     PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH, PRODUCTION_SWAP_REPLACEMENT_CONSENT_PHRASE,
 };
+#[cfg(feature = "production-swap-loop-harness")]
+pub use production_swap_consent_lease::pin_production_swap_replacement_consent_at;
 pub use production_swap_consent_lease::{
     pin_default_production_swap_replacement_consent,
     revalidate_pinned_production_swap_replacement_consent, PinnedProductionSwapReplacementConsent,
@@ -302,6 +304,8 @@ pub use production_swap_partition_removal_tool_lease::{
     pin_production_swap_partition_removal_tools, PinnedProductionSwapPartitionRemovalTools,
     ProductionSwapPartitionRemovalToolLeaseError,
 };
+#[cfg(feature = "production-swap-loop-harness")]
+pub use production_swap_persistent_config::update_production_swap_persistent_config_at_path;
 #[cfg(feature = "production-swap-replacement-persistent-config")]
 pub use production_swap_persistent_config::{
     update_production_swap_persistent_config, ProductionSwapPersistentConfigError,
@@ -327,6 +331,8 @@ pub use production_swap_runtime_launch::{
     ProductionSwapRuntimeLaunchSpec, ProductionSwapRuntimeLaunchStage,
     ProductionSwapfileCreationContract, PRODUCTION_SWAP_RUNTIME_LAUNCH_COMPILED,
 };
+#[cfg(feature = "production-swap-loop-harness")]
+pub use production_swap_runtime_preflight::prepare_production_swap_runtime_preflight_from_evidence;
 #[cfg(feature = "production-swap-replacement-runtime-preflight")]
 pub use production_swap_runtime_preflight::{
     prepare_production_swap_runtime_preflight, ProductionSwapRuntimePreflightError,
@@ -384,6 +390,11 @@ impl HostStorageLock {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    #[cfg(feature = "production-swap-loop-harness")]
+    pub fn try_acquire_at(path: &Path) -> Result<Self, HostLockError> {
+        Self::try_acquire_path(path)
     }
 
     fn try_acquire_path(path: &Path) -> Result<Self, HostLockError> {
