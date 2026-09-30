@@ -124,6 +124,58 @@ fn synthetic_fstab(old_swap_device: &str, priority: i32) -> String {
     )
 }
 
+fn remove_owned_regular(root: &Path, path: &Path) -> Result<(), Box<dyn Error>> {
+    if path.parent() != Some(root) {
+        return Err(format!("refusing cleanup outside owned root: {}", path.display()).into());
+    }
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.nlink() != 1
+        || metadata.mode() & 0o022 != 0
+    {
+        return Err(format!("refusing cleanup of unsafe owned file: {}", path.display()).into());
+    }
+    fs::remove_file(path)?;
+    Ok(())
+}
+
+fn remove_owned_evidence_directory(
+    root: &Path,
+    directory: &Path,
+) -> Result<(), Box<dyn Error>> {
+    if directory.parent() != Some(root) {
+        return Err(
+            format!("refusing evidence cleanup outside owned root: {}", directory.display()).into(),
+        );
+    }
+    let metadata = fs::symlink_metadata(directory)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() || metadata.uid() != 0 {
+        return Err(format!("unsafe owned evidence directory: {}", directory.display()).into());
+    }
+
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.parent() != Some(directory) {
+            return Err("evidence directory entry escaped its parent".into());
+        }
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.uid() != 0
+            || metadata.nlink() != 1
+            || metadata.mode() & 0o022 != 0
+        {
+            return Err(format!("unexpected evidence entry: {}", path.display()).into());
+        }
+        fs::remove_file(path)?;
+    }
+    fs::remove_dir(directory)?;
+    Ok(())
+}
+
 fn run() -> Result<SuccessReceipt, Box<dyn Error>> {
     if unsafe { libc::geteuid() } != 0 {
         return Err("production swap loop harness requires root".into());
@@ -396,6 +448,19 @@ fn run() -> Result<SuccessReceipt, Box<dyn Error>> {
         return Err("replacement swapfile remained active after E2E cleanup".into());
     }
     fs::remove_file(&activation.swapfile_path)?;
+
+    // All production evidence has already been captured and verified. Release
+    // pinned/open handles before deleting only the harness-owned synthetic
+    // artifacts. This cleanup is intentionally non-recursive and refuses any
+    // symlink, foreign owner, hard link, or group/world-writable file.
+    drop(removal_tools);
+    drop(runtime_tools);
+    drop(consent);
+    drop(host_lock);
+    remove_owned_evidence_directory(&owned_root, &journal_root)?;
+    remove_owned_regular(&owned_root, &fstab_path)?;
+    remove_owned_regular(&owned_root, &consent_path)?;
+    remove_owned_regular(&owned_root, &lock_path)?;
 
     Ok(receipt)
 }
