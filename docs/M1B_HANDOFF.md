@@ -364,3 +364,6 @@ M2A5 seals the exact create activation only after revalidating the still-open M2
 
 
 M2A6 performs the final fresh read-only blank-disk preflight before any future provisioning crossing. It verifies the exact M2A2/M2A5 authorization chain, revalidates the still-open M2A4 consent lease, re-discovers a unique blank Disk/Loop with unchanged size/sector/model/serial and no children/filesystem/table/mount/fstab/swap use, and rechecks the frozen partition geometry. It then resolves root-owned non-writable trusted sfdisk, partx and exact mkfs.ext4/mkfs.xfs identities. The resulting receipt remains mutation_enabled=false/process_spawned=false/partition_table_changed=false/filesystem_formatted=false. Tool descriptor pinning, launch construction, durable journal and execution remain separate later gates.
+
+
+M2A7 pins the exact M2A6 create executables by open descriptor. The sfdisk, partx and selected mkfs.ext4/mkfs.xfs objects are opened with O_NOFOLLOW/O_CLOEXEC, then device/inode/uid/mode/size/SHA-256 are revalidated against the fresh preflight identities. Revalidation hashes the already-open descriptors so pathname replacement and in-place binary mutation both fail closed. This layer still spawns no process and changes no partition table or filesystem.

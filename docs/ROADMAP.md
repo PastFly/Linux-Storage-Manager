@@ -205,7 +205,8 @@ mountpoint. Low-level layout steps are generated automatically.
 - [x] M2A4: pin the exact verified create-consent inode/content across later authorization; pathname replacement or in-place mutation invalidates the lease.
 - [x] M2A5: seal the exact M2A2 activation plus revalidated M2A4 pinned consent into a deterministic non-spawning create execution permit; partition-table/mkfs mutation flags remain false.
 - [x] M2A6: fresh create runtime preflight revalidates the exact blank-disk state/geometry, M2A5 permit and pinned consent, then resolves trusted sfdisk/partx/mkfs identities without spawning.
-- [ ] Add create tool pinning, frozen launch contract and durable execution gates before any partition-table or mkfs mutation.
+- [x] M2A7: pin the exact M2A6 sfdisk/partx/mkfs executable objects by open descriptor and rehash/revalidate them without spawning.
+- [ ] Add frozen create launch contract and durable execution gates before any partition-table or mkfs mutation.
 
 - create GPT/DOS partition tables on verified blank disks;
 - create partitions in verified usable free ranges, including disk tail and later internal gaps;
