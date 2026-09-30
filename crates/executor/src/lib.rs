@@ -51,6 +51,8 @@ mod production_swap_consent_lease;
 mod production_swap_execution;
 #[cfg(feature = "production-swap-replacement-partition-removal-preflight")]
 mod production_swap_partition_removal;
+#[cfg(feature = "production-swap-replacement-partition-removal-execution")]
+mod production_swap_partition_removal_exec;
 #[cfg(feature = "production-swap-replacement-partition-removal-launch")]
 mod production_swap_partition_removal_launch;
 #[cfg(feature = "production-swap-replacement-partition-removal-tool-lease")]
@@ -282,6 +284,12 @@ pub use production_swap_partition_removal::{
     prepare_production_swap_partition_removal, ProductionSwapPartitionRemovalPreflight,
     ProductionSwapPartitionRemovalPreflightError,
     PRODUCTION_SWAP_PARTITION_REMOVAL_PREFLIGHT_COMPILED,
+};
+#[cfg(feature = "production-swap-replacement-partition-removal-execution")]
+pub use production_swap_partition_removal_exec::{
+    execute_production_swap_partition_removal, ProductionSwapPartitionRemovalExecutionError,
+    ProductionSwapPartitionRemovalExecutionReceipt,
+    PRODUCTION_SWAP_PARTITION_REMOVAL_EXECUTION_COMPILED,
 };
 #[cfg(feature = "production-swap-replacement-partition-removal-launch")]
 pub use production_swap_partition_removal_launch::{
