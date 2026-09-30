@@ -1,12 +1,13 @@
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    verify_default_production_swap_replacement_consent, ProductionSwapReplacementActivationIntent,
+    verify_default_production_swap_replacement_consent,
+    verify_production_swap_replacement_consent_at, ProductionSwapReplacementActivationIntent,
     ProductionSwapReplacementConsentError, ProductionSwapReplacementConsentFileIdentity,
     ProductionSwapReplacementConsentReceipt, PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH,
 };
@@ -17,6 +18,7 @@ const CONSENT_READ_CHUNK: usize = 4096;
 pub struct PinnedProductionSwapReplacementConsent {
     receipt: ProductionSwapReplacementConsentReceipt,
     file: File,
+    path: PathBuf,
 }
 
 impl PinnedProductionSwapReplacementConsent {
@@ -91,19 +93,24 @@ fn open_file_matches_identity(
     Ok(sha256_file(file, expected.size_bytes)? == expected.sha256)
 }
 
-fn open_pinned_default_consent(
+fn open_pinned_consent_at(
     receipt: ProductionSwapReplacementConsentReceipt,
+    path: &Path,
 ) -> Result<PinnedProductionSwapReplacementConsent, ProductionSwapReplacementConsentLeaseError> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(Path::new(PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH))?;
+        .open(path)?;
 
     if !open_file_matches_identity(&file, &receipt.consent_file)? {
         return Err(ProductionSwapReplacementConsentLeaseError::PinnedFileMismatch);
     }
 
-    Ok(PinnedProductionSwapReplacementConsent { receipt, file })
+    Ok(PinnedProductionSwapReplacementConsent {
+        receipt,
+        file,
+        path: path.to_path_buf(),
+    })
 }
 
 /// Verify the fixed swap-replacement consent and keep the exact opened file
@@ -112,7 +119,19 @@ pub fn pin_default_production_swap_replacement_consent(
     activation: &ProductionSwapReplacementActivationIntent,
 ) -> Result<PinnedProductionSwapReplacementConsent, ProductionSwapReplacementConsentLeaseError> {
     let receipt = verify_default_production_swap_replacement_consent(activation)?;
-    open_pinned_default_consent(receipt)
+    open_pinned_consent_at(
+        receipt,
+        Path::new(PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH),
+    )
+}
+
+#[cfg(feature = "production-swap-loop-harness")]
+pub fn pin_production_swap_replacement_consent_at(
+    activation: &ProductionSwapReplacementActivationIntent,
+    path: &Path,
+) -> Result<PinnedProductionSwapReplacementConsent, ProductionSwapReplacementConsentLeaseError> {
+    let receipt = verify_production_swap_replacement_consent_at(activation, path)?;
+    open_pinned_consent_at(receipt, path)
 }
 
 fn validate_current_receipt_against_lease(
@@ -137,7 +156,7 @@ pub fn revalidate_pinned_production_swap_replacement_consent(
     activation: &ProductionSwapReplacementActivationIntent,
     lease: &PinnedProductionSwapReplacementConsent,
 ) -> Result<ProductionSwapReplacementConsentReceipt, ProductionSwapReplacementConsentLeaseError> {
-    let current = verify_default_production_swap_replacement_consent(activation)?;
+    let current = verify_production_swap_replacement_consent_at(activation, &lease.path)?;
     validate_current_receipt_against_lease(current, lease)
 }
 
