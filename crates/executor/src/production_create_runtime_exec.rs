@@ -643,12 +643,10 @@ fn persist_filesystem_recovery(
         ProductionCreateRuntimeTransition::RecoveryRequired,
     ) {
         Ok(()) => runtime,
-        Err(journal_error) => {
-            ProductionCreateFilesystemExecutionError::RecoveryPersistenceFailed {
-                runtime: runtime.to_string(),
-                journal: journal_error.to_string(),
-            }
-        }
+        Err(journal_error) => ProductionCreateFilesystemExecutionError::RecoveryPersistenceFailed {
+            runtime: runtime.to_string(),
+            journal: journal_error.to_string(),
+        },
     }
 }
 
