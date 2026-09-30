@@ -224,9 +224,7 @@ fn flatten<'a>(devices: &'a [BlockDevice], output: &mut Vec<&'a BlockDevice>) {
     }
 }
 
-fn expected_partition_table(
-    policy: lsm_planner::CreatePartitionTablePolicy,
-) -> &'static str {
+fn expected_partition_table(policy: lsm_planner::CreatePartitionTablePolicy) -> &'static str {
     match policy {
         lsm_planner::CreatePartitionTablePolicy::Gpt => "gpt",
         lsm_planner::CreatePartitionTablePolicy::Dos => "dos",
@@ -276,8 +274,7 @@ fn fresh_filesystem_uuid(
         .iter()
         .filter(|status| status.component == "partition_tables")
         .collect::<Vec<_>>();
-    if partition_collectors.len() != 1
-        || partition_collectors[0].state != CollectorState::Complete
+    if partition_collectors.len() != 1 || partition_collectors[0].state != CollectorState::Complete
     {
         return Err(ProductionCreateMountActivationError::FilesystemBindingMismatch);
     }
