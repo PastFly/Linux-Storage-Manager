@@ -23,6 +23,8 @@ use crate::{
 
 pub const PRODUCTION_CREATE_RUNTIME_EXECUTION_COMPILED: bool =
     cfg!(feature = "production-create-runtime-execution");
+pub const PRODUCTION_CREATE_FILESYSTEM_EXECUTION_COMPILED: bool =
+    cfg!(feature = "production-create-filesystem-execution");
 
 const POST_CREATE_REDISCOVERY_ATTEMPTS: usize = 20;
 const POST_CREATE_REDISCOVERY_DELAY: Duration = Duration::from_millis(50);
@@ -88,6 +90,63 @@ impl ProductionCreatePartitionExecutionReceipt {
     }
 }
 
+#[cfg(feature = "production-create-filesystem-execution")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProductionCreateFilesystemExecutionReceipt {
+    pub schema_version: u32,
+    pub receipt_id: String,
+    pub journal_id: String,
+    pub launch_id: String,
+    pub partition_receipt_id: String,
+    pub disk: String,
+    pub partition_device: String,
+    pub filesystem: String,
+    pub partition_mapped_verified: bool,
+    pub filesystem_formatted: bool,
+    pub journal_completed: bool,
+}
+
+#[cfg(feature = "production-create-filesystem-execution")]
+#[derive(Serialize)]
+struct FilesystemReceiptDigestPayload<'a> {
+    schema_version: u32,
+    journal_id: &'a str,
+    launch_id: &'a str,
+    partition_receipt_id: &'a str,
+    disk: &'a str,
+    partition_device: &'a str,
+    filesystem: &'a str,
+    partition_mapped_verified: bool,
+    filesystem_formatted: bool,
+    journal_completed: bool,
+}
+
+#[cfg(feature = "production-create-filesystem-execution")]
+impl ProductionCreateFilesystemExecutionReceipt {
+    pub fn integrity_matches(&self) -> Result<bool, serde_json::Error> {
+        Ok(self.receipt_id == self.expected_receipt_id()?)
+    }
+
+    fn expected_receipt_id(&self) -> Result<String, serde_json::Error> {
+        let payload = FilesystemReceiptDigestPayload {
+            schema_version: self.schema_version,
+            journal_id: &self.journal_id,
+            launch_id: &self.launch_id,
+            partition_receipt_id: &self.partition_receipt_id,
+            disk: &self.disk,
+            partition_device: &self.partition_device,
+            filesystem: &self.filesystem,
+            partition_mapped_verified: self.partition_mapped_verified,
+            filesystem_formatted: self.filesystem_formatted,
+            journal_completed: self.journal_completed,
+        };
+        Ok(format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&payload)?)
+        ))
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ProductionCreatePartitionExecutionError {
     #[error("production create partition execution feature is not compiled")]
@@ -126,6 +185,45 @@ pub enum ProductionCreatePartitionExecutionError {
     Serialization(#[from] serde_json::Error),
 }
 
+#[cfg(feature = "production-create-filesystem-execution")]
+#[derive(Debug, Error)]
+pub enum ProductionCreateFilesystemExecutionError {
+    #[error("production create filesystem execution feature is not compiled")]
+    FeatureDisabled,
+    #[error("production create filesystem crossing requires root")]
+    RootRequired,
+    #[error("create filesystem authorization chain is invalid or no longer exact")]
+    AuthorizationInvalid,
+    #[error("M2A10 partition execution receipt is invalid or does not match the journal")]
+    PartitionReceiptInvalid,
+    #[error("create runtime journal is not the exact persisted PartitionMappedVerified record")]
+    JournalMismatch,
+    #[error("pinned create consent revalidation failed: {0}")]
+    Consent(#[from] ProductionCreateConsentLeaseError),
+    #[error("pinned create executable revalidation failed: {0}")]
+    ToolLease(#[from] ProductionCreateToolLeaseError),
+    #[error("create filesystem descriptor execution failed: {0}")]
+    Descriptor(#[from] PrivilegedDescriptorExecError),
+    #[error("create runtime journal transition failed: {0}")]
+    Journal(#[from] ProductionCreateRuntimeJournalError),
+    #[error("fresh pre-format partition verification failed: {0}")]
+    PreFormatPartitionVerification(String),
+    #[error("mkfs exited with status {exit_code}: {stderr}")]
+    StageFailed { exit_code: i32, stderr: String },
+    #[error("post-mkfs storage rediscovery did not converge: {0}")]
+    Rediscovery(String),
+    #[error("fresh filesystem or partition geometry does not match the frozen create contract")]
+    FilesystemVerificationMismatch,
+    #[error("fresh formatted partition unexpectedly contains mount, fstab or swap state")]
+    UnexpectedPartitionUse,
+    #[error(
+        "create filesystem crossing failed and durable RecoveryRequired could not be persisted: runtime={runtime}; journal={journal}"
+    )]
+    RecoveryPersistenceFailed { runtime: String, journal: String },
+    #[error("create filesystem execution receipt serialization failed: {0}")]
+    Serialization(#[from] serde_json::Error),
+}
+
 fn expected_partition_table(policy: CreatePartitionTablePolicy) -> &'static str {
     match policy {
         CreatePartitionTablePolicy::Gpt => "gpt",
@@ -157,11 +255,23 @@ fn validate_launch_stage_contract(
         activation.disk.as_str(),
     ];
     let expected_partx = ["partx", "--add", "--nr", "1", activation.disk.as_str()];
+    let (expected_mkfs_program, expected_mkfs) = match activation.filesystem.as_str() {
+        "ext4" => (
+            PrivilegedProgram::MkfsExt4,
+            ["mkfs.ext4", "-F", launch.partition_device.as_str()],
+        ),
+        "xfs" => (
+            PrivilegedProgram::MkfsXfs,
+            ["mkfs.xfs", "-f", launch.partition_device.as_str()],
+        ),
+        _ => return Err(ProductionCreatePartitionExecutionError::AuthorizationInvalid),
+    };
 
     let expected_stdin_sha256 = format!("{:x}", Sha256::digest(launch.sfdisk_script.as_bytes()));
 
     if launch.sfdisk.program != PrivilegedProgram::Sfdisk
         || launch.partx.program != PrivilegedProgram::Partx
+        || launch.mkfs.program != expected_mkfs_program
         || launch
             .sfdisk
             .argv
@@ -174,6 +284,12 @@ fn validate_launch_stage_contract(
             .iter()
             .map(String::as_str)
             .ne(expected_partx)
+        || launch
+            .mkfs
+            .argv
+            .iter()
+            .map(String::as_str)
+            .ne(expected_mkfs)
         || launch.fixed_path != FIXED_PATH
         || launch.fixed_locale != FIXED_LOCALE
         || launch.descriptor_exec_api != "fexecve"
@@ -181,6 +297,8 @@ fn validate_launch_stage_contract(
         || launch.sfdisk.stdin_sha256.as_deref() != Some(expected_stdin_sha256.as_str())
         || launch.partx.stdin_len != 0
         || launch.partx.stdin_sha256.is_some()
+        || launch.mkfs.stdin_len != 0
+        || launch.mkfs.stdin_sha256.is_some()
     {
         return Err(ProductionCreatePartitionExecutionError::AuthorizationInvalid);
     }
@@ -399,6 +517,51 @@ fn verify_partition_snapshot(
     Ok(())
 }
 
+#[cfg(feature = "production-create-filesystem-execution")]
+fn verify_filesystem_snapshot(
+    activation: &ProductionCreateActivationIntent,
+    launch: &ProductionCreateRuntimeLaunchSpec,
+    snapshot: &HostSnapshot,
+) -> Result<(), ProductionCreateFilesystemExecutionError> {
+    let disks = snapshot
+        .storage
+        .block_devices
+        .iter()
+        .filter(|device| device.path.as_deref() == Some(activation.disk.as_str()))
+        .collect::<Vec<_>>();
+    if disks.len() != 1 || disks[0].children.len() != 1 {
+        return Err(ProductionCreateFilesystemExecutionError::FilesystemVerificationMismatch);
+    }
+    let child = &disks[0].children[0];
+    if child
+        .filesystem
+        .as_ref()
+        .is_none_or(|filesystem| filesystem.fs_type != activation.filesystem)
+    {
+        return Err(ProductionCreateFilesystemExecutionError::FilesystemVerificationMismatch);
+    }
+
+    let mut geometry_snapshot = snapshot.clone();
+    let geometry_disk = geometry_snapshot
+        .storage
+        .block_devices
+        .iter_mut()
+        .find(|device| device.path.as_deref() == Some(activation.disk.as_str()))
+        .ok_or(ProductionCreateFilesystemExecutionError::FilesystemVerificationMismatch)?;
+    if geometry_disk.children.len() != 1 {
+        return Err(ProductionCreateFilesystemExecutionError::FilesystemVerificationMismatch);
+    }
+    geometry_disk.children[0].filesystem = None;
+
+    match verify_partition_snapshot(activation, launch, &geometry_snapshot) {
+        Ok(()) => Ok(()),
+        Err(ProductionCreatePartitionExecutionError::UnexpectedPartitionUse) => {
+            Err(ProductionCreateFilesystemExecutionError::UnexpectedPartitionUse)
+        }
+        Err(_) => Err(ProductionCreateFilesystemExecutionError::FilesystemVerificationMismatch),
+    }
+}
+
 fn discover_exact_partition(
     activation: &ProductionCreateActivationIntent,
     launch: &ProductionCreateRuntimeLaunchSpec,
@@ -424,6 +587,32 @@ fn discover_exact_partition(
     ))
 }
 
+#[cfg(feature = "production-create-filesystem-execution")]
+fn discover_exact_filesystem(
+    activation: &ProductionCreateActivationIntent,
+    launch: &ProductionCreateRuntimeLaunchSpec,
+) -> Result<(), ProductionCreateFilesystemExecutionError> {
+    let mut last_error = None;
+    for attempt in 0..POST_CREATE_REDISCOVERY_ATTEMPTS {
+        match discover_snapshot() {
+            Ok(snapshot) => match verify_filesystem_snapshot(activation, launch, &snapshot) {
+                Ok(()) => return Ok(()),
+                Err(error @ ProductionCreateFilesystemExecutionError::UnexpectedPartitionUse) => {
+                    return Err(error);
+                }
+                Err(error) => last_error = Some(error.to_string()),
+            },
+            Err(error) => last_error = Some(error.to_string()),
+        }
+        if attempt + 1 < POST_CREATE_REDISCOVERY_ATTEMPTS {
+            thread::sleep(POST_CREATE_REDISCOVERY_DELAY);
+        }
+    }
+    Err(ProductionCreateFilesystemExecutionError::Rediscovery(
+        last_error.unwrap_or_else(|| "fresh filesystem state was not observable".into()),
+    ))
+}
+
 fn persist_recovery(
     store: &ProductionCreateRuntimeJournalStore,
     journal: &mut ProductionCreateRuntimeJournal,
@@ -439,6 +628,27 @@ fn persist_recovery(
             runtime: runtime.to_string(),
             journal: journal_error.to_string(),
         },
+    }
+}
+
+#[cfg(feature = "production-create-filesystem-execution")]
+fn persist_filesystem_recovery(
+    store: &ProductionCreateRuntimeJournalStore,
+    journal: &mut ProductionCreateRuntimeJournal,
+    runtime: ProductionCreateFilesystemExecutionError,
+) -> ProductionCreateFilesystemExecutionError {
+    match persist_production_create_runtime_transition(
+        store,
+        journal,
+        ProductionCreateRuntimeTransition::RecoveryRequired,
+    ) {
+        Ok(()) => runtime,
+        Err(journal_error) => {
+            ProductionCreateFilesystemExecutionError::RecoveryPersistenceFailed {
+                runtime: runtime.to_string(),
+                journal: journal_error.to_string(),
+            }
+        }
     }
 }
 
@@ -511,6 +721,74 @@ fn execute_partition_crossing(
     Ok(receipt)
 }
 
+#[cfg(feature = "production-create-filesystem-execution")]
+fn validate_filesystem_crossing(
+    activation: &ProductionCreateActivationIntent,
+    permit: &ProductionCreateExecutionPermit,
+    preflight: &ProductionCreateRuntimePreflightReceipt,
+    launch: &ProductionCreateRuntimeLaunchSpec,
+    partition_receipt: &ProductionCreatePartitionExecutionReceipt,
+    journal: &ProductionCreateRuntimeJournal,
+) -> Result<(), ProductionCreateFilesystemExecutionError> {
+    if journal.phase != ProductionCreateRuntimePhase::PartitionMappedVerified
+        || !journal.mutation_may_have_started
+        || !journal.partition_table_may_have_changed
+        || journal.filesystem_may_have_changed
+    {
+        return Err(ProductionCreateFilesystemExecutionError::AuthorizationInvalid);
+    }
+
+    let mut prepared = journal.clone();
+    prepared.phase = ProductionCreateRuntimePhase::Prepared;
+    prepared.mutation_may_have_started = false;
+    prepared.partition_table_may_have_changed = false;
+    prepared.filesystem_may_have_changed = false;
+    prepared.events.clear();
+    if validate_crossing(activation, permit, preflight, launch, &prepared).is_err() {
+        return Err(ProductionCreateFilesystemExecutionError::AuthorizationInvalid);
+    }
+
+    if partition_receipt.schema_version != 1
+        || !partition_receipt.integrity_matches().unwrap_or(false)
+        || partition_receipt.journal_id != journal.journal_id
+        || partition_receipt.launch_id != launch.launch_id
+        || partition_receipt.disk != activation.disk
+        || partition_receipt.partition_device != launch.partition_device
+        || partition_receipt.partition_table != expected_partition_table(activation.partition_table)
+        || partition_receipt.partition_start_sector != activation.partition_start_sector
+        || partition_receipt.partition_sector_count != activation.partition_sector_count
+        || partition_receipt.partition_size_bytes != activation.partition_size_bytes
+        || !partition_receipt.partition_mapped_verified
+        || partition_receipt.filesystem_formatted
+    {
+        return Err(ProductionCreateFilesystemExecutionError::PartitionReceiptInvalid);
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "production-create-filesystem-execution")]
+fn run_filesystem_stage(
+    launch: &ProductionCreateRuntimeLaunchSpec,
+    tools: &PinnedProductionCreateTools,
+) -> Result<DescriptorExecOutcome, ProductionCreateFilesystemExecutionError> {
+    let outcome = execute_descriptor_stage(
+        tools.mkfs_file(),
+        launch.mkfs.program,
+        &launch.mkfs.argv,
+        &launch.fixed_path,
+        &launch.fixed_locale,
+        None,
+    )?;
+    if outcome.exit_code != 0 {
+        return Err(ProductionCreateFilesystemExecutionError::StageFailed {
+            exit_code: outcome.exit_code,
+            stderr: bounded_stderr(&outcome),
+        });
+    }
+    Ok(outcome)
+}
+
 /// Cross only the first irreversible production Create boundary.
 ///
 /// This function may write the exact frozen partition table and add partition 1
@@ -550,6 +828,105 @@ pub fn execute_production_create_partition_crossing(
     tools.revalidate(preflight)?;
 
     execute_partition_crossing(activation, launch, tools, store, journal)
+}
+
+/// Cross only the filesystem-format boundary after M2A10 has durably proven
+/// the exact partition mapping.
+///
+/// The entire immutable authorization/tool chain is revalidated, the partition
+/// is freshly rediscovered before mkfs, BeginFilesystemFormat is durably
+/// persisted before the exact pinned mkfs descriptor can execute, and the
+/// journal reaches Completed only after fresh exact filesystem rediscovery.
+/// Mount and fstab mutation remain outside this layer.
+#[cfg(feature = "production-create-filesystem-execution")]
+#[allow(clippy::too_many_arguments)]
+pub fn execute_production_create_filesystem_crossing(
+    _host_lock: &HostStorageLock,
+    activation: &ProductionCreateActivationIntent,
+    permit: &ProductionCreateExecutionPermit,
+    preflight: &ProductionCreateRuntimePreflightReceipt,
+    launch: &ProductionCreateRuntimeLaunchSpec,
+    partition_receipt: &ProductionCreatePartitionExecutionReceipt,
+    consent: &PinnedProductionCreateConsent,
+    tools: &PinnedProductionCreateTools,
+    store: &ProductionCreateRuntimeJournalStore,
+    journal: &mut ProductionCreateRuntimeJournal,
+) -> Result<ProductionCreateFilesystemExecutionReceipt, ProductionCreateFilesystemExecutionError> {
+    if !PRODUCTION_CREATE_FILESYSTEM_EXECUTION_COMPILED {
+        return Err(ProductionCreateFilesystemExecutionError::FeatureDisabled);
+    }
+    if unsafe { libc::geteuid() } != 0 {
+        return Err(ProductionCreateFilesystemExecutionError::RootRequired);
+    }
+
+    validate_filesystem_crossing(
+        activation,
+        permit,
+        preflight,
+        launch,
+        partition_receipt,
+        journal,
+    )?;
+
+    let persisted = store.load(&journal.journal_id)?;
+    if persisted != *journal {
+        return Err(ProductionCreateFilesystemExecutionError::JournalMismatch);
+    }
+
+    let consent_receipt = revalidate_pinned_production_create_consent(activation, consent)?;
+    if consent_receipt.receipt_id != preflight.consent_receipt_id {
+        return Err(ProductionCreateFilesystemExecutionError::AuthorizationInvalid);
+    }
+    tools.revalidate(preflight)?;
+
+    if let Err(error) = discover_exact_partition(activation, launch) {
+        let error = ProductionCreateFilesystemExecutionError::PreFormatPartitionVerification(
+            error.to_string(),
+        );
+        return Err(persist_filesystem_recovery(store, journal, error));
+    }
+
+    persist_production_create_runtime_transition(
+        store,
+        journal,
+        ProductionCreateRuntimeTransition::BeginFilesystemFormat,
+    )?;
+
+    if let Err(error) = run_filesystem_stage(launch, tools) {
+        return Err(persist_filesystem_recovery(store, journal, error));
+    }
+
+    persist_production_create_runtime_transition(
+        store,
+        journal,
+        ProductionCreateRuntimeTransition::FilesystemFormatSucceeded,
+    )?;
+
+    if let Err(error) = discover_exact_filesystem(activation, launch) {
+        return Err(persist_filesystem_recovery(store, journal, error));
+    }
+
+    persist_production_create_runtime_transition(
+        store,
+        journal,
+        ProductionCreateRuntimeTransition::FilesystemRediscoveryVerified,
+    )?;
+
+    let mut receipt = ProductionCreateFilesystemExecutionReceipt {
+        schema_version: 1,
+        receipt_id: String::new(),
+        journal_id: journal.journal_id.clone(),
+        launch_id: launch.launch_id.clone(),
+        partition_receipt_id: partition_receipt.receipt_id.clone(),
+        disk: activation.disk.clone(),
+        partition_device: launch.partition_device.clone(),
+        filesystem: activation.filesystem.clone(),
+        partition_mapped_verified: true,
+        filesystem_formatted: true,
+        journal_completed: journal.phase == ProductionCreateRuntimePhase::Completed,
+    };
+    receipt.receipt_id = receipt.expected_receipt_id()?;
+    Ok(receipt)
 }
 
 #[cfg(test)]
@@ -783,11 +1160,48 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "production-create-filesystem-execution")]
+    #[test]
+    fn exact_filesystem_rediscovery_accepts_the_frozen_filesystem() {
+        let activation = activation();
+        let launch = launch(&activation);
+        let mut snapshot = snapshot(&activation);
+        snapshot.storage.block_devices[0].children[0].filesystem = Some(lsm_core::Filesystem {
+            fs_type: activation.filesystem.clone(),
+            version: None,
+        });
+        assert!(verify_filesystem_snapshot(&activation, &launch, &snapshot).is_ok());
+    }
+
+    #[cfg(feature = "production-create-filesystem-execution")]
+    #[test]
+    fn wrong_filesystem_after_mkfs_fails_closed() {
+        let activation = activation();
+        let launch = launch(&activation);
+        let mut snapshot = snapshot(&activation);
+        snapshot.storage.block_devices[0].children[0].filesystem = Some(lsm_core::Filesystem {
+            fs_type: "xfs".into(),
+            version: None,
+        });
+        assert!(matches!(
+            verify_filesystem_snapshot(&activation, &launch, &snapshot),
+            Err(ProductionCreateFilesystemExecutionError::FilesystemVerificationMismatch)
+        ));
+    }
+
     #[test]
     fn partition_crossing_feature_is_explicitly_gated() {
         assert_eq!(
             PRODUCTION_CREATE_RUNTIME_EXECUTION_COMPILED,
             cfg!(feature = "production-create-runtime-execution")
+        );
+    }
+
+    #[test]
+    fn filesystem_crossing_feature_is_explicitly_gated() {
+        assert_eq!(
+            PRODUCTION_CREATE_FILESYSTEM_EXECUTION_COMPILED,
+            cfg!(feature = "production-create-filesystem-execution")
         );
     }
 }
