@@ -20,6 +20,7 @@ production-create-runtime-preflight = ["production-create-execution-permit", "de
 production-create-tool-lease = ["production-create-runtime-preflight"]
 production-create-runtime-launch = ["production-create-tool-lease"]
 production-create-runtime-journal = ["production-create-runtime-launch"]
+production-create-runtime-execution = ["production-create-runtime-journal"]
 production-swap-replacement-activation = []
 production-swap-replacement-consent = ["production-swap-replacement-activation"]
 production-swap-replacement-consent-lease = ["production-swap-replacement-consent"]
