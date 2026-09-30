@@ -202,7 +202,8 @@ mountpoint. Low-level layout steps are generated automatically.
 - [x] M2A2: bind the exact M2A1 intent to a separate compile-time production activation contract; profile/integrity are revalidated and the sealed activation remains execution_enabled=false with no table/mkfs crossing.
 - [x] M2A3: require an exact root-owned 0600 runtime-consent document bound to one M2A2 activation ID, create-intent ID, disk and filesystem; the receipt remains non-executing.
 - [x] M2A4: pin the exact verified create-consent inode/content across later authorization; pathname replacement or in-place mutation invalidates the lease.
-- [ ] Add non-spawning execution permit, fresh preflight/tool pinning and durable execution gates for M2A1 before any partition-table or mkfs mutation.
+- [x] M2A5: seal the exact M2A2 activation plus revalidated M2A4 pinned consent into a deterministic non-spawning create execution permit; partition-table/mkfs mutation flags remain false.
+- [ ] Add fresh create preflight/tool pinning and durable execution gates for M2A1 before any partition-table or mkfs mutation.
 
 - create GPT/DOS partition tables on verified blank disks;
 - create partitions in verified usable free ranges, including disk tail and later internal gaps;
