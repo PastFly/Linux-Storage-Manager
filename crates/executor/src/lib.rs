@@ -274,6 +274,8 @@ pub use production_swap_consent_lease::{
     revalidate_pinned_production_swap_replacement_consent, PinnedProductionSwapReplacementConsent,
     ProductionSwapReplacementConsentLeaseError,
 };
+#[cfg(feature = "production-swap-loop-harness")]
+pub use production_swap_consent_lease::pin_production_swap_replacement_consent_at;
 pub use production_swap_execution::{
     seal_production_swap_replacement_execution_permit, ProductionSwapReplacementExecutionPermit,
     ProductionSwapReplacementExecutionPermitError,
@@ -308,6 +310,8 @@ pub use production_swap_persistent_config::{
     ProductionSwapPersistentConfigReceipt, PRODUCTION_SWAP_FSTAB_PATH,
     PRODUCTION_SWAP_PERSISTENT_CONFIG_COMPILED,
 };
+#[cfg(feature = "production-swap-loop-harness")]
+pub use production_swap_persistent_config::update_production_swap_persistent_config_at_path;
 #[cfg(feature = "production-swap-replacement-runtime-execution")]
 pub use production_swap_runtime_exec::{
     execute_production_swap_runtime_replacement, ProductionSwapRuntimeExecutionError,
@@ -332,6 +336,8 @@ pub use production_swap_runtime_preflight::{
     prepare_production_swap_runtime_preflight, ProductionSwapRuntimePreflightError,
     ProductionSwapRuntimePreflightReceipt, PRODUCTION_SWAP_RUNTIME_PREFLIGHT_COMPILED,
 };
+#[cfg(feature = "production-swap-loop-harness")]
+pub use production_swap_runtime_preflight::prepare_production_swap_runtime_preflight_from_evidence;
 #[cfg(feature = "production-swap-replacement-runtime-tool-lease")]
 pub use production_swap_runtime_tool_lease::{
     pin_production_swap_runtime_tools, PinnedProductionSwapRuntimeTools,
@@ -384,6 +390,11 @@ impl HostStorageLock {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    #[cfg(feature = "production-swap-loop-harness")]
+    pub fn try_acquire_at(path: &Path) -> Result<Self, HostLockError> {
+        Self::try_acquire_path(path)
     }
 
     fn try_acquire_path(path: &Path) -> Result<Self, HostLockError> {
