@@ -240,8 +240,7 @@ fn persist_recovery(
 
 fn storage_contains_path(devices: &[lsm_core::BlockDevice], path: &str) -> bool {
     devices.iter().any(|device| {
-        device.path.as_deref() == Some(path)
-            || storage_contains_path(&device.children, path)
+        device.path.as_deref() == Some(path) || storage_contains_path(&device.children, path)
     })
 }
 
