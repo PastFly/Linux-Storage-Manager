@@ -136,9 +136,10 @@ fn run() -> HarnessResult<()> {
         },
     )?;
     if plan.status() != PlanStatus::Preview {
-        return Err(boxed(
-            "production loop fixture did not produce a preview-ready plan",
-        ));
+        return Err(boxed(format!(
+            "production loop fixture did not produce a preview-ready plan: blockers={:?}",
+            plan.blockers()
+        )));
     }
 
     let handoff = build_frozen_execution_handoff(&snapshot, &capabilities, &plan)?;
