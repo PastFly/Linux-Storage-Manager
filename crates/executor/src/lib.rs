@@ -51,6 +51,8 @@ mod production_create_journal;
 mod production_create_launch;
 #[cfg(feature = "production-create-runtime-preflight")]
 mod production_create_preflight;
+#[cfg(feature = "production-create-runtime-execution")]
+mod production_create_runtime_exec;
 #[cfg(feature = "production-create-tool-lease")]
 mod production_create_tool_lease;
 mod production_descriptor_exec;
@@ -294,6 +296,11 @@ pub use production_create_launch::{
 pub use production_create_preflight::{
     prepare_production_create_runtime_preflight, ProductionCreateRuntimePreflightError,
     ProductionCreateRuntimePreflightReceipt, PRODUCTION_CREATE_RUNTIME_PREFLIGHT_COMPILED,
+};
+#[cfg(feature = "production-create-runtime-execution")]
+pub use production_create_runtime_exec::{
+    execute_production_create_partition_crossing, ProductionCreatePartitionExecutionError,
+    ProductionCreatePartitionExecutionReceipt, PRODUCTION_CREATE_RUNTIME_EXECUTION_COMPILED,
 };
 #[cfg(feature = "production-create-tool-lease")]
 pub use production_create_tool_lease::{
