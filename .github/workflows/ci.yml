@@ -107,6 +107,12 @@ jobs:
       - name: Check gated create mount runtime crossing
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-create-mount-runtime-execution --lib
+      - name: Check durable create persistent-config journal
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo test --locked -p lsm-executor --features production-create-persistent-config-journal --lib
+      - name: Check atomic create persistent-config update
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo test --locked -p lsm-executor --features production-create-persistent-config --lib
       - name: Check full production create loop harness feature
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo clippy --locked -p lsm-executor --features production-create-loop-harness --bin lsm-production-create-loop-harness -- -D warnings
