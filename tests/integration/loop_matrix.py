@@ -30,7 +30,8 @@ class Runner:
     def __init__(self, binary: Path, executor_binary: Path,
                  production_executor_binary: Path | None = None,
                  swap_executor_binary: Path | None = None,
-                 production_swap_executor_binary: Path | None = None):
+                 production_swap_executor_binary: Path | None = None,
+                 production_create_executor_binary: Path | None = None):
         names = ("losetup", "sfdisk", "partx", "mkfs.ext4", "mkfs.xfs", "pvcreate",
                  "vgcreate", "vgchange", "lvcreate", "lvrename", "vgremove", "vgs", "pvs", "lvs",
                  "mount", "umount", "findmnt", "vgcfgbackup", "vgcfgrestore", "pvresize", "lvextend",
@@ -55,6 +56,10 @@ class Runner:
         if production_swap_executor_binary is not None:
             self.tools["production-swap-executor"] = str(
                 production_swap_executor_binary.resolve(strict=True)
+            )
+        if production_create_executor_binary is not None:
+            self.tools["production-create-executor"] = str(
+                production_create_executor_binary.resolve(strict=True)
             )
 
     def run(self, name: str, *args: str, input: str | None = None,
@@ -133,6 +138,7 @@ class Resources:
         self.images: list[Path] = []
         self.directories: list[Path] = []
         self.artifacts: list[tuple[Path, tuple[int, int]]] = []
+        self.safe_mountpoints: list[tuple[Path, tuple[int, int]]] = []
         self.uncertain = False
 
     def loop_report(self) -> list[dict[str, Any]]:
@@ -305,6 +311,24 @@ class Resources:
         (target / "readonly-sentinel").write_bytes(b"Linux Storage Manager read-only sentinel\n")
         return target
 
+    def create_production_mountpoint(self, label: str) -> Path:
+        parent = Path("/mnt")
+        parent_info = parent.lstat()
+        if (not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode)
+                or parent_info.st_uid != 0 or parent_info.st_mode & 0o022):
+            raise SafetyError("/mnt is not a safe root-owned production mountpoint parent")
+        if re.fullmatch(r"[a-z0-9-]+", label) is None:
+            raise SafetyError("invalid production mountpoint label")
+        target = parent / f"lsm-{label}-{os.urandom(8).hex()}"
+        target.mkdir(mode=0o755)
+        os.chmod(target, 0o755)
+        info = target.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != 0 or info.st_mode & 0o022):
+            raise SafetyError("created production mountpoint is not root-owned and safe")
+        self.safe_mountpoints.append((target, (info.st_dev, info.st_ino)))
+        return target
+
     def track_artifact(self, path: Path) -> None:
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or path.parent.resolve(strict=True) != self.root:
@@ -331,9 +355,10 @@ class Resources:
                 raise SafetyError(f"mount ownership changed: {mount.target}")
             self.runner.run("umount", str(mount.target))
         remaining = mount_rows(self.runner.json("findmnt", "--json", "--output", "TARGET"))
+        safe_targets = {str(path) for path, _ in self.safe_mountpoints}
         if any(row["target"] == str(self.root) or row["target"].startswith(str(self.root) + "/")
-               for row in remaining):
-            raise SafetyError("mounts remain under the test directory")
+               or row["target"] in safe_targets for row in remaining):
+            raise SafetyError("owned mounts remain after cleanup")
         for group in reversed(self.groups):
             entries = self.vg_rows(group.name)
             if not entries:
@@ -370,6 +395,15 @@ class Resources:
         # rmdir fails on unexpected contents; no recursive deletion, even on error.
         for directory in reversed(self.directories):
             directory.rmdir()
+        for mountpoint, inode in reversed(self.safe_mountpoints):
+            info = mountpoint.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                    or info.st_uid != 0 or info.st_mode & 0o022
+                    or (info.st_dev, info.st_ino) != inode
+                    or mountpoint.parent != Path("/mnt")
+                    or not mountpoint.name.startswith("lsm-")):
+                raise SafetyError(f"production mountpoint identity changed: {mountpoint}")
+            mountpoint.rmdir()
         for image in self.images:
             image.unlink()
         self.root.rmdir()
@@ -2687,6 +2721,159 @@ def exercise_production_swap_replacement(
     )
 
 
+def remove_exact_create_journal_root(root: Path, journal_id: str, owned_root: Path) -> None:
+    if root.parent != owned_root or re.fullmatch(r"[0-9a-f]{64}", journal_id) is None:
+        raise SafetyError("invalid owned create journal cleanup request")
+    info = root.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o700):
+        raise SafetyError(f"unsafe create journal directory: {root}")
+    entries = list(root.iterdir())
+    expected = root / f"{journal_id}.json"
+    if entries != [expected]:
+        raise SafetyError(f"unexpected create journal contents: {root}")
+    record = expected.lstat()
+    if (not stat.S_ISREG(record.st_mode) or stat.S_ISLNK(record.st_mode)
+            or record.st_uid != 0 or stat.S_IMODE(record.st_mode) != 0o600
+            or record.st_nlink != 1):
+        raise SafetyError(f"unsafe create journal record: {expected}")
+    expected.unlink()
+    root.rmdir()
+
+
+def exercise_production_create_mount_e2e(
+    resources: Resources, binary: Runner, loop: Loop, target: Path,
+) -> None:
+    if "production-create-executor" not in binary.tools:
+        raise SafetyError("production create loop harness binary is not configured")
+    resources.check_loop(loop)
+    if target.parent != Path("/mnt"):
+        raise SafetyError("production Create E2E mountpoint escaped /mnt")
+
+    association_row = binary.run(
+        "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
+    ).stdout.strip()
+    if not association_row:
+        raise SafetyError("production Create E2E loop association is unavailable")
+
+    create_journal_root = resources.root / "production-create-runtime"
+    mount_journal_root = resources.root / "production-create-mount-runtime"
+    lock_path = resources.root / "production-create.lock"
+    common = [
+        "--allow-production-create-loop-execution",
+        "--loop-device", loop.device,
+        "--backing-file", str(loop.image),
+        "--owned-root", str(resources.root),
+        "--association-row", association_row,
+        "--create-journal-root", str(create_journal_root),
+        "--mount-journal-root", str(mount_journal_root),
+        "--lock-path", str(lock_path),
+    ]
+
+    resources.uncertain = True
+    result = binary.json(
+        "production-create-executor", *common,
+        "--mountpoint", str(target),
+        "--mode", "execute",
+    )
+    required = {
+        "status": "mounted-awaiting-restart-verification",
+        "loop_device": loop.device,
+        "partition_device": loop.device + "p1",
+        "filesystem": "ext4",
+        "mountpoint": str(target),
+        "create_journal_completed": True,
+        "mount_journal_completed": True,
+        "fstab_unchanged": True,
+        "mounted_verified": True,
+    }
+    for key, expected in required.items():
+        if result.get(key) != expected:
+            raise SafetyError(
+                f"production Create E2E returned unexpected {key}: {result.get(key)!r}"
+            )
+    filesystem_uuid = result.get("filesystem_uuid")
+    create_journal_id = result.get("create_journal_id")
+    mount_journal_id = result.get("mount_journal_id")
+    if (not isinstance(filesystem_uuid, str) or not filesystem_uuid
+            or not isinstance(create_journal_id, str)
+            or re.fullmatch(r"[0-9a-f]{64}", create_journal_id) is None
+            or not isinstance(mount_journal_id, str)
+            or re.fullmatch(r"[0-9a-f]{64}", mount_journal_id) is None):
+        raise SafetyError("production Create E2E omitted durable identity evidence")
+
+    partition = loop.device + "p1"
+    wait_block(partition)
+    refresh_fixture_udev(binary, Path(partition).name)
+    tracked_mount = Mount(partition, target)
+    resources.mounts.append(tracked_mount)
+    assert_owned_mount(binary, tracked_mount)
+    if not lock_path.exists():
+        raise SafetyError("production Create E2E host lock file was not persisted")
+    resources.track_artifact(lock_path)
+    resources.uncertain = False
+
+    wrong_target = resources.create_production_mountpoint("create-restart-wrong-target")
+    wrong = binary.run(
+        "production-create-executor", *common,
+        "--mountpoint", str(wrong_target),
+        "--mode", "verify-restart",
+        "--create-journal-id", create_journal_id,
+        "--mount-journal-id", mount_journal_id,
+        allowed=(1,),
+    )
+    if (wrong.returncode != 1
+            or "restart journal chain does not match" not in wrong.stderr):
+        raise SafetyError("restart recovery did not fail closed on a wrong mountpoint")
+    assert_owned_mount(binary, tracked_mount)
+
+    recovered = binary.json(
+        "production-create-executor", *common,
+        "--mountpoint", str(target),
+        "--mode", "verify-restart",
+        "--create-journal-id", create_journal_id,
+        "--mount-journal-id", mount_journal_id,
+    )
+    expected_recovery = {
+        "status": "restart-recovery-verified",
+        "loop_device": loop.device,
+        "partition_device": partition,
+        "filesystem_uuid": filesystem_uuid,
+        "mountpoint": str(target),
+        "create_journal_id": create_journal_id,
+        "mount_journal_id": mount_journal_id,
+        "live_mount_verified": True,
+        "persistent_config_unchanged": True,
+        "safe_to_unmount_owned_fixture": True,
+    }
+    for key, expected in expected_recovery.items():
+        if recovered.get(key) != expected:
+            raise SafetyError(
+                f"restart recovery returned unexpected {key}: {recovered.get(key)!r}"
+            )
+
+    assert_owned_mount(binary, tracked_mount)
+    binary.run("umount", str(target))
+    absent = binary.run(
+        "findmnt", "--json", "--mountpoint", str(target),
+        "--output", "SOURCE,TARGET", allowed=(0, 1),
+    )
+    if absent.returncode != 1 or absent.stdout.strip() or absent.stderr.strip():
+        raise SafetyError("production Create E2E explicit unmount did not converge")
+    resources.check_loop(loop)
+
+    remove_exact_create_journal_root(
+        mount_journal_root, mount_journal_id, resources.root
+    )
+    remove_exact_create_journal_root(
+        create_journal_root, create_journal_id, resources.root
+    )
+    print(
+        "PRODUCTION_CREATE_MOUNT_E2E_OK=create-format-mount-restart-unmount",
+        flush=True,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--allow-disposable-loop-tests", action="store_true",
@@ -2696,6 +2883,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--production-executor-binary", type=Path)
     parser.add_argument("--swap-executor-binary", type=Path)
     parser.add_argument("--production-swap-executor-binary", type=Path)
+    parser.add_argument("--production-create-executor-binary", type=Path)
     args = parser.parse_args(argv)
     if not args.allow_disposable_loop_tests:
         parser.error("explicit --allow-disposable-loop-tests is required; never use on a production host")
@@ -2717,6 +2905,10 @@ def main(argv: list[str] | None = None) -> int:
             and (not args.production_swap_executor_binary.is_file()
                  or not os.access(args.production_swap_executor_binary, os.X_OK))):
         parser.error("production swap executor binary is absent or not executable")
+    if (args.production_create_executor_binary is not None
+            and (not args.production_create_executor_binary.is_file()
+                 or not os.access(args.production_create_executor_binary, os.X_OK))):
+        parser.error("production create executor binary is absent or not executable")
     def interrupted(signum: int, frame: Any) -> None:
         raise KeyboardInterrupt(f"received signal {signum}")
     for signum in (signal.SIGTERM, signal.SIGHUP):
@@ -2728,6 +2920,7 @@ def main(argv: list[str] | None = None) -> int:
         args.production_executor_binary,
         args.swap_executor_binary,
         args.production_swap_executor_binary,
+        args.production_create_executor_binary,
     )
     root = Path(tempfile.mkdtemp(prefix="lsm-loop-matrix-"))
     resources = Resources(root, runner)
@@ -2905,6 +3098,21 @@ def main(argv: list[str] | None = None) -> int:
                 production_swap_loop,
                 production_swap_partition,
                 production_swap_target,
+            )
+
+        if args.production_create_executor_binary is not None:
+            print("==> blank-disk-production-create-mount-e2e", flush=True)
+            production_create_loop = resources.create_loop(
+                "blank-disk-production-create", 384 * 1024 * 1024
+            )
+            production_create_target = resources.create_production_mountpoint(
+                "create-mount-e2e"
+            )
+            exercise_production_create_mount_e2e(
+                resources,
+                runner,
+                production_create_loop,
+                production_create_target,
             )
 
         if args.production_executor_binary is not None:

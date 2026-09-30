@@ -171,6 +171,14 @@ pub enum ProductionCreatePartitionExecutionError {
         exit_code: i32,
         stderr: String,
     },
+    #[error(
+        "partx exited with status {exit_code} and exact fresh partition rediscovery could not reconcile the requested mapping: {rediscovery}; stderr: {stderr}"
+    )]
+    PartxMappingUnreconciled {
+        exit_code: i32,
+        stderr: String,
+        rediscovery: String,
+    },
     #[error("post-partition storage rediscovery did not converge: {0}")]
     Rediscovery(String),
     #[error("fresh partition table or mapped partition does not match the frozen create geometry")]
@@ -419,6 +427,41 @@ fn run_stage(
         });
     }
     Ok(outcome)
+}
+
+fn run_partx_stage_with_exact_reconciliation(
+    activation: &ProductionCreateActivationIntent,
+    launch: &ProductionCreateRuntimeLaunchSpec,
+    tools: &PinnedProductionCreateTools,
+) -> Result<DescriptorExecOutcome, ProductionCreatePartitionExecutionError> {
+    let outcome = execute_descriptor_stage(
+        tools.partx_file(),
+        launch.partx.program,
+        &launch.partx.argv,
+        &launch.fixed_path,
+        &launch.fixed_locale,
+        None,
+    )?;
+    if outcome.exit_code == 0 {
+        return Ok(outcome);
+    }
+
+    // Some kernels materialize the partition mapping immediately after the
+    // partition-table write even though sfdisk was told not to notify them.
+    // In that state an idempotent partx --add can return non-zero because the
+    // exact requested mapping already exists. Never accept the exit status by
+    // itself: only a complete fresh discovery of the frozen geometry, with no
+    // filesystem/mount/fstab/swap use, may reconcile the non-zero outcome.
+    match discover_exact_partition(activation, launch) {
+        Ok(()) => Ok(outcome),
+        Err(rediscovery) => Err(
+            ProductionCreatePartitionExecutionError::PartxMappingUnreconciled {
+                exit_code: outcome.exit_code,
+                stderr: bounded_stderr(&outcome),
+                rediscovery: rediscovery.to_string(),
+            },
+        ),
+    }
 }
 
 fn verify_partition_snapshot(
@@ -674,14 +717,7 @@ fn execute_partition_crossing(
         return Err(persist_recovery(store, journal, error));
     }
 
-    if let Err(error) = run_stage(
-        "partx",
-        tools.partx_file(),
-        &launch.partx,
-        &launch.fixed_path,
-        &launch.fixed_locale,
-        None,
-    ) {
+    if let Err(error) = run_partx_stage_with_exact_reconciliation(activation, launch, tools) {
         return Err(persist_recovery(store, journal, error));
     }
 
@@ -789,10 +825,11 @@ fn run_filesystem_stage(
 
 /// Cross only the first irreversible production Create boundary.
 ///
-/// This function may write the exact frozen partition table and add partition 1
-/// to the kernel map. It stops after fresh exact partition rediscovery is
-/// durably recorded. The pinned mkfs descriptor is deliberately never executed
-/// by this layer.
+/// This function may write the exact frozen partition table and request partition 1
+/// in the kernel map. A non-zero partx result is accepted only when complete fresh
+/// rediscovery proves that the exact frozen mapping already exists and is unused.
+/// It stops after that exact partition rediscovery is durably recorded. The pinned
+/// mkfs descriptor is deliberately never executed by this layer.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_production_create_partition_crossing(
     _host_lock: &HostStorageLock,

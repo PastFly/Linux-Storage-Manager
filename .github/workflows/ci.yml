@@ -107,6 +107,9 @@ jobs:
       - name: Check gated create mount runtime crossing
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-create-mount-runtime-execution --lib
+      - name: Check full production create loop harness feature
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo clippy --locked -p lsm-executor --features production-create-loop-harness --bin lsm-production-create-loop-harness -- -D warnings
       - name: Check non-executing swap production activation boundary
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-swap-replacement-activation --lib
@@ -218,6 +221,7 @@ jobs:
           cargo build --locked --release -p lsm-executor --features disposable-swap-migration-harness --bin lsm-disposable-swap-loop-harness
           cargo build --locked --release -p lsm-executor --features production-loop-harness --bin lsm-production-loop-harness
           cargo build --locked --release -p lsm-executor --features production-swap-loop-harness --bin lsm-production-swap-loop-harness
+          cargo build --locked --release -p lsm-executor --features production-create-loop-harness --bin lsm-production-create-loop-harness
       - name: Test planning and partition/LVM recovery on disposable fixtures
         run: |
           for attempt in 1 2 3; do
@@ -228,7 +232,8 @@ jobs:
               "${GITHUB_WORKSPACE}/target/release/lsm-disposable-loop-harness" \
               --swap-executor-binary "${GITHUB_WORKSPACE}/target/release/lsm-disposable-swap-loop-harness" \
               --production-executor-binary "${GITHUB_WORKSPACE}/target/release/lsm-production-loop-harness" \
-              --production-swap-executor-binary "${GITHUB_WORKSPACE}/target/release/lsm-production-swap-loop-harness"
+              --production-swap-executor-binary "${GITHUB_WORKSPACE}/target/release/lsm-production-swap-loop-harness" \
+              --production-create-executor-binary "${GITHUB_WORKSPACE}/target/release/lsm-production-create-loop-harness"
           done
 
       - name: Package tested read-only prototype

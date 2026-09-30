@@ -497,7 +497,10 @@ impl HostStorageLock {
         &self.path
     }
 
-    #[cfg(feature = "production-swap-loop-harness")]
+    #[cfg(any(
+        feature = "production-swap-loop-harness",
+        feature = "production-create-loop-harness"
+    ))]
     pub fn try_acquire_at(path: &Path) -> Result<Self, HostLockError> {
         Self::try_acquire_path(path)
     }
