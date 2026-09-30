@@ -886,6 +886,31 @@ pub fn execute_production_create_filesystem_crossing(
         return Err(persist_filesystem_recovery(store, journal, error));
     }
 
+    let consent_receipt = match revalidate_pinned_production_create_consent(activation, consent) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            return Err(persist_filesystem_recovery(
+                store,
+                journal,
+                ProductionCreateFilesystemExecutionError::Consent(error),
+            ));
+        }
+    };
+    if consent_receipt.receipt_id != preflight.consent_receipt_id {
+        return Err(persist_filesystem_recovery(
+            store,
+            journal,
+            ProductionCreateFilesystemExecutionError::AuthorizationInvalid,
+        ));
+    }
+    if let Err(error) = tools.revalidate(preflight) {
+        return Err(persist_filesystem_recovery(
+            store,
+            journal,
+            ProductionCreateFilesystemExecutionError::ToolLease(error),
+        ));
+    }
+
     persist_production_create_runtime_transition(
         store,
         journal,
