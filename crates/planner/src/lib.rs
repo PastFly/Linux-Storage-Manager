@@ -1,12 +1,17 @@
 //! Read-only, in-memory plan previews. No process, filesystem or device I/O.
 //! A preview is NOT an executable plan or authorization to modify storage.
 
+mod create_intent;
 mod execution_guard;
 mod execution_handoff;
 mod filesystem_policy;
 mod identity_guard;
 mod route_graph;
 mod swap_migration;
+
+pub use create_intent::{
+    freeze_blank_disk_filesystem_create_intent, FrozenBlankDiskFilesystemIntent,
+};
 
 pub use route_graph::{
     analyze_layer_route, LayerRoute, LayerRouteStatus, RouteIssue, RouteIssueKind, RouteLayer,
