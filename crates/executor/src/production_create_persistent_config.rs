@@ -17,7 +17,8 @@ use crate::{
     build_production_create_persistent_config_journal, HostStorageLock,
     ProductionCreateActivationIntent, ProductionCreateMountActivationIntent,
     ProductionCreateMountRuntimeExecutionReceipt, ProductionCreateMountRuntimeJournal,
-    ProductionCreateMountRuntimeJournalStore, ProductionCreatePersistentConfigJournal,
+    ProductionCreateMountRuntimeJournalError, ProductionCreateMountRuntimeJournalStore,
+    ProductionCreatePersistentConfigJournal,
     ProductionCreatePersistentConfigJournalError, ProductionCreatePersistentConfigJournalStore,
     ProductionCreatePersistentConfigPhase, ProductionCreatePersistentConfigTransition,
 };
@@ -109,6 +110,8 @@ pub enum ProductionCreatePersistentConfigError {
     AuthorizationInvalid,
     #[error("completed mount runtime journal is not the exact persisted record")]
     MountJournalMismatch,
+    #[error("completed mount runtime journal reload failed: {0}")]
+    MountJournal(#[from] ProductionCreateMountRuntimeJournalError),
     #[error("persistent-config journal is not the exact persisted Prepared record")]
     PersistenceJournalMismatch,
     #[error("fresh mounted filesystem no longer matches the exact completed Create scope: {0}")]
