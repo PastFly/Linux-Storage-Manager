@@ -297,10 +297,16 @@ pub use production_create_preflight::{
     prepare_production_create_runtime_preflight, ProductionCreateRuntimePreflightError,
     ProductionCreateRuntimePreflightReceipt, PRODUCTION_CREATE_RUNTIME_PREFLIGHT_COMPILED,
 };
+#[cfg(feature = "production-create-filesystem-execution")]
+pub use production_create_runtime_exec::{
+    execute_production_create_filesystem_crossing, ProductionCreateFilesystemExecutionError,
+    ProductionCreateFilesystemExecutionReceipt,
+};
 #[cfg(feature = "production-create-runtime-execution")]
 pub use production_create_runtime_exec::{
     execute_production_create_partition_crossing, ProductionCreatePartitionExecutionError,
-    ProductionCreatePartitionExecutionReceipt, PRODUCTION_CREATE_RUNTIME_EXECUTION_COMPILED,
+    ProductionCreatePartitionExecutionReceipt, PRODUCTION_CREATE_FILESYSTEM_EXECUTION_COMPILED,
+    PRODUCTION_CREATE_RUNTIME_EXECUTION_COMPILED,
 };
 #[cfg(feature = "production-create-tool-lease")]
 pub use production_create_tool_lease::{
