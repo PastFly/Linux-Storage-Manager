@@ -8,7 +8,8 @@ use lsm_discovery::{
 };
 use lsm_planner::{
     analyze_layer_route, analyze_swap_migration_safety, analyze_swapfile_destination,
-    build_swap_replacement_intent, decide_filesystem_growth, list_extend_targets,
+    build_swap_replacement_intent, decide_filesystem_growth,
+    freeze_blank_disk_filesystem_create_intent, list_extend_targets,
     list_provisioning_opportunities, parse_growth_size, plan_create, plan_extend,
     CreatePartitionTablePolicy, CreatePurpose, CreateRequest, ExtendRequest,
     FilesystemDecisionState, Growth, PlanStatus,
@@ -142,6 +143,9 @@ enum PlanCommand {
         /// Partition-table policy for a blank-disk source.
         #[arg(long, value_enum)]
         partition_table: Option<CreatePartitionTableArg>,
+        /// Freeze the first non-executing M2 blank-disk filesystem intent.
+        #[arg(long)]
+        freeze_intent: bool,
         /// Emit structured JSON instead of the human-readable preview.
         #[arg(long)]
         json: bool,
@@ -517,6 +521,7 @@ fn run() -> Result<ExitCode> {
                     fs,
                     mount,
                     partition_table,
+                    freeze_intent,
                     json,
                 },
         }) => {
@@ -544,6 +549,35 @@ fn run() -> Result<ExitCode> {
                     partition_table: partition_table.map(CreatePartitionTablePolicy::from),
                 },
             )?;
+            if freeze_intent {
+                let intent = freeze_blank_disk_filesystem_create_intent(&snapshot, &plan)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&intent)?);
+                } else {
+                    println!("Intent: {}", intent.intent_id);
+                    println!("Status: {:?}", intent.status);
+                    println!("Executable: {}", intent.executable);
+                    println!("Disk: {}", intent.disk);
+                    println!(
+                        "Partition: start={} sectors={} bytes={}",
+                        intent.partition_start_sector,
+                        intent.partition_sector_count,
+                        intent.partition_size_bytes
+                    );
+                    println!("Filesystem: {}", intent.filesystem);
+                    for blocker in &intent.blockers {
+                        println!("BLOCKED [{}]: {}", blocker.code, blocker.message);
+                    }
+                    for step in &intent.ordered_future_steps {
+                        println!("Frozen step: {step}");
+                    }
+                }
+                return Ok(if intent.ready() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(2)
+                });
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&plan)?);
             } else {
