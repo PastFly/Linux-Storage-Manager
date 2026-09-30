@@ -8,8 +8,8 @@ use crate::production_swap_runtime_journal::{
     persist_production_swap_runtime_transition, ProductionSwapRuntimeTransition,
 };
 use crate::{
-    production_swap_persistent_config::revalidate_production_swap_persistent_config_receipt,
     prepare_production_swap_partition_removal,
+    production_swap_persistent_config::revalidate_production_swap_persistent_config_receipt,
     revalidate_pinned_production_swap_replacement_consent, DescriptorExecOutcome, HostStorageLock,
     PinnedProductionSwapPartitionRemovalTools, PinnedProductionSwapReplacementConsent,
     PrivilegedDescriptorExecError, ProductionSwapPartitionRemovalLaunchSpec,
