@@ -89,7 +89,7 @@ impl ProductionCreateActivationIntent {
         Ok(self.activation_id == self.expected_activation_id()?)
     }
 
-    fn expected_activation_id(&self) -> Result<String, serde_json::Error> {
+    pub(crate) fn expected_activation_id(&self) -> Result<String, serde_json::Error> {
         let payload = ActivationDigestPayload {
             schema_version: self.schema_version,
             profile: self.profile,

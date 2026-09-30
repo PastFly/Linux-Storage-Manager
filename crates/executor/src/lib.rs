@@ -42,6 +42,7 @@ mod production_chained_verified_step;
 mod production_consent;
 mod production_consent_lease;
 mod production_create_activation;
+mod production_create_consent;
 mod production_descriptor_exec;
 mod production_execution;
 #[cfg(feature = "production-mutation-execution")]
@@ -250,6 +251,12 @@ pub use production_create_activation::{
     ProductionCreateActivationError, ProductionCreateActivationIntent,
     ProductionCreateActivationReadiness, ProductionCreateProfile,
     PRODUCTION_CREATE_ACTIVATION_COMPILED,
+};
+pub use production_create_consent::{
+    verify_default_production_create_consent, ProductionCreateConsentDocument,
+    ProductionCreateConsentError, ProductionCreateConsentFileIdentity,
+    ProductionCreateConsentReceipt, PRODUCTION_CREATE_CONSENT_COMPILED,
+    PRODUCTION_CREATE_CONSENT_PATH, PRODUCTION_CREATE_CONSENT_PHRASE,
 };
 pub use production_descriptor_exec::{
     ProductionDescriptorExecutionChain, ProductionDescriptorExecutionError,
