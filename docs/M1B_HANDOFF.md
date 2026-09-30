@@ -350,3 +350,6 @@ M2A2 adds a separate compile-time provisioning activation around the M2A1 frozen
 
 
 M2A3 requires explicit root-owned provisioning consent for exactly one M2A2 activation. The canonical document lives at `/etc/linux-storage-manager/production-create-consent.json`, must be a single-link root-owned mode-0600 regular file opened with `O_NOFOLLOW`, and must repeat the exact activation ID, create-intent ID, disk, filesystem and phrase `I UNDERSTAND THIS WILL PARTITION AND FORMAT THE DISK`. A digest-bound receipt is produced with execution_enabled=false. The layer still cannot spawn tools or mutate storage.
+
+
+M2A3 is restacked on the merged M2A2 master baseline.
