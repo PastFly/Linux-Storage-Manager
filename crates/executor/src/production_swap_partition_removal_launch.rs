@@ -31,7 +31,8 @@ pub struct ProductionSwapPartitionRemovalLaunchSpec {
     pub retiring_swap_partition_number: u32,
     pub extended_partition_number: u32,
     pub sfdisk_delete: ProductionSwapPartitionRemovalLaunchStage,
-    pub partx_update: ProductionSwapPartitionRemovalLaunchStage,
+    pub partx_delete_swap: ProductionSwapPartitionRemovalLaunchStage,
+    pub partx_delete_extended: ProductionSwapPartitionRemovalLaunchStage,
     pub fixed_path: String,
     pub fixed_locale: String,
     pub process_spawned: bool,
@@ -47,7 +48,8 @@ struct LaunchDigestPayload<'a> {
     retiring_swap_partition_number: u32,
     extended_partition_number: u32,
     sfdisk_delete: &'a ProductionSwapPartitionRemovalLaunchStage,
-    partx_update: &'a ProductionSwapPartitionRemovalLaunchStage,
+    partx_delete_swap: &'a ProductionSwapPartitionRemovalLaunchStage,
+    partx_delete_extended: &'a ProductionSwapPartitionRemovalLaunchStage,
     fixed_path: &'a str,
     fixed_locale: &'a str,
     process_spawned: bool,
@@ -68,7 +70,8 @@ impl ProductionSwapPartitionRemovalLaunchSpec {
             retiring_swap_partition_number: self.retiring_swap_partition_number,
             extended_partition_number: self.extended_partition_number,
             sfdisk_delete: &self.sfdisk_delete,
-            partx_update: &self.partx_update,
+            partx_delete_swap: &self.partx_delete_swap,
+            partx_delete_extended: &self.partx_delete_extended,
             fixed_path: &self.fixed_path,
             fixed_locale: &self.fixed_locale,
             process_spawned: self.process_spawned,
@@ -141,9 +144,29 @@ fn build_from_identities(
         ],
         tool: sfdisk,
     };
-    let partx_update = ProductionSwapPartitionRemovalLaunchStage {
+    // A whole-disk reread can fail while the preserved data partition is
+    // mounted. Remove only the two retired kernel mappings, in dependency
+    // order: logical swap first, then its extended container.
+    let partx_delete_swap = ProductionSwapPartitionRemovalLaunchStage {
         program: PrivilegedProgram::Partx,
-        argv: vec!["partx".into(), "--update".into(), preflight.disk.clone()],
+        argv: vec![
+            "partx".into(),
+            "--delete".into(),
+            "--nr".into(),
+            preflight.retiring_swap_partition_number.to_string(),
+            preflight.disk.clone(),
+        ],
+        tool: partx.clone(),
+    };
+    let partx_delete_extended = ProductionSwapPartitionRemovalLaunchStage {
+        program: PrivilegedProgram::Partx,
+        argv: vec![
+            "partx".into(),
+            "--delete".into(),
+            "--nr".into(),
+            preflight.extended_partition_number.to_string(),
+            preflight.disk.clone(),
+        ],
         tool: partx,
     };
 
@@ -156,7 +179,8 @@ fn build_from_identities(
         retiring_swap_partition_number: preflight.retiring_swap_partition_number,
         extended_partition_number: preflight.extended_partition_number,
         sfdisk_delete,
-        partx_update,
+        partx_delete_swap,
+        partx_delete_extended,
         fixed_path: FIXED_PATH.into(),
         fixed_locale: FIXED_LOCALE.into(),
         process_spawned: false,
@@ -248,7 +272,14 @@ mod tests {
             launch.sfdisk_delete.argv,
             ["sfdisk", "--lock=yes", "--delete", "/dev/sda", "5", "2"]
         );
-        assert_eq!(launch.partx_update.argv, ["partx", "--update", "/dev/sda"]);
+        assert_eq!(
+            launch.partx_delete_swap.argv,
+            ["partx", "--delete", "--nr", "5", "/dev/sda"]
+        );
+        assert_eq!(
+            launch.partx_delete_extended.argv,
+            ["partx", "--delete", "--nr", "2", "/dev/sda"]
+        );
         assert!(!launch.process_spawned);
         assert!(!launch.partition_table_changed);
     }
