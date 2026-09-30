@@ -8,6 +8,7 @@ use crate::production_swap_runtime_journal::{
     persist_production_swap_runtime_transition, ProductionSwapRuntimeTransition,
 };
 use crate::{
+    production_swap_persistent_config::revalidate_production_swap_persistent_config_receipt,
     prepare_production_swap_partition_removal,
     revalidate_pinned_production_swap_replacement_consent, DescriptorExecOutcome, HostStorageLock,
     PinnedProductionSwapPartitionRemovalTools, PinnedProductionSwapReplacementConsent,
@@ -238,6 +239,7 @@ fn persist_recovery(
 fn verify_post_state(
     activation: &ProductionSwapReplacementActivationIntent,
     runtime: &ProductionSwapRuntimeExecutionReceipt,
+    persistent: &ProductionSwapPersistentConfigReceipt,
     preflight: &ProductionSwapPartitionRemovalPreflight,
 ) -> Result<(), ProductionSwapPartitionRemovalExecutionError> {
     let snapshot = discover_snapshot()
@@ -281,28 +283,8 @@ fn verify_post_state(
         return Err(ProductionSwapPartitionRemovalExecutionError::PostStateMismatch);
     }
 
-    if snapshot
-        .fstab
-        .iter()
-        .any(|entry| entry.fs_type == "swap" && entry.source == activation.persistent_swap_source)
-    {
-        return Err(ProductionSwapPartitionRemovalExecutionError::PostStateMismatch);
-    }
-    let persistent_replacement = snapshot
-        .fstab
-        .iter()
-        .filter(|entry| {
-            entry.fs_type == "swap"
-                && entry.source == activation.swapfile_path
-                && entry.target == activation.persistent_swap_target
-                && entry.options == activation.persistent_swap_options
-                && entry.dump == activation.persistent_swap_dump
-                && entry.pass == activation.persistent_swap_pass
-        })
-        .count();
-    if persistent_replacement != 1 {
-        return Err(ProductionSwapPartitionRemovalExecutionError::PostStateMismatch);
-    }
+    revalidate_production_swap_persistent_config_receipt(activation, persistent)
+        .map_err(|_| ProductionSwapPartitionRemovalExecutionError::PostStateMismatch)?;
 
     Ok(())
 }
@@ -378,7 +360,7 @@ pub fn execute_production_swap_partition_removal(
         return Err(persist_recovery(store, journal, error));
     }
 
-    if let Err(error) = verify_post_state(activation, runtime, preflight) {
+    if let Err(error) = verify_post_state(activation, runtime, persistent, preflight) {
         return Err(persist_recovery(store, journal, error));
     }
 
