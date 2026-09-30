@@ -3063,10 +3063,9 @@ pub fn analyze_layout_opportunity(
     }
     let swap_bytes = swap_record.size_sectors.checked_mul(sector)?;
     let swap_device = unique(
-        nodes
-            .iter()
-            .copied()
-            .filter(|device| device.kind == NodeKind::Partition && node_alias(device, &swap_record.node)),
+        nodes.iter().copied().filter(|device| {
+            device.kind == NodeKind::Partition && node_alias(device, &swap_record.node)
+        }),
         "swap-device-not-unique",
     )
     .ok()?;
