@@ -290,12 +290,11 @@ fn expected_mkfs_program(
     }
 }
 
+type ExactCreateStageInputs = (String, String, Vec<String>, Vec<String>, Vec<String>);
+
 fn exact_stage_inputs(
     activation: &ProductionCreateActivationIntent,
-) -> Result<
-    (String, String, Vec<String>, Vec<String>, Vec<String>),
-    ProductionCreateRuntimeLaunchError,
-> {
+) -> Result<ExactCreateStageInputs, ProductionCreateRuntimeLaunchError> {
     let partition = partition_device(&activation.disk)?;
     let script = sfdisk_script(
         activation.partition_table,
