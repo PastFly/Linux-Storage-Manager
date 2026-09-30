@@ -149,12 +149,9 @@ fn io_error(path: &Path, source: io::Error) -> ProductionCreateMountActivationEr
 fn safe_absolute_path(path: &Path) -> bool {
     path.is_absolute()
         && path != Path::new("/")
-        && path.components().all(|component| {
-            matches!(
-                component,
-                Component::RootDir | Component::Normal(_)
-            )
-        })
+        && path
+            .components()
+            .all(|component| matches!(component, Component::RootDir | Component::Normal(_)))
 }
 
 fn reserved_mountpoint(path: &Path) -> bool {
@@ -187,11 +184,9 @@ fn inspect_safe_empty_mountpoint(
             Component::Normal(value) => current.push(value),
             _ => return Err(ProductionCreateMountActivationError::UnsafeMountpoint),
         }
-        let metadata = fs::symlink_metadata(&current).map_err(|source| io_error(&current, source))?;
-        if metadata.file_type().is_symlink()
-            || !metadata.is_dir()
-            || metadata.mode() & 0o022 != 0
-        {
+        let metadata =
+            fs::symlink_metadata(&current).map_err(|source| io_error(&current, source))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() || metadata.mode() & 0o022 != 0 {
             return Err(ProductionCreateMountActivationError::UnsafeMountpoint);
         }
     }
@@ -360,7 +355,11 @@ pub fn seal_production_create_mount_activation_intent(
         fresh_filesystem_uuid(activation, filesystem_receipt, snapshot, mountpoint)?;
     let mountpoint_metadata = inspect_safe_empty_mountpoint(mountpoint, 0)?;
     let fstab_source = format!("UUID={filesystem_uuid}");
-    let fstab_pass = if activation.filesystem == "ext4" { 2 } else { 0 };
+    let fstab_pass = if activation.filesystem == "ext4" {
+        2
+    } else {
+        0
+    };
 
     let mut intent = ProductionCreateMountActivationIntent {
         schema_version: 1,
@@ -407,9 +406,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::current_dir()
-            .unwrap()
-            .join(format!(".lsm-mount-activation-{}-{stamp}-{name}", std::process::id()))
+        std::env::current_dir().unwrap().join(format!(
+            ".lsm-mount-activation-{}-{stamp}-{name}",
+            std::process::id()
+        ))
     }
 
     #[test]
