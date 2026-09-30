@@ -730,13 +730,9 @@ mod tests {
             &space(150_000_000),
             "/data",
         );
-        let intent = build_swap_replacement_intent(
-            &snapshot,
-            &safety,
-            &readiness,
-            &vacant_swapfile_path(),
-        )
-        .unwrap();
+        let intent =
+            build_swap_replacement_intent(&snapshot, &safety, &readiness, &vacant_swapfile_path())
+                .unwrap();
         assert!(intent.ready());
         assert_eq!(intent.retiring_swap_bytes, Some(102_400_000));
     }
