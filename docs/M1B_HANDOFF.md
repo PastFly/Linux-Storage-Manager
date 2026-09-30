@@ -350,3 +350,6 @@ M2A3 requires explicit root-owned provisioning consent for exactly one M2A2 acti
 
 
 M2A4 pins the verified provisioning consent by retaining the exact opened file descriptor after M2A3 verification. Both the live pathname and the pinned fd must continue to match device/inode/uid/mode/link-count/size/SHA-256 before later authorization. In-place edits and pathname replacement fail closed. This still carries no execution permit and cannot mutate storage.
+
+
+M2A5 seals the exact create activation only after revalidating the still-open M2A4 pinned consent lease against the live canonical consent path. The permit binds activation ID, consent receipt, frozen create-intent/plan/source IDs, disk geometry, GPT/DOS policy, exact partition range/bytes and ext4/XFS choice into a deterministic digest. It explicitly records mutation_enabled=false, process_spawned=false, partition_table_changed=false and filesystem_formatted=false. No partition-table write, mkfs execution, mount or fstab mutation is introduced; fresh runtime preflight and trusted-tool pinning remain the next gates.
