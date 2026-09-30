@@ -8,7 +8,8 @@ use lsm_discovery::{
 };
 use lsm_planner::{
     analyze_layer_route, analyze_swap_migration_safety, analyze_swapfile_destination,
-    build_swap_replacement_intent, decide_filesystem_growth, list_extend_targets,
+    build_swap_replacement_intent, decide_filesystem_growth,
+    freeze_blank_disk_filesystem_create_intent, list_extend_targets,
     list_provisioning_opportunities, parse_growth_size, plan_create, plan_extend,
     CreatePartitionTablePolicy, CreatePurpose, CreateRequest, ExtendRequest,
     FilesystemDecisionState, Growth, PlanStatus,
