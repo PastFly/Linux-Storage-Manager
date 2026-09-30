@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    PrivilegedProgram, ProductionCreateMountActivationIntent, ProductionCreateMountRuntimeLaunchSpec,
-    ProductionCreateMountRuntimePreflightReceipt,
+    PrivilegedProgram, ProductionCreateMountActivationIntent,
+    ProductionCreateMountRuntimeLaunchSpec, ProductionCreateMountRuntimePreflightReceipt,
 };
 
 pub const PRODUCTION_CREATE_MOUNT_RUNTIME_JOURNAL_COMPILED: bool =
@@ -353,9 +353,9 @@ fn sync_directory(path: &Path) -> Result<(), ProductionCreateMountRuntimeJournal
 }
 
 fn sync_parent(path: &Path) -> Result<(), ProductionCreateMountRuntimeJournalError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| ProductionCreateMountRuntimeJournalError::UnsafeDirectory(path.to_path_buf()))?;
+    let parent = path.parent().ok_or_else(|| {
+        ProductionCreateMountRuntimeJournalError::UnsafeDirectory(path.to_path_buf())
+    })?;
     sync_directory(parent)
 }
 
@@ -366,7 +366,9 @@ fn temp_path(
     let name = final_path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| ProductionCreateMountRuntimeJournalError::UnsafePath(final_path.to_path_buf()))?;
+        .ok_or_else(|| {
+            ProductionCreateMountRuntimeJournalError::UnsafePath(final_path.to_path_buf())
+        })?;
     let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     Ok(root.join(format!(".{name}.tmp-{}-{sequence}", std::process::id())))
 }
@@ -510,10 +512,19 @@ fn validate_journal(
 
     for (value, label) in [
         (journal.mount_activation_id.as_str(), "mount activation ID"),
-        (journal.preflight_receipt_id.as_str(), "preflight receipt ID"),
+        (
+            journal.preflight_receipt_id.as_str(),
+            "preflight receipt ID",
+        ),
         (journal.launch_id.as_str(), "launch ID"),
-        (journal.create_activation_id.as_str(), "create activation ID"),
-        (journal.filesystem_receipt_id.as_str(), "filesystem receipt ID"),
+        (
+            journal.create_activation_id.as_str(),
+            "create activation ID",
+        ),
+        (
+            journal.filesystem_receipt_id.as_str(),
+            "filesystem receipt ID",
+        ),
         (journal.create_journal_id.as_str(), "create journal ID"),
         (journal.create_launch_id.as_str(), "create launch ID"),
     ] {
@@ -527,7 +538,8 @@ fn validate_journal(
                 "journal event sequence or phase chain is invalid".into(),
             ));
         }
-        let Some((expected_to, expected_code)) = transition_target_for_validation(event.from, event.to)
+        let Some((expected_to, expected_code)) =
+            transition_target_for_validation(event.from, event.to)
         else {
             return Err(ProductionCreateMountRuntimeJournalError::InvalidRecord(
                 "journal event contains an impossible phase transition".into(),
@@ -610,12 +622,14 @@ fn apply_transition(
     journal.phase = to;
     journal.mutation_may_have_started = true;
     journal.mount_may_have_changed = true;
-    journal.events.push(ProductionCreateMountRuntimeJournalEvent {
-        sequence: journal.events.len() as u32 + 1,
-        from,
-        to,
-        code: code.into(),
-    });
+    journal
+        .events
+        .push(ProductionCreateMountRuntimeJournalEvent {
+            sequence: journal.events.len() as u32 + 1,
+            from,
+            to,
+            code: code.into(),
+        });
     validate_journal(journal)
 }
 
