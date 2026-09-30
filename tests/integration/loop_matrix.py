@@ -2853,8 +2853,7 @@ def main(argv: list[str] | None = None) -> int:
             offline_vg,
         )
 
-        if (args.swap_executor_binary is not None
-                or args.production_swap_executor_binary is not None):
+        if args.swap_executor_binary is not None:
             print("==> dos-tail-swap-replacement-e2e", flush=True)
             swap_loop = resources.create_loop(
                 "dos-tail-swap-replacement", 768 * 1024 * 1024
@@ -2870,26 +2869,42 @@ def main(argv: list[str] | None = None) -> int:
             swap_target = resources.mount(
                 swap_data, "dos-tail-swap-replacement-mount"
             )
-            if args.swap_executor_binary is not None:
-                exercise_disposable_swap_replacement(
-                    resources,
-                    runner,
-                    swap_loop,
-                    swap_partition,
-                    swap_target,
+            exercise_disposable_swap_replacement(
+                resources,
+                runner,
+                swap_loop,
+                swap_partition,
+                swap_target,
+            )
+
+        if args.production_swap_executor_binary is not None:
+            # Production E2E gets its own untouched fixture. The disposable
+            # scenario intentionally changes runtime swap state and must never
+            # become setup for the production safety proof.
+            print("==> dos-tail-swap-production-e2e", flush=True)
+            production_swap_loop = resources.create_loop(
+                "dos-tail-swap-production", 768 * 1024 * 1024
+            )
+            production_swap_data, production_swap_partition = (
+                resources.create_tail_swap_layout(
+                    production_swap_loop, data_mib=384, swap_mib=64
                 )
-            if args.production_swap_executor_binary is not None:
-                # Disposable success cleanup leaves p5 intact but inactive.
-                if not any(row.get("name") == swap_partition for row in current_swaps(runner)):
-                    runner.run("swapon", "--priority", "7", swap_partition)
-                print("==> dos-tail-swap-production-e2e", flush=True)
-                exercise_production_swap_replacement(
-                    resources,
-                    runner,
-                    swap_loop,
-                    swap_partition,
-                    swap_target,
-                )
+            )
+            runner.run("mkfs.ext4", "-F", production_swap_data)
+            runner.run("mkswap", "--force", production_swap_partition)
+            runner.run("swapon", "--priority", "7", production_swap_partition)
+            refresh_fixture_udev(runner, Path(production_swap_data).name)
+            refresh_fixture_udev(runner, Path(production_swap_partition).name)
+            production_swap_target = resources.mount(
+                production_swap_data, "dos-tail-swap-production-mount"
+            )
+            exercise_production_swap_replacement(
+                resources,
+                runner,
+                production_swap_loop,
+                production_swap_partition,
+                production_swap_target,
+            )
 
         if args.production_executor_binary is not None:
             print("==> lvm-ext4-production-e2e", flush=True)
