@@ -299,12 +299,7 @@ pub(crate) fn verify_production_swap_replacement_consent_at(
     }
     validate_activation(activation)?;
     let (bytes, identity) = read_consent_file(path)?;
-    bind_consent_receipt(
-        activation,
-        &path.to_string_lossy(),
-        &bytes,
-        identity,
-    )
+    bind_consent_receipt(activation, &path.to_string_lossy(), &bytes, identity)
 }
 
 pub fn verify_default_production_swap_replacement_consent(
