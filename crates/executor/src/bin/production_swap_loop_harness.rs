@@ -10,9 +10,9 @@ use lsm_discovery::{
     discover_path_occupancy, discover_snapshot, discover_swaps,
 };
 use lsm_executor::{
-    build_production_swap_partition_removal_launch_spec,
-    build_production_swap_runtime_launch_spec, capture_disposable_loop_ownership,
-    execute_production_swap_partition_removal, execute_production_swap_runtime_replacement,
+    build_production_swap_partition_removal_launch_spec, build_production_swap_runtime_launch_spec,
+    capture_disposable_loop_ownership, execute_production_swap_partition_removal,
+    execute_production_swap_runtime_replacement,
     inspect_production_swap_replacement_activation_readiness,
     pin_production_swap_partition_removal_tools, pin_production_swap_replacement_consent_at,
     pin_production_swap_runtime_tools, prepare_production_swap_partition_removal,
@@ -20,9 +20,8 @@ use lsm_executor::{
     seal_production_swap_replacement_activation_intent,
     seal_production_swap_replacement_execution_permit,
     update_production_swap_persistent_config_at_path, verify_disposable_loop_association_row,
-    HostStorageLock, ProductionSwapReplacementConsentDocument,
-    ProductionSwapRuntimeJournalStore, ProductionSwapRuntimePhase,
-    PRODUCTION_SWAP_REPLACEMENT_CONSENT_PHRASE,
+    HostStorageLock, ProductionSwapReplacementConsentDocument, ProductionSwapRuntimeJournalStore,
+    ProductionSwapRuntimePhase, PRODUCTION_SWAP_REPLACEMENT_CONSENT_PHRASE,
 };
 use lsm_planner::{
     analyze_swap_migration_safety, analyze_swapfile_destination, build_swap_replacement_intent,
@@ -189,7 +188,9 @@ fn run() -> Result<SuccessReceipt, Box<dyn Error>> {
 
     let resume = discover_hibernation_resume_evidence()?;
     if resume.configured() {
-        return Err("CI host has hibernation/resume configured; refusing production swap E2E".into());
+        return Err(
+            "CI host has hibernation/resume configured; refusing production swap E2E".into(),
+        );
     }
 
     let safety = analyze_swap_migration_safety(&snapshot, &resume, &args.target);
@@ -237,8 +238,7 @@ fn run() -> Result<SuccessReceipt, Box<dyn Error>> {
     write_secure(&consent_path, &consent_bytes)?;
 
     let consent = pin_production_swap_replacement_consent_at(&activation, &consent_path)?;
-    let permit =
-        seal_production_swap_replacement_execution_permit(&activation, consent.receipt())?;
+    let permit = seal_production_swap_replacement_execution_permit(&activation, consent.receipt())?;
 
     let preflight = prepare_production_swap_runtime_preflight_from_evidence(
         &activation,
@@ -250,8 +250,12 @@ fn run() -> Result<SuccessReceipt, Box<dyn Error>> {
         &path_state,
     )?;
     let runtime_tools = pin_production_swap_runtime_tools(&preflight)?;
-    let runtime_launch =
-        build_production_swap_runtime_launch_spec(&activation, &permit, &preflight, &runtime_tools)?;
+    let runtime_launch = build_production_swap_runtime_launch_spec(
+        &activation,
+        &permit,
+        &preflight,
+        &runtime_tools,
+    )?;
 
     let store = ProductionSwapRuntimeJournalStore::at(&journal_root);
     let mut journal = lsm_executor::persist_new_production_swap_runtime_journal(
@@ -344,9 +348,7 @@ fn run() -> Result<SuccessReceipt, Box<dyn Error>> {
     }
 
     let swaps = discover_swaps()?;
-    let old_swap_active = swaps
-        .iter()
-        .any(|entry| entry.name == args.old_swap_device);
+    let old_swap_active = swaps.iter().any(|entry| entry.name == args.old_swap_device);
     let replacement = swaps
         .iter()
         .find(|entry| entry.name == activation.swapfile_path)
