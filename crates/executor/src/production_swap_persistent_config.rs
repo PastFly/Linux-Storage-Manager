@@ -407,6 +407,27 @@ fn atomic_replace(
     result
 }
 
+pub(crate) fn revalidate_production_swap_persistent_config_receipt(
+    activation: &ProductionSwapReplacementActivationIntent,
+    receipt: &ProductionSwapPersistentConfigReceipt,
+) -> Result<(), ProductionSwapPersistentConfigError> {
+    if !receipt.integrity_matches().unwrap_or(false)
+        || !receipt.persistent_config_updated
+        || receipt.partition_table_changed
+        || receipt.retiring_swap_source != activation.persistent_swap_source
+        || receipt.replacement_swapfile != activation.swapfile_path
+    {
+        return Err(ProductionSwapPersistentConfigError::BindingMismatch);
+    }
+
+    let path = Path::new(&receipt.fstab_path);
+    let (bytes, _) = read_safe_regular(path)?;
+    if sha256(&bytes) != receipt.after_sha256 {
+        return Err(ProductionSwapPersistentConfigError::ReplacementVerificationFailed);
+    }
+    verify_rewritten(&bytes, activation)
+}
+
 fn persist_recovery(
     store: &ProductionSwapRuntimeJournalStore,
     journal: &mut ProductionSwapRuntimeJournal,
@@ -557,6 +578,27 @@ fn update_persistent_config_at(
 ///
 /// This stage requires the runtime journal to be durably OldSwapDeactivated.
 /// It never removes or rewrites any partition table.
+#[cfg(feature = "production-swap-loop-harness")]
+pub fn update_production_swap_persistent_config_at_path(
+    _host_lock: &HostStorageLock,
+    activation: &ProductionSwapReplacementActivationIntent,
+    runtime: &ProductionSwapRuntimeExecutionReceipt,
+    consent: &PinnedProductionSwapReplacementConsent,
+    store: &ProductionSwapRuntimeJournalStore,
+    journal: &mut ProductionSwapRuntimeJournal,
+    fstab_path: &Path,
+) -> Result<ProductionSwapPersistentConfigReceipt, ProductionSwapPersistentConfigError> {
+    if !PRODUCTION_SWAP_PERSISTENT_CONFIG_COMPILED {
+        return Err(ProductionSwapPersistentConfigError::FeatureDisabled);
+    }
+    if unsafe { libc::geteuid() } != 0 {
+        return Err(ProductionSwapPersistentConfigError::RootRequired);
+    }
+    let _consent = revalidate_pinned_production_swap_replacement_consent(activation, consent)?;
+    verify_runtime_swap_state(activation, runtime)?;
+    update_persistent_config_at(activation, runtime, store, journal, fstab_path)
+}
+
 pub fn update_production_swap_persistent_config(
     _host_lock: &HostStorageLock,
     activation: &ProductionSwapReplacementActivationIntent,
