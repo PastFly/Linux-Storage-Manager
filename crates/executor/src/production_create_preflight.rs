@@ -227,6 +227,9 @@ fn validate_fresh_blank_disk(
         return Err(ProductionCreateRuntimePreflightError::BlankDiskNoLongerBlank);
     }
 
+    if activation.logical_sector_bytes == 0 {
+        return Err(ProductionCreateRuntimePreflightError::BlankDiskChanged);
+    }
     let Some(end_sector) = activation
         .partition_start_sector
         .checked_add(activation.partition_sector_count)
@@ -234,8 +237,7 @@ fn validate_fresh_blank_disk(
         return Err(ProductionCreateRuntimePreflightError::BlankDiskChanged);
     };
     let disk_sectors = activation.disk_size_bytes / activation.logical_sector_bytes;
-    if activation.logical_sector_bytes == 0
-        || activation.partition_start_sector == 0
+    if activation.partition_start_sector == 0
         || activation.partition_sector_count == 0
         || end_sector > disk_sectors
         || activation
