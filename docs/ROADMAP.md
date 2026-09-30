@@ -199,6 +199,9 @@ The TUI has a separate Create workflow. It starts from discovered free-space sou
 asks for the minimum necessary intent: destination, size, filesystem/use and optional
 mountpoint. Low-level layout steps are generated automatically.
 
+- [x] M2A1: freeze a deterministic, non-executing blank-disk -> one partition -> ext4/XFS provisioning intent from a successful Create preview; revalidate exact blank-disk state/geometry and defer mount/fstab activation to a later gate.
+- [ ] Add explicit activation/consent and durable execution gates for the frozen M2A1 profile before any partition-table or mkfs mutation.
+
 - create GPT/DOS partition tables on verified blank disks;
 - create partitions in verified usable free ranges, including disk tail and later internal gaps;
 - initialize LVM PVs and create/extend VGs;
