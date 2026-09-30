@@ -546,13 +546,14 @@ pub fn build_swap_replacement_intent(
     };
 
     if let (Some(entry), Some(expected_bytes)) = (swap_entry, safety.swap_bytes) {
-        if entry.size_bytes != expected_bytes
+        if entry.size_bytes == 0
+            || entry.size_bytes > expected_bytes
             || Some(entry.used_bytes) != safety.active_swap_used_bytes
         {
             push_blocker(
                 &mut blockers,
                 "retiring-swap-runtime-state-changed",
-                "active swap size or usage changed after the migration safety proof",
+                "active swap reported size exceeds the frozen partition geometry or usage changed after the migration safety proof",
             );
         }
     }
@@ -710,6 +711,34 @@ mod tests {
         assert!(result.clear_for_planning());
         assert_eq!(result.swap_bytes, Some(102_400_000));
         assert_eq!(result.swap_device.as_deref(), Some("/dev/sda5"));
+    }
+
+    #[test]
+    fn intent_accepts_header_reduced_active_swap_size_with_exact_geometry() {
+        let mut snapshot = snapshot();
+        snapshot.storage.block_devices[0].kind = lsm_core::NodeKind::Loop;
+        snapshot.swaps[0].size_bytes -= 4096;
+        let safety = analyze_swap_migration_safety(
+            &snapshot,
+            &HibernationResumeEvidence::default(),
+            "/data",
+        );
+        let readiness = analyze_swapfile_destination(
+            &snapshot,
+            &capabilities(),
+            &safety,
+            &space(150_000_000),
+            "/data",
+        );
+        let intent = build_swap_replacement_intent(
+            &snapshot,
+            &safety,
+            &readiness,
+            &vacant_swapfile_path(),
+        )
+        .unwrap();
+        assert!(intent.ready());
+        assert_eq!(intent.retiring_swap_bytes, Some(102_400_000));
     }
 
     #[test]
