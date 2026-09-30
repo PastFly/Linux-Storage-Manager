@@ -122,9 +122,7 @@ fn flatten<'a>(devices: &'a [BlockDevice], output: &mut Vec<&'a BlockDevice>) {
     }
 }
 
-fn expected_partition_table(
-    policy: lsm_planner::CreatePartitionTablePolicy,
-) -> &'static str {
+fn expected_partition_table(policy: lsm_planner::CreatePartitionTablePolicy) -> &'static str {
     match policy {
         lsm_planner::CreatePartitionTablePolicy::Gpt => "gpt",
         lsm_planner::CreatePartitionTablePolicy::Dos => "dos",
@@ -233,9 +231,8 @@ fn validate_static_chain(
 
 fn mount_source_matches(source: Option<&str>, partition: &str, uuid: &str) -> bool {
     let uuid_source = format!("UUID={uuid}");
-    source.is_some_and(|value| {
-        value == partition || value.eq_ignore_ascii_case(uuid_source.as_str())
-    })
+    source
+        .is_some_and(|value| value == partition || value.eq_ignore_ascii_case(uuid_source.as_str()))
 }
 
 fn verify_mounted_snapshot(
@@ -365,7 +362,9 @@ fn discover_exact_mount(
         match discover_snapshot() {
             Ok(snapshot) => match verify_mounted_snapshot(create, activation, &snapshot) {
                 Ok(()) => return Ok(()),
-                Err(error @ ProductionCreateMountRuntimeExecutionError::PersistentConfigChanged) => {
+                Err(
+                    error @ ProductionCreateMountRuntimeExecutionError::PersistentConfigChanged,
+                ) => {
                     return Err(error);
                 }
                 Err(error) => last_error = Some(error.to_string()),
@@ -439,8 +438,7 @@ pub fn execute_production_create_mount_crossing(
         return Err(ProductionCreateMountRuntimeExecutionError::JournalMismatch);
     }
 
-    let fresh_preflight =
-        prepare_production_create_mount_runtime_preflight(create, activation)?;
+    let fresh_preflight = prepare_production_create_mount_runtime_preflight(create, activation)?;
     if fresh_preflight != *preflight {
         return Err(ProductionCreateMountRuntimeExecutionError::AuthorizationInvalid);
     }
