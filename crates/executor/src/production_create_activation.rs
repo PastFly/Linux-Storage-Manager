@@ -1,8 +1,6 @@
 use std::path::{Component, Path};
 
-use lsm_planner::{
-    CreatePartitionTablePolicy, FrozenBlankDiskFilesystemIntent, PlanStatus,
-};
+use lsm_planner::{CreatePartitionTablePolicy, FrozenBlankDiskFilesystemIntent, PlanStatus};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -180,7 +178,10 @@ fn exact_profile(intent: &FrozenBlankDiskFilesystemIntent) -> bool {
         && intent.partition_sector_count > 0
         && end_sector <= disk_sectors
         && intent.partition_size_bytes == expected_partition_bytes
-        && matches!(intent.partition_table, CreatePartitionTablePolicy::Gpt | CreatePartitionTablePolicy::Dos)
+        && matches!(
+            intent.partition_table,
+            CreatePartitionTablePolicy::Gpt | CreatePartitionTablePolicy::Dos
+        )
         && matches!(intent.filesystem.as_str(), "ext4" | "xfs")
         && intent.mountpoint.is_none()
         && no_controls(&intent.create_plan_id)
