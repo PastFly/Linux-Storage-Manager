@@ -141,14 +141,13 @@ fn remove_owned_regular(root: &Path, path: &Path) -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
-fn remove_owned_evidence_directory(
-    root: &Path,
-    directory: &Path,
-) -> Result<(), Box<dyn Error>> {
+fn remove_owned_evidence_directory(root: &Path, directory: &Path) -> Result<(), Box<dyn Error>> {
     if directory.parent() != Some(root) {
-        return Err(
-            format!("refusing evidence cleanup outside owned root: {}", directory.display()).into(),
-        );
+        return Err(format!(
+            "refusing evidence cleanup outside owned root: {}",
+            directory.display()
+        )
+        .into());
     }
     let metadata = fs::symlink_metadata(directory)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() || metadata.uid() != 0 {
