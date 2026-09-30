@@ -697,6 +697,22 @@ mod tests {
     }
 
     #[test]
+    fn loop_fixture_and_header_reduced_active_swap_are_supported() {
+        let mut snapshot = snapshot();
+        snapshot.storage.block_devices[0].kind = lsm_core::NodeKind::Loop;
+        snapshot.swaps[0].size_bytes -= 4096;
+
+        let result = analyze_swap_migration_safety(
+            &snapshot,
+            &HibernationResumeEvidence::default(),
+            "/data",
+        );
+        assert!(result.clear_for_planning());
+        assert_eq!(result.swap_bytes, Some(102_400_000));
+        assert_eq!(result.swap_device.as_deref(), Some("/dev/sda5"));
+    }
+
+    #[test]
     fn kernel_resume_configuration_blocks_swap_partition_retirement() {
         let resume = HibernationResumeEvidence {
             kernel_resume_targets: vec!["UUID=swap-uuid".into()],
