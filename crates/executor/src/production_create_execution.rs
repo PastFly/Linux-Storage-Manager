@@ -66,7 +66,7 @@ impl ProductionCreateExecutionPermit {
         Ok(self.permit_id == self.expected_permit_id()?)
     }
 
-    fn expected_permit_id(&self) -> Result<String, serde_json::Error> {
+    pub(crate) fn expected_permit_id(&self) -> Result<String, serde_json::Error> {
         let payload = ExecutionPermitDigestPayload {
             schema_version: self.schema_version,
             activation_id: &self.activation_id,
