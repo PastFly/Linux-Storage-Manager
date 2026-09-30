@@ -3,7 +3,7 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
-use lsm_core::{BlockDevice, HostSnapshot, NodeKind};
+use lsm_core::{BlockDevice, CollectorState, HostSnapshot, NodeKind};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -224,6 +224,15 @@ fn flatten<'a>(devices: &'a [BlockDevice], output: &mut Vec<&'a BlockDevice>) {
     }
 }
 
+fn expected_partition_table(
+    policy: lsm_planner::CreatePartitionTablePolicy,
+) -> &'static str {
+    match policy {
+        lsm_planner::CreatePartitionTablePolicy::Gpt => "gpt",
+        lsm_planner::CreatePartitionTablePolicy::Dos => "dos",
+    }
+}
+
 fn verify_completed_chain(
     activation: &ProductionCreateActivationIntent,
     filesystem_receipt: &ProductionCreateFilesystemExecutionReceipt,
@@ -262,6 +271,41 @@ fn fresh_filesystem_uuid(
     snapshot: &HostSnapshot,
     mountpoint: &str,
 ) -> Result<String, ProductionCreateMountActivationError> {
+    let partition_collectors = snapshot
+        .collectors
+        .iter()
+        .filter(|status| status.component == "partition_tables")
+        .collect::<Vec<_>>();
+    if partition_collectors.len() != 1
+        || partition_collectors[0].state != CollectorState::Complete
+    {
+        return Err(ProductionCreateMountActivationError::FilesystemBindingMismatch);
+    }
+
+    let tables = snapshot
+        .partition_tables
+        .iter()
+        .filter(|table| table.device == activation.disk)
+        .collect::<Vec<_>>();
+    if tables.len() != 1 {
+        return Err(ProductionCreateMountActivationError::FilesystemBindingMismatch);
+    }
+    let table = tables[0];
+    if table.label.as_deref() != Some(expected_partition_table(activation.partition_table))
+        || table.unit.as_deref() != Some("sectors")
+        || table.sector_size_bytes != Some(activation.logical_sector_bytes)
+        || table.partitions.len() != 1
+    {
+        return Err(ProductionCreateMountActivationError::FilesystemBindingMismatch);
+    }
+    let partition_geometry = &table.partitions[0];
+    if partition_geometry.node != filesystem_receipt.partition_device
+        || partition_geometry.start_sector != activation.partition_start_sector
+        || partition_geometry.size_sectors != activation.partition_sector_count
+    {
+        return Err(ProductionCreateMountActivationError::FilesystemBindingMismatch);
+    }
+
     let mut nodes = Vec::new();
     flatten(&snapshot.storage.block_devices, &mut nodes);
 
@@ -290,6 +334,7 @@ fn fresh_filesystem_uuid(
         || disk.serial != activation.disk_serial
         || partition.kind != NodeKind::Partition
         || partition.size_bytes != activation.partition_size_bytes
+        || partition.logical_sector_bytes != Some(activation.logical_sector_bytes)
         || partition.parent_kernel_name != disk.kernel_name
         || partition
             .filesystem
