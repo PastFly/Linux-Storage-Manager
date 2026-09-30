@@ -47,6 +47,8 @@ mod production_create_consent_lease;
 mod production_create_execution;
 #[cfg(feature = "production-create-runtime-preflight")]
 mod production_create_preflight;
+#[cfg(feature = "production-create-tool-lease")]
+mod production_create_tool_lease;
 mod production_descriptor_exec;
 mod production_execution;
 #[cfg(feature = "production-mutation-execution")]
@@ -274,6 +276,10 @@ pub use production_create_execution::{
 pub use production_create_preflight::{
     prepare_production_create_runtime_preflight, ProductionCreateRuntimePreflightError,
     ProductionCreateRuntimePreflightReceipt, PRODUCTION_CREATE_RUNTIME_PREFLIGHT_COMPILED,
+};
+#[cfg(feature = "production-create-tool-lease")]
+pub use production_create_tool_lease::{
+    pin_production_create_tools, PinnedProductionCreateTools, ProductionCreateToolLeaseError,
 };
 pub use production_descriptor_exec::{
     ProductionDescriptorExecutionChain, ProductionDescriptorExecutionError,
