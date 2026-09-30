@@ -208,7 +208,8 @@ mountpoint. Low-level layout steps are generated automatically.
 - [x] M2A7: pin the exact M2A6 sfdisk/partx/mkfs executable objects by open descriptor and rehash/revalidate them without spawning.
 - [x] M2A8: freeze the exact descriptor-based create launch contract after M2A7 tool pinning: fixed sfdisk stdin/argv, exact partx partition-map add, exact ext4/XFS mkfs argv, pinned ELF identity, fixed environment and mandatory partition rediscovery before mkfs; no process is spawned.
 - [x] M2A9: persist a typed create runtime journal before mutation, with irreversible boundaries for partition-table write and filesystem format; mkfs cannot be entered until a fresh partition rediscovery is durably verified, and any post-boundary failure can enter RecoveryRequired.
-- [ ] Add the first gated create execution crossing: execute only the partition-table stage, rediscover/verify exact partition geometry, and stop before mkfs until that proof is durable.
+- [x] M2A10: first gated Create crossing executes only the exact descriptor-pinned sfdisk/partx stages after a durable pre-write boundary, then bounded fresh rediscovery must prove the exact single partition geometry before PartitionMappedVerified is persisted; mkfs is not executed.
+- [ ] Add the second gated Create crossing: from a durably verified M2A10 partition, revalidate the entire authorization/tool chain, execute only the exact pinned mkfs stage, rediscover the filesystem and complete the journal; mount/fstab remain separate.
 
 - create GPT/DOS partition tables on verified blank disks;
 - create partitions in verified usable free ranges, including disk tail and later internal gaps;
