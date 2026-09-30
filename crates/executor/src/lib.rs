@@ -276,12 +276,6 @@ pub use production_create_execution::{
     seal_production_create_execution_permit, ProductionCreateExecutionPermit,
     ProductionCreateExecutionPermitError, PRODUCTION_CREATE_EXECUTION_PERMIT_COMPILED,
 };
-#[cfg(feature = "production-create-runtime-launch")]
-pub use production_create_launch::{
-    build_production_create_runtime_launch_spec, ProductionCreateLaunchStage,
-    ProductionCreateRuntimeLaunchError, ProductionCreateRuntimeLaunchSpec,
-    PRODUCTION_CREATE_RUNTIME_LAUNCH_COMPILED,
-};
 #[cfg(feature = "production-create-runtime-journal")]
 pub use production_create_journal::{
     build_production_create_runtime_journal, persist_new_production_create_runtime_journal,
@@ -289,6 +283,12 @@ pub use production_create_journal::{
     ProductionCreateRuntimeJournalEvent, ProductionCreateRuntimeJournalStore,
     ProductionCreateRuntimePhase, ProductionCreateRuntimeTransition,
     PRODUCTION_CREATE_RUNTIME_JOURNAL_COMPILED, PRODUCTION_CREATE_RUNTIME_JOURNAL_DIRECTORY,
+};
+#[cfg(feature = "production-create-runtime-launch")]
+pub use production_create_launch::{
+    build_production_create_runtime_launch_spec, ProductionCreateLaunchStage,
+    ProductionCreateRuntimeLaunchError, ProductionCreateRuntimeLaunchSpec,
+    PRODUCTION_CREATE_RUNTIME_LAUNCH_COMPILED,
 };
 #[cfg(feature = "production-create-runtime-preflight")]
 pub use production_create_preflight::{
