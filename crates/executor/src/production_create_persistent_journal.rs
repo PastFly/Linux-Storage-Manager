@@ -423,7 +423,11 @@ fn validate_authorization(
     mount_journal: &ProductionCreateMountRuntimeJournal,
 ) -> Result<(), ProductionCreatePersistentConfigJournalError> {
     let expected_source = format!("UUID={}", activation.filesystem_uuid);
-    let expected_pass = if activation.filesystem == "ext4" { 2 } else { 0 };
+    let expected_pass = if activation.filesystem == "ext4" {
+        2
+    } else {
+        0
+    };
     if create.schema_version != 1
         || activation.schema_version != 1
         || receipt.schema_version != 1
@@ -503,7 +507,10 @@ fn validate_journal(
             journal.mount_runtime_journal_id.as_str(),
             "mount runtime journal ID",
         ),
-        (journal.create_activation_id.as_str(), "create activation ID"),
+        (
+            journal.create_activation_id.as_str(),
+            "create activation ID",
+        ),
     ] {
         validate_digest(value, label)?;
     }
@@ -535,8 +542,10 @@ fn validate_journal(
         ));
     }
 
-    let mutation_expected =
-        !matches!(journal.phase, ProductionCreatePersistentConfigPhase::Prepared);
+    let mutation_expected = !matches!(
+        journal.phase,
+        ProductionCreatePersistentConfigPhase::Prepared
+    );
     if journal.mutation_may_have_started != mutation_expected
         || journal.persistent_config_may_have_changed != mutation_expected
     {
@@ -601,11 +610,9 @@ fn apply_transition(
     transition: ProductionCreatePersistentConfigTransition,
 ) -> Result<(), ProductionCreatePersistentConfigJournalError> {
     let from = journal.phase;
-    let (to, code) = transition_target(from, transition)
-        .ok_or(ProductionCreatePersistentConfigJournalError::InvalidTransition {
-            from,
-            transition,
-        })?;
+    let (to, code) = transition_target(from, transition).ok_or(
+        ProductionCreatePersistentConfigJournalError::InvalidTransition { from, transition },
+    )?;
     journal.phase = to;
     journal.mutation_may_have_started = true;
     journal.persistent_config_may_have_changed = true;
@@ -664,8 +671,12 @@ pub fn persist_new_production_create_persistent_config_journal(
     receipt: &ProductionCreateMountRuntimeExecutionReceipt,
     mount_journal: &ProductionCreateMountRuntimeJournal,
 ) -> Result<ProductionCreatePersistentConfigJournal, ProductionCreatePersistentConfigJournalError> {
-    let journal =
-        build_production_create_persistent_config_journal(create, activation, receipt, mount_journal)?;
+    let journal = build_production_create_persistent_config_journal(
+        create,
+        activation,
+        receipt,
+        mount_journal,
+    )?;
     store.persist_new(&journal)?;
     Ok(journal)
 }
@@ -813,7 +824,9 @@ mod tests {
         store.persist_new(&journal).unwrap();
         assert!(matches!(
             store.persist_new(&journal),
-            Err(ProductionCreatePersistentConfigJournalError::AlreadyExists(_))
+            Err(ProductionCreatePersistentConfigJournalError::AlreadyExists(
+                _
+            ))
         ));
         fs::remove_dir_all(root).unwrap();
     }
