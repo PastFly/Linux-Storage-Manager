@@ -4,7 +4,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use lsm_core::{HostSnapshot, PartitionRecord, PartitionTable};
+use lsm_core::{HostSnapshot, PartitionRecord};
 use lsm_discovery::discover_snapshot;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -488,6 +488,7 @@ pub fn prepare_production_swap_partition_removal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lsm_core::PartitionTable;
     use serde_json::json;
 
     fn activation() -> ProductionSwapReplacementActivationIntent {
