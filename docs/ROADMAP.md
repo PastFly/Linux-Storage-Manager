@@ -200,7 +200,8 @@ asks for the minimum necessary intent: destination, size, filesystem/use and opt
 mountpoint. Low-level layout steps are generated automatically.
 
 - [x] M2A1: freeze a deterministic, non-executing blank-disk -> one partition -> ext4/XFS provisioning intent from a successful Create preview; revalidate exact blank-disk state/geometry and defer mount/fstab activation to a later gate.
-- [ ] Add explicit activation/consent and durable execution gates for the frozen M2A1 profile before any partition-table or mkfs mutation.
+- [x] M2A2: bind the exact M2A1 intent to a separate compile-time production activation contract; profile/integrity are revalidated and the sealed activation remains execution_enabled=false with no table/mkfs crossing.
+- [ ] Add root-owned consent, non-spawning execution permit, fresh preflight/tool pinning and durable execution gates for M2A1 before any partition-table or mkfs mutation.
 
 - create GPT/DOS partition tables on verified blank disks;
 - create partitions in verified usable free ranges, including disk tail and later internal gaps;
