@@ -51,6 +51,10 @@ mod production_create_journal;
 mod production_create_launch;
 #[cfg(feature = "production-create-mount-activation")]
 mod production_create_mount_activation;
+#[cfg(feature = "production-create-mount-runtime-execution")]
+mod production_create_mount_exec;
+#[cfg(feature = "production-create-mount-runtime-journal")]
+mod production_create_mount_journal;
 #[cfg(feature = "production-create-mount-runtime-preflight")]
 mod production_create_mount_runtime;
 #[cfg(feature = "production-create-runtime-preflight")]
@@ -300,6 +304,21 @@ pub use production_create_launch::{
 pub use production_create_mount_activation::{
     seal_production_create_mount_activation_intent, ProductionCreateMountActivationError,
     ProductionCreateMountActivationIntent, PRODUCTION_CREATE_MOUNT_ACTIVATION_COMPILED,
+};
+#[cfg(feature = "production-create-mount-runtime-execution")]
+pub use production_create_mount_exec::{
+    execute_production_create_mount_crossing, ProductionCreateMountRuntimeExecutionError,
+    ProductionCreateMountRuntimeExecutionReceipt,
+    PRODUCTION_CREATE_MOUNT_RUNTIME_EXECUTION_COMPILED,
+};
+#[cfg(feature = "production-create-mount-runtime-journal")]
+pub use production_create_mount_journal::{
+    build_production_create_mount_runtime_journal,
+    persist_new_production_create_mount_runtime_journal, ProductionCreateMountRuntimeJournal,
+    ProductionCreateMountRuntimeJournalError, ProductionCreateMountRuntimeJournalEvent,
+    ProductionCreateMountRuntimeJournalStore, ProductionCreateMountRuntimePhase,
+    ProductionCreateMountRuntimeTransition, PRODUCTION_CREATE_MOUNT_RUNTIME_JOURNAL_COMPILED,
+    PRODUCTION_CREATE_MOUNT_RUNTIME_JOURNAL_DIRECTORY,
 };
 #[cfg(feature = "production-create-mount-runtime-preflight")]
 pub use production_create_mount_runtime::{
