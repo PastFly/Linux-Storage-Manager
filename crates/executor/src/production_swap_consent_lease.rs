@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::production_swap_consent::verify_production_swap_replacement_consent_at;
 use crate::{
-    verify_default_production_swap_replacement_consent,
-    verify_production_swap_replacement_consent_at, ProductionSwapReplacementActivationIntent,
+    verify_default_production_swap_replacement_consent, ProductionSwapReplacementActivationIntent,
     ProductionSwapReplacementConsentError, ProductionSwapReplacementConsentFileIdentity,
     ProductionSwapReplacementConsentReceipt, PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH,
 };
