@@ -101,6 +101,12 @@ jobs:
       - name: Check fresh pinned create mount runtime contract
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-create-mount-runtime-preflight --lib
+      - name: Check durable create mount runtime journal
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo test --locked -p lsm-executor --features production-create-mount-runtime-journal --lib
+      - name: Check gated create mount runtime crossing
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo test --locked -p lsm-executor --features production-create-mount-runtime-execution --lib
       - name: Check non-executing swap production activation boundary
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-swap-replacement-activation --lib
