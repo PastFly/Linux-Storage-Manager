@@ -353,3 +353,7 @@ M2A3 requires explicit root-owned provisioning consent for exactly one M2A2 acti
 
 
 M2A3 is restacked on the merged M2A2 master baseline.
+
+
+
+M2A4 pins the verified provisioning consent by retaining the exact opened file descriptor after M2A3 verification. Both the live pathname and the pinned fd must continue to match device/inode/uid/mode/link-count/size/SHA-256 before later authorization. In-place edits and pathname replacement fail closed. This still carries no execution permit and cannot mutate storage.
