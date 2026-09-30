@@ -344,3 +344,6 @@ M1B70 adds the first complete production swap-tail E2E over one harness-owned DO
 
 
 M2A1 begins provisioning after the M1B safety architecture. A successful advisory Create preview for an exact blank disk can now be frozen into a deterministic, explicitly non-executable intent covering the disk identity, logical sector size, GPT/DOS policy, exact partition start/count/bytes and ext4/XFS filesystem choice. Fresh partition-table collector evidence and blank/unmounted/non-swap state are required again at freeze time. The first M2 profile intentionally rejects mount/fstab intent; execution, consent, tool pinning, partition writes and mkfs remain future gates.
+
+
+M2A2 adds a separate compile-time provisioning activation around the M2A1 frozen blank-disk intent. The activation rechecks intent readiness, its digest, exact /dev path and disk geometry, GPT/DOS policy, partition range and ext4/XFS/no-mount profile before sealing another deterministic ID. Even when the feature is compiled, the activation records execution_enabled=false, partition_table_changed=false and filesystem_formatted=false. No consent, process spawn, partition write or mkfs path is introduced yet.
