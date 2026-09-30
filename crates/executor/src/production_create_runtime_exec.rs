@@ -156,21 +156,24 @@ fn validate_launch_stage_contract(
         "--no-tell-kernel",
         activation.disk.as_str(),
     ];
-    let expected_partx = [
-        "partx",
-        "--add",
-        "--nr",
-        "1",
-        activation.disk.as_str(),
-    ];
+    let expected_partx = ["partx", "--add", "--nr", "1", activation.disk.as_str()];
 
-    let expected_stdin_sha256 =
-        format!("{:x}", Sha256::digest(launch.sfdisk_script.as_bytes()));
+    let expected_stdin_sha256 = format!("{:x}", Sha256::digest(launch.sfdisk_script.as_bytes()));
 
     if launch.sfdisk.program != PrivilegedProgram::Sfdisk
         || launch.partx.program != PrivilegedProgram::Partx
-        || launch.sfdisk.argv.iter().map(String::as_str).ne(expected_sfdisk)
-        || launch.partx.argv.iter().map(String::as_str).ne(expected_partx)
+        || launch
+            .sfdisk
+            .argv
+            .iter()
+            .map(String::as_str)
+            .ne(expected_sfdisk)
+        || launch
+            .partx
+            .argv
+            .iter()
+            .map(String::as_str)
+            .ne(expected_partx)
         || launch.fixed_path != FIXED_PATH
         || launch.fixed_locale != FIXED_LOCALE
         || launch.descriptor_exec_api != "fexecve"
@@ -335,10 +338,9 @@ fn verify_partition_snapshot(
     if partition.node != launch.partition_device
         || partition.start_sector != activation.partition_start_sector
         || partition.size_sectors != activation.partition_sector_count
-        || partition
-            .partition_type
-            .as_deref()
-            .is_none_or(|value| !value.eq_ignore_ascii_case(expected_partition_type(activation.partition_table)))
+        || partition.partition_type.as_deref().is_none_or(|value| {
+            !value.eq_ignore_ascii_case(expected_partition_type(activation.partition_table))
+        })
     {
         return Err(ProductionCreatePartitionExecutionError::PartitionGeometryMismatch);
     }
@@ -381,16 +383,15 @@ fn verify_partition_snapshot(
     let mount_or_fstab = snapshot.mounts.iter().any(|mount| {
         mount.source.as_deref() == Some(activation.disk.as_str())
             || mount.source.as_deref() == Some(launch.partition_device.as_str())
-    }) || snapshot.fstab.iter().any(|entry| {
-        entry.source == activation.disk || entry.source == launch.partition_device
-    });
-    let swap_active = snapshot.swaps.iter().any(|entry| {
-        entry.name == activation.disk || entry.name == launch.partition_device
-    });
-    if child.filesystem.is_some()
-        || !child.mountpoints.is_empty()
-        || mount_or_fstab
-        || swap_active
+    }) || snapshot
+        .fstab
+        .iter()
+        .any(|entry| entry.source == activation.disk || entry.source == launch.partition_device);
+    let swap_active = snapshot
+        .swaps
+        .iter()
+        .any(|entry| entry.name == activation.disk || entry.name == launch.partition_device);
+    if child.filesystem.is_some() || !child.mountpoints.is_empty() || mount_or_fstab || swap_active
     {
         return Err(ProductionCreatePartitionExecutionError::UnexpectedPartitionUse);
     }
@@ -434,12 +435,10 @@ fn persist_recovery(
         ProductionCreateRuntimeTransition::RecoveryRequired,
     ) {
         Ok(()) => runtime,
-        Err(journal_error) => {
-            ProductionCreatePartitionExecutionError::RecoveryPersistenceFailed {
-                runtime: runtime.to_string(),
-                journal: journal_error.to_string(),
-            }
-        }
+        Err(journal_error) => ProductionCreatePartitionExecutionError::RecoveryPersistenceFailed {
+            runtime: runtime.to_string(),
+            journal: journal_error.to_string(),
+        },
     }
 }
 
@@ -556,9 +555,7 @@ pub fn execute_production_create_partition_crossing(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lsm_core::{
-        BlockDevice, CollectorStatus, PartitionRecord, PartitionTable, StorageGraph,
-    };
+    use lsm_core::{BlockDevice, CollectorStatus, PartitionRecord, PartitionTable, StorageGraph};
 
     fn activation() -> ProductionCreateActivationIntent {
         ProductionCreateActivationIntent {
