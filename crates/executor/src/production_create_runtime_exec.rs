@@ -164,6 +164,9 @@ fn validate_launch_stage_contract(
         activation.disk.as_str(),
     ];
 
+    let expected_stdin_sha256 =
+        format!("{:x}", Sha256::digest(launch.sfdisk_script.as_bytes()));
+
     if launch.sfdisk.program != PrivilegedProgram::Sfdisk
         || launch.partx.program != PrivilegedProgram::Partx
         || launch.sfdisk.argv.iter().map(String::as_str).ne(expected_sfdisk)
@@ -172,10 +175,7 @@ fn validate_launch_stage_contract(
         || launch.fixed_locale != FIXED_LOCALE
         || launch.descriptor_exec_api != "fexecve"
         || launch.sfdisk.stdin_len != launch.sfdisk_script.len() as u64
-        || launch.sfdisk.stdin_sha256.as_deref()
-            != Some(
-                format!("{:x}", Sha256::digest(launch.sfdisk_script.as_bytes())).as_str(),
-            )
+        || launch.sfdisk.stdin_sha256.as_deref() != Some(expected_stdin_sha256.as_str())
         || launch.partx.stdin_len != 0
         || launch.partx.stdin_sha256.is_some()
     {
@@ -691,10 +691,8 @@ mod tests {
                 },
                 elf: crate::ElfExecutionIdentity {
                     class: crate::ElfClass::Elf64,
-                    data: crate::ElfDataEncoding::LittleEndian,
-                    machine: 62,
-                    os_abi: 0,
-                    abi_version: 0,
+                    data_encoding: crate::ElfDataEncoding::LittleEndian,
+                    version: 1,
                 },
                 stdin_len: 0,
                 stdin_sha256: None,
@@ -715,10 +713,8 @@ mod tests {
                 },
                 elf: crate::ElfExecutionIdentity {
                     class: crate::ElfClass::Elf64,
-                    data: crate::ElfDataEncoding::LittleEndian,
-                    machine: 62,
-                    os_abi: 0,
-                    abi_version: 0,
+                    data_encoding: crate::ElfDataEncoding::LittleEndian,
+                    version: 1,
                 },
                 stdin_len: 0,
                 stdin_sha256: None,
@@ -739,10 +735,8 @@ mod tests {
                 },
                 elf: crate::ElfExecutionIdentity {
                     class: crate::ElfClass::Elf64,
-                    data: crate::ElfDataEncoding::LittleEndian,
-                    machine: 62,
-                    os_abi: 0,
-                    abi_version: 0,
+                    data_encoding: crate::ElfDataEncoding::LittleEndian,
+                    version: 1,
                 },
                 stdin_len: 0,
                 stdin_sha256: None,
