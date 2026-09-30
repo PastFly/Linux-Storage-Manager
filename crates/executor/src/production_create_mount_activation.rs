@@ -156,7 +156,7 @@ fn safe_absolute_path(path: &Path) -> bool {
 
 fn reserved_mountpoint(path: &Path) -> bool {
     [
-        "/boot", "/dev", "/etc", "/home", "/proc", "/run", "/sys", "/usr", "/var",
+        "/boot", "/dev", "/etc", "/home", "/proc", "/root", "/run", "/sys", "/tmp", "/usr", "/var",
     ]
     .into_iter()
     .any(|reserved| path == Path::new(reserved))
