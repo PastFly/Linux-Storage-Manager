@@ -306,9 +306,7 @@ pub enum ProductionCreateMountRuntimeLaunchError {
     Serialization(#[from] serde_json::Error),
 }
 
-fn expected_partition_table(
-    policy: lsm_planner::CreatePartitionTablePolicy,
-) -> &'static str {
+fn expected_partition_table(policy: lsm_planner::CreatePartitionTablePolicy) -> &'static str {
     match policy {
         lsm_planner::CreatePartitionTablePolicy::Gpt => "gpt",
         lsm_planner::CreatePartitionTablePolicy::Dos => "dos",
@@ -361,8 +359,7 @@ fn safe_absolute_path(path: &Path) -> bool {
 
 fn reserved_mountpoint(path: &Path) -> bool {
     [
-        "/boot", "/dev", "/etc", "/home", "/proc", "/root", "/run", "/sys", "/tmp", "/usr",
-        "/var",
+        "/boot", "/dev", "/etc", "/home", "/proc", "/root", "/run", "/sys", "/tmp", "/usr", "/var",
     ]
     .into_iter()
     .any(|reserved| path == Path::new(reserved))
@@ -400,13 +397,10 @@ fn revalidate_mountpoint_identity(
         match component {
             Component::RootDir => continue,
             Component::Normal(value) => current.push(value),
-            _ => {
-                return Err(
-                    ProductionCreateMountRuntimePreflightError::MountpointIdentityChanged,
-                )
-            }
+            _ => return Err(ProductionCreateMountRuntimePreflightError::MountpointIdentityChanged),
         }
-        let metadata = fs::symlink_metadata(&current).map_err(|source| mountpoint_io(&current, source))?;
+        let metadata =
+            fs::symlink_metadata(&current).map_err(|source| mountpoint_io(&current, source))?;
         if metadata.file_type().is_symlink()
             || !metadata.is_dir()
             || metadata.uid() != 0
@@ -465,7 +459,11 @@ fn validate_activation_binding(
         || mount.partition_device != expected_partition
         || mount.filesystem != create.filesystem
         || mount.fstab_source != expected_fstab_source
-        || mount.fstab_options.iter().map(String::as_str).ne(expected_options)
+        || mount
+            .fstab_options
+            .iter()
+            .map(String::as_str)
+            .ne(expected_options)
         || mount.fstab_dump != 0
         || mount.fstab_pass != expected_pass
         || mount.mountpoint_uid != 0
@@ -626,8 +624,9 @@ pub fn prepare_production_create_mount_runtime_preflight(
     mount_activation: &ProductionCreateMountActivationIntent,
 ) -> Result<ProductionCreateMountRuntimePreflightReceipt, ProductionCreateMountRuntimePreflightError>
 {
-    let snapshot = discover_snapshot()
-        .map_err(|error| ProductionCreateMountRuntimePreflightError::Discovery(error.to_string()))?;
+    let snapshot = discover_snapshot().map_err(|error| {
+        ProductionCreateMountRuntimePreflightError::Discovery(error.to_string())
+    })?;
     prepare_from_snapshot(create, mount_activation, &snapshot)
 }
 
@@ -769,7 +768,8 @@ fn exact_mount_argv(
     mountpoint: &str,
 ) -> Result<Vec<String>, ProductionCreateMountRuntimeLaunchError> {
     for value in [filesystem, source, mountpoint] {
-        if value.is_empty() || value.as_bytes().contains(&0) || value.chars().any(char::is_control) {
+        if value.is_empty() || value.as_bytes().contains(&0) || value.chars().any(char::is_control)
+        {
             return Err(ProductionCreateMountRuntimeLaunchError::EmbeddedNul);
         }
     }
