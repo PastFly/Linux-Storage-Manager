@@ -1,8 +1,9 @@
 use lsm_core::{BlockDevice, CollectorState, HostSnapshot, NodeKind};
 use serde::Serialize;
+use sha2::Digest;
 
 use crate::{
-    fingerprint, Blocker, CreatePartitionTablePolicy, CreatePlanPreview, CreatePurpose, PlanStatus,
+    Blocker, CreatePartitionTablePolicy, CreatePlanPreview, CreatePurpose, PlanStatus,
     PlannerError, ProvisioningSpaceKind,
 };
 
@@ -32,6 +33,37 @@ pub struct FrozenBlankDiskFilesystemIntent {
 impl FrozenBlankDiskFilesystemIntent {
     pub fn ready(&self) -> bool {
         self.status == PlanStatus::Preview && self.blockers.is_empty() && !self.executable
+    }
+
+    pub fn integrity_matches(&self) -> Result<bool, serde_json::Error> {
+        Ok(self.intent_id == self.expected_intent_id()?)
+    }
+
+    fn expected_intent_id(&self) -> Result<String, serde_json::Error> {
+        let payload = IntentDigestPayload {
+            schema_version: self.schema_version,
+            executable: self.executable,
+            status: self.status,
+            create_plan_id: &self.create_plan_id,
+            source_id: &self.source_id,
+            disk: &self.disk,
+            disk_size_bytes: self.disk_size_bytes,
+            logical_sector_bytes: self.logical_sector_bytes,
+            disk_model: &self.disk_model,
+            disk_serial: &self.disk_serial,
+            partition_table: self.partition_table,
+            partition_start_sector: self.partition_start_sector,
+            partition_sector_count: self.partition_sector_count,
+            partition_size_bytes: self.partition_size_bytes,
+            filesystem: &self.filesystem,
+            mountpoint: &self.mountpoint,
+            blockers: &self.blockers,
+            ordered_future_steps: &self.ordered_future_steps,
+        };
+        Ok(format!(
+            "{:x}",
+            sha2::Sha256::digest(serde_json::to_vec(&payload)?)
+        ))
     }
 }
 
@@ -255,26 +287,7 @@ pub fn freeze_blank_disk_filesystem_create_intent(
         ],
     };
 
-    intent.intent_id = fingerprint(&IntentDigestPayload {
-        schema_version: intent.schema_version,
-        executable: intent.executable,
-        status: intent.status,
-        create_plan_id: &intent.create_plan_id,
-        source_id: &intent.source_id,
-        disk: &intent.disk,
-        disk_size_bytes: intent.disk_size_bytes,
-        logical_sector_bytes: intent.logical_sector_bytes,
-        disk_model: &intent.disk_model,
-        disk_serial: &intent.disk_serial,
-        partition_table: intent.partition_table,
-        partition_start_sector: intent.partition_start_sector,
-        partition_sector_count: intent.partition_sector_count,
-        partition_size_bytes: intent.partition_size_bytes,
-        filesystem: &intent.filesystem,
-        mountpoint: &intent.mountpoint,
-        blockers: &intent.blockers,
-        ordered_future_steps: &intent.ordered_future_steps,
-    })?;
+    intent.intent_id = intent.expected_intent_id()?;
 
     Ok(intent)
 }
@@ -335,9 +348,19 @@ mod tests {
         assert!(first.ready());
         assert!(!first.executable);
         assert_eq!(first.intent_id, second.intent_id);
+        assert!(first.integrity_matches().unwrap());
         assert_eq!(first.disk, "/dev/loop7");
         assert_eq!(first.filesystem, "ext4");
         assert_eq!(first.partition_size_bytes, 128 * 1024 * 1024);
+    }
+
+    #[test]
+    fn frozen_intent_tampering_is_detected() {
+        let snapshot = snapshot();
+        let plan = plan(&snapshot);
+        let mut intent = freeze_blank_disk_filesystem_create_intent(&snapshot, &plan).unwrap();
+        intent.partition_sector_count += 1;
+        assert!(!intent.integrity_matches().unwrap());
     }
 
     #[test]
