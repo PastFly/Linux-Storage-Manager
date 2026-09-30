@@ -5,9 +5,7 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{
-    PrivilegedProgram, ProductionCreateRuntimePreflightReceipt, TrustedToolIdentity,
-};
+use crate::{PrivilegedProgram, ProductionCreateRuntimePreflightReceipt, TrustedToolIdentity};
 
 const TOOL_READ_CHUNK: usize = 64 * 1024;
 
@@ -147,9 +145,7 @@ fn validate_open_tool(
     Ok(())
 }
 
-fn open_exact_tool(
-    identity: &TrustedToolIdentity,
-) -> Result<File, ProductionCreateToolLeaseError> {
+fn open_exact_tool(identity: &TrustedToolIdentity) -> Result<File, ProductionCreateToolLeaseError> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
