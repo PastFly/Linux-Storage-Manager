@@ -341,3 +341,6 @@ M1B69 restacked on the merged M1B68 master baseline.
 
 
 M1B70 adds the first complete production swap-tail E2E over one harness-owned DOS loop fixture. The harness reuses the real M1B56-M1B69 production APIs while injecting only owned consent/fstab/evidence paths under a dedicated test-only feature; production defaults remain unchanged. It must prove replacement swap activation at the frozen priority, old-partition swapoff, atomic persistent-config replacement, removal of logical p5 plus extended p2, durable journal Completed, continued replacement swap service through final removal, filesystem sentinel preservation, and exact cleanup. Any failure retains the owned fixture as uncertain rather than broadening mutation scope.
+
+
+M2A1 begins provisioning after the M1B safety architecture. A successful advisory Create preview for an exact blank disk can now be frozen into a deterministic, explicitly non-executable intent covering the disk identity, logical sector size, GPT/DOS policy, exact partition start/count/bytes and ext4/XFS filesystem choice. Fresh partition-table collector evidence and blank/unmounted/non-swap state are required again at freeze time. The first M2 profile intentionally rejects mount/fstab intent; execution, consent, tool pinning, partition writes and mkfs remain future gates.
