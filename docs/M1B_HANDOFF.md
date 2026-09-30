@@ -336,3 +336,5 @@ M1B68 freezes the final partition-removal command sequence without spawning it. 
 
 
 M1B69 crosses the final partition-removal boundary behind its own compile-time feature. Before the first descriptor spawn it revalidates the complete M1B65 runtime/persistent chain, exact persisted journal, pinned consent, M1B66 fresh geometry/backup preflight, M1B67 pinned executables and M1B68 launch digest, then fsync-persists `RemovingPartitions`. Only the frozen `sfdisk --delete` and `partx --update` descriptor stages may run. Any child failure or ambiguous post-state is durably forced to `RecoveryRequired`. Success requires the old logical swap and extended container absent from fresh partition discovery, old swap inactive, replacement swap still active at the frozen priority/size, and the replacement fstab entry still exact with the retiring entry absent. Only then may the journal persist `PartitionsRemoved` and `Completed`.
+
+M1B69 restacked on the merged M1B68 master baseline.
