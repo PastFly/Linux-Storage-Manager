@@ -2994,7 +2994,8 @@ pub fn analyze_layout_opportunity(
 
     let parent_name = target_device.parent_kernel_name.as_deref()?;
     let mut disks = nodes.iter().copied().filter(|candidate| {
-        candidate.kind == NodeKind::Disk && candidate.kernel_name.as_deref() == Some(parent_name)
+        matches!(candidate.kind, NodeKind::Disk | NodeKind::Loop)
+            && candidate.kernel_name.as_deref() == Some(parent_name)
     });
     let disk = disks.next()?;
     if disks.next().is_some() {
@@ -3060,12 +3061,34 @@ pub fn analyze_layout_opportunity(
     if parse_dos_type(swap_record.partition_type.as_deref()?).ok()? != 0x82 {
         return None;
     }
-    let active_swap = snapshot
-        .swaps
-        .iter()
-        .find(|swap| swap.name == swap_record.node)?;
     let swap_bytes = swap_record.size_sectors.checked_mul(sector)?;
-    if active_swap.size_bytes != swap_bytes {
+    let swap_device = unique(
+        nodes
+            .iter()
+            .copied()
+            .filter(|device| device.kind == NodeKind::Partition && node_alias(device, &swap_record.node)),
+        "swap-device-not-unique",
+    )
+    .ok()?;
+    let active_swap = unique(
+        snapshot
+            .swaps
+            .iter()
+            .filter(|swap| node_alias(swap_device, &swap.name)),
+        "active-swap-not-unique",
+    )
+    .ok()?;
+    if swap_device.size_bytes != swap_bytes
+        || swap_device.parent_kernel_name.as_deref() != Some(parent_name)
+        || swap_device
+            .filesystem
+            .as_ref()
+            .map(|filesystem| filesystem.fs_type.as_str())
+            != Some("swap")
+        || active_swap.size_bytes == 0
+        || active_swap.size_bytes > swap_bytes
+        || active_swap.used_bytes > active_swap.size_bytes
+    {
         return None;
     }
 
