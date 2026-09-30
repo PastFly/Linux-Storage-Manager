@@ -22,6 +22,7 @@ pub enum PrivilegedProgram {
     Mkswap,
     Swapon,
     Swapoff,
+    Mount,
     MkfsExt4,
     MkfsXfs,
 }
@@ -38,6 +39,7 @@ impl PrivilegedProgram {
             Self::Mkswap => "mkswap",
             Self::Swapon => "swapon",
             Self::Swapoff => "swapoff",
+            Self::Mount => "mount",
             Self::MkfsExt4 => "mkfs.ext4",
             Self::MkfsXfs => "mkfs.xfs",
         }
