@@ -367,3 +367,6 @@ M2A6 performs the final fresh read-only blank-disk preflight before any future p
 
 
 M2A7 pins the exact M2A6 create executables by open descriptor. The sfdisk, partx and selected mkfs.ext4/mkfs.xfs objects are opened with O_NOFOLLOW/O_CLOEXEC, then device/inode/uid/mode/size/SHA-256 are revalidated against the fresh preflight identities. Revalidation hashes the already-open descriptors so pathname replacement and in-place binary mutation both fail closed. This layer still spawns no process and changes no partition table or filesystem.
+
+
+M2A8 freezes the exact blank-disk create launch after M2A7 pins sfdisk/partx/mkfs by descriptor. The non-spawning contract binds one exact GPT/DOS sfdisk script and argv, one exact partx mapping-add for partition 1, and one exact ext4/XFS mkfs argv against the derived partition device. Native ELF identity, fixed PATH/locale, pinned tool identities and the full M2A2/M2A5/M2A6 authorization chain are included in the launch digest. The contract explicitly requires fresh partition rediscovery after sfdisk/partx and before any future mkfs crossing. No process is spawned and all mutation/result flags remain false. Durable create journaling and execution remain disabled.
