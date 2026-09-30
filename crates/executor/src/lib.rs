@@ -44,6 +44,7 @@ mod production_consent_lease;
 mod production_create_activation;
 mod production_create_consent;
 mod production_create_consent_lease;
+mod production_create_execution;
 mod production_descriptor_exec;
 mod production_execution;
 #[cfg(feature = "production-mutation-execution")]
@@ -262,6 +263,10 @@ pub use production_create_consent::{
 pub use production_create_consent_lease::{
     pin_default_production_create_consent, revalidate_pinned_production_create_consent,
     PinnedProductionCreateConsent, ProductionCreateConsentLeaseError,
+};
+pub use production_create_execution::{
+    seal_production_create_execution_permit, ProductionCreateExecutionPermit,
+    ProductionCreateExecutionPermitError, PRODUCTION_CREATE_EXECUTION_PERMIT_COMPILED,
 };
 pub use production_descriptor_exec::{
     ProductionDescriptorExecutionChain, ProductionDescriptorExecutionError,
