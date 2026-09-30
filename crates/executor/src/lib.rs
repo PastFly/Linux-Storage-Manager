@@ -45,6 +45,8 @@ mod production_create_activation;
 mod production_create_consent;
 mod production_create_consent_lease;
 mod production_create_execution;
+#[cfg(feature = "production-create-mount-activation")]
+mod production_create_mount_activation;
 #[cfg(feature = "production-create-runtime-journal")]
 mod production_create_journal;
 #[cfg(feature = "production-create-runtime-launch")]
@@ -277,6 +279,11 @@ pub use production_create_consent_lease::{
 pub use production_create_execution::{
     seal_production_create_execution_permit, ProductionCreateExecutionPermit,
     ProductionCreateExecutionPermitError, PRODUCTION_CREATE_EXECUTION_PERMIT_COMPILED,
+};
+#[cfg(feature = "production-create-mount-activation")]
+pub use production_create_mount_activation::{
+    seal_production_create_mount_activation_intent, ProductionCreateMountActivationError,
+    ProductionCreateMountActivationIntent, PRODUCTION_CREATE_MOUNT_ACTIVATION_COMPILED,
 };
 #[cfg(feature = "production-create-runtime-journal")]
 pub use production_create_journal::{
