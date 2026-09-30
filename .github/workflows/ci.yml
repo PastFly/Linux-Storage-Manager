@@ -77,6 +77,9 @@ jobs:
       - name: Check non-spawning create production execution permit
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-create-execution-permit --lib
+      - name: Check fresh create production runtime preflight
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo test --locked -p lsm-executor --features production-create-runtime-preflight --lib
       - name: Check non-executing swap production activation boundary
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-swap-replacement-activation --lib
