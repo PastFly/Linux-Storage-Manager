@@ -57,6 +57,10 @@ mod production_create_mount_exec;
 mod production_create_mount_journal;
 #[cfg(feature = "production-create-mount-runtime-preflight")]
 mod production_create_mount_runtime;
+#[cfg(feature = "production-create-persistent-config")]
+mod production_create_persistent_config;
+#[cfg(feature = "production-create-persistent-config-journal")]
+mod production_create_persistent_journal;
 #[cfg(feature = "production-create-runtime-preflight")]
 mod production_create_preflight;
 #[cfg(feature = "production-create-runtime-execution")]
@@ -328,6 +332,23 @@ pub use production_create_mount_runtime::{
     ProductionCreateMountRuntimeLaunchSpec, ProductionCreateMountRuntimePreflightError,
     ProductionCreateMountRuntimePreflightReceipt, ProductionCreateMountToolLeaseError,
     PRODUCTION_CREATE_MOUNT_RUNTIME_PREFLIGHT_COMPILED,
+};
+#[cfg(feature = "production-create-persistent-config")]
+pub use production_create_persistent_config::{
+    revalidate_production_create_persistent_config_receipt,
+    update_production_create_persistent_config, ProductionCreatePersistentConfigError,
+    ProductionCreatePersistentConfigReceipt, PRODUCTION_CREATE_FSTAB_PATH,
+    PRODUCTION_CREATE_PERSISTENT_CONFIG_COMPILED,
+};
+#[cfg(feature = "production-create-persistent-config-journal")]
+pub use production_create_persistent_journal::{
+    build_production_create_persistent_config_journal,
+    persist_new_production_create_persistent_config_journal,
+    ProductionCreatePersistentConfigJournal, ProductionCreatePersistentConfigJournalError,
+    ProductionCreatePersistentConfigJournalEvent, ProductionCreatePersistentConfigJournalStore,
+    ProductionCreatePersistentConfigPhase, ProductionCreatePersistentConfigTransition,
+    PRODUCTION_CREATE_PERSISTENT_CONFIG_JOURNAL_COMPILED,
+    PRODUCTION_CREATE_PERSISTENT_CONFIG_JOURNAL_DIRECTORY,
 };
 #[cfg(feature = "production-create-runtime-preflight")]
 pub use production_create_preflight::{
