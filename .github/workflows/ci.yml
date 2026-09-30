@@ -95,6 +95,9 @@ jobs:
       - name: Check gated create filesystem-format crossing
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-create-filesystem-execution --lib
+      - name: Check non-executing create mount activation boundary
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo test --locked -p lsm-executor --features production-create-mount-activation --lib
       - name: Check non-executing swap production activation boundary
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features production-swap-replacement-activation --lib
