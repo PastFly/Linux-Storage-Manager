@@ -228,13 +228,14 @@ fn validate_runtime_evidence(
     Ok(())
 }
 
-/// Revalidate the exact swap replacement authorization and all mutable live
-/// evidence immediately before a future runtime crossing. This function does
-/// not create a file and does not execute mkswap/swapon/swapoff.
-pub fn prepare_production_swap_runtime_preflight(
+fn prepare_production_swap_runtime_preflight_from_evidence_inner(
     activation: &ProductionSwapReplacementActivationIntent,
     permit: &ProductionSwapReplacementExecutionPermit,
     consent_lease: &PinnedProductionSwapReplacementConsent,
+    snapshot: &HostSnapshot,
+    resume: &HibernationResumeEvidence,
+    space: &FilesystemSpaceEvidence,
+    path: &PathOccupancyEvidence,
 ) -> Result<ProductionSwapRuntimePreflightReceipt, ProductionSwapRuntimePreflightError> {
     if !PRODUCTION_SWAP_RUNTIME_PREFLIGHT_COMPILED {
         return Err(ProductionSwapRuntimePreflightError::FeatureDisabled);
@@ -246,15 +247,7 @@ pub fn prepare_production_swap_runtime_preflight(
         return Err(ProductionSwapRuntimePreflightError::AuthorizationBindingMismatch);
     }
 
-    let snapshot = discover_snapshot()
-        .map_err(|error| ProductionSwapRuntimePreflightError::Discovery(error.to_string()))?;
-    let resume = discover_hibernation_resume_evidence()
-        .map_err(|error| ProductionSwapRuntimePreflightError::Discovery(error.to_string()))?;
-    let space = discover_filesystem_space(&activation.destination_mount)
-        .map_err(|error| ProductionSwapRuntimePreflightError::Discovery(error.to_string()))?;
-    let path = discover_path_occupancy(&activation.swapfile_path)
-        .map_err(|error| ProductionSwapRuntimePreflightError::Discovery(error.to_string()))?;
-    validate_runtime_evidence(activation, &snapshot, &resume, &space, &path)?;
+    validate_runtime_evidence(activation, snapshot, resume, space, path)?;
 
     let mkswap = resolve_trusted_privileged_tool(PrivilegedProgram::Mkswap)?;
     let swapon = resolve_trusted_privileged_tool(PrivilegedProgram::Swapon)?;
@@ -283,6 +276,55 @@ pub fn prepare_production_swap_runtime_preflight(
     };
     receipt.receipt_id = receipt.expected_receipt_id()?;
     Ok(receipt)
+}
+
+#[cfg(feature = "production-swap-loop-harness")]
+pub fn prepare_production_swap_runtime_preflight_from_evidence(
+    activation: &ProductionSwapReplacementActivationIntent,
+    permit: &ProductionSwapReplacementExecutionPermit,
+    consent_lease: &PinnedProductionSwapReplacementConsent,
+    snapshot: &HostSnapshot,
+    resume: &HibernationResumeEvidence,
+    space: &FilesystemSpaceEvidence,
+    path: &PathOccupancyEvidence,
+) -> Result<ProductionSwapRuntimePreflightReceipt, ProductionSwapRuntimePreflightError> {
+    prepare_production_swap_runtime_preflight_from_evidence_inner(
+        activation,
+        permit,
+        consent_lease,
+        snapshot,
+        resume,
+        space,
+        path,
+    )
+}
+
+/// Revalidate the exact swap replacement authorization and all mutable live
+/// evidence immediately before a future runtime crossing. This function does
+/// not create a file and does not execute mkswap/swapon/swapoff.
+pub fn prepare_production_swap_runtime_preflight(
+    activation: &ProductionSwapReplacementActivationIntent,
+    permit: &ProductionSwapReplacementExecutionPermit,
+    consent_lease: &PinnedProductionSwapReplacementConsent,
+) -> Result<ProductionSwapRuntimePreflightReceipt, ProductionSwapRuntimePreflightError> {
+    let snapshot = discover_snapshot()
+        .map_err(|error| ProductionSwapRuntimePreflightError::Discovery(error.to_string()))?;
+    let resume = discover_hibernation_resume_evidence()
+        .map_err(|error| ProductionSwapRuntimePreflightError::Discovery(error.to_string()))?;
+    let space = discover_filesystem_space(&activation.destination_mount)
+        .map_err(|error| ProductionSwapRuntimePreflightError::Discovery(error.to_string()))?;
+    let path = discover_path_occupancy(&activation.swapfile_path)
+        .map_err(|error| ProductionSwapRuntimePreflightError::Discovery(error.to_string()))?;
+
+    prepare_production_swap_runtime_preflight_from_evidence_inner(
+        activation,
+        permit,
+        consent_lease,
+        &snapshot,
+        &resume,
+        &space,
+        &path,
+    )
 }
 
 #[cfg(test)]
