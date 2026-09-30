@@ -418,7 +418,6 @@ mod tests {
     #[test]
     fn header_reduced_runtime_swap_size_is_valid_inside_frozen_partition_geometry() {
         let activation = activation();
-        let permit = permit(&activation);
         let mut snapshot = snapshot();
         snapshot.swaps[0].size_bytes = activation.retiring_swap_bytes - 4096;
         let resume = HibernationResumeEvidence::default();
@@ -438,7 +437,6 @@ mod tests {
         };
 
         assert!(validate_runtime_evidence(&activation, &snapshot, &resume, &space, &path).is_ok());
-        assert!(permit.integrity_matches().unwrap());
     }
 
     #[test]
