@@ -251,7 +251,9 @@ fn validate_fresh_blank_disk(
     Ok(())
 }
 
-fn mkfs_program(filesystem: &str) -> Result<PrivilegedProgram, ProductionCreateRuntimePreflightError> {
+fn mkfs_program(
+    filesystem: &str,
+) -> Result<PrivilegedProgram, ProductionCreateRuntimePreflightError> {
     match filesystem {
         "ext4" => Ok(PrivilegedProgram::MkfsExt4),
         "xfs" => Ok(PrivilegedProgram::MkfsXfs),
@@ -323,9 +325,7 @@ pub fn prepare_production_create_runtime_preflight(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lsm_core::{
-        BlockDevice, CollectorStatus, StorageGraph,
-    };
+    use lsm_core::{BlockDevice, CollectorStatus, StorageGraph};
 
     fn activation() -> ProductionCreateActivationIntent {
         let mut value = ProductionCreateActivationIntent {
