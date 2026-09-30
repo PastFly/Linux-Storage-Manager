@@ -142,6 +142,9 @@ enum PlanCommand {
         /// Partition-table policy for a blank-disk source.
         #[arg(long, value_enum)]
         partition_table: Option<CreatePartitionTableArg>,
+        /// Freeze the first non-executing M2 blank-disk filesystem intent.
+        #[arg(long)]
+        freeze_intent: bool,
         /// Emit structured JSON instead of the human-readable preview.
         #[arg(long)]
         json: bool,
@@ -517,6 +520,7 @@ fn run() -> Result<ExitCode> {
                     fs,
                     mount,
                     partition_table,
+                    freeze_intent,
                     json,
                 },
         }) => {
@@ -544,6 +548,35 @@ fn run() -> Result<ExitCode> {
                     partition_table: partition_table.map(CreatePartitionTablePolicy::from),
                 },
             )?;
+            if freeze_intent {
+                let intent = freeze_blank_disk_filesystem_create_intent(&snapshot, &plan)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&intent)?);
+                } else {
+                    println!("Intent: {}", intent.intent_id);
+                    println!("Status: {:?}", intent.status);
+                    println!("Executable: {}", intent.executable);
+                    println!("Disk: {}", intent.disk);
+                    println!(
+                        "Partition: start={} sectors={} bytes={}",
+                        intent.partition_start_sector,
+                        intent.partition_sector_count,
+                        intent.partition_size_bytes
+                    );
+                    println!("Filesystem: {}", intent.filesystem);
+                    for blocker in &intent.blockers {
+                        println!("BLOCKED [{}]: {}", blocker.code, blocker.message);
+                    }
+                    for step in &intent.ordered_future_steps {
+                        println!("Frozen step: {step}");
+                    }
+                }
+                return Ok(if intent.ready() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(2)
+                });
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&plan)?);
             } else {
