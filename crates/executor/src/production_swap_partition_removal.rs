@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
+    production_swap_persistent_config::revalidate_production_swap_persistent_config_receipt,
     revalidate_pinned_production_swap_replacement_consent, HostStorageLock,
     PinnedProductionSwapReplacementConsent, ProductionSwapPersistentConfigReceipt,
     ProductionSwapReplacementActivationIntent, ProductionSwapReplacementConsentLeaseError,
@@ -429,6 +430,8 @@ pub fn prepare_production_swap_partition_removal(
         return Err(ProductionSwapPartitionRemovalPreflightError::JournalMismatch);
     }
     let _consent = revalidate_pinned_production_swap_replacement_consent(activation, consent)?;
+    revalidate_production_swap_persistent_config_receipt(activation, persistent)
+        .map_err(|_| ProductionSwapPartitionRemovalPreflightError::BindingMismatch)?;
 
     let snapshot = discover_snapshot().map_err(|error| {
         ProductionSwapPartitionRemovalPreflightError::Discovery(error.to_string())
