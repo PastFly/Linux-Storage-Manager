@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 use lsm_core::{BlockDevice, HostSnapshot};
 use lsm_discovery::discover_snapshot;
 use lsm_executor::{
-    build_production_create_mount_runtime_launch_spec,
-    build_production_create_runtime_launch_spec, capture_disposable_loop_ownership,
-    execute_production_create_filesystem_crossing, execute_production_create_mount_crossing,
-    execute_production_create_partition_crossing, inspect_production_create_activation_readiness,
+    build_production_create_mount_runtime_launch_spec, build_production_create_runtime_launch_spec,
+    capture_disposable_loop_ownership, execute_production_create_filesystem_crossing,
+    execute_production_create_mount_crossing, execute_production_create_partition_crossing,
+    inspect_production_create_activation_readiness,
     persist_new_production_create_mount_runtime_journal,
     persist_new_production_create_runtime_journal, pin_default_production_create_consent,
     pin_production_create_mount_tool, pin_production_create_tools,
@@ -21,8 +21,7 @@ use lsm_executor::{
     seal_production_create_mount_activation_intent, verify_disposable_loop_association_row,
     HostStorageLock, ProductionCreateConsentDocument, ProductionCreateMountRuntimeJournalStore,
     ProductionCreateMountRuntimePhase, ProductionCreateRuntimeJournalStore,
-    ProductionCreateRuntimePhase, PRODUCTION_CREATE_CONSENT_PATH,
-    PRODUCTION_CREATE_CONSENT_PHRASE,
+    ProductionCreateRuntimePhase, PRODUCTION_CREATE_CONSENT_PATH, PRODUCTION_CREATE_CONSENT_PHRASE,
 };
 use lsm_planner::{
     freeze_blank_disk_filesystem_create_intent, list_provisioning_opportunities, plan_create,
@@ -98,7 +97,9 @@ fn require_direct_child(root: &Path, path: &Path, label: &str) -> HarnessResult<
         .parent()
         .ok_or_else(|| boxed(format!("{label} has no parent")))?;
     if parent != root || path.file_name().is_none() {
-        return Err(boxed(format!("{label} must be a direct child of owned root")));
+        return Err(boxed(format!(
+            "{label} must be a direct child of owned root"
+        )));
     }
     Ok(())
 }
@@ -267,9 +268,8 @@ fn flatten<'a>(devices: &'a [BlockDevice], output: &mut Vec<&'a BlockDevice>) {
 
 fn source_matches(source: Option<&str>, partition: &str, uuid: &str) -> bool {
     let uuid_source = format!("UUID={uuid}");
-    source.is_some_and(|value| {
-        value == partition || value.eq_ignore_ascii_case(uuid_source.as_str())
-    })
+    source
+        .is_some_and(|value| value == partition || value.eq_ignore_ascii_case(uuid_source.as_str()))
 }
 
 fn verify_live_mount(
@@ -506,9 +506,7 @@ fn execute(args: &Args) -> HarnessResult<()> {
 
     let fstab_after = fs::read("/etc/fstab")?;
     if fstab_after != fstab_before {
-        return Err(boxed(
-            "M2A14b live mount unexpectedly changed /etc/fstab",
-        ));
+        return Err(boxed("M2A14b live mount unexpectedly changed /etc/fstab"));
     }
     let live = discover_snapshot()?;
     verify_live_mount(&live, &mount_journal)?;
@@ -609,11 +607,7 @@ fn run() -> HarnessResult<()> {
         &args.create_journal_root,
         "create journal root",
     )?;
-    require_direct_child(
-        &owned_root,
-        &args.mount_journal_root,
-        "mount journal root",
-    )?;
+    require_direct_child(&owned_root, &args.mount_journal_root, "mount journal root")?;
     require_direct_child(&owned_root, &args.lock_path, "host lock path")?;
 
     let _ownership =
