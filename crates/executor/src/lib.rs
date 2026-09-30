@@ -51,6 +51,8 @@ mod production_create_journal;
 mod production_create_launch;
 #[cfg(feature = "production-create-mount-activation")]
 mod production_create_mount_activation;
+#[cfg(feature = "production-create-mount-runtime-preflight")]
+mod production_create_mount_runtime;
 #[cfg(feature = "production-create-runtime-preflight")]
 mod production_create_preflight;
 #[cfg(feature = "production-create-runtime-execution")]
@@ -298,6 +300,15 @@ pub use production_create_launch::{
 pub use production_create_mount_activation::{
     seal_production_create_mount_activation_intent, ProductionCreateMountActivationError,
     ProductionCreateMountActivationIntent, PRODUCTION_CREATE_MOUNT_ACTIVATION_COMPILED,
+};
+#[cfg(feature = "production-create-mount-runtime-preflight")]
+pub use production_create_mount_runtime::{
+    build_production_create_mount_runtime_launch_spec, pin_production_create_mount_tool,
+    prepare_production_create_mount_runtime_preflight, PinnedProductionCreateMountTool,
+    ProductionCreateMountLaunchStage, ProductionCreateMountRuntimeLaunchError,
+    ProductionCreateMountRuntimeLaunchSpec, ProductionCreateMountRuntimePreflightError,
+    ProductionCreateMountRuntimePreflightReceipt, ProductionCreateMountToolLeaseError,
+    PRODUCTION_CREATE_MOUNT_RUNTIME_PREFLIGHT_COMPILED,
 };
 #[cfg(feature = "production-create-runtime-preflight")]
 pub use production_create_preflight::{
