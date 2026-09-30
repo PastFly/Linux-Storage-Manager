@@ -344,3 +344,6 @@ M2A1 begins provisioning after the M1B safety architecture. A successful advisor
 
 
 M2A2 adds a separate compile-time provisioning activation around the M2A1 frozen blank-disk intent. The activation rechecks intent readiness, its digest, exact /dev path and disk geometry, GPT/DOS policy, partition range and ext4/XFS/no-mount profile before sealing another deterministic ID. Even when the feature is compiled, the activation records execution_enabled=false, partition_table_changed=false and filesystem_formatted=false. No consent, process spawn, partition write or mkfs path is introduced yet.
+
+
+M2A3 requires explicit root-owned provisioning consent for exactly one M2A2 activation. The canonical document lives at `/etc/linux-storage-manager/production-create-consent.json`, must be a single-link root-owned mode-0600 regular file opened with `O_NOFOLLOW`, and must repeat the exact activation ID, create-intent ID, disk, filesystem and phrase `I UNDERSTAND THIS WILL PARTITION AND FORMAT THE DISK`. A digest-bound receipt is produced with execution_enabled=false. The layer still cannot spawn tools or mutate storage.
