@@ -119,10 +119,7 @@ pub fn pin_default_production_swap_replacement_consent(
     activation: &ProductionSwapReplacementActivationIntent,
 ) -> Result<PinnedProductionSwapReplacementConsent, ProductionSwapReplacementConsentLeaseError> {
     let receipt = verify_default_production_swap_replacement_consent(activation)?;
-    open_pinned_consent_at(
-        receipt,
-        Path::new(PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH),
-    )
+    open_pinned_consent_at(receipt, Path::new(PRODUCTION_SWAP_REPLACEMENT_CONSENT_PATH))
 }
 
 #[cfg(feature = "production-swap-loop-harness")]
