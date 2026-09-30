@@ -432,6 +432,14 @@ impl CreatePlanPreview {
         &self.plan_id
     }
 
+    pub fn request(&self) -> &CreateRequest {
+        &self.request
+    }
+
+    pub fn executable(&self) -> bool {
+        self.executable
+    }
+
     pub fn source(&self) -> Option<&ProvisioningOpportunity> {
         self.source.as_ref()
     }
