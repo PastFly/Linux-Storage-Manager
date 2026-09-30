@@ -607,10 +607,9 @@ fn transition_target(
             P::PartitionTableWrittenAwaitingRediscovery,
             "partition-table-write-succeeded",
         )),
-        (
-            P::PartitionTableWrittenAwaitingRediscovery,
-            T::PartitionRediscoveryVerified,
-        ) => Some((P::PartitionMappedVerified, "partition-rediscovery-verified")),
+        (P::PartitionTableWrittenAwaitingRediscovery, T::PartitionRediscoveryVerified) => {
+            Some((P::PartitionMappedVerified, "partition-rediscovery-verified"))
+        }
         (P::PartitionMappedVerified, T::BeginFilesystemFormat) => {
             Some((P::FormattingFilesystem, "filesystem-format-started"))
         }
@@ -618,10 +617,9 @@ fn transition_target(
             P::FilesystemFormattedAwaitingVerification,
             "filesystem-format-succeeded",
         )),
-        (
-            P::FilesystemFormattedAwaitingVerification,
-            T::FilesystemRediscoveryVerified,
-        ) => Some((P::Completed, "filesystem-rediscovery-verified")),
+        (P::FilesystemFormattedAwaitingVerification, T::FilesystemRediscoveryVerified) => {
+            Some((P::Completed, "filesystem-rediscovery-verified"))
+        }
         (P::WritingPartitionTable, T::RecoveryRequired)
         | (P::PartitionTableWrittenAwaitingRediscovery, T::RecoveryRequired)
         | (P::PartitionMappedVerified, T::RecoveryRequired)
