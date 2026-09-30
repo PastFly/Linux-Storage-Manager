@@ -45,6 +45,8 @@ mod production_create_activation;
 mod production_create_consent;
 mod production_create_consent_lease;
 mod production_create_execution;
+#[cfg(feature = "production-create-runtime-launch")]
+mod production_create_launch;
 #[cfg(feature = "production-create-runtime-preflight")]
 mod production_create_preflight;
 #[cfg(feature = "production-create-tool-lease")]
@@ -271,6 +273,12 @@ pub use production_create_consent_lease::{
 pub use production_create_execution::{
     seal_production_create_execution_permit, ProductionCreateExecutionPermit,
     ProductionCreateExecutionPermitError, PRODUCTION_CREATE_EXECUTION_PERMIT_COMPILED,
+};
+#[cfg(feature = "production-create-runtime-launch")]
+pub use production_create_launch::{
+    build_production_create_runtime_launch_spec, ProductionCreateLaunchStage,
+    ProductionCreateRuntimeLaunchError, ProductionCreateRuntimeLaunchSpec,
+    PRODUCTION_CREATE_RUNTIME_LAUNCH_COMPILED,
 };
 #[cfg(feature = "production-create-runtime-preflight")]
 pub use production_create_preflight::{
