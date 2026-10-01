@@ -235,7 +235,7 @@ fn mount_source_matches(source: Option<&str>, partition: &str, uuid: &str) -> bo
         .is_some_and(|value| value == partition || value.eq_ignore_ascii_case(uuid_source.as_str()))
 }
 
-fn verify_mounted_snapshot(
+pub(crate) fn verify_mounted_snapshot(
     create: &ProductionCreateActivationIntent,
     activation: &ProductionCreateMountActivationIntent,
     snapshot: &HostSnapshot,
