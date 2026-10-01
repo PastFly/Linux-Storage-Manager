@@ -53,6 +53,9 @@ jobs:
       - name: Test
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked --workspace
+      - name: Check non-executing GPT-tail Create intent
+        if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
+        run: cargo test --locked -p lsm-planner gpt_tail_intent
       - name: Test disposable executor feature boundary
         if: ${{ !cancelled() && steps.resolve.outcome == 'success' }}
         run: cargo test --locked -p lsm-executor --features disposable-executor --lib
