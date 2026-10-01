@@ -2827,11 +2827,20 @@ def remove_exact_create_persistent_journal_root(
 
 
 def exercise_production_create_mount_e2e(
-    resources: Resources, binary: Runner, loop: Loop, target: Path,
+    resources: Resources,
+    binary: Runner,
+    loop: Loop,
+    target: Path,
+    filesystem: str,
+    partition_table: str,
 ) -> None:
     if "production-create-executor" not in binary.tools:
         raise SafetyError("production create loop harness binary is not configured")
     resources.check_loop(loop)
+    if filesystem not in {"ext4", "xfs"}:
+        raise SafetyError("production Create E2E filesystem profile is invalid")
+    if partition_table not in {"gpt", "dos"}:
+        raise SafetyError("production Create E2E partition-table profile is invalid")
     if target.parent != Path("/mnt"):
         raise SafetyError("production Create E2E mountpoint escaped /mnt")
 
@@ -2859,6 +2868,8 @@ def exercise_production_create_mount_e2e(
         "--backing-file", str(loop.image),
         "--owned-root", str(resources.root),
         "--association-row", association_row,
+        "--filesystem", filesystem,
+        "--partition-table", partition_table,
         "--create-journal-root", str(create_journal_root),
         "--mount-journal-root", str(mount_journal_root),
         "--persistent-journal-root", str(persistent_journal_root),
@@ -2882,7 +2893,8 @@ def exercise_production_create_mount_e2e(
             "status": "persistent-mount-awaiting-restart-verification",
             "loop_device": loop.device,
             "partition_device": loop.device + "p1",
-            "filesystem": "ext4",
+            "partition_table": partition_table,
+            "filesystem": filesystem,
             "mountpoint": str(target),
             "create_journal_completed": True,
             "mount_journal_completed": True,
@@ -2954,6 +2966,8 @@ def exercise_production_create_mount_e2e(
             "status": "persistent-restart-recovery-verified",
             "loop_device": loop.device,
             "partition_device": partition,
+            "partition_table": partition_table,
+            "filesystem": filesystem,
             "filesystem_uuid": filesystem_uuid,
             "mountpoint": str(target),
             "create_journal_id": create_journal_id,
@@ -3001,7 +3015,9 @@ def exercise_production_create_mount_e2e(
     )
     resources.uncertain = False
     print(
-        "PRODUCTION_CREATE_PERSISTENT_E2E_OK=create-format-mount-fstab-restart-restore-unmount",
+        "PRODUCTION_CREATE_PERSISTENT_E2E_OK="
+        f"{partition_table}-{filesystem}:"
+        "create-format-mount-fstab-restart-restore-unmount",
         flush=True,
     )
 
@@ -3232,19 +3248,32 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         if args.production_create_executor_binary is not None:
-            print("==> blank-disk-production-create-persistent-e2e", flush=True)
-            production_create_loop = resources.create_loop(
-                "blank-disk-production-create", 384 * 1024 * 1024
-            )
-            production_create_target = resources.create_production_mountpoint(
-                "create-mount-e2e"
-            )
-            exercise_production_create_mount_e2e(
-                resources,
-                runner,
-                production_create_loop,
-                production_create_target,
-            )
+            for partition_table, filesystem, loop_mib in (
+                ("gpt", "ext4", 384),
+                ("dos", "ext4", 384),
+                ("gpt", "xfs", 640),
+                ("dos", "xfs", 640),
+            ):
+                profile = f"{partition_table}-{filesystem}"
+                print(
+                    f"==> blank-disk-production-create-persistent-{profile}-e2e",
+                    flush=True,
+                )
+                production_create_loop = resources.create_loop(
+                    f"blank-disk-production-create-{profile}",
+                    loop_mib * 1024 * 1024,
+                )
+                production_create_target = resources.create_production_mountpoint(
+                    f"create-{profile}-e2e"
+                )
+                exercise_production_create_mount_e2e(
+                    resources,
+                    runner,
+                    production_create_loop,
+                    production_create_target,
+                    filesystem,
+                    partition_table,
+                )
 
         if args.production_executor_binary is not None:
             print("==> lvm-ext4-production-e2e", flush=True)
