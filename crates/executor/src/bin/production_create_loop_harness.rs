@@ -19,14 +19,13 @@ use lsm_executor::{
     pin_production_create_mount_tool, pin_production_create_tools,
     prepare_production_create_mount_runtime_preflight, prepare_production_create_runtime_preflight,
     revalidate_production_create_persistent_config_receipt,
-    seal_production_create_activation_intent,
-    seal_production_create_execution_permit, seal_production_create_mount_activation_intent,
-    update_production_create_persistent_config, verify_disposable_loop_association_row,
-    HostStorageLock, ProductionCreateConsentDocument, ProductionCreateMountRuntimeJournalStore,
-    ProductionCreateMountRuntimePhase, ProductionCreatePersistentConfigJournal,
-    ProductionCreatePersistentConfigJournalStore, ProductionCreatePersistentConfigPhase,
-    ProductionCreateRuntimeJournalStore, ProductionCreateRuntimePhase,
-    PRODUCTION_CREATE_CONSENT_PATH, PRODUCTION_CREATE_CONSENT_PHRASE,
+    seal_production_create_activation_intent, seal_production_create_execution_permit,
+    seal_production_create_mount_activation_intent, update_production_create_persistent_config,
+    verify_disposable_loop_association_row, HostStorageLock, ProductionCreateConsentDocument,
+    ProductionCreateMountRuntimeJournalStore, ProductionCreateMountRuntimePhase,
+    ProductionCreatePersistentConfigJournal, ProductionCreatePersistentConfigJournalStore,
+    ProductionCreatePersistentConfigPhase, ProductionCreateRuntimeJournalStore,
+    ProductionCreateRuntimePhase, PRODUCTION_CREATE_CONSENT_PATH, PRODUCTION_CREATE_CONSENT_PHRASE,
 };
 use lsm_planner::{
     freeze_blank_disk_filesystem_create_intent, list_provisioning_opportunities, plan_create,
@@ -593,10 +592,7 @@ fn execute(args: &Args) -> HarnessResult<()> {
         &persistent_store,
         &mut persistent_journal,
     )?;
-    revalidate_production_create_persistent_config_receipt(
-        &mount_activation,
-        &persistent_receipt,
-    )?;
+    revalidate_production_create_persistent_config_receipt(&mount_activation, &persistent_receipt)?;
     if persistent_journal.phase != ProductionCreatePersistentConfigPhase::Completed
         || !persistent_receipt.persistent_config_updated
         || persistent_receipt.before_sha256 == persistent_receipt.after_sha256
