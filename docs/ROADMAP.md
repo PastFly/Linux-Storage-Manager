@@ -217,6 +217,7 @@ mountpoint. Low-level layout steps are generated automatically.
 - [x] M2A15: atomically persist the exact sealed UUID-based fstab entry only after M2A14/M2A14b prove the live mount, with backup, inode recheck, fsynced temp+rename+directory fsync, parse/readback verification and recovery semantics.
 - [x] M2A15b: prove the complete production Create persistence path on a root-owned disposable loop, including real /etc/fstab mutation on the disposable CI host, durable backup/journal reload, fail-closed wrong-target restart, exact persistent rediscovery, byte-for-byte fstab restoration and explicit unmount cleanup.
 - [x] M2A16: prove production blank-disk Create profile parity across GPT/DOS partition tables and ext4/XFS filesystems, carrying each combination through partitioning, format, live mount, durable fstab persistence, restart verification, exact fstab restoration and explicit unmount cleanup.
+- [x] M2B1: freeze a separate non-executing Create intent for an exact verified free tail on an existing GPT disk; bind fresh disk identity, GPT disk ID/canonical table digest, exact tail/allocation sectors and ext4/XFS choice while deliberately deferring partition-slot selection and all mutation authorization.
 
 - create GPT/DOS partition tables on verified blank disks;
 - create partitions in verified usable free ranges, including disk tail and later internal gaps;
