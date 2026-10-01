@@ -55,6 +55,8 @@ struct Args {
     owned_root: PathBuf,
     association_row: String,
     mountpoint: PathBuf,
+    filesystem: String,
+    partition_table: CreatePartitionTablePolicy,
     create_journal_root: PathBuf,
     mount_journal_root: PathBuf,
     persistent_journal_root: PathBuf,
@@ -133,6 +135,8 @@ fn parse_args() -> HarnessResult<Args> {
             | "--owned-root"
             | "--association-row"
             | "--mountpoint"
+            | "--filesystem"
+            | "--partition-table"
             | "--create-journal-root"
             | "--mount-journal-root"
             | "--persistent-journal-root"
@@ -163,6 +167,16 @@ fn parse_args() -> HarnessResult<Args> {
             .ok_or_else(|| boxed(format!("{key} is required")))
     };
     let mode = mode.ok_or_else(|| boxed("--mode is required"))?;
+    let filesystem = take("--filesystem")?;
+    if !matches!(filesystem.as_str(), "ext4" | "xfs") {
+        return Err(boxed("--filesystem must be ext4 or xfs"));
+    }
+    let partition_table_value = take("--partition-table")?;
+    let partition_table = match partition_table_value.as_str() {
+        "gpt" => CreatePartitionTablePolicy::Gpt,
+        "dos" => CreatePartitionTablePolicy::Dos,
+        _ => return Err(boxed("--partition-table must be gpt or dos")),
+    };
     let create_journal_id = values.get("--create-journal-id").cloned();
     let mount_journal_id = values.get("--mount-journal-id").cloned();
     let persistent_journal_id = values.get("--persistent-journal-id").cloned();
@@ -183,6 +197,8 @@ fn parse_args() -> HarnessResult<Args> {
         owned_root: PathBuf::from(take("--owned-root")?),
         association_row: take("--association-row")?,
         mountpoint: PathBuf::from(take("--mountpoint")?),
+        filesystem,
+        partition_table,
         create_journal_root: PathBuf::from(take("--create-journal-root")?),
         mount_journal_root: PathBuf::from(take("--mount-journal-root")?),
         persistent_journal_root: PathBuf::from(take("--persistent-journal-root")?),
@@ -191,6 +207,13 @@ fn parse_args() -> HarnessResult<Args> {
         mount_journal_id,
         persistent_journal_id,
     })
+}
+
+fn partition_table_name(policy: CreatePartitionTablePolicy) -> &'static str {
+    match policy {
+        CreatePartitionTablePolicy::Gpt => "gpt",
+        CreatePartitionTablePolicy::Dos => "dos",
+    }
 }
 
 fn create_exact_create_consent(
@@ -444,9 +467,9 @@ fn execute(args: &Args) -> HarnessResult<()> {
             source_id: matches[0].id.clone(),
             size: Growth::MaxFree,
             purpose: CreatePurpose::Filesystem,
-            filesystem: Some("ext4".into()),
+            filesystem: Some(args.filesystem.clone()),
             mountpoint: None,
-            partition_table: Some(CreatePartitionTablePolicy::Gpt),
+            partition_table: Some(args.partition_table),
         },
     )?;
     if plan.status() != PlanStatus::Preview || plan.executable() || !plan.blockers().is_empty() {
@@ -465,9 +488,12 @@ fn execute(args: &Args) -> HarnessResult<()> {
         )));
     }
     let activation = seal_production_create_activation_intent(&intent)?;
-    if activation.disk != args.loop_device {
+    if activation.disk != args.loop_device
+        || activation.filesystem != args.filesystem
+        || activation.partition_table != args.partition_table
+    {
         return Err(boxed(
-            "sealed create activation escaped the owned loop disk",
+            "sealed create activation escaped the exact owned loop profile",
         ));
     }
 
@@ -627,6 +653,7 @@ fn execute(args: &Args) -> HarnessResult<()> {
             "status": "persistent-mount-awaiting-restart-verification",
             "loop_device": args.loop_device,
             "partition_device": mount_journal.partition_device,
+            "partition_table": partition_table_name(args.partition_table),
             "filesystem": mount_journal.filesystem,
             "filesystem_uuid": mount_journal.filesystem_uuid,
             "mountpoint": mount_journal.mountpoint,
@@ -672,7 +699,10 @@ fn verify_restart(args: &Args) -> HarnessResult<()> {
     if create_journal.phase != ProductionCreateRuntimePhase::Completed
         || mount_journal.phase != ProductionCreateMountRuntimePhase::Completed
         || create_journal.disk != args.loop_device
+        || create_journal.partition_table != partition_table_name(args.partition_table)
+        || create_journal.filesystem != args.filesystem
         || mount_journal.disk != args.loop_device
+        || mount_journal.filesystem != args.filesystem
         || mount_journal.create_journal_id != create_journal.journal_id
         || mount_journal.partition_device != format!("{}p1", args.loop_device)
         || mount_journal.mountpoint != mountpoint
@@ -701,6 +731,8 @@ fn verify_restart(args: &Args) -> HarnessResult<()> {
             "status": "persistent-restart-recovery-verified",
             "loop_device": args.loop_device,
             "partition_device": mount_journal.partition_device,
+            "partition_table": partition_table_name(args.partition_table),
+            "filesystem": mount_journal.filesystem,
             "filesystem_uuid": mount_journal.filesystem_uuid,
             "mountpoint": mount_journal.mountpoint,
             "create_journal_id": create_journal.journal_id,
