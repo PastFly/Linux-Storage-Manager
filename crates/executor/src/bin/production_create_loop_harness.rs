@@ -14,13 +14,17 @@ use lsm_executor::{
     execute_production_create_mount_crossing, execute_production_create_partition_crossing,
     inspect_production_create_activation_readiness,
     persist_new_production_create_mount_runtime_journal,
+    persist_new_production_create_persistent_config_journal,
     persist_new_production_create_runtime_journal, pin_default_production_create_consent,
     pin_production_create_mount_tool, pin_production_create_tools,
     prepare_production_create_mount_runtime_preflight, prepare_production_create_runtime_preflight,
+    revalidate_production_create_persistent_config_receipt,
     seal_production_create_activation_intent, seal_production_create_execution_permit,
-    seal_production_create_mount_activation_intent, verify_disposable_loop_association_row,
-    HostStorageLock, ProductionCreateConsentDocument, ProductionCreateMountRuntimeJournalStore,
-    ProductionCreateMountRuntimePhase, ProductionCreateRuntimeJournalStore,
+    seal_production_create_mount_activation_intent, update_production_create_persistent_config,
+    verify_disposable_loop_association_row, HostStorageLock, ProductionCreateConsentDocument,
+    ProductionCreateMountRuntimeJournalStore, ProductionCreateMountRuntimePhase,
+    ProductionCreatePersistentConfigJournal, ProductionCreatePersistentConfigJournalStore,
+    ProductionCreatePersistentConfigPhase, ProductionCreateRuntimeJournalStore,
     ProductionCreateRuntimePhase, PRODUCTION_CREATE_CONSENT_PATH, PRODUCTION_CREATE_CONSENT_PHRASE,
 };
 use lsm_planner::{
@@ -53,9 +57,11 @@ struct Args {
     mountpoint: PathBuf,
     create_journal_root: PathBuf,
     mount_journal_root: PathBuf,
+    persistent_journal_root: PathBuf,
     lock_path: PathBuf,
     create_journal_id: Option<String>,
     mount_journal_id: Option<String>,
+    persistent_journal_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -129,9 +135,11 @@ fn parse_args() -> HarnessResult<Args> {
             | "--mountpoint"
             | "--create-journal-root"
             | "--mount-journal-root"
+            | "--persistent-journal-root"
             | "--lock-path"
             | "--create-journal-id"
-            | "--mount-journal-id" => {
+            | "--mount-journal-id"
+            | "--persistent-journal-id" => {
                 let value = iter
                     .next()
                     .ok_or_else(|| boxed(format!("{key} requires a value")))?;
@@ -157,9 +165,14 @@ fn parse_args() -> HarnessResult<Args> {
     let mode = mode.ok_or_else(|| boxed("--mode is required"))?;
     let create_journal_id = values.get("--create-journal-id").cloned();
     let mount_journal_id = values.get("--mount-journal-id").cloned();
-    if mode == Mode::VerifyRestart && (create_journal_id.is_none() || mount_journal_id.is_none()) {
+    let persistent_journal_id = values.get("--persistent-journal-id").cloned();
+    if mode == Mode::VerifyRestart
+        && (create_journal_id.is_none()
+            || mount_journal_id.is_none()
+            || persistent_journal_id.is_none())
+    {
         return Err(boxed(
-            "verify-restart requires --create-journal-id and --mount-journal-id",
+            "verify-restart requires --create-journal-id, --mount-journal-id and --persistent-journal-id",
         ));
     }
 
@@ -172,9 +185,11 @@ fn parse_args() -> HarnessResult<Args> {
         mountpoint: PathBuf::from(take("--mountpoint")?),
         create_journal_root: PathBuf::from(take("--create-journal-root")?),
         mount_journal_root: PathBuf::from(take("--mount-journal-root")?),
+        persistent_journal_root: PathBuf::from(take("--persistent-journal-root")?),
         lock_path: PathBuf::from(take("--lock-path")?),
         create_journal_id,
         mount_journal_id,
+        persistent_journal_id,
     })
 }
 
@@ -275,6 +290,7 @@ fn source_matches(source: Option<&str>, partition: &str, uuid: &str) -> bool {
 fn verify_live_mount(
     snapshot: &HostSnapshot,
     journal: &lsm_executor::ProductionCreateMountRuntimeJournal,
+    persistent: Option<&ProductionCreatePersistentConfigJournal>,
 ) -> HarnessResult<()> {
     let mut nodes = Vec::new();
     flatten(&snapshot.storage.block_devices, &mut nodes);
@@ -345,14 +361,60 @@ fn verify_live_mount(
             "restart verification found the created filesystem active as swap",
         ));
     }
-    if snapshot.fstab.iter().any(|entry| {
-        entry.target == journal.mountpoint
-            || entry.source == journal.partition_device
-            || entry.source.eq_ignore_ascii_case(&uuid_source)
-    }) {
-        return Err(boxed(
-            "restart verification found an unexpected persistent mount binding",
-        ));
+
+    match persistent {
+        None => {
+            if snapshot.fstab.iter().any(|entry| {
+                entry.target == journal.mountpoint
+                    || entry.source == journal.partition_device
+                    || entry.source.eq_ignore_ascii_case(&uuid_source)
+            }) {
+                return Err(boxed(
+                    "restart verification found an unexpected persistent mount binding",
+                ));
+            }
+        }
+        Some(persistent) => {
+            if persistent.phase != ProductionCreatePersistentConfigPhase::Completed
+                || !persistent.integrity_matches().unwrap_or(false)
+                || persistent.mount_runtime_journal_id != journal.journal_id
+                || persistent.mount_activation_id != journal.mount_activation_id
+                || persistent.disk != journal.disk
+                || persistent.partition_device != journal.partition_device
+                || persistent.filesystem != journal.filesystem
+                || !persistent
+                    .filesystem_uuid
+                    .eq_ignore_ascii_case(&journal.filesystem_uuid)
+                || persistent.mountpoint != journal.mountpoint
+                || !persistent.fstab_source.eq_ignore_ascii_case(&uuid_source)
+            {
+                return Err(boxed(
+                    "restart verification persistent journal does not match the live mount",
+                ));
+            }
+
+            let is_exact = |entry: &&lsm_core::FstabEntry| {
+                entry.source.eq_ignore_ascii_case(&persistent.fstab_source)
+                    && entry.target == persistent.mountpoint
+                    && entry.fs_type == persistent.filesystem
+                    && entry.options == persistent.fstab_options
+                    && entry.dump == persistent.fstab_dump
+                    && entry.pass == persistent.fstab_pass
+            };
+            let exact_count = snapshot.fstab.iter().filter(is_exact).count();
+            if exact_count != 1
+                || snapshot.fstab.iter().any(|entry| {
+                    let conflict = entry.target == persistent.mountpoint
+                        || entry.source == persistent.partition_device
+                        || entry.source.eq_ignore_ascii_case(&persistent.fstab_source);
+                    conflict && !is_exact(&entry)
+                })
+            {
+                return Err(boxed(
+                    "restart verification did not find exactly one sealed persistent mount binding",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -468,7 +530,7 @@ fn execute(args: &Args) -> HarnessResult<()> {
         &create_journal,
         &fresh,
         mountpoint,
-        false,
+        true,
     )?;
     let mount_preflight =
         prepare_production_create_mount_runtime_preflight(&activation, &mount_activation)?;
@@ -504,18 +566,56 @@ fn execute(args: &Args) -> HarnessResult<()> {
         ));
     }
 
-    let fstab_after = fs::read("/etc/fstab")?;
-    if fstab_after != fstab_before {
+    let fstab_after_mount = fs::read("/etc/fstab")?;
+    if fstab_after_mount != fstab_before {
         return Err(boxed("M2A14b live mount unexpectedly changed /etc/fstab"));
     }
     let live = discover_snapshot()?;
-    verify_live_mount(&live, &mount_journal)?;
+    verify_live_mount(&live, &mount_journal, None)?;
+
+    let persistent_store =
+        ProductionCreatePersistentConfigJournalStore::at(&args.persistent_journal_root);
+    let mut persistent_journal = persist_new_production_create_persistent_config_journal(
+        &persistent_store,
+        &activation,
+        &mount_activation,
+        &mount_receipt,
+        &mount_journal,
+    )?;
+    let persistent_receipt = update_production_create_persistent_config(
+        &host_lock,
+        &activation,
+        &mount_activation,
+        &mount_receipt,
+        &mount_store,
+        &mount_journal,
+        &persistent_store,
+        &mut persistent_journal,
+    )?;
+    revalidate_production_create_persistent_config_receipt(&mount_activation, &persistent_receipt)?;
+    if persistent_journal.phase != ProductionCreatePersistentConfigPhase::Completed
+        || !persistent_receipt.persistent_config_updated
+        || persistent_receipt.before_sha256 == persistent_receipt.after_sha256
+    {
+        return Err(boxed(
+            "persistent-config crossing did not finish with an exact durable update",
+        ));
+    }
+
+    let persisted_live = discover_snapshot()?;
+    verify_live_mount(&persisted_live, &mount_journal, Some(&persistent_journal))?;
 
     let reloaded_create = ProductionCreateRuntimeJournalStore::at(&args.create_journal_root)
         .load(&create_journal.journal_id)?;
     let reloaded_mount = ProductionCreateMountRuntimeJournalStore::at(&args.mount_journal_root)
         .load(&mount_journal.journal_id)?;
-    if reloaded_create != create_journal || reloaded_mount != mount_journal {
+    let reloaded_persistent =
+        ProductionCreatePersistentConfigJournalStore::at(&args.persistent_journal_root)
+            .load(&persistent_journal.journal_id)?;
+    if reloaded_create != create_journal
+        || reloaded_mount != mount_journal
+        || reloaded_persistent != persistent_journal
+    {
         return Err(boxed(
             "durable journal reload changed completed Create state",
         ));
@@ -524,7 +624,7 @@ fn execute(args: &Args) -> HarnessResult<()> {
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "status": "mounted-awaiting-restart-verification",
+            "status": "persistent-mount-awaiting-restart-verification",
             "loop_device": args.loop_device,
             "partition_device": mount_journal.partition_device,
             "filesystem": mount_journal.filesystem,
@@ -532,9 +632,12 @@ fn execute(args: &Args) -> HarnessResult<()> {
             "mountpoint": mount_journal.mountpoint,
             "create_journal_id": create_journal.journal_id,
             "mount_journal_id": mount_journal.journal_id,
+            "persistent_journal_id": persistent_journal.journal_id,
+            "persistent_receipt_id": persistent_receipt.receipt_id,
             "create_journal_completed": true,
             "mount_journal_completed": true,
-            "fstab_unchanged": true,
+            "persistent_journal_completed": true,
+            "fstab_persisted": true,
             "mounted_verified": true
         }))?
     );
@@ -550,10 +653,17 @@ fn verify_restart(args: &Args) -> HarnessResult<()> {
         .mount_journal_id
         .as_deref()
         .ok_or_else(|| boxed("missing mount journal ID"))?;
+    let persistent_journal_id = args
+        .persistent_journal_id
+        .as_deref()
+        .ok_or_else(|| boxed("missing persistent journal ID"))?;
     let create_journal = ProductionCreateRuntimeJournalStore::at(&args.create_journal_root)
         .load(create_journal_id)?;
     let mount_journal = ProductionCreateMountRuntimeJournalStore::at(&args.mount_journal_root)
         .load(mount_journal_id)?;
+    let persistent_journal =
+        ProductionCreatePersistentConfigJournalStore::at(&args.persistent_journal_root)
+            .load(persistent_journal_id)?;
 
     let mountpoint = args
         .mountpoint
@@ -569,6 +679,14 @@ fn verify_restart(args: &Args) -> HarnessResult<()> {
         || !mount_journal.mutation_may_have_started
         || !mount_journal.mount_may_have_changed
         || mount_journal.fstab_may_have_changed
+        || persistent_journal.phase != ProductionCreatePersistentConfigPhase::Completed
+        || persistent_journal.mount_runtime_journal_id != mount_journal.journal_id
+        || persistent_journal.create_activation_id != create_journal.activation_id
+        || persistent_journal.disk != args.loop_device
+        || persistent_journal.partition_device != mount_journal.partition_device
+        || persistent_journal.mountpoint != mountpoint
+        || !persistent_journal.mutation_may_have_started
+        || !persistent_journal.persistent_config_may_have_changed
     {
         return Err(boxed(
             "restart journal chain does not match the exact completed owned loop mount",
@@ -576,20 +694,21 @@ fn verify_restart(args: &Args) -> HarnessResult<()> {
     }
 
     let snapshot = discover_snapshot()?;
-    verify_live_mount(&snapshot, &mount_journal)?;
+    verify_live_mount(&snapshot, &mount_journal, Some(&persistent_journal))?;
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "status": "restart-recovery-verified",
+            "status": "persistent-restart-recovery-verified",
             "loop_device": args.loop_device,
             "partition_device": mount_journal.partition_device,
             "filesystem_uuid": mount_journal.filesystem_uuid,
             "mountpoint": mount_journal.mountpoint,
             "create_journal_id": create_journal.journal_id,
             "mount_journal_id": mount_journal.journal_id,
+            "persistent_journal_id": persistent_journal.journal_id,
             "live_mount_verified": true,
-            "persistent_config_unchanged": true,
-            "safe_to_unmount_owned_fixture": true
+            "persistent_config_verified": true,
+            "safe_to_restore_fstab_and_unmount_owned_fixture": true
         }))?
     );
     Ok(())
@@ -608,6 +727,11 @@ fn run() -> HarnessResult<()> {
         "create journal root",
     )?;
     require_direct_child(&owned_root, &args.mount_journal_root, "mount journal root")?;
+    require_direct_child(
+        &owned_root,
+        &args.persistent_journal_root,
+        "persistent journal root",
+    )?;
     require_direct_child(&owned_root, &args.lock_path, "host lock path")?;
 
     let _ownership =
