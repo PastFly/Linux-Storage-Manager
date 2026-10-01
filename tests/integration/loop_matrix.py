@@ -2741,6 +2741,91 @@ def remove_exact_create_journal_root(root: Path, journal_id: str, owned_root: Pa
     root.rmdir()
 
 
+
+def restore_root_owned_regular_file(
+    path: Path, before: bytes, original: os.stat_result,
+) -> None:
+    current = path.lstat()
+    if (not stat.S_ISREG(current.st_mode) or stat.S_ISLNK(current.st_mode)
+            or current.st_uid != 0 or current.st_nlink != 1
+            or stat.S_IMODE(current.st_mode) & 0o022):
+        raise SafetyError(f"unsafe file state while restoring {path}")
+
+    if (path.read_bytes() == before
+            and current.st_uid == original.st_uid
+            and current.st_gid == original.st_gid
+            and stat.S_IMODE(current.st_mode) == stat.S_IMODE(original.st_mode)):
+        return
+
+    parent = path.parent
+    temp = parent / f".{path.name}.linux-storage-manager-e2e-restore-{os.getpid()}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = -1
+    try:
+        fd = os.open(temp, flags, 0o600)
+        view = memoryview(before)
+        written = 0
+        while written < len(view):
+            count = os.write(fd, view[written:])
+            if count <= 0:
+                raise SafetyError(f"short write while restoring {path}")
+            written += count
+        os.fchmod(fd, stat.S_IMODE(original.st_mode))
+        os.fchown(fd, original.st_uid, original.st_gid)
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.replace(temp, path)
+        directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if temp.exists():
+            temp.unlink()
+
+    restored = path.lstat()
+    if (not stat.S_ISREG(restored.st_mode) or stat.S_ISLNK(restored.st_mode)
+            or restored.st_uid != original.st_uid
+            or restored.st_gid != original.st_gid
+            or restored.st_nlink != 1
+            or stat.S_IMODE(restored.st_mode) != stat.S_IMODE(original.st_mode)
+            or path.read_bytes() != before):
+        raise SafetyError(f"failed to restore exact original bytes/metadata for {path}")
+
+
+def remove_exact_create_persistent_journal_root(
+    root: Path, journal_id: str, owned_root: Path, expected_backup: bytes,
+) -> None:
+    if root.parent != owned_root or re.fullmatch(r"[0-9a-f]{64}", journal_id) is None:
+        raise SafetyError("invalid owned persistent journal cleanup request")
+    info = root.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o700):
+        raise SafetyError(f"unsafe persistent journal directory: {root}")
+    journal = root / f"{journal_id}.json"
+    backup = root / f"{journal_id}.fstab.backup"
+    entries = set(root.iterdir())
+    if entries != {journal, backup}:
+        raise SafetyError(f"unexpected persistent journal contents: {root}")
+    for path in (journal, backup):
+        record = path.lstat()
+        if (not stat.S_ISREG(record.st_mode) or stat.S_ISLNK(record.st_mode)
+                or record.st_uid != 0 or stat.S_IMODE(record.st_mode) != 0o600
+                or record.st_nlink != 1):
+            raise SafetyError(f"unsafe persistent journal artifact: {path}")
+    if backup.read_bytes() != expected_backup:
+        raise SafetyError("persistent-config backup does not match original /etc/fstab")
+    journal.unlink()
+    backup.unlink()
+    root.rmdir()
+
+
 def exercise_production_create_mount_e2e(
     resources: Resources, binary: Runner, loop: Loop, target: Path,
 ) -> None:
@@ -2750,6 +2835,14 @@ def exercise_production_create_mount_e2e(
     if target.parent != Path("/mnt"):
         raise SafetyError("production Create E2E mountpoint escaped /mnt")
 
+    fstab_path = Path("/etc/fstab")
+    fstab_info = fstab_path.lstat()
+    if (not stat.S_ISREG(fstab_info.st_mode) or stat.S_ISLNK(fstab_info.st_mode)
+            or fstab_info.st_uid != 0 or fstab_info.st_nlink != 1
+            or stat.S_IMODE(fstab_info.st_mode) & 0o022):
+        raise SafetyError("production Create E2E requires a safe root-owned regular /etc/fstab")
+    fstab_before = fstab_path.read_bytes()
+
     association_row = binary.run(
         "losetup", "--list", "--noheadings", "--output", "NAME,BACK-FILE", loop.device
     ).stdout.strip()
@@ -2758,6 +2851,7 @@ def exercise_production_create_mount_e2e(
 
     create_journal_root = resources.root / "production-create-runtime"
     mount_journal_root = resources.root / "production-create-mount-runtime"
+    persistent_journal_root = resources.root / "production-create-persistent-config"
     lock_path = resources.root / "production-create.lock"
     common = [
         "--allow-production-create-loop-execution",
@@ -2767,90 +2861,121 @@ def exercise_production_create_mount_e2e(
         "--association-row", association_row,
         "--create-journal-root", str(create_journal_root),
         "--mount-journal-root", str(mount_journal_root),
+        "--persistent-journal-root", str(persistent_journal_root),
         "--lock-path", str(lock_path),
     ]
 
+    create_journal_id: str | None = None
+    mount_journal_id: str | None = None
+    persistent_journal_id: str | None = None
+    filesystem_uuid: str | None = None
+    tracked_mount: Mount | None = None
+
     resources.uncertain = True
-    result = binary.json(
-        "production-create-executor", *common,
-        "--mountpoint", str(target),
-        "--mode", "execute",
-    )
-    required = {
-        "status": "mounted-awaiting-restart-verification",
-        "loop_device": loop.device,
-        "partition_device": loop.device + "p1",
-        "filesystem": "ext4",
-        "mountpoint": str(target),
-        "create_journal_completed": True,
-        "mount_journal_completed": True,
-        "fstab_unchanged": True,
-        "mounted_verified": True,
-    }
-    for key, expected in required.items():
-        if result.get(key) != expected:
-            raise SafetyError(
-                f"production Create E2E returned unexpected {key}: {result.get(key)!r}"
-            )
-    filesystem_uuid = result.get("filesystem_uuid")
-    create_journal_id = result.get("create_journal_id")
-    mount_journal_id = result.get("mount_journal_id")
-    if (not isinstance(filesystem_uuid, str) or not filesystem_uuid
-            or not isinstance(create_journal_id, str)
-            or re.fullmatch(r"[0-9a-f]{64}", create_journal_id) is None
-            or not isinstance(mount_journal_id, str)
-            or re.fullmatch(r"[0-9a-f]{64}", mount_journal_id) is None):
-        raise SafetyError("production Create E2E omitted durable identity evidence")
+    try:
+        result = binary.json(
+            "production-create-executor", *common,
+            "--mountpoint", str(target),
+            "--mode", "execute",
+        )
+        required = {
+            "status": "persistent-mount-awaiting-restart-verification",
+            "loop_device": loop.device,
+            "partition_device": loop.device + "p1",
+            "filesystem": "ext4",
+            "mountpoint": str(target),
+            "create_journal_completed": True,
+            "mount_journal_completed": True,
+            "persistent_journal_completed": True,
+            "fstab_persisted": True,
+            "mounted_verified": True,
+        }
+        for key, expected in required.items():
+            if result.get(key) != expected:
+                raise SafetyError(
+                    f"production Create E2E returned unexpected {key}: {result.get(key)!r}"
+                )
+        filesystem_uuid = result.get("filesystem_uuid")
+        create_journal_id = result.get("create_journal_id")
+        mount_journal_id = result.get("mount_journal_id")
+        persistent_journal_id = result.get("persistent_journal_id")
+        persistent_receipt_id = result.get("persistent_receipt_id")
+        for label, value in (
+            ("create journal", create_journal_id),
+            ("mount journal", mount_journal_id),
+            ("persistent journal", persistent_journal_id),
+            ("persistent receipt", persistent_receipt_id),
+        ):
+            if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                raise SafetyError(f"production Create E2E omitted valid {label} identity")
+        if not isinstance(filesystem_uuid, str) or not filesystem_uuid:
+            raise SafetyError("production Create E2E omitted filesystem UUID")
 
-    partition = loop.device + "p1"
-    wait_block(partition)
-    refresh_fixture_udev(binary, Path(partition).name)
-    tracked_mount = Mount(partition, target)
-    resources.mounts.append(tracked_mount)
-    assert_owned_mount(binary, tracked_mount)
-    if not lock_path.exists():
-        raise SafetyError("production Create E2E host lock file was not persisted")
-    resources.track_artifact(lock_path)
-    resources.uncertain = False
+        partition = loop.device + "p1"
+        wait_block(partition)
+        refresh_fixture_udev(binary, Path(partition).name)
+        tracked_mount = Mount(partition, target)
+        resources.mounts.append(tracked_mount)
+        assert_owned_mount(binary, tracked_mount)
+        if not lock_path.exists():
+            raise SafetyError("production Create E2E host lock file was not persisted")
+        resources.track_artifact(lock_path)
 
-    wrong_target = resources.create_production_mountpoint("create-restart-wrong-target")
-    wrong = binary.run(
-        "production-create-executor", *common,
-        "--mountpoint", str(wrong_target),
-        "--mode", "verify-restart",
-        "--create-journal-id", create_journal_id,
-        "--mount-journal-id", mount_journal_id,
-        allowed=(1,),
-    )
-    if (wrong.returncode != 1
-            or "restart journal chain does not match" not in wrong.stderr):
-        raise SafetyError("restart recovery did not fail closed on a wrong mountpoint")
-    assert_owned_mount(binary, tracked_mount)
+        if fstab_path.read_bytes() == fstab_before:
+            raise SafetyError("M2A15b did not persist the sealed /etc/fstab entry")
+        backup = persistent_journal_root / f"{persistent_journal_id}.fstab.backup"
+        if backup.read_bytes() != fstab_before:
+            raise SafetyError("M2A15b durable backup is not the exact original /etc/fstab")
 
-    recovered = binary.json(
-        "production-create-executor", *common,
-        "--mountpoint", str(target),
-        "--mode", "verify-restart",
-        "--create-journal-id", create_journal_id,
-        "--mount-journal-id", mount_journal_id,
-    )
-    expected_recovery = {
-        "status": "restart-recovery-verified",
-        "loop_device": loop.device,
-        "partition_device": partition,
-        "filesystem_uuid": filesystem_uuid,
-        "mountpoint": str(target),
-        "create_journal_id": create_journal_id,
-        "mount_journal_id": mount_journal_id,
-        "live_mount_verified": True,
-        "persistent_config_unchanged": True,
-        "safe_to_unmount_owned_fixture": True,
-    }
-    for key, expected in expected_recovery.items():
-        if recovered.get(key) != expected:
-            raise SafetyError(
-                f"restart recovery returned unexpected {key}: {recovered.get(key)!r}"
-            )
+        wrong_target = resources.create_production_mountpoint("create-restart-wrong-target")
+        wrong = binary.run(
+            "production-create-executor", *common,
+            "--mountpoint", str(wrong_target),
+            "--mode", "verify-restart",
+            "--create-journal-id", create_journal_id,
+            "--mount-journal-id", mount_journal_id,
+            "--persistent-journal-id", persistent_journal_id,
+            allowed=(1,),
+        )
+        if (wrong.returncode != 1
+                or "restart journal chain does not match" not in wrong.stderr):
+            raise SafetyError("persistent restart recovery did not fail closed on a wrong mountpoint")
+        assert_owned_mount(binary, tracked_mount)
+
+        recovered = binary.json(
+            "production-create-executor", *common,
+            "--mountpoint", str(target),
+            "--mode", "verify-restart",
+            "--create-journal-id", create_journal_id,
+            "--mount-journal-id", mount_journal_id,
+            "--persistent-journal-id", persistent_journal_id,
+        )
+        expected_recovery = {
+            "status": "persistent-restart-recovery-verified",
+            "loop_device": loop.device,
+            "partition_device": partition,
+            "filesystem_uuid": filesystem_uuid,
+            "mountpoint": str(target),
+            "create_journal_id": create_journal_id,
+            "mount_journal_id": mount_journal_id,
+            "persistent_journal_id": persistent_journal_id,
+            "live_mount_verified": True,
+            "persistent_config_verified": True,
+            "safe_to_restore_fstab_and_unmount_owned_fixture": True,
+        }
+        for key, expected in expected_recovery.items():
+            if recovered.get(key) != expected:
+                raise SafetyError(
+                    f"persistent restart recovery returned unexpected {key}: "
+                    f"{recovered.get(key)!r}"
+                )
+    finally:
+        restore_root_owned_regular_file(fstab_path, fstab_before, fstab_info)
+
+    if tracked_mount is None or create_journal_id is None or mount_journal_id is None:
+        raise SafetyError("production Create E2E did not establish a tracked live mount")
+    if persistent_journal_id is None or filesystem_uuid is None:
+        raise SafetyError("production Create E2E did not establish persistent identity")
 
     assert_owned_mount(binary, tracked_mount)
     binary.run("umount", str(target))
@@ -2862,17 +2987,23 @@ def exercise_production_create_mount_e2e(
         raise SafetyError("production Create E2E explicit unmount did not converge")
     resources.check_loop(loop)
 
+    remove_exact_create_persistent_journal_root(
+        persistent_journal_root,
+        persistent_journal_id,
+        resources.root,
+        fstab_before,
+    )
     remove_exact_create_journal_root(
         mount_journal_root, mount_journal_id, resources.root
     )
     remove_exact_create_journal_root(
         create_journal_root, create_journal_id, resources.root
     )
+    resources.uncertain = False
     print(
-        "PRODUCTION_CREATE_MOUNT_E2E_OK=create-format-mount-restart-unmount",
+        "PRODUCTION_CREATE_PERSISTENT_E2E_OK=create-format-mount-fstab-restart-restore-unmount",
         flush=True,
     )
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -3101,7 +3232,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         if args.production_create_executor_binary is not None:
-            print("==> blank-disk-production-create-mount-e2e", flush=True)
+            print("==> blank-disk-production-create-persistent-e2e", flush=True)
             production_create_loop = resources.create_loop(
                 "blank-disk-production-create", 384 * 1024 * 1024
             )
