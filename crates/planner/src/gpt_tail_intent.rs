@@ -207,7 +207,11 @@ fn safe_identifier(value: &str) -> bool {
     !value.is_empty() && !value.as_bytes().contains(&0) && !value.chars().any(char::is_control)
 }
 
-fn validate_existing_gpt_records(table: &PartitionTable, first_lba: u64, last_lba: u64) -> bool {
+fn validate_existing_gpt_records(
+    table: &PartitionTable,
+    first_lba: u64,
+    last_lba: u64,
+) -> bool {
     let Some(limit) = last_lba.checked_add(1) else {
         return false;
     };
@@ -252,7 +256,10 @@ pub fn freeze_gpt_tail_filesystem_create_intent(
 ) -> Result<FrozenGptTailFilesystemIntent, PlannerError> {
     let mut blockers = Vec::new();
 
-    if plan.status() != PlanStatus::Preview || plan.executable() || !plan.blockers().is_empty() {
+    if plan.status() != PlanStatus::Preview
+        || plan.executable()
+        || !plan.blockers().is_empty()
+    {
         blockers.extend(plan.blockers().iter().cloned());
         push_blocker(
             &mut blockers,
@@ -292,7 +299,9 @@ pub fn freeze_gpt_tail_filesystem_create_intent(
         );
     }
 
-    if !collector_complete(snapshot, "lsblk") || !collector_complete(snapshot, "partition_tables") {
+    if !collector_complete(snapshot, "lsblk")
+        || !collector_complete(snapshot, "partition_tables")
+    {
         push_blocker(
             &mut blockers,
             "m2b1-discovery-incomplete",
@@ -416,18 +425,28 @@ pub fn freeze_gpt_tail_filesystem_create_intent(
         }
     }
 
-    let adapter = source.and_then(|source| match resolve_create_source_adapter(snapshot, source, None)
-    {
-        Ok(adapter) => Some(adapter),
-        Err(blocker) => {
-            blockers.push(blocker);
-            None
-        }
-    });
+    let adapter = source.and_then(
+        |source| match resolve_create_source_adapter(snapshot, source, None) {
+            Ok(adapter) => Some(adapter),
+            Err(blocker) => {
+                blockers.push(blocker);
+                None
+            }
+        },
+    );
 
-    let source_start_sector = adapter.as_ref().and_then(|value| value.start_sector).unwrap_or(0);
-    let source_sector_count = adapter.as_ref().and_then(|value| value.sector_count).unwrap_or(0);
-    let source_size_bytes = adapter.as_ref().map(|value| value.available_bytes).unwrap_or(0);
+    let source_start_sector = adapter
+        .as_ref()
+        .and_then(|value| value.start_sector)
+        .unwrap_or(0);
+    let source_sector_count = adapter
+        .as_ref()
+        .and_then(|value| value.sector_count)
+        .unwrap_or(0);
+    let source_size_bytes = adapter
+        .as_ref()
+        .map(|value| value.available_bytes)
+        .unwrap_or(0);
 
     if let Some(adapter) = adapter.as_ref() {
         if adapter.kind != ProvisioningSpaceKind::DiskTail
@@ -501,7 +520,9 @@ pub fn freeze_gpt_tail_filesystem_create_intent(
         PlanStatus::Blocked
     };
 
-    let logical_sector_bytes = disk.and_then(|device| device.logical_sector_bytes).unwrap_or(0);
+    let logical_sector_bytes = disk
+        .and_then(|device| device.logical_sector_bytes)
+        .unwrap_or(0);
     let mut intent = FrozenGptTailFilesystemIntent {
         schema_version: 1,
         intent_id: String::new(),
@@ -541,13 +562,19 @@ pub fn freeze_gpt_tail_filesystem_create_intent(
         filesystem_format_authorized: false,
         blockers,
         ordered_future_steps: vec![
-            "rediscover and require the exact same disk identity, GPT disk identifier, canonical table digest and tail geometry".into(),
-            "capture and fsync a pre-mutation GPT partition-table backup and evidence record".into(),
-            "resolve exactly one unused GPT partition slot from fresh trusted runtime tooling; partition number is deliberately not frozen by M2B1".into(),
-            "prepare one partition addition at the frozen tail start/count while preserving every pre-existing GPT entry byte-for-byte in the intended table model".into(),
-            "rediscover authoritative GPT geometry and prove all previous entries unchanged plus exactly one new partition before formatting".into(),
+            "rediscover and require the exact same disk identity, GPT disk identifier, canonical table digest and tail geometry"
+                .into(),
+            "capture and fsync a pre-mutation GPT partition-table backup and evidence record"
+                .into(),
+            "resolve exactly one unused GPT partition slot from fresh trusted runtime tooling; partition number is deliberately not frozen by M2B1"
+                .into(),
+            "prepare one partition addition at the frozen tail start/count while preserving every pre-existing GPT entry byte-for-byte in the intended table model"
+                .into(),
+            "rediscover authoritative GPT geometry and prove all previous entries unchanged plus exactly one new partition before formatting"
+                .into(),
             "format only the newly proven partition with the frozen ext4/XFS profile".into(),
-            "defer mount and persistent configuration to the existing guarded mount/persistence activation path".into(),
+            "defer mount and persistent configuration to the existing guarded mount/persistence activation path"
+                .into(),
         ],
     };
     intent.intent_id = intent.expected_intent_id()?;
