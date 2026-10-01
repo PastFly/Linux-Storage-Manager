@@ -684,7 +684,7 @@ fn verify_restart(args: &Args) -> HarnessResult<()> {
         || mount_journal.fstab_may_have_changed
         || persistent_journal.phase != ProductionCreatePersistentConfigPhase::Completed
         || persistent_journal.mount_runtime_journal_id != mount_journal.journal_id
-        || persistent_journal.create_activation_id != create_journal.create_activation_id
+        || persistent_journal.create_activation_id != create_journal.activation_id
         || persistent_journal.disk != args.loop_device
         || persistent_journal.partition_device != mount_journal.partition_device
         || persistent_journal.mountpoint != mountpoint
