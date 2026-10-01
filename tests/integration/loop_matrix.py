@@ -2841,6 +2841,7 @@ def exercise_production_create_mount_e2e(
         raise SafetyError("production Create E2E filesystem profile is invalid")
     if partition_table not in {"gpt", "dos"}:
         raise SafetyError("production Create E2E partition-table profile is invalid")
+    profile = f"{partition_table}-{filesystem}"
     if target.parent != Path("/mnt"):
         raise SafetyError("production Create E2E mountpoint escaped /mnt")
 
@@ -2858,10 +2859,10 @@ def exercise_production_create_mount_e2e(
     if not association_row:
         raise SafetyError("production Create E2E loop association is unavailable")
 
-    create_journal_root = resources.root / "production-create-runtime"
-    mount_journal_root = resources.root / "production-create-mount-runtime"
-    persistent_journal_root = resources.root / "production-create-persistent-config"
-    lock_path = resources.root / "production-create.lock"
+    create_journal_root = resources.root / f"production-create-runtime-{profile}"
+    mount_journal_root = resources.root / f"production-create-mount-runtime-{profile}"
+    persistent_journal_root = resources.root / f"production-create-persistent-config-{profile}"
+    lock_path = resources.root / f"production-create-{profile}.lock"
     common = [
         "--allow-production-create-loop-execution",
         "--loop-device", loop.device,
@@ -2939,7 +2940,9 @@ def exercise_production_create_mount_e2e(
         if backup.read_bytes() != fstab_before:
             raise SafetyError("M2A15b durable backup is not the exact original /etc/fstab")
 
-        wrong_target = resources.create_production_mountpoint("create-restart-wrong-target")
+        wrong_target = resources.create_production_mountpoint(
+            f"create-{profile}-restart-wrong-target"
+        )
         wrong = binary.run(
             "production-create-executor", *common,
             "--mountpoint", str(wrong_target),
