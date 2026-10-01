@@ -215,7 +215,7 @@ mountpoint. Low-level layout steps are generated automatically.
 - [x] M2A14: execute the exact pinned mount descriptor only after recomputing the complete fresh M2A13 preflight/launch chain, fsync-persist a dedicated mount journal before `fexecve`, and require bounded fresh disk/partition/filesystem/UUID/mount verification with unchanged fstab before Completed; ambiguous post-boundary failures enter RecoveryRequired.
 - [x] M2A14b: prove the complete M2A12 -> M2A14 live mount path end to end on a root-owned disposable loop fixture, including restart/recovery evidence and explicit unmount cleanup.
 - [x] M2A15: atomically persist the exact sealed UUID-based fstab entry only after M2A14/M2A14b prove the live mount, with backup, inode recheck, fsynced temp+rename+directory fsync, parse/readback verification and recovery semantics.
-- [ ] M2A15b: prove the complete production Create persistence path on a root-owned disposable loop, including real /etc/fstab mutation on the disposable CI host, durable backup/journal reload, fail-closed wrong-target restart, exact persistent rediscovery, byte-for-byte fstab restoration and explicit unmount cleanup.
+- [x] M2A15b: prove the complete production Create persistence path on a root-owned disposable loop, including real /etc/fstab mutation on the disposable CI host, durable backup/journal reload, fail-closed wrong-target restart, exact persistent rediscovery, byte-for-byte fstab restoration and explicit unmount cleanup.
 
 - create GPT/DOS partition tables on verified blank disks;
 - create partitions in verified usable free ranges, including disk tail and later internal gaps;
