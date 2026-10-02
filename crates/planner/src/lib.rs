@@ -5,12 +5,18 @@ mod create_intent;
 mod execution_guard;
 mod execution_handoff;
 mod filesystem_policy;
+mod gpt_tail_intent;
 mod identity_guard;
 mod route_graph;
 mod swap_migration;
 
 pub use create_intent::{
     freeze_blank_disk_filesystem_create_intent, FrozenBlankDiskFilesystemIntent,
+};
+
+pub use gpt_tail_intent::{
+    freeze_gpt_tail_filesystem_create_intent, FrozenGptTailAllocation, FrozenGptTailDiskIdentity,
+    FrozenGptTailFilesystemIntent, FrozenGptTailTableIdentity,
 };
 
 pub use route_graph::{
