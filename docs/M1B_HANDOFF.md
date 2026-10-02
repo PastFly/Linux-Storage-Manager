@@ -406,3 +406,5 @@ M2B3 restacked directly on the merged M2B2 master baseline.
 M2B4 pins the verified M2B3 consent object before any later execution authorization. The exact root-owned consent file is retained by O_NOFOLLOW/O_CLOEXEC descriptor and its device/inode/uid/mode/link-count/size/SHA-256 are revalidated from the open object. Revalidation also re-runs canonical consent verification through the live pathname and requires the resulting receipt/file identity to remain byte-for-byte equal to the pinned receipt. Path replacement and in-place content mutation therefore fail closed. M2B4 still selects no GPT slot, spawns no process and changes no storage state.
 
 M2B4 restacked on the current M2B3 head.
+
+M2B4 restacked directly on the merged M2B3 master baseline.
