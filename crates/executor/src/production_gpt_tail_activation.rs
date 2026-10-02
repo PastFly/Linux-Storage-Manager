@@ -186,18 +186,10 @@ fn exact_profile(intent: &FrozenGptTailFilesystemIntent) -> bool {
     if !(512..=4096).contains(&sector) || !sector.is_power_of_two() {
         return false;
     }
-    let Some(source_bytes) = intent
-        .allocation
-        .source_sector_count
-        .checked_mul(sector)
-    else {
+    let Some(source_bytes) = intent.allocation.source_sector_count.checked_mul(sector) else {
         return false;
     };
-    let Some(partition_bytes) = intent
-        .allocation
-        .partition_sector_count
-        .checked_mul(sector)
-    else {
+    let Some(partition_bytes) = intent.allocation.partition_sector_count.checked_mul(sector) else {
         return false;
     };
     let Some(source_end) = intent
@@ -349,11 +341,9 @@ pub fn seal_production_gpt_tail_create_activation_intent(
         partition_table_changed: false,
         filesystem_formatted: false,
     };
-    activation.activation_id = activation
-        .expected_activation_id()
-        .map_err(|error| {
-            ProductionGptTailCreateActivationError::Serialization(error.to_string())
-        })?;
+    activation.activation_id = activation.expected_activation_id().map_err(|error| {
+        ProductionGptTailCreateActivationError::Serialization(error.to_string())
+    })?;
     Ok(activation)
 }
 
