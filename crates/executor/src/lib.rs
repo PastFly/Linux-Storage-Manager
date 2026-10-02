@@ -292,13 +292,6 @@ pub use production_create_execution::{
     seal_production_create_execution_permit, ProductionCreateExecutionPermit,
     ProductionCreateExecutionPermitError, PRODUCTION_CREATE_EXECUTION_PERMIT_COMPILED,
 };
-#[cfg(feature = "production-gpt-tail-activation")]
-pub use production_gpt_tail_activation::{
-    inspect_production_gpt_tail_create_activation_readiness,
-    seal_production_gpt_tail_create_activation_intent, ProductionGptTailCreateActivationError,
-    ProductionGptTailCreateActivationIntent, ProductionGptTailCreateActivationReadiness,
-    ProductionGptTailCreateProfile, PRODUCTION_GPT_TAIL_CREATE_ACTIVATION_COMPILED,
-};
 #[cfg(feature = "production-create-runtime-journal")]
 pub use production_create_journal::{
     build_production_create_runtime_journal, persist_new_production_create_runtime_journal,
@@ -386,6 +379,13 @@ pub use production_descriptor_exec::{
 pub use production_execution::{
     seal_production_mutation_execution_permit, ProductionMutationExecutionPermit,
     ProductionMutationExecutionPermitError, PRODUCTION_MUTATION_EXECUTION_PERMIT_COMPILED,
+};
+#[cfg(feature = "production-gpt-tail-activation")]
+pub use production_gpt_tail_activation::{
+    inspect_production_gpt_tail_create_activation_readiness,
+    seal_production_gpt_tail_create_activation_intent, ProductionGptTailCreateActivationError,
+    ProductionGptTailCreateActivationIntent, ProductionGptTailCreateActivationReadiness,
+    ProductionGptTailCreateProfile, PRODUCTION_GPT_TAIL_CREATE_ACTIVATION_COMPILED,
 };
 #[cfg(feature = "production-mutation-execution")]
 pub use production_prepare::{
