@@ -408,3 +408,5 @@ M2B4 pins the verified M2B3 consent object before any later execution authorizat
 M2B4 restacked on the current M2B3 head.
 
 M2B4 restacked directly on the merged M2B3 master baseline.
+
+M2B5 seals the exact existing-GPT-tail authorization only after revalidating the still-open M2B4 consent lease. The deterministic permit binds activation and consent receipt IDs, disk identity, GPT disk ID/first-last LBA/sector size/canonical table SHA-256, existing partition count, full frozen tail range, requested partition start/count/bytes and ext4/XFS profile. It explicitly retains partition_slot_deferred=true and mutation_enabled=false/process_spawned=false/partition_table_changed=false/filesystem_formatted=false. Fresh runtime rediscovery, GPT backup, partition-slot selection and trusted-tool preparation remain separate later gates.
