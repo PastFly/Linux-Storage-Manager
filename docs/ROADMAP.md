@@ -220,6 +220,7 @@ mountpoint. Low-level layout steps are generated automatically.
 - [x] M2B1: freeze a separate non-executing Create intent for an exact verified free tail on an existing GPT disk; bind fresh disk identity, GPT disk ID/canonical table digest, exact tail/allocation sectors and ext4/XFS choice while deliberately deferring partition-slot selection and all mutation authorization.
 - [x] M2B2: seal a separate compile-time production activation around the exact M2B1 GPT-tail intent; revalidate intent readiness/integrity, /dev disk identity, GPT geometry/table digest, tail/allocation bounds and ext4/XFS profile while keeping partition-slot selection deferred and all execution/mutation flags false.
 - [x] M2B3: require a separate root-owned 0600 consent document bound to one exact M2B2 activation, including GPT disk ID/table digest, frozen partition start/count and filesystem plus an explicit existing-disk mutation phrase; consent verification remains non-executing.
+- [x] M2B4: pin the exact verified GPT-tail consent file by open descriptor and revalidate both the current pathname and retained inode/metadata/content digest before later authorization; replacement or in-place mutation fails closed.
 
 - create GPT/DOS partition tables on verified blank disks;
 - create partitions in verified usable free ranges, including disk tail and later internal gaps;
