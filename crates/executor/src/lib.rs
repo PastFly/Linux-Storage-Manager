@@ -73,6 +73,8 @@ mod production_execution;
 mod production_gpt_tail_activation;
 #[cfg(feature = "production-gpt-tail-consent")]
 mod production_gpt_tail_consent;
+#[cfg(feature = "production-gpt-tail-consent-lease")]
+mod production_gpt_tail_consent_lease;
 #[cfg(feature = "production-mutation-execution")]
 mod production_prepare;
 mod production_swap_activation;
@@ -395,6 +397,12 @@ pub use production_gpt_tail_consent::{
     ProductionGptTailCreateConsentError, ProductionGptTailCreateConsentFileIdentity,
     ProductionGptTailCreateConsentReceipt, PRODUCTION_GPT_TAIL_CREATE_CONSENT_COMPILED,
     PRODUCTION_GPT_TAIL_CREATE_CONSENT_PATH, PRODUCTION_GPT_TAIL_CREATE_CONSENT_PHRASE,
+};
+#[cfg(feature = "production-gpt-tail-consent-lease")]
+pub use production_gpt_tail_consent_lease::{
+    pin_default_production_gpt_tail_create_consent,
+    revalidate_pinned_production_gpt_tail_create_consent, PinnedProductionGptTailCreateConsent,
+    ProductionGptTailCreateConsentLeaseError,
 };
 #[cfg(feature = "production-mutation-execution")]
 pub use production_prepare::{
