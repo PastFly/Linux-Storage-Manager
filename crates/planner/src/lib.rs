@@ -15,8 +15,8 @@ pub use create_intent::{
 };
 
 pub use gpt_tail_intent::{
-    freeze_gpt_tail_filesystem_create_intent, FrozenGptTailAllocation,
-    FrozenGptTailDiskIdentity, FrozenGptTailFilesystemIntent, FrozenGptTailTableIdentity,
+    freeze_gpt_tail_filesystem_create_intent, FrozenGptTailAllocation, FrozenGptTailDiskIdentity,
+    FrozenGptTailFilesystemIntent, FrozenGptTailTableIdentity,
 };
 
 pub use route_graph::{
