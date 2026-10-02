@@ -219,6 +219,7 @@ mountpoint. Low-level layout steps are generated automatically.
 - [x] M2A16: prove production blank-disk Create profile parity across GPT/DOS partition tables and ext4/XFS filesystems, carrying each combination through partitioning, format, live mount, durable fstab persistence, restart verification, exact fstab restoration and explicit unmount cleanup.
 - [x] M2B1: freeze a separate non-executing Create intent for an exact verified free tail on an existing GPT disk; bind fresh disk identity, GPT disk ID/canonical table digest, exact tail/allocation sectors and ext4/XFS choice while deliberately deferring partition-slot selection and all mutation authorization.
 - [x] M2B2: seal a separate compile-time production activation around the exact M2B1 GPT-tail intent; revalidate intent readiness/integrity, /dev disk identity, GPT geometry/table digest, tail/allocation bounds and ext4/XFS profile while keeping partition-slot selection deferred and all execution/mutation flags false.
+- [x] M2B3: require a separate root-owned 0600 consent document bound to one exact M2B2 activation, including GPT disk ID/table digest, frozen partition start/count and filesystem plus an explicit existing-disk mutation phrase; consent verification remains non-executing.
 
 - create GPT/DOS partition tables on verified blank disks;
 - create partitions in verified usable free ranges, including disk tail and later internal gaps;
