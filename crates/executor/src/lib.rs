@@ -69,6 +69,8 @@ mod production_create_runtime_exec;
 mod production_create_tool_lease;
 mod production_descriptor_exec;
 mod production_execution;
+#[cfg(feature = "production-gpt-tail-activation")]
+mod production_gpt_tail_activation;
 #[cfg(feature = "production-mutation-execution")]
 mod production_prepare;
 mod production_swap_activation;
@@ -377,6 +379,13 @@ pub use production_descriptor_exec::{
 pub use production_execution::{
     seal_production_mutation_execution_permit, ProductionMutationExecutionPermit,
     ProductionMutationExecutionPermitError, PRODUCTION_MUTATION_EXECUTION_PERMIT_COMPILED,
+};
+#[cfg(feature = "production-gpt-tail-activation")]
+pub use production_gpt_tail_activation::{
+    inspect_production_gpt_tail_create_activation_readiness,
+    seal_production_gpt_tail_create_activation_intent, ProductionGptTailCreateActivationError,
+    ProductionGptTailCreateActivationIntent, ProductionGptTailCreateActivationReadiness,
+    ProductionGptTailCreateProfile, PRODUCTION_GPT_TAIL_CREATE_ACTIVATION_COMPILED,
 };
 #[cfg(feature = "production-mutation-execution")]
 pub use production_prepare::{
