@@ -207,11 +207,7 @@ fn safe_identifier(value: &str) -> bool {
     !value.is_empty() && !value.as_bytes().contains(&0) && !value.chars().any(char::is_control)
 }
 
-fn validate_existing_gpt_records(
-    table: &PartitionTable,
-    first_lba: u64,
-    last_lba: u64,
-) -> bool {
+fn validate_existing_gpt_records(table: &PartitionTable, first_lba: u64, last_lba: u64) -> bool {
     let Some(limit) = last_lba.checked_add(1) else {
         return false;
     };
@@ -256,10 +252,7 @@ pub fn freeze_gpt_tail_filesystem_create_intent(
 ) -> Result<FrozenGptTailFilesystemIntent, PlannerError> {
     let mut blockers = Vec::new();
 
-    if plan.status() != PlanStatus::Preview
-        || plan.executable()
-        || !plan.blockers().is_empty()
-    {
+    if plan.status() != PlanStatus::Preview || plan.executable() || !plan.blockers().is_empty() {
         blockers.extend(plan.blockers().iter().cloned());
         push_blocker(
             &mut blockers,
@@ -299,9 +292,7 @@ pub fn freeze_gpt_tail_filesystem_create_intent(
         );
     }
 
-    if !collector_complete(snapshot, "lsblk")
-        || !collector_complete(snapshot, "partition_tables")
-    {
+    if !collector_complete(snapshot, "lsblk") || !collector_complete(snapshot, "partition_tables") {
         push_blocker(
             &mut blockers,
             "m2b1-discovery-incomplete",
@@ -405,7 +396,11 @@ pub fn freeze_gpt_tail_filesystem_create_intent(
                 "GPT label, disk identifier, sector geometry or existing partition records are incomplete or unsafe",
             );
         }
-        if table.id.as_deref().is_none_or(|value| !safe_identifier(value)) {
+        if table
+            .id
+            .as_deref()
+            .is_none_or(|value| !safe_identifier(value))
+        {
             push_blocker(
                 &mut blockers,
                 "m2b1-gpt-id-missing",
@@ -425,15 +420,16 @@ pub fn freeze_gpt_tail_filesystem_create_intent(
         }
     }
 
-    let adapter = source.and_then(
-        |source| match resolve_create_source_adapter(snapshot, source, None) {
-            Ok(adapter) => Some(adapter),
-            Err(blocker) => {
-                blockers.push(blocker);
-                None
-            }
-        },
-    );
+    let adapter =
+        source.and_then(
+            |source| match resolve_create_source_adapter(snapshot, source, None) {
+                Ok(adapter) => Some(adapter),
+                Err(blocker) => {
+                    blockers.push(blocker);
+                    None
+                }
+            },
+        );
 
     let source_start_sector = adapter
         .as_ref()
@@ -466,7 +462,9 @@ pub fn freeze_gpt_tail_filesystem_create_intent(
     let allocation = plan.allocation();
     let partition_start_sector = allocation.and_then(|value| value.start_sector).unwrap_or(0);
     let partition_sector_count = allocation.and_then(|value| value.sector_count).unwrap_or(0);
-    let partition_size_bytes = partition_sector_count.checked_mul(table_sector).unwrap_or(0);
+    let partition_size_bytes = partition_sector_count
+        .checked_mul(table_sector)
+        .unwrap_or(0);
 
     if allocation.is_none()
         || partition_start_sector != source_start_sector
@@ -489,8 +487,7 @@ pub fn freeze_gpt_tail_filesystem_create_intent(
 
     if table_sector == 0
         || CREATE_PARTITION_ALIGNMENT_BYTES % table_sector != 0
-        || partition_start_sector
-            % (CREATE_PARTITION_ALIGNMENT_BYTES / table_sector.max(1)).max(1)
+        || partition_start_sector % (CREATE_PARTITION_ALIGNMENT_BYTES / table_sector.max(1)).max(1)
             != 0
     {
         push_blocker(
@@ -584,9 +581,7 @@ pub fn freeze_gpt_tail_filesystem_create_intent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        list_provisioning_opportunities, plan_create, CreateRequest, Growth,
-    };
+    use crate::{list_provisioning_opportunities, plan_create, CreateRequest, Growth};
     use serde_json::json;
 
     const MIB: u64 = 1024 * 1024;
