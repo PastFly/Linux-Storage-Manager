@@ -431,17 +431,12 @@ fn validate_fresh_gpt_tail(
         return Err(ProductionGptTailCreateRuntimePreflightError::AllocationChanged);
     };
     if activation.source_sector_count == 0
-        || activation
-            .source_sector_count
-            .checked_mul(sector)
-            != Some(activation.source_size_bytes)
+        || activation.source_sector_count.checked_mul(sector) != Some(activation.source_size_bytes)
         || activation.partition_start_sector != activation.source_start_sector
         || activation.partition_start_sector % alignment_sectors != 0
         || activation.partition_sector_count == 0
         || activation.partition_sector_count > activation.source_sector_count
-        || activation
-            .partition_sector_count
-            .checked_mul(sector)
+        || activation.partition_sector_count.checked_mul(sector)
             != Some(activation.partition_size_bytes)
         || partition_end > source_end
         || source_end > activation.gpt_last_lba.saturating_add(1)
@@ -467,8 +462,10 @@ fn prepare_from_snapshot_inner(
     permit: &ProductionGptTailCreateExecutionPermit,
     consent_lease: &PinnedProductionGptTailCreateConsent,
     snapshot: &HostSnapshot,
-) -> Result<ProductionGptTailCreateRuntimePreflightReceipt, ProductionGptTailCreateRuntimePreflightError>
-{
+) -> Result<
+    ProductionGptTailCreateRuntimePreflightReceipt,
+    ProductionGptTailCreateRuntimePreflightError,
+> {
     if !PRODUCTION_GPT_TAIL_CREATE_RUNTIME_PREFLIGHT_COMPILED {
         return Err(ProductionGptTailCreateRuntimePreflightError::FeatureDisabled);
     }
@@ -533,10 +530,13 @@ pub fn prepare_production_gpt_tail_create_runtime_preflight(
     activation: &ProductionGptTailCreateActivationIntent,
     permit: &ProductionGptTailCreateExecutionPermit,
     consent_lease: &PinnedProductionGptTailCreateConsent,
-) -> Result<ProductionGptTailCreateRuntimePreflightReceipt, ProductionGptTailCreateRuntimePreflightError>
-{
-    let snapshot = discover_snapshot()
-        .map_err(|error| ProductionGptTailCreateRuntimePreflightError::Discovery(error.to_string()))?;
+) -> Result<
+    ProductionGptTailCreateRuntimePreflightReceipt,
+    ProductionGptTailCreateRuntimePreflightError,
+> {
+    let snapshot = discover_snapshot().map_err(|error| {
+        ProductionGptTailCreateRuntimePreflightError::Discovery(error.to_string())
+    })?;
     prepare_from_snapshot_inner(activation, permit, consent_lease, &snapshot)
 }
 
@@ -590,9 +590,7 @@ mod tests {
                         model: None,
                         serial: None,
                         uuid: Some("11111111-1111-1111-1111-111111111111".into()),
-                        partition_uuid: Some(
-                            "22222222-2222-2222-2222-222222222222".into(),
-                        ),
+                        partition_uuid: Some("22222222-2222-2222-2222-222222222222".into()),
                         partition_table: None,
                         children: vec![],
                     }],
@@ -610,9 +608,7 @@ mod tests {
                     node: "/dev/loop7p1".into(),
                     start_sector: first_start,
                     size_sectors: first_size_sectors,
-                    partition_type: Some(
-                        "0FC63DAF-8483-4772-8E79-3D69D8477DE4".into(),
-                    ),
+                    partition_type: Some("0FC63DAF-8483-4772-8E79-3D69D8477DE4".into()),
                     uuid: Some("22222222-2222-2222-2222-222222222222".into()),
                     name: None,
                     attrs: None,
@@ -742,8 +738,7 @@ mod tests {
     fn changed_gpt_disk_id_fails_closed() {
         let mut snapshot = snapshot();
         let (activation, _) = activation_and_permit(&snapshot);
-        snapshot.partition_tables[0].id =
-            Some("99999999-9999-9999-9999-999999999999".into());
+        snapshot.partition_tables[0].id = Some("99999999-9999-9999-9999-999999999999".into());
         assert!(matches!(
             validate_fresh_gpt_tail(&activation, &snapshot),
             Err(ProductionGptTailCreateRuntimePreflightError::GptTableChanged)
