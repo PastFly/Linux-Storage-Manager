@@ -222,6 +222,9 @@ mountpoint. Low-level layout steps are generated automatically.
 - [x] M2B3: require a separate root-owned 0600 consent document bound to one exact M2B2 activation, including GPT disk ID/table digest, frozen partition start/count and filesystem plus an explicit existing-disk mutation phrase; consent verification remains non-executing.
 - [x] M2B4: pin the exact verified GPT-tail consent file by open descriptor and revalidate both the current pathname and retained inode/metadata/content digest before later authorization; replacement or in-place mutation fails closed.
 - [x] M2B5: seal the exact M2B2 activation plus revalidated pinned M2B4 consent into a deterministic non-spawning execution permit that binds GPT identity/table digest, tail/allocation geometry and filesystem while keeping partition-slot selection deferred and all mutation flags false.
+- [x] M2B6: perform a fresh read-only runtime preflight over the exact M2B5 authorization; require complete storage collectors, unchanged disk/GPT/table digest and exact tail source, revalidate pinned consent, resolve trusted sfdisk/partx/mkfs identities, and keep GPT backup/slot selection/process spawn/mutation deferred.
+- [x] Pre-Prod Wave 1 plan: define manual disposable-VM acceptance for the already executable Extend, swap-migration and blank-disk Create production paths.
+- [ ] Pre-Prod Wave 1 run: complete three consecutive matrix passes on Ubuntu 24.04, Debian 12 and Rocky Linux 9, capture exact environment/results and then repeat on at least one aarch64 VM.
 
 - create GPT/DOS partition tables on verified blank disks;
 - create partitions in verified usable free ranges, including disk tail and later internal gaps;
