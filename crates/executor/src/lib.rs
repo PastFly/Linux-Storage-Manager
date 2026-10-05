@@ -77,6 +77,8 @@ mod production_gpt_tail_consent;
 mod production_gpt_tail_consent_lease;
 #[cfg(feature = "production-gpt-tail-execution-permit")]
 mod production_gpt_tail_execution;
+#[cfg(feature = "production-gpt-tail-runtime-preflight")]
+mod production_gpt_tail_preflight;
 #[cfg(feature = "production-mutation-execution")]
 mod production_prepare;
 mod production_swap_activation;
@@ -411,6 +413,12 @@ pub use production_gpt_tail_execution::{
     seal_production_gpt_tail_create_execution_permit, ProductionGptTailCreateExecutionPermit,
     ProductionGptTailCreateExecutionPermitError,
     PRODUCTION_GPT_TAIL_CREATE_EXECUTION_PERMIT_COMPILED,
+};
+#[cfg(feature = "production-gpt-tail-runtime-preflight")]
+pub use production_gpt_tail_preflight::{
+    prepare_production_gpt_tail_create_runtime_preflight,
+    ProductionGptTailCreateRuntimePreflightError, ProductionGptTailCreateRuntimePreflightReceipt,
+    PRODUCTION_GPT_TAIL_CREATE_RUNTIME_PREFLIGHT_COMPILED,
 };
 #[cfg(feature = "production-mutation-execution")]
 pub use production_prepare::{
