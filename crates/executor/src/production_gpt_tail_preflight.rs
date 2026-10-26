@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use lsm_core::{BlockDevice, CollectorState, HostSnapshot, NodeKind, PartitionTable};
+use lsm_core::{
+    BlockDevice, CollectorState, DiagnosticSeverity, HostSnapshot, NodeKind, PartitionTable,
+};
 use lsm_discovery::discover_snapshot;
 use lsm_planner::{list_provisioning_opportunities, ProvisioningSpaceKind};
 use serde::Serialize;
@@ -162,6 +164,8 @@ pub enum ProductionGptTailCreateRuntimePreflightError {
     GptTableChanged,
     #[error("fresh GPT partition records are malformed, overlapping or out of range")]
     GptPartitionRecordsInvalid,
+    #[error("fresh target kernel topology does not reconcile with its GPT table")]
+    KernelTopologyMismatch,
     #[error("fresh GPT-tail free-space source changed or is no longer unique")]
     TailSourceChanged,
     #[error("frozen GPT-tail allocation is no longer contained in the exact free tail")]
@@ -285,6 +289,91 @@ fn validate_partition_records(table: &PartitionTable, first_lba: u64, last_lba: 
     true
 }
 
+fn kernel_topology_matches(
+    disk: &BlockDevice,
+    table: &PartitionTable,
+    snapshot: &HostSnapshot,
+    nodes: &[&BlockDevice],
+) -> bool {
+    let Some(disk_kernel) = disk.kernel_name.as_deref().filter(|name| !name.is_empty()) else {
+        return false;
+    };
+    let Some(sector) = table.sector_size_bytes else {
+        return false;
+    };
+    if disk.children.len() != table.partitions.len() {
+        return false;
+    }
+    for child in &disk.children {
+        let Some(path) = child.path.as_deref().filter(|path| !path.is_empty()) else {
+            return false;
+        };
+        let Some(kernel) = child.kernel_name.as_deref().filter(|name| !name.is_empty()) else {
+            return false;
+        };
+        let records = table
+            .partitions
+            .iter()
+            .filter(|record| record.node == path)
+            .collect::<Vec<_>>();
+        let [record] = records.as_slice() else {
+            return false;
+        };
+        // lsblk START is always in 512-byte sectors, including on 4Kn disks.
+        let kernel_start = child
+            .start_512_sector
+            .and_then(|start| start.checked_mul(512));
+        let table_start = record.start_sector.checked_mul(sector);
+        if child.kind != NodeKind::Partition
+            || child.name.is_empty()
+            || child.parent_kernel_name.as_deref() != Some(disk_kernel)
+            || child.logical_sector_bytes != Some(sector)
+            || kernel_start.is_none()
+            || kernel_start != table_start
+            || record.size_sectors.checked_mul(sector) != Some(child.size_bytes)
+            || nodes
+                .iter()
+                .filter(|node| node.path.as_deref() == Some(path))
+                .count()
+                != 1
+            || nodes
+                .iter()
+                .filter(|node| node.kernel_name.as_deref() == Some(kernel))
+                .count()
+                != 1
+            || record.uuid.as_deref().is_some_and(|uuid| {
+                child
+                    .partition_uuid
+                    .as_deref()
+                    .is_none_or(|value| !uuid.eq_ignore_ascii_case(value))
+            })
+        {
+            return false;
+        }
+    }
+
+    let mut target_nodes = Vec::new();
+    flatten(std::slice::from_ref(disk), &mut target_nodes);
+    let reconciliation = lsm_discovery::reconcile_snapshot(snapshot);
+    !snapshot
+        .diagnostics
+        .iter()
+        .chain(reconciliation.iter())
+        .any(|diagnostic| {
+            diagnostic.severity == DiagnosticSeverity::Error
+                && diagnostic.device.as_deref().is_none_or(|device| {
+                    target_nodes.iter().any(|node| {
+                        node.path.as_deref() == Some(device)
+                            || node.name == device
+                            || node.kernel_name.as_deref() == Some(device)
+                            || device
+                                .strip_prefix("/dev/")
+                                .is_some_and(|name| node.kernel_name.as_deref() == Some(name))
+                    }) || table.partitions.iter().any(|record| record.node == device)
+                })
+        })
+}
+
 fn validate_authorization(
     activation: &ProductionGptTailCreateActivationIntent,
     permit: &ProductionGptTailCreateExecutionPermit,
@@ -390,6 +479,10 @@ fn validate_fresh_gpt_tail(
     }
     if !validate_partition_records(table, activation.gpt_first_lba, activation.gpt_last_lba) {
         return Err(ProductionGptTailCreateRuntimePreflightError::GptPartitionRecordsInvalid);
+    }
+
+    if !kernel_topology_matches(disk, table, snapshot, &nodes) {
+        return Err(ProductionGptTailCreateRuntimePreflightError::KernelTopologyMismatch);
     }
 
     let opportunities = list_provisioning_opportunities(snapshot);
@@ -768,6 +861,141 @@ mod tests {
             Err(ProductionGptTailCreateRuntimePreflightError::AuthorizationInvalid)
                 | Err(ProductionGptTailCreateRuntimePreflightError::AuthorizationBindingMismatch)
         ));
+    }
+
+    #[test]
+    fn changed_kernel_partition_size_fails_closed() {
+        let mut snapshot = snapshot();
+        let (activation, _) = activation_and_permit(&snapshot);
+        snapshot.storage.block_devices[0].children[0].size_bytes += 512;
+        snapshot
+            .diagnostics
+            .extend(lsm_discovery::reconcile_snapshot(&snapshot));
+        assert!(validate_fresh_gpt_tail(&activation, &snapshot).is_err());
+    }
+
+    #[test]
+    fn changed_kernel_partition_start_fails_closed() {
+        let mut snapshot = snapshot();
+        let (activation, _) = activation_and_permit(&snapshot);
+        snapshot.storage.block_devices[0].children[0].start_512_sector = Some(4096);
+        assert!(validate_fresh_gpt_tail(&activation, &snapshot).is_err());
+    }
+
+    #[test]
+    fn missing_kernel_partition_fails_closed() {
+        let mut snapshot = snapshot();
+        let (activation, _) = activation_and_permit(&snapshot);
+        snapshot.storage.block_devices[0].children.clear();
+        assert!(validate_fresh_gpt_tail(&activation, &snapshot).is_err());
+    }
+
+    #[test]
+    fn extra_kernel_partition_fails_closed() {
+        let mut snapshot = snapshot();
+        let (activation, _) = activation_and_permit(&snapshot);
+        let mut extra = snapshot.storage.block_devices[0].children[0].clone();
+        extra.name = "loop7p2".into();
+        extra.kernel_name = Some("loop7p2".into());
+        extra.path = Some("/dev/loop7p2".into());
+        snapshot.storage.block_devices[0].children.push(extra);
+        assert!(validate_fresh_gpt_tail(&activation, &snapshot).is_err());
+    }
+
+    #[test]
+    fn ambiguous_kernel_partition_fails_closed() {
+        let mut snapshot = snapshot();
+        let (activation, _) = activation_and_permit(&snapshot);
+        let duplicate = snapshot.storage.block_devices[0].children[0].clone();
+        snapshot.storage.block_devices.push(duplicate);
+        assert!(validate_fresh_gpt_tail(&activation, &snapshot).is_err());
+    }
+
+    #[test]
+    fn incomplete_or_malformed_kernel_partition_fails_closed() {
+        let baseline = snapshot();
+        let (activation, _) = activation_and_permit(&baseline);
+        for case in 0..7 {
+            let mut snapshot = baseline.clone();
+            let child = &mut snapshot.storage.block_devices[0].children[0];
+            match case {
+                0 => child.path = None,
+                1 => child.kernel_name = None,
+                2 => child.parent_kernel_name = Some("loop8".into()),
+                3 => child.start_512_sector = None,
+                4 => child.logical_sector_bytes = None,
+                5 => child.kind = NodeKind::Unknown,
+                6 => child.partition_uuid = Some("different-partition".into()),
+                _ => unreachable!(),
+            }
+            assert!(
+                validate_fresh_gpt_tail(&activation, &snapshot).is_err(),
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn target_error_diagnostic_fails_closed() {
+        let mut snapshot = snapshot();
+        let (activation, _) = activation_and_permit(&snapshot);
+        snapshot.diagnostics.push(lsm_core::StorageDiagnostic {
+            code: "contradictory-target".into(),
+            severity: lsm_core::DiagnosticSeverity::Error,
+            message: "target topology is contradictory".into(),
+            device: Some("/dev/loop7p1".into()),
+        });
+        assert!(validate_fresh_gpt_tail(&activation, &snapshot).is_err());
+    }
+
+    #[test]
+    fn consistent_existing_mounted_partitions_and_unrelated_disk_are_allowed() {
+        let mut snapshot = snapshot();
+        let mut sibling = snapshot.storage.block_devices[0].children[0].clone();
+        sibling.name = "loop7p2".into();
+        sibling.kernel_name = Some("loop7p2".into());
+        sibling.path = Some("/dev/loop7p2".into());
+        sibling.start_512_sector = Some(133120);
+        sibling.partition_uuid = Some("33333333-3333-3333-3333-333333333333".into());
+        sibling.mountpoints = vec!["/existing".into()];
+        snapshot.storage.block_devices[0].children.push(sibling);
+        let mut record = snapshot.partition_tables[0].partitions[0].clone();
+        record.node = "/dev/loop7p2".into();
+        record.start_sector = 133120;
+        record.uuid = Some("33333333-3333-3333-3333-333333333333".into());
+        snapshot.partition_tables[0].partitions.push(record);
+        let mut unrelated = snapshot.storage.block_devices[0].clone();
+        unrelated.name = "loop8".into();
+        unrelated.kernel_name = Some("loop8".into());
+        unrelated.path = Some("/dev/loop8".into());
+        unrelated.children.clear();
+        snapshot.storage.block_devices.push(unrelated);
+        snapshot.diagnostics.push(lsm_core::StorageDiagnostic {
+            code: "unrelated-disk-error".into(),
+            severity: lsm_core::DiagnosticSeverity::Error,
+            message: "another disk needs recovery".into(),
+            device: Some("/dev/loop8".into()),
+        });
+        let (activation, _) = activation_and_permit(&snapshot);
+        assert!(validate_fresh_gpt_tail(&activation, &snapshot).is_ok());
+    }
+
+    #[test]
+    fn four_kn_kernel_start_remains_in_512_byte_units() {
+        let mut snapshot = snapshot();
+        let disk = &mut snapshot.storage.block_devices[0];
+        disk.logical_sector_bytes = Some(4096);
+        disk.children[0].logical_sector_bytes = Some(4096);
+        let table = &mut snapshot.partition_tables[0];
+        table.sector_size_bytes = Some(4096);
+        table.last_lba = Some(disk.size_bytes / 4096 - 6);
+        table.partitions[0].start_sector = 256;
+        table.partitions[0].size_sectors = 16384;
+        let (activation, _) = activation_and_permit(&snapshot);
+        assert!(validate_fresh_gpt_tail(&activation, &snapshot).is_ok());
+        // Treating lsblk START as 4K sectors would incorrectly accept this offset.
+        snapshot.storage.block_devices[0].children[0].start_512_sector = Some(256);
+        assert!(validate_fresh_gpt_tail(&activation, &snapshot).is_err());
     }
 
     #[test]
