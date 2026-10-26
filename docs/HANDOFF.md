@@ -1,139 +1,59 @@
-# Linux Storage Manager — engineering handoff
+# Linux Storage Manager — current engineering handoff
 
-Last live GitHub audit: **2026-09-21**.
+Updated: **2026-10-26**. Repository: `PastFly/Linux-Storage-Manager`, default branch
+`master`. Read live GitHub refs and checks before continuing; historical SHAs in
+older milestone documents are not the current baseline.
 
-`AGENTS.md` is the governing engineering document. Re-check live GitHub refs and changed
-governing-document blob SHAs before continuing.
+`AGENTS.md` governs engineering. The owner has explicitly authorized autonomous
+development, feature-branch PRs and merges in this project, and asks that completed
+PRs be closed. Preserve that authorization across sessions. Require successful
+checks for the exact candidate head before merging.
 
-## Verified master baseline
+## Current work
 
-Repository: `PastFly/Linux-Storage-Manager`
+- M1B Extend and swap paths have guarded execution and disposable-loop acceptance.
+- M2A blank-disk Create has GPT/DOS × ext4/XFS coverage through mount, fstab
+  persistence, restart verification and exact cleanup.
+- M2B1–M2B5 freeze and authorize existing-GPT-tail intent without storage writes.
+- PR #175 adds M2B6 fresh runtime preflight, including target-scoped kernel/GPT
+  reconciliation. Regression coverage rejects changed, missing, extra or ambiguous
+  partitions and preserves the fixed 512-byte lsblk START units on 4Kn media.
+- The Wave 1 evidence runner uses those existing executable profiles to produce a
+  three-repetition VM acceptance report. Read `docs/PREPROD_TEST_PLAN.md` and the
+  2026-10-26 specification/plan under `docs/superpowers/` for its contract.
 
-Verified master:
+## Honest readiness boundary
 
-`e4c34bf952b942a37b4ea7c79effd2f18162fc03`
+Normal CLI/TUI builds remain read-only and have no general `apply` entry point.
+The native harnesses are separate, explicitly opted-in disposable-VM tests.
+Existing-GPT-tail writes/formats and advanced storage layouts are still pending.
 
-Latest merged milestone:
+Do not delay Wave 1 testing for completion of M2B. Wave 2 adds GPT-tail Create only
+after its own backup, slot selection, pinned launch, durable write/format sequence
+and destructive sentinel-preservation acceptance exist.
 
-- PR **#26 — M1B12: bind exact operator approval durably**
-- approved PR head: `031b0afd1ac9ac527d8d0f3617824a0c11ef7edf`
-- squash result / master: `e4c34bf952b942a37b4ea7c79effd2f18162fc03`
-- post-merge **CI #512: success**
-- post-merge **Portable Linux #391: success**
-- Portable Linux #391 x86_64 succeeded on attempt #2 after attempt #1 hit an external
-  Docker Hub connection reset while pulling `almalinux:9`.
+## Verification and evidence
 
-M0 discovery, M1A planning and M1B0-M1B12 are merged. PR #26 and
-`feature/m1b12-exact-plan-approval` are historical continuation points only.
+1. `bash tools/validate.sh --source-only` runs rootless harness and runner tests.
+2. `bash tools/validate.sh` additionally runs Rust 1.88.0 formatting, clippy, tests
+   and build. Feature-specific tests remain in `.github/workflows/ci.yml`.
+3. `python3 -I tools/preprod.py build` creates the source-bound native binaries.
+4. `check` inspects prerequisites; `run` requires exact source, root/Linux and
+   `--allow-disposable-vm-tests`. It runs all profiles three times, stops on failure
+   and retains the report/logs. It performs no independent storage cleanup.
+5. CI uploads `wave1-ubuntu24-x86_64-<run>-<attempt>` evidence even after a failed
+   test. Read `report.json` and `SUMMARY.txt`; workflow success alone is not a
+   substitute for a report from a different distribution or a real extra disk.
 
-## Current milestone — M1B13 frozen execution intent
+## Next useful work
 
-Current branch:
+- Collect complete Wave 1 reports from Debian 12, Rocky Linux 9 and an aarch64 VM.
+- Exercise operator-facing read-only target selection on a disposable VM with a
+  dedicated additional virtual disk; keep this evidence separate from loop tests.
+- Continue M2B runtime backup/slot/launch/journal/write/format as a coherent feature,
+  with preservation of existing partition geometry and sentinel data proved E2E.
+- Connect accepted execution paths to a deliberate operator-facing apply workflow
+  only with the existing consent, recovery and fresh-state safeguards intact.
 
-`feature/m1b13-frozen-execution-intent`
-
-M1B13 is still strictly non-mutating. It freezes the exact approved semantic plan into a typed, immutable, non-executable intent manifest. The durable journal remains `Approved`.
-
-The approved M1B13 design is in:
-
-`docs/superpowers/specs/2026-09-21-m1b13-frozen-execution-intent-design.md`
-
-The implementation plan is in:
-
-`docs/superpowers/plans/2026-09-21-m1b13-frozen-execution-intent.md`
-
-## M1B12 regression contract
-
-Positive path proves:
-
-- exact approval advances only `PreconditionsVerified -> Approved`;
-- the host lock remains exclusive;
-- durable reload preserves `Approved` plus the exact approval binding;
-- `mutation_may_have_started=false`;
-- owner acceptance remains required;
-- `MUTATION_ENABLED=false`.
-
-Fail-closed coverage includes:
-
-- wrong explicit plan ID;
-- wrong explicit evidence bundle ID;
-- wrong explicit target-manifest digest;
-- stale preconditions-journal digest;
-- M1B11 verification from another locked session;
-- wrong journal phase;
-- repeated approval;
-- durable journal divergence;
-- approval binding for another preconditions journal;
-- durable reload tampering, including recomputed approval fingerprints.
-
-Every failed approval attempt must leave the live journal unadvanced.
-
-## Safety boundary
-
-`MUTATION_ENABLED = false`
-
-M1B12 does **not** add:
-
-- `apply`;
-- `ExecutionStarted` through the executor layer;
-- privileged helpers;
-- partition-table writes;
-- `pvresize`;
-- `lvextend`;
-- `resize2fs` / `xfs_growfs` execution;
-- mount/fstab mutation;
-- swap mutation;
-- recovery-command execution;
-- automatic owner acceptance.
-
-The planner retains its future journal state model, but no M1B12 executor API crosses the
-mutation boundary.
-
-## M1B13 boundary and later work
-
-Do not enable production storage writes merely because an exact approval record exists.
-
-Before a first write-capable executor milestone, separately design and review:
-
-- explicit owner acceptance for mutation-capable rollout;
-- privileged-helper boundary and privilege model;
-- minimal executable command allowlist;
-- exact argv specs;
-- per-layer rediscovery and verification;
-- interruption handling;
-- recovery semantics and UX;
-- test-only mutation adapters;
-- disposable write matrix.
-
-## Git workflow
-
-- Start work from live `master`.
-- Use feature branches and PRs.
-- Require complete CI and Portable Linux success on the exact PR head.
-- Do not merge any M1B13 public-main PR without explicit owner authorization for that PR and its exact head SHA.
-- After an authorized squash merge, verify the new master and post-merge Actions before starting the next milestone.
-
-
-## M1B13 implementation state
-
-Branch: `feature/m1b13-frozen-execution-intent`.
-Current PR: **#27 — M1B13: freeze approved execution intent**.
-
-The branch contains the typed frozen-intent model, exact approval/durable-journal binding,
-one-to-one operation mapping, dependency-graph validation, frozen target semantic validation,
-and fail-closed approval mismatch coverage.
-
-TDD/review evidence retained on the branch includes:
-
-- CI #526: RED/diagnostic run that exposed a duplicate contract test and a missing test-only
-  approval fixture;
-- CI #544: RED proving the M1B12 preconditions-journal digest was not yet bound by M1B13;
-- CI #547: RED proving filesystem intent accepted a filesystem decision for a different device;
-- CI #549: RED proving filesystem intent accepted a filesystem decision for a different target.
-
-The corresponding fail-closed bindings were added. The final exact PR head and final CI /
-Portable Linux run numbers must be read live from PR #27 rather than copied from an intermediate
-branch run.
-
-M1B13 adds no journal transition and no process execution. The next intended milestone is M1B14,
-a non-executing semantic-to-argv compiler plus minimal executable allowlist.
+`docs/M1B_HANDOFF.md` is historical implementation detail. Do not restart at its
+older M1B checkpoint or repeat already merged milestones.

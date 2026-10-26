@@ -3492,10 +3492,27 @@ def main(argv: list[str] | None = None) -> int:
         print(f"INTEGRATION_FAILED: {error}", file=sys.stderr)
         failed = True
     finally:
+        # A first interrupt may arrive after normal/error handling has already
+        # entered cleanup. Defer it rather than raising through ownership-aware
+        # unmount/detach checks or interrupting an in-flight cleanup subprocess.
+        cleanup_signals: list[int] = []
+        def defer_cleanup_interrupt(signum: int, frame: Any) -> None:
+            cleanup_signals.append(signum)
+        previous_handlers = {
+            signum: signal.signal(signum, defer_cleanup_interrupt)
+            for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+        }
         try:
-            resources.cleanup()
-        except (OSError, ValueError, KeyError, TypeError, SafetyError, subprocess.SubprocessError) as error:
-            print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
+            try:
+                resources.cleanup()
+            except (OSError, ValueError, KeyError, TypeError, SafetyError, subprocess.SubprocessError) as error:
+                print(f"CLEANUP_INCOMPLETE: {error}; retained directory: {root}", file=sys.stderr)
+                failed = True
+        finally:
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
+        if cleanup_signals:
+            print(f"INTEGRATION_FAILED: interrupt(s) {cleanup_signals} deferred until cleanup completed", file=sys.stderr)
             failed = True
     if not failed:
         print("LOOP_MATRIX_OK cases=plain-ext4,plain-xfs,lvm-ext4,lvm-xfs,lvm-ext4-pre-spawn-recovery,lvm-ext4-growth,lvm-xfs-growth,lvm-ext4-offline-growth,lvm-ext4-production-e2e,lvm-ext4-production-chained-e2e,dos-tail-swap-replacement-e2e,plain-ext4-multi-partition-selection,lvm-ext4-multi-target-isolation,lvm-ext4-filesystem-post-write-recovery,lvm-ext4-lv-post-write-recovery,lvm-ext4-pv-post-write-recovery,lvm-ext4-pv-lv-filesystem-growth,lvm-ext4-gpt-partition-post-write-recovery,lvm-ext4-dos-partition-post-write-recovery,lvm-ext4-gpt-partition-pv-lv-filesystem-growth,lvm-ext4-dos-partition-pv-lv-filesystem-growth,partition-recovery-gpt,partition-recovery-dos,lvm-metadata-recovery cleanup=complete")

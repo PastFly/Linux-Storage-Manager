@@ -236,6 +236,14 @@ mountpoint. Low-level layout steps are generated automatically.
 - show an exact before/after topology preview before any write;
 - allow advanced users to inspect/override the automatically chosen route without requiring that knowledge for normal use.
 
+## Pre-production acceptance
+
+- [x] Provide a source-bound Wave 1 build/check/run command and rootless orchestration tests.
+- [x] Use the same three-repetition evidence runner in Ubuntu loop CI, with complete scenario markers, exact fstab restoration, resource checks and retained logs/reports.
+- [ ] Record manual Debian 12 and Rocky Linux 9 Wave 1 acceptance on disposable VMs.
+- [ ] Record at least one aarch64 VM acceptance run.
+- [ ] Inspect operator-facing selection on a dedicated additional virtual disk; destructive real-disk acceptance remains separate from the current read-only CLI.
+
 ## M3 — Advanced storage
 
 - LUKS growth/provisioning with explicit crypt-layer identity checks;
