@@ -4,6 +4,8 @@ import copy
 import importlib.util
 import io
 import json
+import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -616,6 +618,65 @@ class ReadinessTests(unittest.TestCase):
                 patch.object(M.time, "sleep"):
             self.assertEqual(M.ready_snapshot(runner, "/dev/loop987654", None), 2)
         self.assertEqual(runner.json.call_count, 3)
+
+
+class CleanupSignalTests(unittest.TestCase):
+    def test_signals_during_real_main_cleanup_are_deferred_and_handlers_restored(self):
+        # Only the process boundary is real. Runner and fixture creation are mocked;
+        # the actual main/finally and Python signal delivery are exercised.
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=signum), tempfile.TemporaryDirectory() as directory:
+                completed = Path(directory) / 'cleanup-completed'
+                script = r"""
+import importlib.util, pathlib, signal, sys, time
+from unittest.mock import Mock, patch
+spec = importlib.util.spec_from_file_location('matrix_signal_test', sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = m
+spec.loader.exec_module(m)
+handlers = {}
+def fail_loop(*args, **kwargs):
+    handlers.update({s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)})
+    raise m.SafetyError('rootless injected fixture failure')
+def cleanup(self):
+    print('CLEANUP_STARTED', flush=True)
+    sys.stdin.readline()
+    time.sleep(.05)
+    pathlib.Path(sys.argv[2]).write_text('cleanup completed')
+with patch.object(m.os, 'geteuid', return_value=0), patch.object(m, 'Runner', Mock()), \
+     patch.object(m.Resources, 'create_loop', fail_loop), patch.object(m.Resources, 'cleanup', cleanup), \
+     patch.object(m.tempfile, 'mkdtemp', return_value=sys.argv[3]):
+    result = m.main(['--allow-disposable-loop-tests', sys.executable, sys.executable])
+assert all(signal.getsignal(s) is handler for s, handler in handlers.items()), 'handlers not restored'
+print('HANDLERS_RESTORED', flush=True)
+sys.exit(result)
+"""
+                child = subprocess.Popen([sys.executable, '-I', '-c', script,
+                                          str(Path(__file__).with_name('loop_matrix.py')),
+                                          str(completed), directory], stdin=subprocess.PIPE,
+                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                try:
+                    lines = []
+                    for line in child.stdout:
+                        lines.append(line)
+                        if line.strip() == 'CLEANUP_STARTED':
+                            break
+                    self.assertTrue(lines and lines[-1].strip() == 'CLEANUP_STARTED', ''.join(lines))
+                    os.kill(child.pid, signum)
+                    remaining, _ = child.communicate('continue\n', timeout=5)
+                    output = ''.join(lines) + remaining
+                    self.assertTrue(completed.exists(), output)
+                    self.assertEqual(child.returncode, 1, output)
+                    self.assertIn('HANDLERS_RESTORED', output)
+                    self.assertNotIn('Traceback', output)
+                finally:
+                    if child.poll() is None:
+                        child.kill()  # This child only contains rootless mocks, never storage tools.
+                        child.wait()
+                    if child.stdin:
+                        child.stdin.close()
+                    if child.stdout:
+                        child.stdout.close()
 
 
 if __name__ == "__main__":

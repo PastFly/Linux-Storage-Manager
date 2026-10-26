@@ -1,46 +1,89 @@
 # Linux Storage Manager
 
-Linux Storage Manager is a safety-first terminal application for inspecting and managing Linux storage without requiring administrators to manually compose low-level storage commands.
+Linux Storage Manager is a native Rust terminal application for Linux storage
+administration. Its TUI works locally and over SSH; the CLI uses the same discovery
+and planning core. Administrators select a target and intent instead of composing
+low-level partition, LVM and filesystem commands themselves.
 
-The project has completed the read-only **M0 — Storage Discovery** and **M1A — Planning** baselines and is now in the guarded **M1B executor** phase. M1B0-M1B15 establish the exact handoff, host lock, durable journal, verified backups and preconditions, explicit approval, immutable semantic/native manifests, deterministic bindings, exact chained LVM previews, and native mutation-layer ordering. M1B16 adds a deliberately narrow, feature-gated `disposable-executor` for the first `LV -> filesystem` profile: exact non-shell argv, owned-loop proof, one-shot execution permits, durable `Executing -> Verifying` state, fresh post-LV rediscovery, and a consumed verified-boundary token before the filesystem step can be authorized. Default production builds still expose no normal apply path, and `MUTATION_ENABLED=false` remains unchanged.
+## Current status
 
-## Initial goals
+The normal `storagemgr` CLI and TUI are **read-only**: they discover storage, explain
+blockers and preview changes. There is no general-purpose `storagemgr apply` command.
 
-- Full-screen TUI suitable for local consoles and SSH sessions.
-- CLI for scripting and automation.
-- Capability-based discovery instead of hard-coding Linux distributions.
-- A normalized storage graph covering disks, partitions, LVM, filesystems, mounts, and swap.
-- Independent partition-table verification through read-only `sfdisk --json`.
-- Cross-source diagnostics before any future write planning.
-- Explicit planning and dry-run before any future write operation.
-- Metadata backup and post-operation verification for future mutating operations.
-- Conservative safety model: unsupported, incomplete, or contradictory storage layouts must fail closed.
+Implemented mutation paths are tested through separately enabled harnesses on
+disposable loop devices. They include fresh identity checks, explicit operation
+consent, pinned tools, durable journals, metadata backups, post-write verification
+and recovery boundaries. A passing harness is evidence for its exact scenario,
+not authorization to run on a production disk.
 
-## Current read-only CLI
+| Area | Available now |
+| --- | --- |
+| Discovery and planning | Block topology, GPT/DOS reconciliation, mounts, fstab, swap, LVM, target selection, Extend/Create previews |
+| Extend acceptance | LV/filesystem growth; single-PV partition → PV → LV → filesystem growth; ext4 online/offline; XFS online; sibling isolation |
+| Swap acceptance | DOS tail swap-partition migration to a swapfile, persistent configuration and old partition removal |
+| Blank-disk Create acceptance | GPT/DOS × ext4/XFS, mount, atomic fstab persistence, restart verification and exact fixture cleanup |
+| Existing GPT free-tail Create | Frozen intent, consent and runtime preflight; write/format execution and E2E acceptance remain pending |
+| General operator apply flow and advanced layouts | Pending; unsupported or contradictory topology is blocked |
+
+## Start testing
+
+Use a **disposable Linux VM** for Wave 1 storage tests. The full procedure, required
+tools and acceptance criteria are in [the pre-production test plan](docs/PREPROD_TEST_PLAN.md).
+
+From a clean checkout, with Rust **1.88.0**, Python **3.10+** and the required host
+storage tools installed:
+
+```bash
+# Build all six binaries and record their source and content identities.
+python3 -I tools/preprod.py build
+
+# Check prerequisites without launching storage tests.
+python3 -I tools/preprod.py check --expected-source "$(git rev-parse HEAD)"
+
+# Run only on a disposable VM. Three complete repetitions are required for PASS.
+sudo python3 -I tools/preprod.py run \
+  --expected-source "$(git rev-parse HEAD)" \
+  --allow-disposable-vm-tests \
+  --output /var/tmp/lsm-wave1-first-run
+```
+
+Choose a new output directory for each run. It contains `SUMMARY.txt`, `report.json`
+and the complete emitted harness output for each repetition. Missing scenario
+markers, a failed run, changed fstab, retained resources or missing final evidence
+prevent acceptance. The wrapper never attempts to repair or remove uncertain
+storage resources after a failure.
+
+GitHub CI runs this same Wave 1 command on its disposable Ubuntu 24.04 VM and
+uploads the evidence. Debian, Rocky and aarch64 VM acceptance require their own
+complete reports. Portable artifact checks cover static linkage and userland smoke
+tests separately; the downloadable `storagemgr` prototype remains read-only.
+
+## Read-only CLI
 
 ```text
-storagemgr                  # open the read-only TUI
-storagemgr tree             # normalized block topology
-storagemgr json             # normalized lsblk graph as JSON
-storagemgr snapshot         # complete multi-source host snapshot
-storagemgr partition-tables # read-only sfdisk partition tables
-storagemgr mounts           # active findmnt inventory
-storagemgr fstab            # parsed /etc/fstab
-storagemgr swap             # active swap inventory
-storagemgr lvm              # PV/VG/LV inventory
-storagemgr capabilities     # available host storage tools
-storagemgr diagnose         # topology and cross-source diagnostics
-storagemgr explain /        # read-only growth explanation for a target
-storagemgr plan targets      # selectable Grow targets and current blockers
+storagemgr                   # open the TUI
+storagemgr tree              # normalized block topology
+storagemgr snapshot          # complete multi-source host snapshot
+storagemgr capabilities      # available host tools
+storagemgr diagnose          # cross-source diagnostics
+storagemgr explain /         # growth explanation for a target
+storagemgr plan targets      # selectable targets and blockers
 storagemgr plan create-spaces # verified/blocked provisioning sources
 storagemgr plan extend / --max
 storagemgr plan create <id> --max --purpose filesystem --fs ext4
 ```
 
-## Current execution boundary
+Discovery works without root wherever the underlying tools permit it. Missing
+permissions or tools are reported rather than treated as a complete inventory.
 
-M1A plans and the normal CLI/TUI remain non-mutating. M1B1-M1B15 provide lock/revalidation/journal/backup foundations, exact approval, frozen execution intent, native validation, and chained LVM growth planning. M1B16 introduces a mutation-capable executor only behind the explicit `disposable-executor` Cargo feature and only for harness-owned loop-device evidence. It is bound to an exact durable execution ID, validated native manifest, owned loop association, and fresh target identity; after the LV command the journal must enter `Verifying`, fresh state must prove the exact expected LV size, and a non-cloneable verified boundary must be consumed before a fresh filesystem-growth permit can be minted. There is still no production `storagemgr apply` command, and default builds keep `MUTATION_ENABLED=false`.
+## Development
 
-Implementation language: **Rust**.
+```bash
+bash tools/validate.sh --source-only  # Python harness/runner tests; no disk writes
+bash tools/validate.sh                # also formatting, clippy, Rust tests and build
+```
 
-> This repository is under active development. The M1B16 disposable executor is a test-only safety boundary, not production authorization. Do not treat a preview, handoff, evidence bundle, `PreconditionsVerified` state, approval record, frozen/native manifest, disposable permit, or verified boundary as permission to modify production storage.
+See [AGENTS.md](AGENTS.md), [architecture](docs/ARCHITECTURE.md),
+[roadmap](docs/ROADMAP.md), [safety model](docs/SAFETY.md) and
+[current handoff](docs/HANDOFF.md). Support is determined from verified storage
+capabilities, not a promise to handle every layout on every Linux release.

@@ -13,6 +13,7 @@ command -v python3 >/dev/null || { echo 'Python 3.10+ is required for harness te
 python3 -I -c 'import sys; assert sys.version_info >= (3, 10), "Python 3.10+ required"'
 bash -n tools/validate.sh tests/integration/loop-matrix.sh
 python3 -I tests/integration/test_loop_matrix.py -v
+python3 -I tests/integration/test_preprod.py -v
 
 if [[ ${MODE} == --source-only ]]; then
   echo 'HARNESS_CHECKS_OK rust=not-run real-storage-integration=not-run'
