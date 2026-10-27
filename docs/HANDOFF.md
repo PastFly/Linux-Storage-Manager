@@ -65,7 +65,7 @@ read-only preview into a target-identity- and capabilities-bound M1B handoff. It
 prints a stable handoff identifier plus status and blockers. The JSON includes
 `mutation_enabled: false` and `owner_acceptance_required: true`; a status of
 `future_executor_gates_required` is **not** authorization to write to storage.
-Blocked previews return exit code 2 rather than producing a handoff. No JSON
+Blocked previews and all non-executable frozen handoffs return exit code 2;\na zero exit is reserved for a successful preview, not execution authorization. No JSON
 handoff should be passed to shell tools or treated as an executable command.
 
 The operator `apply` path remains absent. Implementing it requires a real host
