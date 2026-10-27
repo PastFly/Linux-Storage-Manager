@@ -824,3 +824,60 @@ mod tests {
         .is_err());
     }
 }
+
+#[cfg(test)]
+mod extend_handoff_cli_tests {
+    use super::*;
+
+    #[test]
+    fn freeze_handoff_accepts_max_and_json() {
+        let cli = Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "extend",
+            "/",
+            "--max",
+            "--freeze-handoff",
+            "--json",
+        ])
+        .expect("valid extend handoff invocation");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Plan {
+                command: PlanCommand::Extend {
+                    max: true,
+                    freeze_handoff: true,
+                    json: true,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn freeze_handoff_still_requires_growth_selection() {
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "extend",
+            "/",
+            "--freeze-handoff"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn extend_rejects_conflicting_growth_selection() {
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "extend",
+            "/",
+            "--max",
+            "--by",
+            "1GiB",
+            "--freeze-handoff"
+        ])
+        .is_err());
+    }
+}
