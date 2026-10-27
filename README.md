@@ -70,6 +70,7 @@ storagemgr explain /         # growth explanation for a target
 storagemgr plan targets      # selectable targets and blockers
 storagemgr plan create-spaces # verified/blocked provisioning sources
 storagemgr plan extend / --max
+storagemgr plan extend / --max --freeze-handoff --json # frozen, non-executable handoff
 storagemgr plan create <id> --max --purpose filesystem --fs ext4
 ```
 
