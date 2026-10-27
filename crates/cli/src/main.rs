@@ -856,9 +856,7 @@ mod extend_handoff_cli_tests {
     fn freeze_handoff_is_not_an_apply_command() {
         // A frozen handoff is a pending execution contract; this CLI has no
         // authorization to mutate storage or report successful execution.
-        assert!(Cli::try_parse_from([
-            "storagemgr", "apply", "extend", "/", "--max"
-        ]).is_err());
+        assert!(Cli::try_parse_from(["storagemgr", "apply", "extend", "/", "--max"]).is_err());
     }
 
     #[test]
