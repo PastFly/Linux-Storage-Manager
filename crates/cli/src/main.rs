@@ -8,7 +8,7 @@ use lsm_discovery::{
 };
 use lsm_planner::{
     analyze_layer_route, analyze_swap_migration_safety, analyze_swapfile_destination,
-    build_swap_replacement_intent, decide_filesystem_growth,
+    build_frozen_execution_handoff, build_swap_replacement_intent, decide_filesystem_growth,
     freeze_blank_disk_filesystem_create_intent, list_extend_targets,
     list_provisioning_opportunities, parse_growth_size, plan_create, plan_extend,
     CreatePartitionTablePolicy, CreatePurpose, CreateRequest, ExtendRequest,
@@ -78,6 +78,9 @@ enum PlanCommand {
         /// Emit structured JSON instead of the human-readable preview.
         #[arg(long)]
         json: bool,
+        /// Freeze a non-executable, source-bound handoff for future guarded execution.
+        #[arg(long)]
+        freeze_handoff: bool,
     },
     /// List filesystem targets that can be selected for growth planning.
     Targets {
@@ -239,6 +242,7 @@ fn run() -> Result<ExitCode> {
                     by,
                     max,
                     json,
+                    freeze_handoff,
                 },
         }) => {
             let growth = match (by, max) {
@@ -249,6 +253,33 @@ fn run() -> Result<ExitCode> {
             let snapshot = discover_snapshot()?;
             let capabilities = discover_capabilities();
             let plan = plan_extend(&snapshot, &capabilities, ExtendRequest { target, growth })?;
+            if freeze_handoff {
+                if plan.status() == PlanStatus::Blocked {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&plan)?);
+                    } else {
+                        print!("{}", plan.render_text());
+                    }
+                    return Ok(ExitCode::from(2));
+                }
+                let handoff = build_frozen_execution_handoff(&snapshot, &capabilities, &plan)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&handoff)?);
+                } else {
+                    println!("Handoff ID: {}", handoff.handoff_id());
+                    println!("Status: {:?}", handoff.status());
+                    println!("Mutation enabled: {}", handoff.mutation_enabled());
+                    println!("Target: {}", handoff.plan().target());
+                    for blocker in handoff.blockers() {
+                        println!("BLOCKED: {blocker}");
+                    }
+                }
+                return Ok(if handoff.blockers().is_empty() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(2)
+                });
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&plan)?);
             } else {
@@ -789,6 +820,58 @@ mod tests {
             "filesystem",
             "--fs",
             "ext4"
+        ])
+        .is_err());
+    }
+}
+
+#[cfg(test)]
+mod extend_handoff_cli_tests {
+    use super::*;
+
+    #[test]
+    fn freeze_handoff_accepts_max_and_json() {
+        let cli = Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "extend",
+            "/",
+            "--max",
+            "--freeze-handoff",
+            "--json",
+        ])
+        .expect("valid extend handoff invocation");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Plan {
+                command: PlanCommand::Extend {
+                    max: true,
+                    freeze_handoff: true,
+                    json: true,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn freeze_handoff_still_requires_growth_selection() {
+        assert!(
+            Cli::try_parse_from(["storagemgr", "plan", "extend", "/", "--freeze-handoff"]).is_err()
+        );
+    }
+
+    #[test]
+    fn extend_rejects_conflicting_growth_selection() {
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "plan",
+            "extend",
+            "/",
+            "--max",
+            "--by",
+            "1GiB",
+            "--freeze-handoff"
         ])
         .is_err());
     }
