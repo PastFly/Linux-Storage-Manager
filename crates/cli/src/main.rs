@@ -274,11 +274,9 @@ fn run() -> Result<ExitCode> {
                         println!("BLOCKED: {blocker}");
                     }
                 }
-                return Ok(if handoff.blockers().is_empty() {
-                    ExitCode::SUCCESS
-                } else {
-                    ExitCode::from(2)
-                });
+                // A frozen handoff never authorizes storage mutation. Automation must not
+                // mistake a well-formed, still-gated handoff for an executable operation.
+                return Ok(ExitCode::from(2));
             }
             if json {
                 println!("{}", serde_json::to_string_pretty(&plan)?);
@@ -852,6 +850,15 @@ mod extend_handoff_cli_tests {
                 }
             })
         ));
+    }
+
+    #[test]
+    fn freeze_handoff_is_not_an_apply_command() {
+        // A frozen handoff is a pending execution contract; this CLI has no
+        // authorization to mutate storage or report successful execution.
+        assert!(Cli::try_parse_from([
+            "storagemgr", "apply", "extend", "/", "--max"
+        ]).is_err());
     }
 
     #[test]
