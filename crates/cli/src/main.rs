@@ -9,9 +9,10 @@ use lsm_discovery::{
 use lsm_planner::{
     analyze_layer_route, analyze_swap_migration_safety, analyze_swapfile_destination,
     build_frozen_execution_handoff, build_swap_replacement_intent, decide_filesystem_growth,
-    freeze_blank_disk_filesystem_create_intent, list_extend_targets, list_provisioning_opportunities,
-    parse_growth_size, plan_create, plan_extend, CreatePartitionTablePolicy, CreatePurpose,
-    CreateRequest, ExtendRequest, FilesystemDecisionState, Growth, PlanStatus,
+    freeze_blank_disk_filesystem_create_intent, list_extend_targets,
+    list_provisioning_opportunities, parse_growth_size, plan_create, plan_extend,
+    CreatePartitionTablePolicy, CreatePurpose, CreateRequest, ExtendRequest,
+    FilesystemDecisionState, Growth, PlanStatus,
 };
 use std::process::ExitCode;
 
@@ -855,14 +856,9 @@ mod extend_handoff_cli_tests {
 
     #[test]
     fn freeze_handoff_still_requires_growth_selection() {
-        assert!(Cli::try_parse_from([
-            "storagemgr",
-            "plan",
-            "extend",
-            "/",
-            "--freeze-handoff"
-        ])
-        .is_err());
+        assert!(
+            Cli::try_parse_from(["storagemgr", "plan", "extend", "/", "--freeze-handoff"]).is_err()
+        );
     }
 
     #[test]
