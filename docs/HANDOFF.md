@@ -57,3 +57,19 @@ and destructive sentinel-preservation acceptance exist.
 
 `docs/M1B_HANDOFF.md` is historical implementation detail. Do not restart at its
 older M1B checkpoint or repeat already merged milestones.
+
+## Operator-facing frozen Extend handoff
+
+`storagemgr plan extend TARGET --max --freeze-handoff [--json]` freezes the current
+read-only preview into a target-identity- and capabilities-bound M1B handoff. It
+prints a stable handoff identifier plus status and blockers. The JSON includes
+`mutation_enabled: false` and `owner_acceptance_required: true`; a status of
+`future_executor_gates_required` is **not** authorization to write to storage.
+Blocked previews return exit code 2 rather than producing a handoff. No JSON
+handoff should be passed to shell tools or treated as an executable command.
+
+The operator `apply` path remains absent. Implementing it requires a real host
+exclusive lock, fresh-state revalidation, pinned trusted tools, exact consent,
+durable backup/journal, guarded mutation with verification after every irreversible
+boundary and fail-closed recovery. Keep it out of portable read-only builds until
+these gates are end-to-end connected and tested on disposable devices.
