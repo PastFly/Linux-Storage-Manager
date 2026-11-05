@@ -243,6 +243,7 @@ fn run() -> Result<ExitCode> {
             println!("{}", serde_json::to_string_pretty(&snapshot.diagnostics)?);
         }
         Some(Command::Operations { json }) => {
+            use std::os::unix::ffi::OsStrExt;
             let diagnostics =
                 read_operation_diagnostics(&lsm_executor::DurableJournalStore::default())?;
             if json {
@@ -252,13 +253,15 @@ fn run() -> Result<ExitCode> {
                         "journal_directory_exists": diagnostics.journal_directory_exists,
                         "unfinished_extend_journals": diagnostics.unfinished,
                         "unclassified_journal_entries": diagnostics.unclassified_journals,
-                        "unclassified_runtime_evidence": diagnostics.unclassified,
+                        "unclassified_runtime_evidence": diagnostics.unclassified.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+                        "unclassified_runtime_evidence_bytes_hex": diagnostics.unclassified.iter().map(|path| path.as_os_str().as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>()).collect::<Vec<_>>(),
+                        "snapshot_may_be_changing": true,
                         "reconciliation_required": diagnostics.reconciliation_required,
                         "execution_authorized": false,
                     }))?
                 );
             } else {
-                println!("Operation evidence (read-only; not an authorization to write):");
+                println!("Operation evidence (read-only, unlocked snapshot; it may be changing and does not authorize writes):");
                 if !diagnostics.journal_directory_exists {
                     println!("Extend journal directory has not been initialized.");
                 }
@@ -272,15 +275,18 @@ fn run() -> Result<ExitCode> {
                     );
                 }
                 for path in &diagnostics.unclassified {
-                    println!("Unclassified runtime evidence: {}", path.display());
+                    println!("Unclassified runtime evidence: {:?}", path.as_os_str());
                 }
                 for entry in &diagnostics.unclassified_journals {
-                    println!("Unclassified journal evidence: {}", entry.path.display());
+                    println!(
+                        "Unclassified journal evidence: {:?}",
+                        entry.path.as_os_str()
+                    );
                     if let Some(journal) = &entry.staged_journal {
                         println!("  Staged journal {}: target {}, phase {:?}, mutation may have started: {}", journal.journal_id, journal.target, journal.phase, journal.mutation_may_have_started);
                     }
                     if let Some(problem) = &entry.problem {
-                        println!("  Could not validate evidence: {problem}");
+                        println!("  Could not validate evidence: {problem:?}");
                     }
                 }
                 if diagnostics.reconciliation_required {
