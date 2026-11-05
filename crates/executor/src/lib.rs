@@ -123,8 +123,9 @@ pub use backup_capture::{
     revalidate_metadata_backup_receipt_at_disposable_root,
 };
 pub use backup_manifest::{
-    build_metadata_backup_manifest, BackupCommandSpec, BackupExpectedIdentity, BackupManifestError,
-    MetadataBackupKind, MetadataBackupManifest, MetadataBackupRequirement, BACKUP_DIRECTORY,
+    build_metadata_backup_manifest, build_metadata_backup_manifest_for_session, BackupCommandSpec,
+    BackupExpectedIdentity, BackupManifestError, MetadataBackupKind, MetadataBackupManifest,
+    MetadataBackupRequirement, BACKUP_DIRECTORY,
 };
 pub use disposable_argv::{
     compile_disposable_lvm_growth_commands, DisposableArgvError, DisposableCommandPlan,

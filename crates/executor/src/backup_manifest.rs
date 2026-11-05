@@ -73,6 +73,8 @@ pub enum BackupManifestError {
     MutationEnabled,
     #[error("owner-acceptance gate unexpectedly appears satisfied")]
     OwnerAcceptanceBypassed,
+    #[error("attempt-specific backup requires a durably journaled, revalidated session")]
+    SessionNotRevalidated,
     #[error("frozen handoff identity is invalid: {0}")]
     InvalidIdentity(String),
     #[error("partition-table backup step has no exact target identity for {0}")]
@@ -128,6 +130,32 @@ impl MetadataBackupManifest {
 pub fn build_metadata_backup_manifest(
     handoff: &FrozenExecutionHandoff,
 ) -> Result<MetadataBackupManifest, BackupManifestError> {
+    build_metadata_backup_manifest_at(
+        handoff,
+        Path::new(BACKUP_DIRECTORY).join(handoff.handoff_id()),
+    )
+}
+
+pub fn build_metadata_backup_manifest_for_session(
+    session: &crate::LockedExecutionSession<'_>,
+) -> Result<MetadataBackupManifest, BackupManifestError> {
+    if !session.durable_journal_enabled()
+        || session.journal().phase != lsm_planner::JournalPhase::IdentityRevalidated
+    {
+        return Err(BackupManifestError::SessionNotRevalidated);
+    }
+    validate_digest(&session.journal().journal_id, "journal ID")?;
+    let handoff = session.handoff();
+    let path = Path::new(BACKUP_DIRECTORY)
+        .join(handoff.handoff_id())
+        .join(&session.journal().journal_id);
+    build_metadata_backup_manifest_at(handoff, path)
+}
+
+fn build_metadata_backup_manifest_at(
+    handoff: &FrozenExecutionHandoff,
+    artifact_directory: PathBuf,
+) -> Result<MetadataBackupManifest, BackupManifestError> {
     if handoff.status() == ExecutionHandoffStatus::Blocked {
         return Err(BackupManifestError::HandoffBlocked);
     }
@@ -144,10 +172,7 @@ pub fn build_metadata_backup_manifest(
         "target manifest digest",
     )?;
 
-    let artifact_directory = Path::new(BACKUP_DIRECTORY)
-        .join(handoff.handoff_id())
-        .to_string_lossy()
-        .into_owned();
+    let artifact_directory = artifact_directory.to_string_lossy().into_owned();
     let mut requirements = Vec::new();
     let mut seen = BTreeSet::new();
 

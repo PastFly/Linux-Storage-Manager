@@ -82,9 +82,9 @@ impl DurableJournalStore {
 
     /// Inspect all durable journals. Unexpected files or invalid records are errors:
     /// ignoring either could hide evidence of an interrupted storage mutation.
-    pub fn unfinished(&self) -> Result<Vec<OperationJournal>, JournalStoreError> {
+    pub fn all(&self) -> Result<Vec<OperationJournal>, JournalStoreError> {
         ensure_secure_directory(&self.root, false)?;
-        let mut unfinished = Vec::new();
+        let mut journals = Vec::new();
         let entries = fs::read_dir(&self.root).map_err(|source| io_error(&self.root, source))?;
         for entry in entries {
             let entry = entry.map_err(|source| io_error(&self.root, source))?;
@@ -98,15 +98,23 @@ impl DurableJournalStore {
                 ))
             })?;
             let journal = self.load(id)?;
-            if !matches!(
-                journal.phase,
-                JournalPhase::Completed | JournalPhase::Aborted
-            ) {
-                unfinished.push(journal);
-            }
+            journals.push(journal);
         }
-        unfinished.sort_by(|a, b| a.journal_id.cmp(&b.journal_id));
-        Ok(unfinished)
+        journals.sort_by(|a, b| a.journal_id.cmp(&b.journal_id));
+        Ok(journals)
+    }
+
+    pub fn unfinished(&self) -> Result<Vec<OperationJournal>, JournalStoreError> {
+        Ok(self
+            .all()?
+            .into_iter()
+            .filter(|journal| {
+                !matches!(
+                    journal.phase,
+                    JournalPhase::Completed | JournalPhase::Aborted
+                )
+            })
+            .collect())
     }
 
     /// Enumerate evidence owned by other runtime journal formats. Until their

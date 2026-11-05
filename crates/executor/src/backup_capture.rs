@@ -35,6 +35,8 @@ pub struct MetadataBackupReceipt {
     handoff_id: String,
     plan_id: String,
     target_manifest_digest: String,
+    session_id: String,
+    journal_id: String,
     mutation_enabled: bool,
     artifacts: Vec<BackupArtifactReceipt>,
 }
@@ -76,6 +78,8 @@ pub struct BackupReceiptRevalidation {
     handoff_id: String,
     plan_id: String,
     target_manifest_digest: String,
+    session_id: String,
+    journal_id: String,
     matches: bool,
     blockers: Vec<String>,
 }
@@ -99,6 +103,14 @@ impl BackupReceiptRevalidation {
 
     pub fn target_manifest_digest(&self) -> &str {
         &self.target_manifest_digest
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub fn journal_id(&self) -> &str {
+        &self.journal_id
     }
 
     pub fn matches(&self) -> bool {
@@ -274,7 +286,8 @@ fn capture_with_runner(
 
     let expected_root = Path::new(manifest.artifact_directory());
     let production_root = Path::new(crate::BACKUP_DIRECTORY).join(session.handoff().handoff_id());
-    if expected_root != production_root {
+    let attempt_root = production_root.join(&session.journal().journal_id);
+    if expected_root != production_root && expected_root != attempt_root {
         return Err(BackupCaptureError::ArtifactDirectoryMismatch);
     }
 
@@ -322,6 +335,8 @@ fn capture_with_runner(
         manifest.handoff_id(),
         manifest.plan_id(),
         manifest.target_manifest_digest(),
+        session.session_id(),
+        &session.journal().journal_id,
         false,
         &receipts,
     ))?;
@@ -333,6 +348,8 @@ fn capture_with_runner(
         handoff_id: manifest.handoff_id().to_owned(),
         plan_id: manifest.plan_id().to_owned(),
         target_manifest_digest: manifest.target_manifest_digest().to_owned(),
+        session_id: session.session_id().to_owned(),
+        journal_id: session.journal().journal_id.clone(),
         mutation_enabled: false,
         artifacts: receipts,
     })
@@ -361,7 +378,10 @@ fn revalidate_receipt_at_root(
     }
 
     let production_root = Path::new(crate::BACKUP_DIRECTORY).join(manifest.handoff_id());
-    if Path::new(manifest.artifact_directory()) != production_root {
+    let attempt_root = production_root.join(&receipt.journal_id);
+    if Path::new(manifest.artifact_directory()) != production_root
+        && Path::new(manifest.artifact_directory()) != attempt_root
+    {
         blockers.push("backup artifact directory does not match the frozen handoff".to_owned());
     }
 
@@ -371,6 +391,8 @@ fn revalidate_receipt_at_root(
         manifest.handoff_id(),
         manifest.plan_id(),
         manifest.target_manifest_digest(),
+        &receipt.session_id,
+        &receipt.journal_id,
         false,
         &receipt.artifacts,
     ))?;
@@ -480,6 +502,8 @@ fn revalidate_receipt_at_root(
         handoff_id: manifest.handoff_id().to_owned(),
         plan_id: manifest.plan_id().to_owned(),
         target_manifest_digest: manifest.target_manifest_digest().to_owned(),
+        session_id: receipt.session_id.clone(),
+        journal_id: receipt.journal_id.clone(),
         matches: blockers.is_empty(),
         blockers,
     })
@@ -688,6 +712,7 @@ fn io_error(path: &Path, source: io::Error) -> BackupCaptureError {
 
 #[cfg(test)]
 pub(crate) fn test_backup_receipt_revalidation(
+    session: &LockedExecutionSession<'_>,
     handoff_id: &str,
     plan_id: &str,
     target_manifest_digest: &str,
@@ -700,6 +725,8 @@ pub(crate) fn test_backup_receipt_revalidation(
         handoff_id: handoff_id.to_owned(),
         plan_id: plan_id.to_owned(),
         target_manifest_digest: target_manifest_digest.to_owned(),
+        session_id: session.session_id().to_owned(),
+        journal_id: session.journal().journal_id.clone(),
         matches,
         blockers,
     }

@@ -177,11 +177,11 @@ impl<'a> LockedExecutionSession<'a> {
             if let Some(path) = store.unclassified_runtime_evidence()?.into_iter().next() {
                 return Err(LockedSessionError::UnclassifiedRuntimeJournal(path));
             }
-            if let Some(previous) = store
-                .unfinished()?
-                .into_iter()
-                .find(|journal| journal.mutation_may_have_started)
-            {
+            if let Some(previous) = store.all()?.into_iter().find(|journal| {
+                journal.mutation_may_have_started
+                    && (journal.phase != JournalPhase::Completed
+                        || journal.plan_id == handoff.plan().plan_id())
+            }) {
                 return Err(LockedSessionError::UnfinishedMutation {
                     journal_id: previous.journal_id,
                     target: previous.target,
@@ -390,6 +390,16 @@ fn next_attempt_id(
 ) -> Result<String, JournalStoreError> {
     // Called only while the host lock is held. Preserve every prior attempt and
     // permit a new ID only when the matching previous attempt was safely aborted.
+    let history = store.all()?;
+    let mut related = history
+        .iter()
+        .filter(|journal| {
+            journal.plan_id == proposed.plan_id
+                && journal.target == proposed.target
+                && journal.baseline_manifest_digest == proposed.baseline_manifest_digest
+        })
+        .map(|journal| journal.journal_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
     for attempt in 0_u64..1024 {
         let candidate = if attempt == 0 {
             proposed.journal_id.clone()
@@ -400,16 +410,26 @@ fn next_attempt_id(
             hash.update(attempt.to_le_bytes());
             format!("{:x}", hash.finalize())
         };
-        match store.load(&candidate) {
-            Err(JournalStoreError::NotFound(_)) => return Ok(candidate),
-            Err(error) => return Err(error),
-            Ok(previous)
+        match history
+            .iter()
+            .find(|journal| journal.journal_id == candidate)
+        {
+            None if related.is_empty() => return Ok(candidate),
+            None => {
+                return Err(JournalStoreError::InvalidRecord(
+                    "journal attempt history has a gap or unrecognized entry".to_owned(),
+                ))
+            }
+            Some(previous)
                 if previous.phase == JournalPhase::Aborted
                     && !previous.mutation_may_have_started
                     && previous.plan_id == proposed.plan_id
                     && previous.target == proposed.target
-                    && previous.baseline_manifest_digest == proposed.baseline_manifest_digest => {}
-            Ok(_) => return Err(JournalStoreError::AlreadyExists(candidate)),
+                    && previous.baseline_manifest_digest == proposed.baseline_manifest_digest =>
+            {
+                related.remove(&candidate);
+            }
+            Some(_) => return Err(JournalStoreError::AlreadyExists(candidate)),
         }
     }
     Err(JournalStoreError::InvalidRecord(
@@ -566,6 +586,7 @@ mod tests {
         backup_blockers: Vec<String>,
     ) -> crate::PreMutationEvidenceBundle {
         let backup = crate::backup_capture::test_backup_receipt_revalidation(
+            session,
             handoff.handoff_id(),
             handoff.plan().plan_id(),
             &handoff.target_identity().manifest_digest,
@@ -943,8 +964,10 @@ mod tests {
         let path = lock_path();
         let root = journal_root("reconciled-new-attempt");
         let store = DurableJournalStore::at(&root);
-        let first =
+        let mut first =
             LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        first.revalidate(&snapshot, &capabilities).unwrap();
+        let first_backup = crate::build_metadata_backup_manifest_for_session(&first).unwrap();
         let mut abandoned = first.journal().clone();
         drop(first);
         abandoned
@@ -953,12 +976,60 @@ mod tests {
             })
             .unwrap();
         store.persist(&abandoned).unwrap();
-        let second =
+        let mut second =
             LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
         assert_ne!(second.journal().journal_id, abandoned.journal_id);
         assert_eq!(store.load(&abandoned.journal_id).unwrap(), abandoned);
         assert!(!second.journal().mutation_may_have_started);
+        second.revalidate(&snapshot, &capabilities).unwrap();
+        let second_backup = crate::build_metadata_backup_manifest_for_session(&second).unwrap();
+        assert_ne!(
+            first_backup.artifact_directory(),
+            second_backup.artifact_directory()
+        );
         drop(second);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_earlier_attempt_blocks_new_session() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("missing-earlier-attempt");
+        let store = DurableJournalStore::at(&root);
+        let first =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let mut first_journal = first.journal().clone();
+        drop(first);
+        first_journal
+            .apply(JournalTransition::Abort {
+                reason: "confirmed abandoned",
+            })
+            .unwrap();
+        store.persist(&first_journal).unwrap();
+        let second =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let mut second_journal = second.journal().clone();
+        drop(second);
+        second_journal
+            .apply(JournalTransition::Abort {
+                reason: "confirmed abandoned",
+            })
+            .unwrap();
+        store.persist(&second_journal).unwrap();
+        std::fs::remove_file(root.join(format!("{}.json", first_journal.journal_id))).unwrap();
+        assert!(matches!(
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store),
+            Err(LockedSessionError::DurableJournal(
+                JournalStoreError::InvalidRecord(_)
+            ))
+        ));
+        assert_eq!(
+            store.load(&second_journal.journal_id).unwrap(),
+            second_journal
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
         let _ = std::fs::remove_dir_all(root);
     }
