@@ -677,7 +677,15 @@ fn run() -> Result<ExitCode> {
         Some(Command::Tui) | None => {
             let snapshot = discover_snapshot()?;
             let capabilities = discover_capabilities();
-            lsm_tui::run(snapshot, capabilities)?;
+            if lsm_executor::effective_user_is_root() {
+                lsm_tui::run_with_runner(
+                    snapshot,
+                    capabilities,
+                    &lsm_executor::TrustedDiscoveryRunner,
+                )?;
+            } else {
+                lsm_tui::run(snapshot, capabilities)?;
+            }
         }
     }
     Ok(ExitCode::SUCCESS)

@@ -12,7 +12,7 @@ use lsm_core::{
     BlockDevice, DiagnosticSeverity, ExtendAnalysis, ExtendabilityStatus, HostCapabilities,
     HostSnapshot, NodeKind, StorageGraph,
 };
-use lsm_discovery::{analyze_extendability, discover_capabilities, discover_snapshot};
+use lsm_discovery::{analyze_extendability, DiscoveryCommandRunner, SystemDiscoveryRunner};
 use lsm_planner::{
     analyze_layer_route, analyze_layout_opportunity, analyze_lvm_underlying_growth,
     decide_filesystem_growth, list_provisioning_opportunities, plan_create, plan_extend,
@@ -282,13 +282,21 @@ struct DeviceRow<'a> {
 }
 
 pub fn run(snapshot: HostSnapshot, capabilities: HostCapabilities) -> Result<()> {
+    run_with_runner(snapshot, capabilities, &SystemDiscoveryRunner)
+}
+
+pub fn run_with_runner(
+    snapshot: HostSnapshot,
+    capabilities: HostCapabilities,
+    runner: &dyn DiscoveryCommandRunner,
+) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let result = event_loop(&mut terminal, snapshot, capabilities);
+    let result = event_loop(&mut terminal, snapshot, capabilities, runner);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -301,6 +309,7 @@ fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     mut snapshot: HostSnapshot,
     mut capabilities: HostCapabilities,
+    runner: &dyn DiscoveryCommandRunner,
 ) -> Result<()> {
     let mut state = AppState::new(&snapshot);
     let mut refresh_status: Option<String> = None;
@@ -320,27 +329,33 @@ fn event_loop(
             if let Event::Key(key) = event::read()? {
                 match handle_key_event(&mut state, &snapshot, key) {
                     LoopControl::Quit => return Ok(()),
-                    LoopControl::Refresh => match discover_snapshot() {
-                        Ok(fresh) => {
-                            snapshot = fresh;
-                            capabilities = discover_capabilities();
-                            state.content_scroll = 0;
-                            state.plan_growth_index = 0;
-                            state.clamp_device_selection(&snapshot);
-                            refresh_status = Some("Refreshed".to_owned());
+                    LoopControl::Refresh => {
+                        match lsm_discovery::discover_snapshot_with_runner(runner) {
+                            Ok(fresh) => {
+                                snapshot = fresh;
+                                capabilities =
+                                    lsm_discovery::discover_capabilities_with_runner(runner);
+                                state.content_scroll = 0;
+                                state.plan_growth_index = 0;
+                                state.clamp_device_selection(&snapshot);
+                                refresh_status = Some("Refreshed".to_owned());
+                            }
+                            Err(error) => {
+                                refresh_status = Some(format!("Refresh failed: {error}"));
+                            }
                         }
-                        Err(error) => {
-                            refresh_status = Some(format!("Refresh failed: {error}"));
-                        }
-                    },
+                    }
                     LoopControl::KernelRescan => {
                         match kernel_rescan_selected_disk(&snapshot, state) {
                             Ok(kernel_name) => {
                                 std::thread::sleep(Duration::from_millis(250));
-                                match discover_snapshot() {
+                                match lsm_discovery::discover_snapshot_with_runner(runner) {
                                     Ok(fresh) => {
                                         snapshot = fresh;
-                                        capabilities = discover_capabilities();
+                                        capabilities =
+                                            lsm_discovery::discover_capabilities_with_runner(
+                                                runner,
+                                            );
                                         state.content_scroll = 0;
                                         state.plan_growth_index = 0;
                                         state.clamp_device_selection(&snapshot);

@@ -7,7 +7,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use lsm_core::{BlockDevice, HostSnapshot};
-use lsm_discovery::discover_snapshot;
+use lsm_executor::discover_snapshot_trusted as discover_snapshot;
 use lsm_executor::{
     build_production_create_mount_runtime_launch_spec, build_production_create_runtime_launch_spec,
     capture_disposable_loop_ownership, execute_production_create_filesystem_crossing,

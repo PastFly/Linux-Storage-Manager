@@ -519,7 +519,9 @@ pub use production_verified_step::{
     ProductionVerifiedMutationStepError,
 };
 #[cfg(feature = "trusted-discovery")]
-pub use trusted_discovery::TrustedDiscoveryRunner;
+pub use trusted_discovery::{
+    discover_capabilities_trusted, discover_snapshot_trusted, TrustedDiscoveryRunner,
+};
 
 use std::fs::{self, File, OpenOptions};
 use std::io;

@@ -4,8 +4,8 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::discover_snapshot_trusted as discover_snapshot;
 use lsm_core::{HostSnapshot, PartitionRecord};
-use lsm_discovery::discover_snapshot;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;

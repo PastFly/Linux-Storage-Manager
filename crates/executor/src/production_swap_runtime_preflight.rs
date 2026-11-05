@@ -1,9 +1,9 @@
+use crate::discover_snapshot_trusted as discover_snapshot;
 use lsm_core::{
     FilesystemSpaceEvidence, HibernationResumeEvidence, HostSnapshot, PathOccupancyEvidence,
 };
 use lsm_discovery::{
     discover_filesystem_space, discover_hibernation_resume_evidence, discover_path_occupancy,
-    discover_snapshot,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};

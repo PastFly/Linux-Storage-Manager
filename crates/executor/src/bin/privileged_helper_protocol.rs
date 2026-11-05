@@ -1,7 +1,7 @@
 use std::io::{self, Read};
 use std::process::ExitCode;
 
-use lsm_discovery::discover_snapshot;
+use lsm_executor::discover_snapshot_trusted as discover_snapshot;
 use lsm_executor::{
     compile_privileged_helper_command, decode_privileged_helper_request,
     prepare_privileged_invocation, resolve_privileged_command_tools,

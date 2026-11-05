@@ -10,6 +10,15 @@ use crate::{BackupCaptureError, PrivilegedProgram, TrustedToolError};
 /// An allowlisted read-only discovery runner for privileged operation.
 pub struct TrustedDiscoveryRunner;
 
+pub fn discover_snapshot_trusted(
+) -> Result<lsm_core::HostSnapshot, lsm_discovery::SnapshotDiscoveryError> {
+    lsm_discovery::discover_snapshot_with_runner(&TrustedDiscoveryRunner)
+}
+
+pub fn discover_capabilities_trusted() -> lsm_core::HostCapabilities {
+    lsm_discovery::discover_capabilities_with_runner(&TrustedDiscoveryRunner)
+}
+
 fn program(name: &str) -> Option<PrivilegedProgram> {
     use PrivilegedProgram::*;
     Some(match name {
@@ -38,7 +47,9 @@ fn program(name: &str) -> Option<PrivilegedProgram> {
         "e2fsck" => E2fsck,
         "tune2fs" => Tune2fs,
         "xfs_growfs" => XfsGrowfs,
-        "xfs_info" => XfsInfo,
+        // xfs_info is a shell script on Ubuntu; use its read-only compiled
+        // geometry provider so both the executable and its arguments are pinned.
+        "xfs_info" => XfsSpaceman,
         "xfs_scrub" => XfsScrub,
         "xfs_repair" => XfsRepair,
         "mkfs.ext4" => MkfsExt4,
@@ -95,21 +106,22 @@ impl DiscoveryCommandRunner for TrustedDiscoveryRunner {
         let program = program(name).ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotFound, "unsupported discovery utility")
         })?;
-        let result = crate::backup_capture::run_trusted_read_only_tool(
-            program,
-            args.iter().map(|arg| (*arg).to_owned()).collect(),
-        )
-        .map_err(|error| {
-            let kind = if matches!(
-                error,
-                BackupCaptureError::TrustedTool(TrustedToolError::NotFound(_))
-            ) {
-                io::ErrorKind::NotFound
-            } else {
-                io::ErrorKind::PermissionDenied
-            };
-            io::Error::new(kind, error.to_string())
-        })?;
+        let mut pinned_args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+        if name == "xfs_info" {
+            pinned_args.splice(0..0, ["-c".to_owned(), "info".to_owned()]);
+        }
+        let result = crate::backup_capture::run_trusted_read_only_tool(program, pinned_args)
+            .map_err(|error| {
+                let kind = if matches!(
+                    error,
+                    BackupCaptureError::TrustedTool(TrustedToolError::NotFound(_))
+                ) {
+                    io::ErrorKind::NotFound
+                } else {
+                    io::ErrorKind::PermissionDenied
+                };
+                io::Error::new(kind, error.to_string())
+            })?;
         if result.stdout_truncated || result.stderr_truncated {
             return Err(io::Error::other(
                 "trusted discovery output exceeded the capture limit",

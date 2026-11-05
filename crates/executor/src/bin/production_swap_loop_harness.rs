@@ -1,3 +1,7 @@
+use lsm_executor::{
+    discover_capabilities_trusted as discover_capabilities,
+    discover_snapshot_trusted as discover_snapshot,
+};
 use std::error::Error;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -6,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use lsm_core::{FstabEntry, HibernationResumeEvidence};
 use lsm_discovery::{
-    discover_capabilities, discover_filesystem_space, discover_hibernation_resume_evidence,
-    discover_path_occupancy, discover_snapshot, discover_swaps,
+    discover_filesystem_space, discover_hibernation_resume_evidence, discover_path_occupancy,
+    discover_swaps,
 };
 use lsm_executor::{
     build_production_swap_partition_removal_launch_spec, build_production_swap_runtime_launch_spec,

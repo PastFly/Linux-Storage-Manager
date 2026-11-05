@@ -2,8 +2,8 @@ use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 
+use crate::discover_snapshot_trusted as discover_snapshot;
 use lsm_core::{BlockDevice, CollectorState, HostSnapshot, NodeKind};
-use lsm_discovery::discover_snapshot;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;

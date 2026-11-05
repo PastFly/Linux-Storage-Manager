@@ -5,7 +5,6 @@ use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use lsm_discovery::{discover_capabilities, discover_snapshot};
 use lsm_executor::{
     approve_exact_plan, build_metadata_backup_manifest, build_pre_mutation_evidence,
     build_pre_mutation_evidence_with_filesystem_health, capture_disposable_loop_ownership,
@@ -22,6 +21,10 @@ use lsm_executor::{
     FrozenIntentRole, LockedExecutionSession, LockedRevalidationStatus, PreMutationEvidenceStatus,
     PrivilegedDurableDisposition, ProductionMutationConsentDocument,
     PRODUCTION_MUTATION_CONSENT_PATH, PRODUCTION_MUTATION_CONSENT_PHRASE,
+};
+use lsm_executor::{
+    discover_capabilities_trusted as discover_capabilities,
+    discover_snapshot_trusted as discover_snapshot,
 };
 use lsm_planner::{
     build_execution_start_binding, build_frozen_execution_handoff, capture_target_identity,

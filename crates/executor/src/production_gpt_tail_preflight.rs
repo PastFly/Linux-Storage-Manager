@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
+use crate::discover_snapshot_trusted as discover_snapshot;
 use lsm_core::{
     BlockDevice, CollectorState, DiagnosticSeverity, HostSnapshot, NodeKind, PartitionTable,
 };
-use lsm_discovery::discover_snapshot;
 use lsm_planner::{list_provisioning_opportunities, ProvisioningSpaceKind};
 use serde::Serialize;
 use sha2::{Digest, Sha256};

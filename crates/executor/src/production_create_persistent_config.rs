@@ -3,8 +3,9 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use crate::discover_snapshot_trusted as discover_snapshot;
 use lsm_core::FstabEntry;
-use lsm_discovery::{discover_snapshot, parse_fstab};
+use lsm_discovery::parse_fstab;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;

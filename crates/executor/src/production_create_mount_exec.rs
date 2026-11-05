@@ -1,8 +1,8 @@
 use std::thread;
 use std::time::Duration;
 
+use crate::discover_snapshot_trusted as discover_snapshot;
 use lsm_core::{BlockDevice, CollectorState, HostSnapshot, NodeKind};
-use lsm_discovery::discover_snapshot;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
