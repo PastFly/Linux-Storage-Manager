@@ -272,7 +272,19 @@ impl DirectoryWatch {
         loop {
             match self.file.read(&mut bytes) {
                 Ok(0) => return Err(JournalStoreError::ChangedDuringInspection),
-                Ok(_) => return Err(JournalStoreError::ChangedDuringInspection),
+                Ok(count) => {
+                    #[cfg(test)]
+                    if count >= 16 {
+                        let mask = u32::from_ne_bytes(bytes[4..8].try_into().unwrap());
+                        eprintln!(
+                            "journal directory event: path={:?} mask={mask:#x}",
+                            self.path
+                        );
+                    }
+                    #[cfg(not(test))]
+                    let _ = count;
+                    return Err(JournalStoreError::ChangedDuringInspection);
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(error) => return Err(failure(&self.path, error)),
