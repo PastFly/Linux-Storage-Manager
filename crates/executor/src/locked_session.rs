@@ -69,6 +69,8 @@ pub enum LockedSessionError {
         target: String,
         phase: JournalPhase,
     },
+    #[error("runtime journal evidence requires reconciliation before mutation: {0}")]
+    UnclassifiedRuntimeJournal(std::path::PathBuf),
 }
 
 impl<'a> LockedExecutionSession<'a> {
@@ -172,6 +174,9 @@ impl<'a> LockedExecutionSession<'a> {
         // previous operation may have crossed a mutation boundary.
         if let Some(store) = journal_store {
             store.prepare_directory()?;
+            if let Some(path) = store.unclassified_runtime_evidence()?.into_iter().next() {
+                return Err(LockedSessionError::UnclassifiedRuntimeJournal(path));
+            }
             if let Some(previous) = store
                 .unfinished()?
                 .into_iter()
@@ -700,6 +705,33 @@ mod tests {
         assert_eq!(session.journal().phase, JournalPhase::IdentityRevalidated);
         drop(session);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn other_runtime_journal_evidence_blocks_new_extend_session() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        for name in [
+            "create-runtime",
+            "create-mount-runtime",
+            "create-persistent-config",
+            "swap-runtime",
+        ] {
+            let path = lock_path();
+            let root = journal_root("foreign-runtime-evidence");
+            let directory = root.join(name);
+            std::fs::create_dir_all(&directory).unwrap();
+            let evidence = directory.join(format!("{}.json", "a".repeat(64)));
+            std::fs::write(&evidence, b"retained evidence").unwrap();
+            let store = DurableJournalStore::at(root.join("journal"));
+            let result = LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store);
+            assert!(
+                matches!(result, Err(LockedSessionError::UnclassifiedRuntimeJournal(ref actual)) if actual == &evidence)
+            );
+            assert_eq!(std::fs::read(&evidence).unwrap(), b"retained evidence");
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     #[test]
