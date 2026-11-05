@@ -1,3 +1,76 @@
+use std::path::Path;
+
+use lsm_planner::{
+    JournalError, JournalPhase, JournalTransition, OperationJournal, HOST_STORAGE_LOCK_PATH,
+};
+use thiserror::Error;
+
+use crate::{DurableJournalStore, HostLockError, HostStorageLock, JournalStoreError};
+
+#[derive(Debug, Error)]
+pub enum ReconciliationError {
+    #[error("host storage lock acquisition failed: {0}")]
+    Lock(#[from] HostLockError),
+    #[error("journal access failed: {0}")]
+    Store(#[from] JournalStoreError),
+    #[error("journal transition failed: {0}")]
+    Journal(#[from] JournalError),
+    #[error("the exact journal-specific confirmation did not match")]
+    ConfirmationMismatch,
+    #[error("mutation may have started; manual investigation is required and this procedure cannot resolve it")]
+    AmbiguousMutation,
+    #[error("the journal is already terminal")]
+    Terminal,
+}
+
+/// Abort an abandoned journal only if its durable history proves no write began.
+/// Ambiguous operations remain blocked and are never retried by this procedure.
+pub fn reconcile_abandoned_prewrite(
+    store: &DurableJournalStore,
+    journal_id: &str,
+    confirmation: &str,
+) -> Result<OperationJournal, ReconciliationError> {
+    reconcile_prewrite_at(
+        store,
+        journal_id,
+        confirmation,
+        Path::new(HOST_STORAGE_LOCK_PATH),
+    )
+}
+
+fn reconcile_prewrite_at(
+    store: &DurableJournalStore,
+    journal_id: &str,
+    confirmation: &str,
+    lock_path: &Path,
+) -> Result<OperationJournal, ReconciliationError> {
+    let _lock = HostStorageLock::try_acquire_path(lock_path)?;
+    let mut journal = store.load(journal_id)?;
+    if confirmation != format!("ABORT {}", journal.journal_id) {
+        return Err(ReconciliationError::ConfirmationMismatch);
+    }
+    if journal.mutation_may_have_started
+        || matches!(
+            journal.phase,
+            JournalPhase::Executing | JournalPhase::Verifying | JournalPhase::RecoveryRequired
+        )
+    {
+        return Err(ReconciliationError::AmbiguousMutation);
+    }
+    if matches!(
+        journal.phase,
+        JournalPhase::Completed | JournalPhase::Aborted
+    ) {
+        return Err(ReconciliationError::Terminal);
+    }
+    journal.apply(JournalTransition::Abort {
+        reason:
+            "operator reconciled abandoned pre-write operation; no mutation boundary was crossed",
+    })?;
+    store.persist(&journal)?;
+    Ok(journal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
