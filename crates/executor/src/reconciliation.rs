@@ -47,6 +47,9 @@ fn reconcile_prewrite_at(
     lock_path: &Path,
 ) -> Result<OperationJournal, ReconciliationError> {
     let _lock = HostStorageLock::try_acquire_path(lock_path)?;
+    // An interrupted durable replacement may contain a newer mutation state.
+    // Any unclassified entry must block even a seemingly pre-write abort.
+    let _ = store.all()?;
     let mut journal = store.load(&shown_journal.journal_id)?;
     if &journal != shown_journal {
         return Err(ReconciliationError::JournalChanged);
@@ -163,6 +166,32 @@ mod tests {
         );
         assert!(matches!(result, Err(ReconciliationError::JournalChanged)));
         assert_eq!(store.load(&shown.journal_id).unwrap(), changed);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reconciliation_preserves_and_rejects_unclassified_staging_evidence() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, store, journal) = fixture();
+        let staging = store
+            .root()
+            .join(format!(".{}.tmp-123-1", journal.journal_id));
+        fs::write(&staging, b"unclassified possible execution state").unwrap();
+        fs::set_permissions(&staging, fs::Permissions::from_mode(0o600)).unwrap();
+        let result = reconcile_prewrite_at(
+            &store,
+            &journal,
+            &format!("ABORT {}", journal.journal_id),
+            &root.join("lock/storage.lock"),
+        );
+        assert!(matches!(
+            result,
+            Err(ReconciliationError::Store(
+                JournalStoreError::InvalidRecord(_)
+            ))
+        ));
+        assert_eq!(store.load(&journal.journal_id).unwrap(), journal);
+        assert!(staging.exists());
         fs::remove_dir_all(root).unwrap();
     }
 
