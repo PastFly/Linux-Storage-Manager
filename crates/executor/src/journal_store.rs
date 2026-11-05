@@ -795,6 +795,12 @@ fn ensure_secure_directory(path: &Path, create: bool) -> Result<(), JournalStore
                 if !trusted_journal_directory(&metadata, current == path) {
                     return Err(JournalStoreError::UnsafeDirectory(current));
                 }
+                if create {
+                    let parent = current
+                        .parent()
+                        .ok_or_else(|| JournalStoreError::UnsafeDirectory(current.clone()))?;
+                    sync_directory(parent)?;
+                }
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound && create => {
                 let mut builder = DirBuilder::new();
@@ -809,6 +815,10 @@ fn ensure_secure_directory(path: &Path, create: bool) -> Result<(), JournalStore
                 if !trusted_journal_directory(&metadata, current == path) {
                     return Err(JournalStoreError::UnsafeDirectory(current));
                 }
+                let parent = current
+                    .parent()
+                    .ok_or_else(|| JournalStoreError::UnsafeDirectory(current.clone()))?;
+                sync_directory(parent)?;
             }
             Err(source) => return Err(io_error(&current, source)),
         }

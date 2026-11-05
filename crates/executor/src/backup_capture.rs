@@ -314,6 +314,8 @@ fn capture_with_runner(
         });
     }
 
+    sync_backup_directory(artifact_root)?;
+
     let receipt_id = fingerprint(&(
         1_u32,
         manifest.manifest_id(),
@@ -582,6 +584,10 @@ fn ensure_secure_directory(path: &Path) -> Result<(), BackupCaptureError> {
                 if metadata.file_type().is_symlink() || !metadata.is_dir() {
                     return Err(BackupCaptureError::UnsafeDirectory(current));
                 }
+                let parent = current
+                    .parent()
+                    .ok_or_else(|| BackupCaptureError::UnsafeDirectory(current.clone()))?;
+                sync_backup_directory(parent)?;
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
                 let mut builder = DirBuilder::new();
@@ -596,11 +602,21 @@ fn ensure_secure_directory(path: &Path) -> Result<(), BackupCaptureError> {
                 if metadata.file_type().is_symlink() || !metadata.is_dir() {
                     return Err(BackupCaptureError::UnsafeDirectory(current));
                 }
+                let parent = current
+                    .parent()
+                    .ok_or_else(|| BackupCaptureError::UnsafeDirectory(current.clone()))?;
+                sync_backup_directory(parent)?;
             }
             Err(source) => return Err(io_error(&current, source)),
         }
     }
     Ok(())
+}
+
+fn sync_backup_directory(path: &Path) -> Result<(), BackupCaptureError> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| io_error(path, source))
 }
 
 fn ensure_artifact_absent(path: &Path) -> Result<(), BackupCaptureError> {
