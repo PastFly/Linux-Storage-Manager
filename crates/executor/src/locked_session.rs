@@ -716,6 +716,7 @@ mod tests {
         snapshot.storage.block_devices[0].children[0].children[0]
             .mountpoints
             .clear();
+        snapshot.lvm.as_mut().unwrap().logical_volumes[0].attributes = Some("-wi-a-----".into());
         snapshot.filesystem_preflight[0].mountpoint = None;
         let plan = plan_extend(
             &snapshot,
@@ -726,6 +727,12 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(
+            plan.status(),
+            PlanStatus::Preview,
+            "blockers: {:?}",
+            plan.blockers()
+        );
         let handoff = build_frozen_execution_handoff(&snapshot, &capabilities, &plan).unwrap();
         let path = lock_path();
         let root = journal_root("untrusted-health-tool");
