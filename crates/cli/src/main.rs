@@ -243,6 +243,7 @@ fn run() -> Result<ExitCode> {
             println!("{}", serde_json::to_string_pretty(&snapshot.diagnostics)?);
         }
         Some(Command::Operations { json }) => {
+            use std::os::unix::ffi::OsStrExt;
             let diagnostics =
                 read_operation_diagnostics(&lsm_executor::DurableJournalStore::default())?;
             if json {
@@ -251,13 +252,16 @@ fn run() -> Result<ExitCode> {
                     serde_json::to_string_pretty(&serde_json::json!({
                         "journal_directory_exists": diagnostics.journal_directory_exists,
                         "unfinished_extend_journals": diagnostics.unfinished,
-                        "unclassified_runtime_evidence": diagnostics.unclassified,
+                        "unclassified_journal_entries": diagnostics.unclassified_journals,
+                        "unclassified_runtime_evidence": diagnostics.unclassified.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+                        "unclassified_runtime_evidence_bytes_hex": diagnostics.unclassified.iter().map(|path| path.as_os_str().as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>()).collect::<Vec<_>>(),
+                        "snapshot_may_be_changing": true,
                         "reconciliation_required": diagnostics.reconciliation_required,
                         "execution_authorized": false,
                     }))?
                 );
             } else {
-                println!("Operation evidence (read-only; not an authorization to write):");
+                println!("Operation evidence (read-only, unlocked snapshot; it may be changing and does not authorize writes):");
                 if !diagnostics.journal_directory_exists {
                     println!("Extend journal directory has not been initialized.");
                 }
@@ -271,7 +275,19 @@ fn run() -> Result<ExitCode> {
                     );
                 }
                 for path in &diagnostics.unclassified {
-                    println!("Unclassified runtime evidence: {}", path.display());
+                    println!("Unclassified runtime evidence: {:?}", path.as_os_str());
+                }
+                for entry in &diagnostics.unclassified_journals {
+                    println!(
+                        "Unclassified journal evidence: {:?}",
+                        entry.path.as_os_str()
+                    );
+                    if let Some(journal) = &entry.staged_journal {
+                        println!("  Staged journal {}: target {}, phase {:?}, mutation may have started: {}", journal.journal_id, journal.target, journal.phase, journal.mutation_may_have_started);
+                    }
+                    if let Some(problem) = &entry.problem {
+                        println!("  Could not validate evidence: {problem:?}");
+                    }
                 }
                 if diagnostics.reconciliation_required {
                     println!("Manual investigation required. Preserve journals and backups; do not retry a potentially started operation.");
@@ -730,6 +746,7 @@ struct OperationDiagnostics {
     journal_directory_exists: bool,
     unfinished: Vec<lsm_planner::OperationJournal>,
     unclassified: Vec<PathBuf>,
+    unclassified_journals: Vec<lsm_executor::UnclassifiedJournalEvidence>,
     reconciliation_required: bool,
 }
 
@@ -801,18 +818,21 @@ fn read_operation_diagnostics(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => return Err(error.into()),
     };
-    let unfinished = if journal_directory_exists {
-        store.unfinished()?
+    let (unfinished, unclassified_journals) = if journal_directory_exists {
+        let inspection = store.inspect()?;
+        (inspection.unfinished, inspection.unclassified)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     let unclassified = store.unclassified_runtime_evidence()?;
-    let reconciliation_required =
-        unfinished.iter().any(|j| j.mutation_may_have_started) || !unclassified.is_empty();
+    let reconciliation_required = unfinished.iter().any(|j| j.mutation_may_have_started)
+        || !unclassified.is_empty()
+        || !unclassified_journals.is_empty();
     Ok(OperationDiagnostics {
         journal_directory_exists,
         unfinished,
         unclassified,
+        unclassified_journals,
         reconciliation_required,
     })
 }
@@ -1035,6 +1055,26 @@ mod extend_handoff_cli_tests {
         assert_eq!(diagnostics.unclassified, vec![evidence.clone()]);
         assert_eq!(std::fs::read(&evidence).unwrap(), b"preserve");
         assert!(!store.root().exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn diagnostics_reports_and_preserves_interrupted_journal_staging() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("lsm-cli-staging-evidence-{}", std::process::id()));
+        let directory = root.join("journal");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!(".{}.tmp-42-1", "a".repeat(64)));
+        std::fs::write(&path, b"incomplete").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let store = lsm_executor::DurableJournalStore::at(&directory);
+        let diagnostics = read_operation_diagnostics(&store).unwrap();
+        assert!(diagnostics.reconciliation_required);
+        assert_eq!(diagnostics.unclassified_journals.len(), 1);
+        assert_eq!(diagnostics.unclassified_journals[0].path, path);
+        assert!(diagnostics.unclassified_journals[0].problem.is_some());
+        assert_eq!(std::fs::read(&path).unwrap(), b"incomplete");
         std::fs::remove_dir_all(root).unwrap();
     }
 

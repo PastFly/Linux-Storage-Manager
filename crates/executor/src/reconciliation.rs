@@ -71,11 +71,12 @@ fn reconcile_prewrite_at(
     ) {
         return Err(ReconciliationError::Terminal);
     }
+    let previous = journal.clone();
     journal.apply(JournalTransition::Abort {
         reason:
             "operator reconciled abandoned pre-write operation; no mutation boundary was crossed",
     })?;
-    store.persist(&journal)?;
+    store.persist_if_matches(&previous, &journal)?;
     Ok(journal)
 }
 
@@ -157,7 +158,7 @@ mod tests {
         let (root, store, shown) = fixture();
         let mut changed = shown.clone();
         changed.apply(JournalTransition::HostLockAcquired).unwrap();
-        store.persist(&changed).unwrap();
+        store.test_overwrite(&changed).unwrap();
         let result = reconcile_prewrite_at(
             &store,
             &shown,
@@ -237,7 +238,7 @@ mod tests {
         journal
             .apply(JournalTransition::ExecutionStarted { binding: &binding })
             .unwrap();
-        store.persist(&journal).unwrap();
+        store.test_overwrite(&journal).unwrap();
         let result = reconcile_prewrite_at(
             &store,
             &journal,
