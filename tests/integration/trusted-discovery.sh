@@ -40,9 +40,10 @@ if [[ -e ${root}/executed ]]; then
 fi
 PATH="${root}:/usr/sbin:/usr/bin:/sbin:/bin" LSM_TEST_MARKER="${root}/executed" \
   python3 - "${binary}" <<'PY'
-import os, pty, select, subprocess, sys, time
+import fcntl, os, pty, select, struct, subprocess, sys, termios, time
 
 master, slave = pty.openpty()
+fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
 env = dict(os.environ, TERM="xterm")
 process = subprocess.Popen([sys.argv[1], "tui"], stdin=slave, stdout=slave, stderr=slave, env=env)
 os.close(slave)
