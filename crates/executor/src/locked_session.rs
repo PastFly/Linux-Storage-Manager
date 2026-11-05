@@ -703,6 +703,27 @@ mod tests {
     }
 
     #[test]
+    fn other_runtime_journal_evidence_blocks_new_extend_session() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("foreign-runtime-evidence");
+        let swap = root.join("swap-runtime");
+        std::fs::create_dir_all(&swap).unwrap();
+        let evidence = swap.join(format!("{}.json", "a".repeat(64)));
+        std::fs::write(&evidence, b"retained evidence").unwrap();
+        let store = DurableJournalStore::at(root.join("journal"));
+        let result = LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store);
+        assert!(
+            result.is_err(),
+            "unexamined runtime evidence must block a new operation"
+        );
+        assert_eq!(std::fs::read(&evidence).unwrap(), b"retained evidence");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn malformed_existing_journal_blocks_a_new_durable_session() {
         let (snapshot, capabilities) = fixture();
         let handoff = handoff(&snapshot, &capabilities);
