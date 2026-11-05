@@ -232,8 +232,8 @@ pub use privileged_start::{
     PrivilegedExecutionStartReceipt,
 };
 pub use privileged_tools::{
-    resolve_privileged_command_tools, resolve_trusted_privileged_tool, PrivilegedToolResolution,
-    TrustedToolError, TrustedToolIdentity,
+    effective_user_is_root, resolve_privileged_command_tools, resolve_trusted_privileged_tool,
+    run_trusted_storage_inventory, PrivilegedToolResolution, TrustedToolError, TrustedToolIdentity,
 };
 pub use privileged_verify::{
     verify_privileged_layer_post_state, PrivilegedLayerVerificationError,

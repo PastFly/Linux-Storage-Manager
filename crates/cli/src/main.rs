@@ -207,13 +207,16 @@ fn run() -> Result<ExitCode> {
     match cli.command {
         Some(Command::Capabilities) => print_capabilities()?,
         Some(Command::Json) => {
-            println!("{}", serde_json::to_string_pretty(&discover_storage()?)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&discover_storage_for_cli()?)?
+            );
         }
         Some(Command::Snapshot) => {
             println!("{}", serde_json::to_string_pretty(&discover_snapshot()?)?);
         }
         Some(Command::PartitionTables) => {
-            let graph = discover_storage()?;
+            let graph = discover_storage_for_cli()?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&discover_partition_tables(&graph)?)?
@@ -667,7 +670,7 @@ fn run() -> Result<ExitCode> {
             });
         }
         Some(Command::Tree) => {
-            let graph = discover_storage()?;
+            let graph = discover_storage_for_cli()?;
             for device in &graph.block_devices {
                 print_device(device, 0);
             }
@@ -686,6 +689,18 @@ struct OperationDiagnostics {
     unfinished: Vec<lsm_planner::OperationJournal>,
     unclassified: Vec<PathBuf>,
     reconciliation_required: bool,
+}
+
+fn discover_storage_for_cli() -> Result<lsm_core::StorageGraph> {
+    if !lsm_executor::effective_user_is_root() {
+        return Ok(discover_storage()?);
+    }
+    let output = lsm_executor::run_trusted_storage_inventory()?;
+    if output.exit_code != 0 || output.stdout_truncated || output.stderr_truncated {
+        anyhow::bail!("trusted lsblk inventory failed or exceeded the capture limit");
+    }
+    let json = std::str::from_utf8(&output.stdout)?;
+    Ok(lsm_discovery::parse_lsblk_json(json)?)
 }
 
 fn read_operation_diagnostics(
