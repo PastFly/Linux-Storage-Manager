@@ -1,7 +1,11 @@
-use std::fs::{self, DirBuilder, File, OpenOptions};
+#[cfg(test)]
+use std::fs::OpenOptions;
+use std::fs::{self, DirBuilder, File};
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+#[cfg(test)]
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 

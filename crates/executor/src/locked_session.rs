@@ -524,10 +524,12 @@ mod tests {
 
     fn journal_root(name: &str) -> PathBuf {
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "linux-storage-manager-session-journal-test-{}-{unique}-{name}",
-            std::process::id()
-        ))
+        std::env::temp_dir()
+            .join(format!(
+                "linux-storage-manager-session-journal-test-{}-{unique}-{name}",
+                std::process::id()
+            ))
+            .join("journal")
     }
 
     fn fixture() -> (HostSnapshot, HostCapabilities) {
