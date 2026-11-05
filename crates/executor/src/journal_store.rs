@@ -758,7 +758,7 @@ fn is_lower_hex_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
-fn trusted_journal_file(metadata: &fs::Metadata) -> bool {
+pub(crate) fn trusted_journal_file(metadata: &fs::Metadata) -> bool {
     metadata.is_file()
         && !metadata.file_type().is_symlink()
         && metadata.uid() == unsafe { libc::geteuid() }
@@ -766,7 +766,7 @@ fn trusted_journal_file(metadata: &fs::Metadata) -> bool {
         && metadata.nlink() == 1
 }
 
-fn trusted_journal_directory(metadata: &fs::Metadata, is_root: bool) -> bool {
+pub(crate) fn trusted_journal_directory(metadata: &fs::Metadata, is_root: bool) -> bool {
     let uid = metadata.uid();
     let mode = metadata.mode();
     let owner_ok = uid == 0 || uid == unsafe { libc::geteuid() };
@@ -795,6 +795,12 @@ fn ensure_secure_directory(path: &Path, create: bool) -> Result<(), JournalStore
                 if !trusted_journal_directory(&metadata, current == path) {
                     return Err(JournalStoreError::UnsafeDirectory(current));
                 }
+                if create {
+                    let parent = current
+                        .parent()
+                        .ok_or_else(|| JournalStoreError::UnsafeDirectory(current.clone()))?;
+                    sync_directory(parent)?;
+                }
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound && create => {
                 let mut builder = DirBuilder::new();
@@ -809,6 +815,10 @@ fn ensure_secure_directory(path: &Path, create: bool) -> Result<(), JournalStore
                 if !trusted_journal_directory(&metadata, current == path) {
                     return Err(JournalStoreError::UnsafeDirectory(current));
                 }
+                let parent = current
+                    .parent()
+                    .ok_or_else(|| JournalStoreError::UnsafeDirectory(current.clone()))?;
+                sync_directory(parent)?;
             }
             Err(source) => return Err(io_error(&current, source)),
         }
@@ -865,6 +875,25 @@ mod tests {
             std::process::id(),
             TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn journal_creation_fails_when_parent_directory_cannot_be_synced() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let parent = root("unreadable-parent");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o300)).unwrap();
+        let store = DurableJournalStore::at(parent.join("journal"));
+        let result = store.persist_new(&journal());
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+        assert!(
+            result.is_err(),
+            "journal parent directory sync failure must fail closed"
+        );
     }
 
     #[test]

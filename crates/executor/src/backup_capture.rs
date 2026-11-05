@@ -1,6 +1,6 @@
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
@@ -314,6 +314,8 @@ fn capture_with_runner(
         });
     }
 
+    sync_backup_directory(artifact_root)?;
+
     let receipt_id = fingerprint(&(
         1_u32,
         manifest.manifest_id(),
@@ -501,7 +503,7 @@ fn verify_existing_secure_directory(path: &Path) -> Result<(), BackupCaptureErro
 
         let metadata =
             fs::symlink_metadata(&current).map_err(|source| io_error(&current, source))?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        if !crate::journal_store::trusted_journal_directory(&metadata, current == path) {
             return Err(BackupCaptureError::UnsafeDirectory(current));
         }
     }
@@ -579,9 +581,13 @@ fn ensure_secure_directory(path: &Path) -> Result<(), BackupCaptureError> {
         }
         match fs::symlink_metadata(&current) {
             Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                if !crate::journal_store::trusted_journal_directory(&metadata, current == path) {
                     return Err(BackupCaptureError::UnsafeDirectory(current));
                 }
+                let parent = current
+                    .parent()
+                    .ok_or_else(|| BackupCaptureError::UnsafeDirectory(current.clone()))?;
+                sync_backup_directory(parent)?;
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
                 let mut builder = DirBuilder::new();
@@ -593,14 +599,24 @@ fn ensure_secure_directory(path: &Path) -> Result<(), BackupCaptureError> {
                 }
                 let metadata =
                     fs::symlink_metadata(&current).map_err(|source| io_error(&current, source))?;
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                if !crate::journal_store::trusted_journal_directory(&metadata, current == path) {
                     return Err(BackupCaptureError::UnsafeDirectory(current));
                 }
+                let parent = current
+                    .parent()
+                    .ok_or_else(|| BackupCaptureError::UnsafeDirectory(current.clone()))?;
+                sync_backup_directory(parent)?;
             }
             Err(source) => return Err(io_error(&current, source)),
         }
     }
     Ok(())
+}
+
+fn sync_backup_directory(path: &Path) -> Result<(), BackupCaptureError> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| io_error(path, source))
 }
 
 fn ensure_artifact_absent(path: &Path) -> Result<(), BackupCaptureError> {
@@ -624,7 +640,7 @@ fn create_artifact_file(path: &Path) -> Result<File, BackupCaptureError> {
 
 fn verify_artifact(path: &Path) -> Result<(u64, String), BackupCaptureError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if !crate::journal_store::trusted_journal_file(&metadata) {
         return Err(BackupCaptureError::UnsafeArtifact(path.to_path_buf()));
     }
     if metadata.len() == 0 {
@@ -639,6 +655,13 @@ fn verify_artifact(path: &Path) -> Result<(u64, String), BackupCaptureError> {
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
         .open(path)
         .map_err(|source| io_error(path, source))?;
+    let opened = file.metadata().map_err(|source| io_error(path, source))?;
+    if !crate::journal_store::trusted_journal_file(&opened)
+        || opened.dev() != metadata.dev()
+        || opened.ino() != metadata.ino()
+    {
+        return Err(BackupCaptureError::UnsafeArtifact(path.to_path_buf()));
+    }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(MAX_BACKUP_ARTIFACT_BYTES + 1)
         .read_to_end(&mut bytes)
@@ -786,6 +809,7 @@ mod tests {
         ensure_secure_directory(&root).unwrap();
         let path = root.join("artifact");
         fs::write(&path, b"verified-backup").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
 
         let (size, digest) = verify_artifact(&path).unwrap();
 
@@ -802,6 +826,7 @@ mod tests {
         ensure_secure_directory(&root).unwrap();
         let path = root.join("artifact");
         fs::write(&path, b"").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
 
         assert!(matches!(
             verify_artifact(&path),
@@ -914,6 +939,58 @@ mod tests {
             "lsm-backup-capture-session-test-{}-{name}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn backup_evidence_rejects_writable_directory_and_unsafe_file() {
+        let root = temp_path("unsafe-backup-evidence");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o777)).unwrap();
+        let directory_result = ensure_secure_directory(&root);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let artifact = root.join("artifact");
+        fs::write(&artifact, b"backup").unwrap();
+        fs::set_permissions(&artifact, fs::Permissions::from_mode(0o644)).unwrap();
+        let file_result = verify_artifact(&artifact);
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            directory_result.is_err(),
+            "writable backup directory was accepted"
+        );
+        assert!(file_result.is_err(), "unsafe backup artifact was accepted");
+    }
+
+    #[test]
+    fn backup_capture_fails_when_artifact_directory_cannot_be_synced() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let (snapshot, capabilities) = direct_fixture();
+        let handoff = direct_handoff(&snapshot, &capabilities);
+        let manifest = crate::build_metadata_backup_manifest(&handoff).unwrap();
+        let lock = temp_path("sync-failure-lock").join("storage.lock");
+        let root = temp_path("sync-failure-artifacts");
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o300)).unwrap();
+        let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let result = capture_with_runner(
+            &session,
+            &manifest,
+            Some(&root),
+            &FakeRunner::new(b"valid backup"),
+        );
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        drop(session);
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(root);
+        assert!(
+            result.is_err(),
+            "backup directory sync failure must fail closed"
+        );
     }
 
     #[test]
