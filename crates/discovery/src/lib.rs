@@ -1,4 +1,5 @@
 mod analysis;
+mod command_runner;
 mod diagnostics;
 mod filesystem_preflight;
 mod filesystem_space;
@@ -14,29 +15,37 @@ mod swap;
 
 use std::env;
 use std::path::Path;
-use std::process::Command;
 
 use lsm_core::{BlockDevice, Filesystem, HostCapabilities, NodeKind, StorageGraph, ToolCapability};
 use serde::Deserialize;
 use thiserror::Error;
 
 pub use analysis::{analyze_extendability, ExtendAnalysisError};
+pub use command_runner::{DiscoveryCommandRunner, SystemDiscoveryRunner};
 pub use diagnostics::diagnose_storage;
-pub use filesystem_preflight::discover_filesystem_preflight;
+pub use filesystem_preflight::{
+    discover_filesystem_preflight, discover_filesystem_preflight_with_runner,
+};
 pub use filesystem_space::{discover_filesystem_space, FilesystemSpaceDiscoveryError};
 pub use fstab::{discover_fstab, parse_fstab, FstabDiscoveryError};
 pub use hibernation::{
     discover_hibernation_resume_evidence, parse_kernel_resume_evidence, parse_sysfs_resume,
     parse_sysfs_resume_offset, HibernationResumeDiscoveryError,
 };
-pub use lvm::{discover_lvm, parse_lvs_json, parse_pvs_json, parse_vgs_json, LvmDiscoveryError};
-pub use mounts::{discover_mounts, parse_findmnt_json, MountDiscoveryError};
+pub use lvm::{
+    discover_lvm, discover_lvm_with_runner, parse_lvs_json, parse_pvs_json, parse_vgs_json,
+    LvmDiscoveryError,
+};
+pub use mounts::{
+    discover_mounts, discover_mounts_with_runner, parse_findmnt_json, MountDiscoveryError,
+};
 pub use partition_table::{
-    discover_partition_tables, parse_sfdisk_json, PartitionTableDiscoveryError,
+    discover_partition_tables, discover_partition_tables_with_runner, parse_sfdisk_json,
+    PartitionTableDiscoveryError,
 };
 pub use path_occupancy::{discover_path_occupancy, PathOccupancyDiscoveryError};
 pub use reconcile::reconcile_snapshot;
-pub use snapshot::{discover_snapshot, SnapshotDiscoveryError};
+pub use snapshot::{discover_snapshot, discover_snapshot_with_runner, SnapshotDiscoveryError};
 pub use swap::{discover_swaps, parse_proc_swaps, SwapDiscoveryError};
 
 const LSBLK_COLUMNS: &str =
@@ -53,9 +62,13 @@ pub enum DiscoveryError {
 }
 
 pub fn discover_storage() -> Result<StorageGraph, DiscoveryError> {
-    let output = Command::new("lsblk")
-        .args(["--json", "--bytes", "--output", LSBLK_COLUMNS])
-        .output()?;
+    discover_storage_with_runner(&SystemDiscoveryRunner)
+}
+
+pub fn discover_storage_with_runner(
+    runner: &dyn DiscoveryCommandRunner,
+) -> Result<StorageGraph, DiscoveryError> {
+    let output = runner.output("lsblk", &["--json", "--bytes", "--output", LSBLK_COLUMNS])?;
 
     if !output.status.success() {
         return Err(DiscoveryError::LsblkFailed {
@@ -75,6 +88,10 @@ pub fn parse_lsblk_json(input: &str) -> Result<StorageGraph, DiscoveryError> {
 }
 
 pub fn discover_capabilities() -> HostCapabilities {
+    discover_capabilities_with_runner(&SystemDiscoveryRunner)
+}
+
+pub fn discover_capabilities_with_runner(runner: &dyn DiscoveryCommandRunner) -> HostCapabilities {
     const TOOLS: &[&str] = &[
         "lsblk",
         "findmnt",
@@ -119,7 +136,7 @@ pub fn discover_capabilities() -> HostCapabilities {
             .iter()
             .map(|tool| ToolCapability {
                 name: (*tool).to_owned(),
-                available: command_exists(tool),
+                available: runner.available(tool),
             })
             .collect(),
     }

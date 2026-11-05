@@ -6,7 +6,6 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use lsm_discovery::{discover_capabilities, discover_snapshot};
 use lsm_executor::{
     approve_exact_plan, bind_disposable_execution_permit,
     bind_verified_disposable_execution_permit, build_metadata_backup_manifest,
@@ -19,6 +18,10 @@ use lsm_executor::{
     verify_disposable_loop_association_row, verify_preconditions, DisposableProgram,
     DisposableToolPaths, DurableJournalStore, LockedExecutionSession, LockedRevalidationStatus,
     NativeOperationSpec, PreMutationEvidenceStatus,
+};
+use lsm_executor::{
+    discover_capabilities_trusted as discover_capabilities,
+    discover_snapshot_trusted as discover_snapshot,
 };
 use lsm_planner::{
     build_frozen_execution_handoff, capture_target_identity, plan_extend, ExtendRequest,

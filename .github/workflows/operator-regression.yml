@@ -29,9 +29,16 @@ jobs:
           cargo test --locked -p lsm-executor --lib directory_cannot_be_synced -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo test --locked -p lsm-executor --lib backup_evidence_rejects_writable_directory_and_unsafe_file -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo test --locked -p lsm-executor --features disposable-loop-harness --lib filesystem_health_rejects_untrusted_executable_path -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --features trusted-discovery --lib rejects_commands_and_arguments_outside_read_only_allowlist -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --features production-swap-replacement-partition-removal-preflight --lib partition_dump_rejects_untrusted_device_paths -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --features production-swap-replacement-partition-removal-preflight --lib truncated_partition_backup_is_never_accepted -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --features production-swap-replacement-runtime-journal --lib swap_journal_rejects_writable_ancestor -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib lock_rejects_ -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo test --locked -p linux-storage-manager-cli --bin storagemgr diagnostics_ -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo clippy --locked -p lsm-executor --lib -- -D warnings 2>&1 | tee -a backup-path-test.log || failed=1
           cargo clippy --locked -p linux-storage-manager-cli --bin storagemgr -- -D warnings 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo build --locked -p linux-storage-manager-cli --bin storagemgr 2>&1 | tee -a backup-path-test.log || failed=1
+          sudo bash tests/integration/trusted-discovery.sh --allow-disposable-vm-tests "$PWD/target/debug/storagemgr" 2>&1 | tee -a backup-path-test.log || failed=1
           exit "$failed"
       - name: Preserve regression output
         if: always()
@@ -40,3 +47,20 @@ jobs:
           name: backup-path-test-${{ github.run_id }}-${{ github.run_attempt }}
           path: backup-path-test.log
           if-no-files-found: warn
+
+  executable-memfd-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Verify pinned execution under memfd_noexec=1
+        shell: bash
+        run: |
+          set -euo pipefail
+          original=$(sysctl -n vm.memfd_noexec)
+          trap 'sudo sysctl -w "vm.memfd_noexec=${original}"' EXIT
+          sudo sysctl -w vm.memfd_noexec=1
+          cargo test --locked -p lsm-executor --lib pinned_backup_tool_cannot_change_after_last_verification -- --nocapture

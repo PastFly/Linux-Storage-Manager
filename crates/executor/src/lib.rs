@@ -107,6 +107,8 @@ mod production_swap_runtime_preflight;
 mod production_swap_runtime_tool_lease;
 #[cfg(feature = "production-mutation-execution")]
 mod production_verified_step;
+#[cfg(feature = "trusted-discovery")]
+mod trusted_discovery;
 
 pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError};
 pub use backup_capture::{
@@ -232,8 +234,8 @@ pub use privileged_start::{
     PrivilegedExecutionStartReceipt,
 };
 pub use privileged_tools::{
-    resolve_privileged_command_tools, resolve_trusted_privileged_tool, PrivilegedToolResolution,
-    TrustedToolError, TrustedToolIdentity,
+    effective_user_is_root, resolve_privileged_command_tools, resolve_trusted_privileged_tool,
+    PrivilegedToolResolution, TrustedToolError, TrustedToolIdentity,
 };
 pub use privileged_verify::{
     verify_privileged_layer_post_state, PrivilegedLayerVerificationError,
@@ -516,12 +518,16 @@ pub use production_verified_step::{
     execute_verify_and_persist_production_step, ProductionVerifiedMutationStep,
     ProductionVerifiedMutationStepError,
 };
+#[cfg(feature = "trusted-discovery")]
+pub use trusted_discovery::{
+    discover_capabilities_trusted, discover_snapshot_trusted, TrustedDiscoveryRunner,
+};
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::path::{Component, Path, PathBuf};
 
 use lsm_planner::HOST_STORAGE_LOCK_PATH;
 use thiserror::Error;
@@ -543,6 +549,8 @@ pub enum HostLockError {
     UnsafeParent(PathBuf),
     #[error("lock path is not a regular file: {0}")]
     NotRegularFile(PathBuf),
+    #[error("lock file is not exclusively owned and protected: {0}")]
+    UnsafeFile(PathBuf),
     #[error("could not prepare host storage lock at {path}: {source}")]
     Io {
         path: PathBuf,
@@ -591,6 +599,9 @@ impl HostStorageLock {
         if !metadata.file_type().is_file() {
             return Err(HostLockError::NotRegularFile(path.to_path_buf()));
         }
+        if !journal_store::trusted_journal_file(&metadata) {
+            return Err(HostLockError::UnsafeFile(path.to_path_buf()));
+        }
 
         let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if result != 0 {
@@ -628,31 +639,51 @@ fn prepare_parent(path: &Path) -> Result<(), HostLockError> {
     let parent = path
         .parent()
         .ok_or_else(|| HostLockError::UnsafeParent(path.to_path_buf()))?;
-
-    if parent.exists() {
-        let metadata = fs::symlink_metadata(parent).map_err(|source| HostLockError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(HostLockError::UnsafeParent(parent.to_path_buf()));
-        }
-        return Ok(());
-    }
-
-    fs::create_dir_all(parent).map_err(|source| HostLockError::Io {
-        path: parent.to_path_buf(),
-        source,
-    })?;
-
-    let metadata = fs::symlink_metadata(parent).map_err(|source| HostLockError::Io {
-        path: parent.to_path_buf(),
-        source,
-    })?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+    if !parent.is_absolute() {
         return Err(HostLockError::UnsafeParent(parent.to_path_buf()));
     }
-
+    let mut current = PathBuf::new();
+    for component in parent.components() {
+        match component {
+            Component::RootDir => {
+                current.push("/");
+                continue;
+            }
+            Component::Normal(part) => current.push(part),
+            _ => return Err(HostLockError::UnsafeParent(parent.to_path_buf())),
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata)
+                if journal_store::trusted_journal_directory(&metadata, current == parent) => {}
+            Ok(_) => return Err(HostLockError::UnsafeParent(current)),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                let mut builder = fs::DirBuilder::new();
+                builder.mode(0o700);
+                if let Err(source) = builder.create(&current) {
+                    if source.kind() != io::ErrorKind::AlreadyExists {
+                        return Err(HostLockError::Io {
+                            path: current,
+                            source,
+                        });
+                    }
+                }
+                let metadata =
+                    fs::symlink_metadata(&current).map_err(|source| HostLockError::Io {
+                        path: current.clone(),
+                        source,
+                    })?;
+                if !journal_store::trusted_journal_directory(&metadata, current == parent) {
+                    return Err(HostLockError::UnsafeParent(current));
+                }
+            }
+            Err(source) => {
+                return Err(HostLockError::Io {
+                    path: current,
+                    source,
+                })
+            }
+        }
+    }
     Ok(())
 }
 
@@ -685,6 +716,50 @@ mod tests {
         assert_eq!(first.path(), path);
         drop(first);
         let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn lock_rejects_writable_parent_and_cannot_be_replaced() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = test_path("storage.lock");
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(matches!(
+            HostStorageLock::try_acquire_path(&path),
+            Err(HostLockError::UnsafeParent(_))
+        ));
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
+        let guard = HostStorageLock::try_acquire_path(&path).unwrap();
+        assert!(matches!(
+            HostStorageLock::try_acquire_path(&path),
+            Err(HostLockError::Busy)
+        ));
+        drop(guard);
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn lock_rejects_multiple_hard_links_and_unsafe_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = test_path("storage.lock");
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+        fs::write(&path, b"").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let other = parent.join("other.lock");
+        fs::hard_link(&path, &other).unwrap();
+        assert!(matches!(
+            HostStorageLock::try_acquire_path(&path),
+            Err(HostLockError::UnsafeFile(_))
+        ));
+        fs::remove_file(other).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(matches!(
+            HostStorageLock::try_acquire_path(&path),
+            Err(HostLockError::UnsafeFile(_))
+        ));
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]

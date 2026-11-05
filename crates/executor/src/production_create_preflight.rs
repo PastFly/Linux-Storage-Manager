@@ -1,5 +1,5 @@
+use crate::discover_snapshot_trusted as discover_snapshot;
 use lsm_core::{CollectorState, HostSnapshot, NodeKind};
-use lsm_discovery::discover_snapshot;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;

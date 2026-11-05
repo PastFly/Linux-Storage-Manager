@@ -1,4 +1,4 @@
-use std::process::Command;
+use crate::{DiscoveryCommandRunner, SystemDiscoveryRunner};
 
 use lsm_core::{NodeKind, PartitionRecord, PartitionTable, StorageGraph};
 use serde::Deserialize;
@@ -29,6 +29,13 @@ pub enum PartitionTableDiscoveryError {
 pub fn discover_partition_tables(
     graph: &StorageGraph,
 ) -> Result<Vec<PartitionTable>, PartitionTableDiscoveryError> {
+    discover_partition_tables_with_runner(graph, &SystemDiscoveryRunner)
+}
+
+pub fn discover_partition_tables_with_runner(
+    graph: &StorageGraph,
+    runner: &dyn DiscoveryCommandRunner,
+) -> Result<Vec<PartitionTable>, PartitionTableDiscoveryError> {
     let mut tables = Vec::new();
 
     for disk in &graph.block_devices {
@@ -40,9 +47,8 @@ pub fn discover_partition_tables(
             continue;
         };
 
-        let output = Command::new("sfdisk")
-            .args(["--json", device])
-            .output()
+        let output = runner
+            .output("sfdisk", &["--json", device])
             .map_err(|source| PartitionTableDiscoveryError::Io {
                 device: device.to_owned(),
                 source,
