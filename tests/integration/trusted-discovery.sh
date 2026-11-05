@@ -21,7 +21,13 @@ chmod 755 "${root}/lsblk"
 PATH="${root}:/usr/sbin:/usr/bin:/sbin:/bin" LSM_TEST_MARKER="${root}/executed" \
   "${binary}" json > /dev/null
 if [[ -e ${root}/executed ]]; then
-  echo 'Untrusted lsblk from PATH was executed by root discovery' >&2
+  echo 'Untrusted lsblk from PATH was executed by root JSON inventory' >&2
+  exit 1
+fi
+PATH="${root}:/usr/sbin:/usr/bin:/sbin:/bin" LSM_TEST_MARKER="${root}/executed" \
+  "${binary}" snapshot > /dev/null
+if [[ -e ${root}/executed ]]; then
+  echo 'Untrusted lsblk from PATH was executed by root snapshot discovery' >&2
   exit 1
 fi
 echo 'TRUSTED_DISCOVERY_PATH_OK'
