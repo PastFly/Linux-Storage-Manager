@@ -1,8 +1,7 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use crate::discover_snapshot_trusted as discover_snapshot;
 use lsm_core::{HostSnapshot, PartitionRecord};
@@ -344,27 +343,17 @@ fn ensure_secure_backup(
             }
         }
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
-            let file = OpenOptions::new()
+            let bytes = capture_partition_dump(disk)?;
+            let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .mode(0o600)
                 .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
                 .open(&path)
                 .map_err(|source| io_error(&path, source))?;
-            let stdout = file.try_clone().map_err(|source| io_error(&path, source))?;
-            let status = Command::new("sfdisk")
-                .arg("--dump")
-                .arg(disk)
-                .stdin(Stdio::null())
-                .stdout(Stdio::from(stdout))
-                .stderr(Stdio::null())
-                .env("LC_ALL", "C")
-                .env("LANG", "C")
-                .status()
-                .map_err(|source| io_error(Path::new("sfdisk"), source))?;
-            if !status.success() {
+            if let Err(source) = file.write_all(&bytes) {
                 let _ = fs::remove_file(&path);
-                return Err(ProductionSwapPartitionRemovalPreflightError::BackupMismatch);
+                return Err(io_error(&path, source));
             }
             file.sync_all().map_err(|source| io_error(&path, source))?;
             File::open(store.root())
@@ -401,6 +390,37 @@ fn ensure_secure_backup(
         return Err(ProductionSwapPartitionRemovalPreflightError::BackupMismatch);
     }
     Ok((path, sha256(&bytes)))
+}
+
+fn capture_partition_dump(
+    disk: &str,
+) -> Result<Vec<u8>, ProductionSwapPartitionRemovalPreflightError> {
+    let path = Path::new(disk);
+    if !path.starts_with("/dev")
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+        || disk.chars().any(char::is_control)
+    {
+        return Err(ProductionSwapPartitionRemovalPreflightError::BackupMismatch);
+    }
+    let result = crate::backup_capture::run_trusted_read_only_tool(
+        crate::PrivilegedProgram::Sfdisk,
+        vec!["--dump".into(), disk.into()],
+    )
+    .map_err(|_| ProductionSwapPartitionRemovalPreflightError::BackupMismatch)?;
+    if result.exit_code != 0
+        || result.stdout_truncated
+        || result.stderr_truncated
+        || result.stdout.is_empty()
+        || result.stdout.len() as u64 > MAX_PARTITION_BACKUP_BYTES
+    {
+        return Err(ProductionSwapPartitionRemovalPreflightError::BackupMismatch);
+    }
+    Ok(result.stdout)
 }
 
 /// Freeze the exact old logical-swap plus DOS extended-container removal boundary.
@@ -490,6 +510,16 @@ mod tests {
     use super::*;
     use lsm_core::PartitionTable;
     use serde_json::json;
+
+    #[test]
+    fn partition_dump_rejects_untrusted_device_paths() {
+        for disk in ["--help", "/etc/passwd", "/dev/../etc/passwd", "/dev/sda\n"] {
+            assert!(matches!(
+                capture_partition_dump(disk),
+                Err(ProductionSwapPartitionRemovalPreflightError::BackupMismatch)
+            ));
+        }
+    }
 
     fn activation() -> ProductionSwapReplacementActivationIntent {
         let mut value = ProductionSwapReplacementActivationIntent {

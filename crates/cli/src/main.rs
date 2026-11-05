@@ -678,13 +678,17 @@ fn run() -> Result<ExitCode> {
             let snapshot = discover_snapshot()?;
             let capabilities = discover_capabilities();
             if lsm_executor::effective_user_is_root() {
-                lsm_tui::run_with_runner(
+                lsm_tui::run(
                     snapshot,
                     capabilities,
                     &lsm_executor::TrustedDiscoveryRunner,
                 )?;
             } else {
-                lsm_tui::run(snapshot, capabilities)?;
+                lsm_tui::run(
+                    snapshot,
+                    capabilities,
+                    &lsm_discovery::SystemDiscoveryRunner,
+                )?;
             }
         }
     }

@@ -30,6 +30,7 @@ jobs:
           cargo test --locked -p lsm-executor --lib backup_evidence_rejects_writable_directory_and_unsafe_file -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo test --locked -p lsm-executor --features disposable-loop-harness --lib filesystem_health_rejects_untrusted_executable_path -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo test --locked -p lsm-executor --features trusted-discovery --lib rejects_commands_and_arguments_outside_read_only_allowlist -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --features production-swap-replacement-partition-removal-preflight --lib partition_dump_rejects_untrusted_device_paths -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo test --locked -p linux-storage-manager-cli --bin storagemgr diagnostics_ -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo clippy --locked -p lsm-executor --lib -- -D warnings 2>&1 | tee -a backup-path-test.log || failed=1
           cargo clippy --locked -p linux-storage-manager-cli --bin storagemgr -- -D warnings 2>&1 | tee -a backup-path-test.log || failed=1

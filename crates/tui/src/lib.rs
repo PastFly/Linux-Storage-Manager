@@ -12,7 +12,7 @@ use lsm_core::{
     BlockDevice, DiagnosticSeverity, ExtendAnalysis, ExtendabilityStatus, HostCapabilities,
     HostSnapshot, NodeKind, StorageGraph,
 };
-use lsm_discovery::{analyze_extendability, DiscoveryCommandRunner, SystemDiscoveryRunner};
+use lsm_discovery::{analyze_extendability, DiscoveryCommandRunner};
 use lsm_planner::{
     analyze_layer_route, analyze_layout_opportunity, analyze_lvm_underlying_growth,
     decide_filesystem_growth, list_provisioning_opportunities, plan_create, plan_extend,
@@ -281,11 +281,7 @@ struct DeviceRow<'a> {
     device: &'a BlockDevice,
 }
 
-pub fn run(snapshot: HostSnapshot, capabilities: HostCapabilities) -> Result<()> {
-    run_with_runner(snapshot, capabilities, &SystemDiscoveryRunner)
-}
-
-pub fn run_with_runner(
+pub fn run(
     snapshot: HostSnapshot,
     capabilities: HostCapabilities,
     runner: &dyn DiscoveryCommandRunner,

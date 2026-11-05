@@ -5,7 +5,8 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use lsm_discovery::{discover_snapshot, discover_swaps};
+use crate::discover_snapshot_trusted as discover_snapshot;
+use lsm_discovery::discover_swaps;
 use serde::Serialize;
 use thiserror::Error;
 

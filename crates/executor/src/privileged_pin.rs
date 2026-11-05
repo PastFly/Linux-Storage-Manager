@@ -131,12 +131,23 @@ pub(crate) fn snapshot_trusted_tool(
     if expected.size_bytes == 0 || expected.size_bytes > MAX_EXECUTABLE_BYTES {
         return Err(PrivilegedToolPinError::UnsafeExpectedIdentity);
     }
-    let fd = unsafe {
+    // Linux 6.3+ supports MFD_EXEC, which is required when memfd_noexec=1.
+    // Older kernels reject the flag with EINVAL and already create executable memfds.
+    const MFD_EXEC: libc::c_uint = 0x0010;
+    let mut fd = unsafe {
         libc::memfd_create(
             c"lsm-backup-tool".as_ptr(),
-            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING | MFD_EXEC,
         )
     };
+    if fd < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
+        fd = unsafe {
+            libc::memfd_create(
+                c"lsm-backup-tool".as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
+        };
+    }
     if fd < 0 {
         return Err(io::Error::last_os_error().into());
     }
@@ -355,6 +366,7 @@ mod tests {
         let opened = File::open(&path).unwrap();
         receipt_from_open_file(&opened, &expected).unwrap();
         let snapshot = snapshot_trusted_tool(&opened, &expected).unwrap();
+        assert_ne!(snapshot.metadata().unwrap().permissions().mode() & 0o111, 0);
         fs::write(&path, fs::read("/usr/bin/false").unwrap()).unwrap();
         let result = crate::privileged_exec::execute_descriptor_stage(
             &snapshot,
