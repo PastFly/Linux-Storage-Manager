@@ -60,6 +60,13 @@ enum Command {
         /// Full 64-character journal ID reported by operations.
         journal_id: String,
     },
+    /// Remove a verified duplicate staging link while preserving the durable journal.
+    ReconcileDuplicate {
+        /// Full journal ID reported by operations.
+        journal_id: String,
+        /// Exact staging filename reported by operations.
+        staging_name: String,
+    },
     /// Explain whether a mount point or block device can be grown with currently known capacity.
     Explain {
         /// Mount point (for example / or /var) or block-device path.
@@ -324,6 +331,55 @@ fn run() -> Result<ExitCode> {
             let reconciled =
                 lsm_executor::reconcile_abandoned_prewrite(&store, &journal, &confirmation)?;
             println!("Journal {} recorded as aborted before mutation; no storage operation was executed.", reconciled.journal_id);
+        }
+        Some(Command::ReconcileDuplicate {
+            journal_id,
+            staging_name,
+        }) => {
+            use std::io::{BufRead, BufReader, Write};
+            let store = lsm_executor::DurableJournalStore::default();
+            let inspection = store.inspect()?;
+            let entry = inspection
+                .unclassified
+                .iter()
+                .find(|entry| {
+                    entry.path.file_name().and_then(|name| name.to_str())
+                        == Some(staging_name.as_str())
+                })
+                .ok_or_else(|| anyhow::anyhow!("staging evidence was not found"))?;
+            let journal = entry
+                .staged_journal
+                .as_ref()
+                .filter(|journal| journal.journal_id == journal_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "staging evidence is not a validated journal with the requested ID"
+                    )
+                })?;
+            let mut tty = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/tty")?;
+            writeln!(tty, "Remove duplicate journal link (the durable journal is preserved):\nJournal: {}\nTarget: {}\nPhase: {:?}\nMutation may have started: {}\nStaging: {:?}", journal.journal_id, journal.target, journal.phase, journal.mutation_may_have_started, entry.path.as_os_str())?;
+            write!(
+                tty,
+                "Type REMOVE DUPLICATE {} to confirm: ",
+                journal.journal_id
+            )?;
+            tty.flush()?;
+            let mut confirmation = String::new();
+            BufReader::new(&tty).read_line(&mut confirmation)?;
+            if confirmation.ends_with('\n') {
+                confirmation.pop();
+                if confirmation.ends_with('\r') {
+                    confirmation.pop();
+                }
+            }
+            lsm_executor::reconcile_duplicate_staging(&store, &entry.path, journal, &confirmation)?;
+            println!(
+                "Duplicate link removed; journal {} remains and no storage operation was executed.",
+                journal.journal_id
+            );
         }
         Some(Command::Explain { target }) => {
             let snapshot = discover_snapshot()?;

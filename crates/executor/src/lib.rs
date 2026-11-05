@@ -32,7 +32,9 @@ mod privileged_spawn;
 mod privileged_start;
 mod privileged_tools;
 mod reconciliation;
-pub use reconciliation::{reconcile_abandoned_prewrite, ReconciliationError};
+pub use reconciliation::{
+    reconcile_abandoned_prewrite, reconcile_duplicate_staging, ReconciliationError,
+};
 mod privileged_verify;
 mod production_activation;
 mod production_chained_descriptor_exec;

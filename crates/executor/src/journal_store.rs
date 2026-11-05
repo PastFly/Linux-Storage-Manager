@@ -391,6 +391,52 @@ impl DurableJournalStore {
         self.load_at_with_links(path, journal_id, 2)
     }
 
+    pub(crate) fn remove_linked_staging_duplicate(
+        &self,
+        staging: &Path,
+        shown: &OperationJournal,
+    ) -> Result<(), JournalStoreError> {
+        ensure_secure_directory(&self.root, false)?;
+        if staging.parent() != Some(self.root.as_path())
+            || staging
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(staging_journal_id)
+                != Some(shown.journal_id.as_str())
+        {
+            return Err(JournalStoreError::InvalidRecord(
+                "staging name does not identify the displayed journal".to_owned(),
+            ));
+        }
+        if self.load_linked_staging(staging, &shown.journal_id)? != *shown {
+            return Err(JournalStoreError::InvalidRecord(
+                "staged journal changed after it was displayed".to_owned(),
+            ));
+        }
+        let final_path = self.path_for(&shown.journal_id)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(&final_path)
+            .map_err(|source| io_error(&final_path, source))?;
+        let final_metadata = file
+            .metadata()
+            .map_err(|source| io_error(&final_path, source))?;
+        let staged_metadata =
+            fs::symlink_metadata(staging).map_err(|source| io_error(staging, source))?;
+        if !trusted_journal_file_with_links(&final_metadata, 2)
+            || !trusted_journal_file_with_links(&staged_metadata, 2)
+            || final_metadata.dev() != staged_metadata.dev()
+            || final_metadata.ino() != staged_metadata.ino()
+        {
+            return Err(JournalStoreError::NotRegularFile(staging.to_path_buf()));
+        }
+        file.sync_all()
+            .map_err(|source| io_error(&final_path, source))?;
+        fs::remove_file(staging).map_err(|source| io_error(staging, source))?;
+        sync_directory(&self.root)
+    }
+
     fn load_at_with_links(
         &self,
         path: &Path,

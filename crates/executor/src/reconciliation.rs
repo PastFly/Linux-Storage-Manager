@@ -40,6 +40,38 @@ pub fn reconcile_abandoned_prewrite(
     )
 }
 
+/// Remove only a second name for the exact displayed durable journal inode.
+/// This never executes or resumes any storage operation.
+pub fn reconcile_duplicate_staging(
+    store: &DurableJournalStore,
+    staging: &Path,
+    shown_journal: &OperationJournal,
+    confirmation: &str,
+) -> Result<(), ReconciliationError> {
+    reconcile_duplicate_at(
+        store,
+        staging,
+        shown_journal,
+        confirmation,
+        Path::new(HOST_STORAGE_LOCK_PATH),
+    )
+}
+
+fn reconcile_duplicate_at(
+    store: &DurableJournalStore,
+    staging: &Path,
+    shown_journal: &OperationJournal,
+    confirmation: &str,
+    lock_path: &Path,
+) -> Result<(), ReconciliationError> {
+    let _lock = HostStorageLock::try_acquire_path(lock_path)?;
+    if confirmation != format!("REMOVE DUPLICATE {}", shown_journal.journal_id) {
+        return Err(ReconciliationError::ConfirmationMismatch);
+    }
+    store.remove_linked_staging_duplicate(staging, shown_journal)?;
+    Ok(())
+}
+
 fn reconcile_prewrite_at(
     store: &DurableJournalStore,
     shown_journal: &OperationJournal,
