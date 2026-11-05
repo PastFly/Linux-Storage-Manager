@@ -1,0 +1,41 @@
+name: Operator security regression
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backup-path:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Verify backup tool path isolation
+        shell: bash
+        run: |
+          set -o pipefail
+          failed=0
+          cargo test --locked -p lsm-executor --lib backup_capture_does_not_execute_tools_from_untrusted_path -- --nocapture 2>&1 | tee backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib in_place_change_of_opened_tool_is_rejected_before_use -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib pinned_backup_tool_cannot_change_after_last_verification -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib writable_journal_directory_is_rejected -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib other_runtime_journal_evidence_blocks_new_extend_session -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib backup_table_output_preserves_a_large_dump -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib directory_cannot_be_synced -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib backup_evidence_rejects_writable_directory_and_unsafe_file -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p linux-storage-manager-cli --bin storagemgr diagnostics_ -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo clippy --locked -p lsm-executor --lib -- -D warnings 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo clippy --locked -p linux-storage-manager-cli --bin storagemgr -- -D warnings 2>&1 | tee -a backup-path-test.log || failed=1
+          exit "$failed"
+      - name: Preserve regression output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-path-test-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backup-path-test.log
+          if-no-files-found: warn

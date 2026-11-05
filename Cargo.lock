@@ -681,6 +681,7 @@ dependencies = [
  "clap",
  "lsm-core",
  "lsm-discovery",
+ "lsm-executor",
  "lsm-planner",
  "lsm-tui",
  "serde_json",

@@ -1,5 +1,6 @@
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
@@ -118,7 +119,52 @@ fn sha256_open_file(file: &File) -> Result<String, io::Error> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-fn receipt_from_open_file(
+/// Copy the already-pinned executable into an immutable Linux memfd and verify
+/// the bytes after sealing. A later in-place change to the original inode cannot
+/// alter the executable passed to fexecve.
+pub(crate) fn snapshot_trusted_tool(
+    source: &File,
+    expected: &TrustedToolIdentity,
+) -> Result<File, PrivilegedToolPinError> {
+    const MAX_EXECUTABLE_BYTES: u64 = 128 * 1024 * 1024;
+    receipt_from_open_file(source, expected)?;
+    if expected.size_bytes == 0 || expected.size_bytes > MAX_EXECUTABLE_BYTES {
+        return Err(PrivilegedToolPinError::UnsafeExpectedIdentity);
+    }
+    let fd = unsafe {
+        libc::memfd_create(
+            c"lsm-backup-tool".as_ptr(),
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    let mut snapshot = unsafe { File::from_raw_fd(fd) };
+    let mut offset = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    while offset < expected.size_bytes {
+        let remaining = (expected.size_bytes - offset).min(buffer.len() as u64) as usize;
+        let count = source.read_at(&mut buffer[..remaining], offset)?;
+        if count == 0 {
+            return Err(PrivilegedToolPinError::PinnedExecutableMismatch);
+        }
+        snapshot.write_all(&buffer[..count])?;
+        offset += count as u64;
+    }
+    let seals = libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+    if unsafe { libc::fcntl(snapshot.as_raw_fd(), libc::F_ADD_SEALS, seals) } < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    if snapshot.metadata()?.len() != expected.size_bytes
+        || sha256_open_file(&snapshot)? != expected.sha256
+    {
+        return Err(PrivilegedToolPinError::PinnedExecutableMismatch);
+    }
+    Ok(snapshot)
+}
+
+pub(crate) fn receipt_from_open_file(
     file: &File,
     expected: &TrustedToolIdentity,
 ) -> Result<PinnedToolReceipt, PrivilegedToolPinError> {
@@ -149,7 +195,7 @@ fn receipt_from_open_file(
     })
 }
 
-fn pin_trusted_tool(
+pub(crate) fn pin_trusted_tool(
     expected: &TrustedToolIdentity,
 ) -> Result<(File, PinnedToolReceipt), PrivilegedToolPinError> {
     if expected.uid != 0
@@ -293,6 +339,52 @@ mod tests {
         assert_eq!(receipt.sha256, expected.sha256);
         assert_ne!(fs::metadata(&path).unwrap().ino(), expected.inode);
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pinned_backup_tool_cannot_change_after_last_verification() {
+        let root = temp_path("backup-content-after-verification");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("vgcfgbackup");
+        fs::write(&path, fs::read("/usr/bin/true").unwrap()).unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).unwrap();
+        let expected = identity_for_file(&path, PrivilegedProgram::Vgcfgbackup);
+        let opened = File::open(&path).unwrap();
+        receipt_from_open_file(&opened, &expected).unwrap();
+        let snapshot = snapshot_trusted_tool(&opened, &expected).unwrap();
+        fs::write(&path, fs::read("/usr/bin/false").unwrap()).unwrap();
+        let result = crate::privileged_exec::execute_descriptor_stage(
+            &snapshot,
+            PrivilegedProgram::Vgcfgbackup,
+            &["vgcfgbackup".into()],
+            "/usr/sbin:/usr/bin:/sbin:/bin",
+            "C",
+            None,
+        )
+        .unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            result.exit_code, 0,
+            "changed executable content reached launch"
+        );
+    }
+
+    #[test]
+    fn in_place_change_of_opened_tool_is_rejected_before_use() {
+        let root = temp_path("in-place-change");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("vgcfgbackup");
+        fs::write(&path, b"trusted executable").unwrap();
+        let expected = identity_for_file(&path, PrivilegedProgram::Vgcfgbackup);
+        let opened = File::open(&path).unwrap();
+        fs::write(&path, b"changed executable").unwrap();
+        assert!(matches!(
+            receipt_from_open_file(&opened, &expected),
+            Err(PrivilegedToolPinError::PinnedExecutableMismatch)
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 

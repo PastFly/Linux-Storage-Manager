@@ -1,8 +1,9 @@
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{self, Read};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+#[cfg(test)]
+use std::process::Command;
 
 use lsm_planner::JournalPhase;
 use serde::Serialize;
@@ -111,6 +112,16 @@ impl BackupReceiptRevalidation {
 
 #[derive(Debug, Error)]
 pub enum BackupCaptureError {
+    #[error("trusted backup tool resolution failed: {0}")]
+    TrustedTool(#[from] crate::TrustedToolError),
+    #[error("trusted backup tool pinning failed: {0}")]
+    ToolPin(#[from] crate::PrivilegedToolPinError),
+    #[error("trusted backup tool identity changed before execution")]
+    ToolIdentityChanged,
+    #[error("backup tool descriptor execution failed: {0}")]
+    ToolExecution(#[from] crate::PrivilegedDescriptorExecError),
+    #[error("partition table backup exceeds the descriptor output limit")]
+    BackupOutputTruncated,
     #[error("metadata backup capture requires a successfully identity-revalidated locked session")]
     SessionNotRevalidated,
     #[error("mutation-enabled execution is forbidden in the backup capture foundation")]
@@ -182,48 +193,65 @@ trait CaptureRunner {
 
 struct SystemCaptureRunner;
 
+fn run_backup_tool(
+    program: crate::PrivilegedProgram,
+    args: Vec<String>,
+) -> Result<crate::DescriptorExecOutcome, BackupCaptureError> {
+    let expected = crate::resolve_trusted_privileged_tool(program)?;
+    let (file, _) = crate::privileged_pin::pin_trusted_tool(&expected)?;
+    let snapshot = crate::privileged_pin::snapshot_trusted_tool(&file, &expected)?;
+    if crate::resolve_trusted_privileged_tool(program)? != expected {
+        return Err(BackupCaptureError::ToolIdentityChanged);
+    }
+    let mut argv = vec![program.as_str().to_owned()];
+    argv.extend(args);
+    Ok(
+        crate::privileged_exec::execute_descriptor_stage_with_stdout_limit(
+            &snapshot,
+            program,
+            &argv,
+            "/usr/sbin:/usr/bin:/sbin:/bin",
+            "C",
+            None,
+            MAX_BACKUP_ARTIFACT_BYTES as usize,
+        )?,
+    )
+}
+
 impl CaptureRunner for SystemCaptureRunner {
     fn capture_partition_table(&self, disk: &str, output: &Path) -> Result<(), BackupCaptureError> {
-        let file = create_artifact_file(output)?;
-        let stdout = file
-            .try_clone()
-            .map_err(|source| io_error(output, source))?;
-        let status = Command::new("sfdisk")
-            .arg("--dump")
-            .arg(disk)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::null())
-            .env("LC_ALL", "C")
-            .env("LANG", "C")
-            .status()
-            .map_err(|source| io_error(Path::new("sfdisk"), source))?;
-        if !status.success() {
+        let mut file = create_artifact_file(output)?;
+        let result = run_backup_tool(
+            crate::PrivilegedProgram::Sfdisk,
+            vec!["--dump".into(), disk.into()],
+        )?;
+        if result.exit_code != 0 {
             return Err(BackupCaptureError::CommandFailed {
                 program: "sfdisk".to_owned(),
-                status: status.to_string(),
+                status: result.exit_code.to_string(),
             });
         }
+        if result.stdout_truncated {
+            return Err(BackupCaptureError::BackupOutputTruncated);
+        }
+        file.write_all(&result.stdout)
+            .map_err(|source| io_error(output, source))?;
         file.sync_all().map_err(|source| io_error(output, source))
     }
 
     fn capture_lvm_metadata(&self, vg_name: &str, output: &Path) -> Result<(), BackupCaptureError> {
         ensure_artifact_absent(output)?;
-        let status = Command::new("vgcfgbackup")
-            .arg("--file")
-            .arg(output)
-            .arg(vg_name)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .env("LC_ALL", "C")
-            .env("LANG", "C")
-            .status()
-            .map_err(|source| io_error(Path::new("vgcfgbackup"), source))?;
-        if !status.success() {
+        let output_arg = output
+            .to_str()
+            .ok_or_else(|| BackupCaptureError::UnsafeArtifact(output.to_path_buf()))?;
+        let result = run_backup_tool(
+            crate::PrivilegedProgram::Vgcfgbackup,
+            vec!["--file".into(), output_arg.into(), vg_name.into()],
+        )?;
+        if result.exit_code != 0 {
             return Err(BackupCaptureError::CommandFailed {
                 program: "vgcfgbackup".to_owned(),
-                status: status.to_string(),
+                status: result.exit_code.to_string(),
             });
         }
         let file = OpenOptions::new()
@@ -285,6 +313,8 @@ fn capture_with_runner(
             sha256,
         });
     }
+
+    sync_backup_directory(artifact_root)?;
 
     let receipt_id = fingerprint(&(
         1_u32,
@@ -473,7 +503,7 @@ fn verify_existing_secure_directory(path: &Path) -> Result<(), BackupCaptureErro
 
         let metadata =
             fs::symlink_metadata(&current).map_err(|source| io_error(&current, source))?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        if !crate::journal_store::trusted_journal_directory(&metadata, current == path) {
             return Err(BackupCaptureError::UnsafeDirectory(current));
         }
     }
@@ -551,9 +581,13 @@ fn ensure_secure_directory(path: &Path) -> Result<(), BackupCaptureError> {
         }
         match fs::symlink_metadata(&current) {
             Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                if !crate::journal_store::trusted_journal_directory(&metadata, current == path) {
                     return Err(BackupCaptureError::UnsafeDirectory(current));
                 }
+                let parent = current
+                    .parent()
+                    .ok_or_else(|| BackupCaptureError::UnsafeDirectory(current.clone()))?;
+                sync_backup_directory(parent)?;
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
                 let mut builder = DirBuilder::new();
@@ -565,14 +599,24 @@ fn ensure_secure_directory(path: &Path) -> Result<(), BackupCaptureError> {
                 }
                 let metadata =
                     fs::symlink_metadata(&current).map_err(|source| io_error(&current, source))?;
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                if !crate::journal_store::trusted_journal_directory(&metadata, current == path) {
                     return Err(BackupCaptureError::UnsafeDirectory(current));
                 }
+                let parent = current
+                    .parent()
+                    .ok_or_else(|| BackupCaptureError::UnsafeDirectory(current.clone()))?;
+                sync_backup_directory(parent)?;
             }
             Err(source) => return Err(io_error(&current, source)),
         }
     }
     Ok(())
+}
+
+fn sync_backup_directory(path: &Path) -> Result<(), BackupCaptureError> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| io_error(path, source))
 }
 
 fn ensure_artifact_absent(path: &Path) -> Result<(), BackupCaptureError> {
@@ -596,7 +640,7 @@ fn create_artifact_file(path: &Path) -> Result<File, BackupCaptureError> {
 
 fn verify_artifact(path: &Path) -> Result<(u64, String), BackupCaptureError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if !crate::journal_store::trusted_journal_file(&metadata) {
         return Err(BackupCaptureError::UnsafeArtifact(path.to_path_buf()));
     }
     if metadata.len() == 0 {
@@ -611,6 +655,13 @@ fn verify_artifact(path: &Path) -> Result<(u64, String), BackupCaptureError> {
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
         .open(path)
         .map_err(|source| io_error(path, source))?;
+    let opened = file.metadata().map_err(|source| io_error(path, source))?;
+    if !crate::journal_store::trusted_journal_file(&opened)
+        || opened.dev() != metadata.dev()
+        || opened.ino() != metadata.ino()
+    {
+        return Err(BackupCaptureError::UnsafeArtifact(path.to_path_buf()));
+    }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(MAX_BACKUP_ARTIFACT_BYTES + 1)
         .read_to_end(&mut bytes)
@@ -657,7 +708,50 @@ pub(crate) fn test_backup_receipt_revalidation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::Mutex;
+
+    #[test]
+    fn backup_capture_does_not_execute_tools_from_untrusted_path() {
+        const CHILD: &str = "LSM_UNTRUSTED_BACKUP_PATH_CHILD";
+        if let Some(root) = std::env::var_os(CHILD) {
+            let root = PathBuf::from(root);
+            let runner = SystemCaptureRunner;
+            let _ =
+                runner.capture_partition_table("/dev/lsm-nonexistent-test", &root.join("table"));
+            let _ = runner.capture_lvm_metadata("lsm-nonexistent-test", &root.join("vg"));
+            assert!(
+                !root.join("executed").exists(),
+                "untrusted PATH tool was executed"
+            );
+            return;
+        }
+        let root =
+            std::env::temp_dir().join(format!("lsm-untrusted-path-test-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        for name in ["sfdisk", "vgcfgbackup"] {
+            let path = root.join(name);
+            fs::write(
+                &path,
+                b"#!/bin/sh\nprintf injected > \"$LSM_UNTRUSTED_BACKUP_PATH_CHILD/executed\"\n",
+            )
+            .unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let status = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("backup_capture::tests::backup_capture_does_not_execute_tools_from_untrusted_path")
+            .arg("--nocapture")
+            .env(CHILD, &root)
+            .env("PATH", &root)
+            .status()
+            .unwrap();
+        let _ = fs::remove_dir_all(root);
+        assert!(
+            status.success(),
+            "backup capture executed a tool from an untrusted PATH"
+        );
+    }
 
     struct FakeRunner {
         calls: Mutex<Vec<(String, String)>>,
@@ -715,6 +809,7 @@ mod tests {
         ensure_secure_directory(&root).unwrap();
         let path = root.join("artifact");
         fs::write(&path, b"verified-backup").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
 
         let (size, digest) = verify_artifact(&path).unwrap();
 
@@ -731,6 +826,7 @@ mod tests {
         ensure_secure_directory(&root).unwrap();
         let path = root.join("artifact");
         fs::write(&path, b"").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
 
         assert!(matches!(
             verify_artifact(&path),
@@ -843,6 +939,58 @@ mod tests {
             "lsm-backup-capture-session-test-{}-{name}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn backup_evidence_rejects_writable_directory_and_unsafe_file() {
+        let root = temp_path("unsafe-backup-evidence");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o777)).unwrap();
+        let directory_result = ensure_secure_directory(&root);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let artifact = root.join("artifact");
+        fs::write(&artifact, b"backup").unwrap();
+        fs::set_permissions(&artifact, fs::Permissions::from_mode(0o644)).unwrap();
+        let file_result = verify_artifact(&artifact);
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            directory_result.is_err(),
+            "writable backup directory was accepted"
+        );
+        assert!(file_result.is_err(), "unsafe backup artifact was accepted");
+    }
+
+    #[test]
+    fn backup_capture_fails_when_artifact_directory_cannot_be_synced() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let (snapshot, capabilities) = direct_fixture();
+        let handoff = direct_handoff(&snapshot, &capabilities);
+        let manifest = crate::build_metadata_backup_manifest(&handoff).unwrap();
+        let lock = temp_path("sync-failure-lock").join("storage.lock");
+        let root = temp_path("sync-failure-artifacts");
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o300)).unwrap();
+        let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let result = capture_with_runner(
+            &session,
+            &manifest,
+            Some(&root),
+            &FakeRunner::new(b"valid backup"),
+        );
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        drop(session);
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(root);
+        assert!(
+            result.is_err(),
+            "backup directory sync failure must fail closed"
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@ use crate::{
 #[serde(rename_all = "snake_case")]
 pub enum PrivilegedProgram {
     Sfdisk,
+    Vgcfgbackup,
     Partx,
     Pvresize,
     Lvextend,
@@ -31,6 +32,7 @@ impl PrivilegedProgram {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Sfdisk => "sfdisk",
+            Self::Vgcfgbackup => "vgcfgbackup",
             Self::Partx => "partx",
             Self::Pvresize => "pvresize",
             Self::Lvextend => "lvextend",

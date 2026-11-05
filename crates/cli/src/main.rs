@@ -14,6 +14,7 @@ use lsm_planner::{
     CreatePartitionTablePolicy, CreatePurpose, CreateRequest, ExtendRequest,
     FilesystemDecisionState, Growth, PlanStatus,
 };
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[derive(Debug, Parser)]
@@ -49,6 +50,12 @@ enum Command {
     Lvm,
     /// Run read-only topology and cross-source consistency diagnostics.
     Diagnose,
+    /// Inspect unfinished operation evidence without changing it.
+    Operations {
+        /// Emit structured JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Explain whether a mount point or block device can be grown with currently known capacity.
     Explain {
         /// Mount point (for example / or /var) or block-device path.
@@ -227,6 +234,47 @@ fn run() -> Result<ExitCode> {
         Some(Command::Diagnose) => {
             let snapshot = discover_snapshot()?;
             println!("{}", serde_json::to_string_pretty(&snapshot.diagnostics)?);
+        }
+        Some(Command::Operations { json }) => {
+            let diagnostics =
+                read_operation_diagnostics(&lsm_executor::DurableJournalStore::default())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "journal_directory_exists": diagnostics.journal_directory_exists,
+                        "unfinished_extend_journals": diagnostics.unfinished,
+                        "unclassified_runtime_evidence": diagnostics.unclassified,
+                        "reconciliation_required": diagnostics.reconciliation_required,
+                        "execution_authorized": false,
+                    }))?
+                );
+            } else {
+                println!("Operation evidence (read-only; not an authorization to write):");
+                if !diagnostics.journal_directory_exists {
+                    println!("Extend journal directory has not been initialized.");
+                }
+                for journal in &diagnostics.unfinished {
+                    println!(
+                        "Journal {}: target {}, phase {:?}, mutation may have started: {}",
+                        journal.journal_id,
+                        journal.target,
+                        journal.phase,
+                        journal.mutation_may_have_started
+                    );
+                }
+                for path in &diagnostics.unclassified {
+                    println!("Unclassified runtime evidence: {}", path.display());
+                }
+                if diagnostics.reconciliation_required {
+                    println!("Manual investigation required. Preserve journals and backups; do not retry a potentially started operation.");
+                }
+            }
+            return Ok(if diagnostics.reconciliation_required {
+                ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
+            });
         }
         Some(Command::Explain { target }) => {
             let snapshot = discover_snapshot()?;
@@ -633,6 +681,37 @@ fn run() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+struct OperationDiagnostics {
+    journal_directory_exists: bool,
+    unfinished: Vec<lsm_planner::OperationJournal>,
+    unclassified: Vec<PathBuf>,
+    reconciliation_required: bool,
+}
+
+fn read_operation_diagnostics(
+    store: &lsm_executor::DurableJournalStore,
+) -> Result<OperationDiagnostics> {
+    let journal_directory_exists = match std::fs::symlink_metadata(store.root()) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    let unfinished = if journal_directory_exists {
+        store.unfinished()?
+    } else {
+        Vec::new()
+    };
+    let unclassified = store.unclassified_runtime_evidence()?;
+    let reconciliation_required =
+        unfinished.iter().any(|j| j.mutation_may_have_started) || !unclassified.is_empty();
+    Ok(OperationDiagnostics {
+        journal_directory_exists,
+        unfinished,
+        unclassified,
+        reconciliation_required,
+    })
+}
+
 fn print_capabilities() -> Result<()> {
     for tool in discover_capabilities().tools {
         println!(
@@ -826,6 +905,39 @@ mod tests {
 #[cfg(test)]
 mod extend_handoff_cli_tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_does_not_create_missing_journal_directory() {
+        let root = std::env::temp_dir().join(format!("lsm-cli-ops-missing-{}", std::process::id()));
+        let store = lsm_executor::DurableJournalStore::at(root.join("journal"));
+        let diagnostics = read_operation_diagnostics(&store).unwrap();
+        assert!(!diagnostics.journal_directory_exists);
+        assert!(!diagnostics.reconciliation_required);
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn diagnostics_reports_and_preserves_unclassified_runtime_evidence() {
+        let root =
+            std::env::temp_dir().join(format!("lsm-cli-ops-evidence-{}", std::process::id()));
+        let directory = root.join("swap-runtime");
+        std::fs::create_dir_all(&directory).unwrap();
+        let evidence = directory.join("pending.json");
+        std::fs::write(&evidence, b"preserve").unwrap();
+        let store = lsm_executor::DurableJournalStore::at(root.join("journal"));
+        let diagnostics = read_operation_diagnostics(&store).unwrap();
+        assert!(diagnostics.reconciliation_required);
+        assert_eq!(diagnostics.unclassified, vec![evidence.clone()]);
+        assert_eq!(std::fs::read(&evidence).unwrap(), b"preserve");
+        assert!(!store.root().exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn operations_diagnostics_accepts_json_without_mutating_commands() {
+        assert!(Cli::try_parse_from(["storagemgr", "operations", "--json"]).is_ok());
+        assert!(Cli::try_parse_from(["storagemgr", "operations", "--reconcile"]).is_err());
+    }
 
     #[test]
     fn freeze_handoff_accepts_max_and_json() {

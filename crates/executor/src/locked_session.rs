@@ -63,6 +63,14 @@ pub enum LockedSessionError {
     DurableJournalMismatch,
     #[error("durable journal persistence failed: {0}")]
     DurableJournal(#[from] JournalStoreError),
+    #[error("unfinished storage mutation requires reconciliation: journal {journal_id}, target {target}, phase {phase:?}")]
+    UnfinishedMutation {
+        journal_id: String,
+        target: String,
+        phase: JournalPhase,
+    },
+    #[error("runtime journal evidence requires reconciliation before mutation: {0}")]
+    UnclassifiedRuntimeJournal(std::path::PathBuf),
 }
 
 impl<'a> LockedExecutionSession<'a> {
@@ -160,6 +168,27 @@ impl<'a> LockedExecutionSession<'a> {
         journal_store: Option<&'a DurableJournalStore>,
     ) -> Result<Self, LockedSessionError> {
         validate_handoff(handoff)?;
+
+        // Old journal records do not contain a complete resource identity. While
+        // holding the host-wide lock, conservatively block all writes if any
+        // previous operation may have crossed a mutation boundary.
+        if let Some(store) = journal_store {
+            store.prepare_directory()?;
+            if let Some(path) = store.unclassified_runtime_evidence()?.into_iter().next() {
+                return Err(LockedSessionError::UnclassifiedRuntimeJournal(path));
+            }
+            if let Some(previous) = store
+                .unfinished()?
+                .into_iter()
+                .find(|journal| journal.mutation_may_have_started)
+            {
+                return Err(LockedSessionError::UnfinishedMutation {
+                    journal_id: previous.journal_id,
+                    target: previous.target,
+                    phase: previous.phase,
+                });
+            }
+        }
 
         let mut journal = OperationJournal::new(handoff.guard());
         journal.apply(JournalTransition::HostLockAcquired)?;
@@ -676,6 +705,106 @@ mod tests {
         assert_eq!(session.journal().phase, JournalPhase::IdentityRevalidated);
         drop(session);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn other_runtime_journal_evidence_blocks_new_extend_session() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        for name in [
+            "create-runtime",
+            "create-mount-runtime",
+            "create-persistent-config",
+            "swap-runtime",
+        ] {
+            let path = lock_path();
+            let root = journal_root("foreign-runtime-evidence");
+            let directory = root.join(name);
+            std::fs::create_dir_all(&directory).unwrap();
+            let evidence = directory.join(format!("{}.json", "a".repeat(64)));
+            std::fs::write(&evidence, b"retained evidence").unwrap();
+            let store = DurableJournalStore::at(root.join("journal"));
+            let result = LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store);
+            assert!(
+                matches!(result, Err(LockedSessionError::UnclassifiedRuntimeJournal(ref actual)) if actual == &evidence)
+            );
+            assert_eq!(std::fs::read(&evidence).unwrap(), b"retained evidence");
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn malformed_existing_journal_blocks_a_new_durable_session() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("malformed-existing-journal");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(format!("{}.json", "a".repeat(64))), b"{").unwrap();
+        let store = DurableJournalStore::at(&root);
+        let result = LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store);
+        assert!(result.is_err(), "invalid journal evidence must fail closed");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unfinished_mutation_blocks_a_new_plan_for_the_same_storage() {
+        let (snapshot, capabilities) = fixture();
+        let first_handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("unfinished-mutation-new-plan");
+        let store = DurableJournalStore::at(&root);
+        let mut first =
+            LockedExecutionSession::begin_durable_at_paths(&first_handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut first, &first_handoff, &snapshot, &capabilities);
+        let frozen = crate::freeze_execution_intent(&first, &approval).unwrap();
+        let validated =
+            crate::validate_and_bind_native_manifest(crate::compile_native_manifest(&frozen))
+                .unwrap();
+        let steps = validated
+            .manifest()
+            .steps
+            .iter()
+            .filter(|step| step.role == crate::FrozenIntentRole::MutationCandidate)
+            .map(|step| step.plan_step_id)
+            .collect::<Vec<_>>();
+        let binding = build_execution_start_binding(
+            first.journal(),
+            frozen.manifest_id(),
+            validated.digest(),
+            &first_handoff.target_identity().manifest_digest,
+            &steps,
+        )
+        .unwrap();
+        first.persist_execution_started(&binding).unwrap();
+        let previous = store.load(&first.journal().journal_id).unwrap();
+        drop(first);
+
+        let plan = plan_extend(
+            &snapshot,
+            &capabilities,
+            ExtendRequest {
+                target: "/".into(),
+                growth: Growth::ByBytes(2 * GIB),
+            },
+        )
+        .unwrap();
+        let second_handoff =
+            build_frozen_execution_handoff(&snapshot, &capabilities, &plan).unwrap();
+        assert_ne!(
+            first_handoff.guard().guard_id,
+            second_handoff.guard().guard_id
+        );
+        let second = LockedExecutionSession::begin_durable_at_paths(&second_handoff, &path, &store);
+        assert!(
+            second.is_err(),
+            "an unfinished mutation must block a new plan"
+        );
+        assert_eq!(store.load(&previous.journal_id).unwrap(), previous);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -78,6 +78,68 @@ impl DurableJournalStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Inspect all durable journals. Unexpected files or invalid records are errors:
+    /// ignoring either could hide evidence of an interrupted storage mutation.
+    pub fn unfinished(&self) -> Result<Vec<OperationJournal>, JournalStoreError> {
+        ensure_secure_directory(&self.root, false)?;
+        let mut unfinished = Vec::new();
+        let entries = fs::read_dir(&self.root).map_err(|source| io_error(&self.root, source))?;
+        for entry in entries {
+            let entry = entry.map_err(|source| io_error(&self.root, source))?;
+            let name = entry.file_name();
+            let name = name.to_str().ok_or_else(|| {
+                JournalStoreError::InvalidRecord("non-UTF-8 journal directory entry".to_owned())
+            })?;
+            let id = name.strip_suffix(".json").ok_or_else(|| {
+                JournalStoreError::InvalidRecord(format!(
+                    "unexpected journal directory entry: {name}"
+                ))
+            })?;
+            let journal = self.load(id)?;
+            if !matches!(
+                journal.phase,
+                JournalPhase::Completed | JournalPhase::Aborted
+            ) {
+                unfinished.push(journal);
+            }
+        }
+        unfinished.sort_by(|a, b| a.journal_id.cmp(&b.journal_id));
+        Ok(unfinished)
+    }
+
+    /// Enumerate evidence owned by other runtime journal formats. Until their
+    /// typed recovery validators are connected, no entry may be treated as safe.
+    pub fn unclassified_runtime_evidence(&self) -> Result<Vec<PathBuf>, JournalStoreError> {
+        let parent = self
+            .root
+            .parent()
+            .ok_or_else(|| JournalStoreError::UnsafeDirectory(self.root.clone()))?;
+        let mut evidence = Vec::new();
+        for name in [
+            "create-runtime",
+            "create-mount-runtime",
+            "create-persistent-config",
+            "swap-runtime",
+        ] {
+            let directory = parent.join(name);
+            match fs::symlink_metadata(&directory) {
+                Ok(_) => ensure_secure_directory(&directory, false)?,
+                Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
+                Err(source) => return Err(io_error(&directory, source)),
+            }
+            for entry in fs::read_dir(&directory).map_err(|source| io_error(&directory, source))? {
+                let entry = entry.map_err(|source| io_error(&directory, source))?;
+                evidence.push(entry.path());
+            }
+        }
+        evidence.sort();
+        Ok(evidence)
+    }
+
+    pub(crate) fn prepare_directory(&self) -> Result<(), JournalStoreError> {
+        ensure_secure_directory(&self.root, true)
     }
 
     pub fn persist_new(&self, journal: &OperationJournal) -> Result<PathBuf, JournalStoreError> {
@@ -187,7 +249,7 @@ impl DurableJournalStore {
             }
             Err(source) => return Err(io_error(&path, source)),
         };
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
+        if !trusted_journal_file(&metadata) {
             return Err(JournalStoreError::NotRegularFile(path));
         }
         if metadata.len() > MAX_JOURNAL_BYTES {
@@ -199,6 +261,13 @@ impl DurableJournalStore {
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
             .open(&path)
             .map_err(|source| io_error(&path, source))?;
+        let opened = file.metadata().map_err(|source| io_error(&path, source))?;
+        if !trusted_journal_file(&opened)
+            || opened.dev() != metadata.dev()
+            || opened.ino() != metadata.ino()
+        {
+            return Err(JournalStoreError::NotRegularFile(path));
+        }
         let mut bytes = Vec::new();
         file.take(MAX_JOURNAL_BYTES + 1)
             .read_to_end(&mut bytes)
@@ -689,6 +758,22 @@ fn is_lower_hex_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
+pub(crate) fn trusted_journal_file(metadata: &fs::Metadata) -> bool {
+    metadata.is_file()
+        && !metadata.file_type().is_symlink()
+        && metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.mode() & 0o7777 == 0o600
+        && metadata.nlink() == 1
+}
+
+pub(crate) fn trusted_journal_directory(metadata: &fs::Metadata, is_root: bool) -> bool {
+    let uid = metadata.uid();
+    let mode = metadata.mode();
+    let owner_ok = uid == 0 || uid == unsafe { libc::geteuid() };
+    let safe_mode = mode & 0o022 == 0 || (!is_root && uid == 0 && mode & 0o1000 != 0);
+    metadata.is_dir() && !metadata.file_type().is_symlink() && owner_ok && safe_mode
+}
+
 fn ensure_secure_directory(path: &Path, create: bool) -> Result<(), JournalStoreError> {
     if !path.is_absolute() {
         return Err(JournalStoreError::UnsafeDirectory(path.to_path_buf()));
@@ -707,8 +792,14 @@ fn ensure_secure_directory(path: &Path, create: bool) -> Result<(), JournalStore
 
         match fs::symlink_metadata(&current) {
             Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                if !trusted_journal_directory(&metadata, current == path) {
                     return Err(JournalStoreError::UnsafeDirectory(current));
+                }
+                if create {
+                    let parent = current
+                        .parent()
+                        .ok_or_else(|| JournalStoreError::UnsafeDirectory(current.clone()))?;
+                    sync_directory(parent)?;
                 }
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound && create => {
@@ -721,9 +812,13 @@ fn ensure_secure_directory(path: &Path, create: bool) -> Result<(), JournalStore
                 }
                 let metadata =
                     fs::symlink_metadata(&current).map_err(|source| io_error(&current, source))?;
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                if !trusted_journal_directory(&metadata, current == path) {
                     return Err(JournalStoreError::UnsafeDirectory(current));
                 }
+                let parent = current
+                    .parent()
+                    .ok_or_else(|| JournalStoreError::UnsafeDirectory(current.clone()))?;
+                sync_directory(parent)?;
             }
             Err(source) => return Err(io_error(&current, source)),
         }
@@ -780,6 +875,66 @@ mod tests {
             std::process::id(),
             TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn journal_creation_fails_when_parent_directory_cannot_be_synced() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let parent = root("unreadable-parent");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o300)).unwrap();
+        let store = DurableJournalStore::at(parent.join("journal"));
+        let result = store.persist_new(&journal());
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+        assert!(
+            result.is_err(),
+            "journal parent directory sync failure must fail closed"
+        );
+    }
+
+    #[test]
+    fn journal_with_multiple_links_is_rejected() {
+        let root = root("multiple-links");
+        let store = DurableJournalStore::at(&root);
+        let journal = journal();
+        let path = store.persist_new(&journal).unwrap();
+        fs::hard_link(&path, root.join("extra-link")).unwrap();
+        let result = store.load(&journal.journal_id);
+        let _ = fs::remove_dir_all(root);
+        assert!(matches!(result, Err(JournalStoreError::NotRegularFile(_))));
+    }
+
+    #[test]
+    fn journal_read_rejects_unsafe_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = root("unsafe-file-mode");
+        let store = DurableJournalStore::at(&root);
+        let journal = journal();
+        let path = store.persist_new(&journal).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let result = store.load(&journal.journal_id);
+        let _ = fs::remove_dir_all(root);
+        assert!(matches!(result, Err(JournalStoreError::NotRegularFile(_))));
+    }
+
+    #[test]
+    fn writable_journal_directory_is_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = root("writable-directory");
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o777)).unwrap();
+        let store = DurableJournalStore::at(&root);
+        let result = store.persist_new(&journal());
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            result.is_err(),
+            "unsafe writable journal directory was accepted"
+        );
     }
 
     #[test]
