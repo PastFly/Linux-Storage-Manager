@@ -657,7 +657,50 @@ pub(crate) fn test_backup_receipt_revalidation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::Mutex;
+
+    #[test]
+    fn backup_capture_does_not_execute_tools_from_untrusted_path() {
+        const CHILD: &str = "LSM_UNTRUSTED_BACKUP_PATH_CHILD";
+        if let Some(root) = std::env::var_os(CHILD) {
+            let root = PathBuf::from(root);
+            let runner = SystemCaptureRunner;
+            let _ =
+                runner.capture_partition_table("/dev/lsm-nonexistent-test", &root.join("table"));
+            let _ = runner.capture_lvm_metadata("lsm-nonexistent-test", &root.join("vg"));
+            assert!(
+                !root.join("executed").exists(),
+                "untrusted PATH tool was executed"
+            );
+            return;
+        }
+        let root =
+            std::env::temp_dir().join(format!("lsm-untrusted-path-test-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        for name in ["sfdisk", "vgcfgbackup"] {
+            let path = root.join(name);
+            fs::write(
+                &path,
+                b"#!/bin/sh\nprintf injected > \"$LSM_UNTRUSTED_BACKUP_PATH_CHILD/executed\"\n",
+            )
+            .unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let status = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("backup_capture::tests::backup_capture_does_not_execute_tools_from_untrusted_path")
+            .arg("--nocapture")
+            .env(CHILD, &root)
+            .env("PATH", &root)
+            .status()
+            .unwrap();
+        let _ = fs::remove_dir_all(root);
+        assert!(
+            status.success(),
+            "backup capture executed a tool from an untrusted PATH"
+        );
+    }
 
     struct FakeRunner {
         calls: Mutex<Vec<(String, String)>>,

@@ -1,0 +1,29 @@
+name: Operator security regression
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backup-path:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Verify backup tool path isolation
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked -p lsm-executor --lib backup_capture_does_not_execute_tools_from_untrusted_path -- --nocapture 2>&1 | tee backup-path-test.log
+      - name: Preserve regression output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-path-test-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backup-path-test.log
+          if-no-files-found: warn
