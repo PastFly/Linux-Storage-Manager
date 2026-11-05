@@ -370,7 +370,7 @@ impl<'a> LockedExecutionSession<'a> {
     }
 
     #[cfg(test)]
-    fn begin_durable_at_paths(
+    pub(crate) fn begin_durable_at_paths(
         handoff: &'a FrozenExecutionHandoff,
         lock_path: &Path,
         journal_store: &'a DurableJournalStore,

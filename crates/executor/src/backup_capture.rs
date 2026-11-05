@@ -291,7 +291,14 @@ fn capture_with_runner(
         return Err(BackupCaptureError::ArtifactDirectoryMismatch);
     }
 
-    let artifact_root = root_override.unwrap_or(expected_root);
+    let overridden_root = root_override.map(|root| {
+        if expected_root == attempt_root {
+            root.join(&session.journal().journal_id)
+        } else {
+            root.to_path_buf()
+        }
+    });
+    let artifact_root = overridden_root.as_deref().unwrap_or(expected_root);
     ensure_secure_directory(artifact_root)?;
 
     let mut receipts = Vec::with_capacity(manifest.requirements().len());
@@ -408,7 +415,16 @@ fn revalidate_receipt_at_root(
         ));
     }
 
-    let artifact_root = root_override.unwrap_or_else(|| Path::new(manifest.artifact_directory()));
+    let overridden_root = root_override.map(|root| {
+        if Path::new(manifest.artifact_directory()) == attempt_root {
+            root.join(&receipt.journal_id)
+        } else {
+            root.to_path_buf()
+        }
+    });
+    let artifact_root = overridden_root
+        .as_deref()
+        .unwrap_or_else(|| Path::new(manifest.artifact_directory()));
     if let Err(error) = verify_existing_secure_directory(artifact_root) {
         blockers.push(format!("artifact directory verification failed: {error}"));
     }
@@ -826,6 +842,64 @@ mod tests {
                 .map_err(|source| io_error(output, source))?;
             file.sync_all().map_err(|source| io_error(output, source))
         }
+    }
+
+    #[test]
+    fn separate_attempts_capture_distinct_backups_without_reusing_prior_evidence() {
+        use lsm_planner::JournalTransition;
+        let (snapshot, capabilities) = direct_fixture();
+        let handoff = direct_handoff(&snapshot, &capabilities);
+        let root = temp_path("attempt-specific-backups");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let lock = root.join("lock/storage.lock");
+        let store = crate::DurableJournalStore::at(root.join("journals"));
+        let backup_root = root.join("backups");
+        let mut first =
+            crate::LockedExecutionSession::begin_durable_at_paths(&handoff, &lock, &store).unwrap();
+        first.revalidate(&snapshot, &capabilities).unwrap();
+        let first_manifest = crate::build_metadata_backup_manifest_for_session(&first).unwrap();
+        let first_receipt = capture_with_runner(
+            &first,
+            &first_manifest,
+            Some(&backup_root),
+            &FakeRunner::new(b"first backup"),
+        )
+        .unwrap();
+        assert!(
+            revalidate_receipt_at_root(&first_manifest, &first_receipt, Some(&backup_root))
+                .unwrap()
+                .matches()
+        );
+        let mut first_journal = first.journal().clone();
+        drop(first);
+        first_journal
+            .apply(JournalTransition::Abort {
+                reason: "operator confirmed no mutation",
+            })
+            .unwrap();
+        store.persist(&first_journal).unwrap();
+        let mut second =
+            crate::LockedExecutionSession::begin_durable_at_paths(&handoff, &lock, &store).unwrap();
+        second.revalidate(&snapshot, &capabilities).unwrap();
+        let second_manifest = crate::build_metadata_backup_manifest_for_session(&second).unwrap();
+        let second_receipt = capture_with_runner(
+            &second,
+            &second_manifest,
+            Some(&backup_root),
+            &FakeRunner::new(b"second backup"),
+        )
+        .unwrap();
+        assert!(
+            revalidate_receipt_at_root(&second_manifest, &second_receipt, Some(&backup_root))
+                .unwrap()
+                .matches()
+        );
+        assert_ne!(first_receipt.receipt_id(), second_receipt.receipt_id());
+        assert!(backup_root.join(&first_journal.journal_id).is_dir());
+        assert!(backup_root.join(&second.journal().journal_id).is_dir());
+        drop(second);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
