@@ -888,11 +888,16 @@ mod tests {
         fs::set_permissions(&parent, fs::Permissions::from_mode(0o300)).unwrap();
         let store = DurableJournalStore::at(parent.join("journal"));
         let result = store.persist_new(&journal());
+        let retry = store.persist_new(&journal());
         fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
         fs::remove_dir_all(parent).unwrap();
         assert!(
             result.is_err(),
             "journal parent directory sync failure must fail closed"
+        );
+        assert!(
+            retry.is_err(),
+            "an existing unsynced directory must not make a retry succeed"
         );
     }
 

@@ -193,7 +193,7 @@ trait CaptureRunner {
 
 struct SystemCaptureRunner;
 
-fn run_backup_tool(
+pub(crate) fn run_trusted_read_only_tool(
     program: crate::PrivilegedProgram,
     args: Vec<String>,
 ) -> Result<crate::DescriptorExecOutcome, BackupCaptureError> {
@@ -221,7 +221,7 @@ fn run_backup_tool(
 impl CaptureRunner for SystemCaptureRunner {
     fn capture_partition_table(&self, disk: &str, output: &Path) -> Result<(), BackupCaptureError> {
         let mut file = create_artifact_file(output)?;
-        let result = run_backup_tool(
+        let result = run_trusted_read_only_tool(
             crate::PrivilegedProgram::Sfdisk,
             vec!["--dump".into(), disk.into()],
         )?;
@@ -244,7 +244,7 @@ impl CaptureRunner for SystemCaptureRunner {
         let output_arg = output
             .to_str()
             .ok_or_else(|| BackupCaptureError::UnsafeArtifact(output.to_path_buf()))?;
-        let result = run_backup_tool(
+        let result = run_trusted_read_only_tool(
             crate::PrivilegedProgram::Vgcfgbackup,
             vec!["--file".into(), output_arg.into(), vg_name.into()],
         )?;
@@ -939,6 +939,27 @@ mod tests {
             "lsm-backup-capture-session-test-{}-{name}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn backup_directory_creation_fails_when_parent_directory_cannot_be_synced() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let parent = temp_path("backup-unsynced-parent");
+        let _ = fs::remove_dir_all(&parent);
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o300)).unwrap();
+        let root = parent.join("backups");
+        let first = ensure_secure_directory(&root);
+        let retry = ensure_secure_directory(&root);
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+        assert!(first.is_err());
+        assert!(
+            retry.is_err(),
+            "an existing unsynced backup directory must not make a retry succeed"
+        );
     }
 
     #[test]
