@@ -276,7 +276,8 @@ impl DirectoryWatch {
                     #[cfg(test)]
                     if count >= 16 {
                         let mask = u32::from_ne_bytes(bytes[4..8].try_into().unwrap());
-                        let name_len = u32::from_ne_bytes(bytes[12..16].try_into().unwrap()) as usize;
+                        let name_len =
+                            u32::from_ne_bytes(bytes[12..16].try_into().unwrap()) as usize;
                         let end = (16 + name_len).min(count);
                         eprintln!(
                             "journal directory event: path={:?} mask={mask:#x} name={:?}",
