@@ -942,6 +942,27 @@ mod tests {
     }
 
     #[test]
+    fn backup_directory_creation_fails_when_parent_directory_cannot_be_synced() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let parent = temp_path("backup-unsynced-parent");
+        let _ = fs::remove_dir_all(&parent);
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o300)).unwrap();
+        let root = parent.join("backups");
+        let first = ensure_secure_directory(&root);
+        let retry = ensure_secure_directory(&root);
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+        assert!(first.is_err());
+        assert!(
+            retry.is_err(),
+            "an existing unsynced backup directory must not make a retry succeed"
+        );
+    }
+
+    #[test]
     fn backup_evidence_rejects_writable_directory_and_unsafe_file() {
         let root = temp_path("unsafe-backup-evidence");
         let _ = fs::remove_dir_all(&root);
