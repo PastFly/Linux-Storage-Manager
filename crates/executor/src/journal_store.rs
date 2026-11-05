@@ -1,6 +1,6 @@
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -220,7 +220,7 @@ impl DurableJournalStore {
             }
             Err(source) => return Err(io_error(&path, source)),
         };
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
+        if !trusted_journal_file(&metadata) {
             return Err(JournalStoreError::NotRegularFile(path));
         }
         if metadata.len() > MAX_JOURNAL_BYTES {
@@ -232,6 +232,13 @@ impl DurableJournalStore {
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
             .open(&path)
             .map_err(|source| io_error(&path, source))?;
+        let opened = file.metadata().map_err(|source| io_error(&path, source))?;
+        if !trusted_journal_file(&opened)
+            || opened.dev() != metadata.dev()
+            || opened.ino() != metadata.ino()
+        {
+            return Err(JournalStoreError::NotRegularFile(path));
+        }
         let mut bytes = Vec::new();
         file.take(MAX_JOURNAL_BYTES + 1)
             .read_to_end(&mut bytes)
@@ -722,6 +729,22 @@ fn is_lower_hex_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
+fn trusted_journal_file(metadata: &fs::Metadata) -> bool {
+    metadata.is_file()
+        && !metadata.file_type().is_symlink()
+        && metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.mode() & 0o7777 == 0o600
+        && metadata.nlink() == 1
+}
+
+fn trusted_journal_directory(metadata: &fs::Metadata, is_root: bool) -> bool {
+    let uid = metadata.uid();
+    let mode = metadata.mode();
+    let owner_ok = uid == 0 || uid == unsafe { libc::geteuid() };
+    let safe_mode = mode & 0o022 == 0 || (!is_root && uid == 0 && mode & 0o1000 != 0);
+    metadata.is_dir() && !metadata.file_type().is_symlink() && owner_ok && safe_mode
+}
+
 fn ensure_secure_directory(path: &Path, create: bool) -> Result<(), JournalStoreError> {
     if !path.is_absolute() {
         return Err(JournalStoreError::UnsafeDirectory(path.to_path_buf()));
@@ -740,7 +763,7 @@ fn ensure_secure_directory(path: &Path, create: bool) -> Result<(), JournalStore
 
         match fs::symlink_metadata(&current) {
             Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                if !trusted_journal_directory(&metadata, current == path) {
                     return Err(JournalStoreError::UnsafeDirectory(current));
                 }
             }
@@ -754,7 +777,7 @@ fn ensure_secure_directory(path: &Path, create: bool) -> Result<(), JournalStore
                 }
                 let metadata =
                     fs::symlink_metadata(&current).map_err(|source| io_error(&current, source))?;
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                if !trusted_journal_directory(&metadata, current == path) {
                     return Err(JournalStoreError::UnsafeDirectory(current));
                 }
             }

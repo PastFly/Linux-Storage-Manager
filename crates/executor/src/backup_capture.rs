@@ -205,14 +205,17 @@ fn run_backup_tool(
     crate::privileged_pin::receipt_from_open_file(&file, &expected)?;
     let mut argv = vec![program.as_str().to_owned()];
     argv.extend(args);
-    Ok(crate::privileged_exec::execute_descriptor_stage(
-        &file,
-        program,
-        &argv,
-        "/usr/sbin:/usr/bin:/sbin:/bin",
-        "C",
-        None,
-    )?)
+    Ok(
+        crate::privileged_exec::execute_descriptor_stage_with_stdout_limit(
+            &file,
+            program,
+            &argv,
+            "/usr/sbin:/usr/bin:/sbin:/bin",
+            "C",
+            None,
+            MAX_BACKUP_ARTIFACT_BYTES as usize,
+        )?,
+    )
 }
 
 impl CaptureRunner for SystemCaptureRunner {

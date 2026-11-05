@@ -85,7 +85,7 @@ struct CapturedOutput {
     truncated: bool,
 }
 
-fn read_bounded(mut file: File) -> Result<CapturedOutput, io::Error> {
+fn read_bounded(mut file: File, limit: usize) -> Result<CapturedOutput, io::Error> {
     let mut bytes = Vec::new();
     let mut truncated = false;
     let mut buffer = [0_u8; 8192];
@@ -94,7 +94,7 @@ fn read_bounded(mut file: File) -> Result<CapturedOutput, io::Error> {
         if read == 0 {
             break;
         }
-        let remaining = OUTPUT_CAPTURE_LIMIT.saturating_sub(bytes.len());
+        let remaining = limit.saturating_sub(bytes.len());
         if remaining > 0 {
             let keep = remaining.min(read);
             bytes.extend_from_slice(&buffer[..keep]);
@@ -131,6 +131,26 @@ pub(crate) fn execute_descriptor_stage(
     fixed_path: &str,
     fixed_locale: &str,
     stdin_payload: Option<&[u8]>,
+) -> Result<DescriptorExecOutcome, PrivilegedDescriptorExecError> {
+    execute_descriptor_stage_with_stdout_limit(
+        file,
+        program,
+        argv,
+        fixed_path,
+        fixed_locale,
+        stdin_payload,
+        OUTPUT_CAPTURE_LIMIT,
+    )
+}
+
+pub(crate) fn execute_descriptor_stage_with_stdout_limit(
+    file: &File,
+    program: PrivilegedProgram,
+    argv: &[String],
+    fixed_path: &str,
+    fixed_locale: &str,
+    stdin_payload: Option<&[u8]>,
+    stdout_limit: usize,
 ) -> Result<DescriptorExecOutcome, PrivilegedDescriptorExecError> {
     if argv.first().map(String::as_str) != Some(program.as_str()) {
         return Err(PrivilegedDescriptorExecError::BindingMismatch);
@@ -225,8 +245,8 @@ pub(crate) fn execute_descriptor_stage(
 
     let stdout_file = unsafe { File::from_raw_fd(stdout_pipe[0]) };
     let stderr_file = unsafe { File::from_raw_fd(stderr_pipe[0]) };
-    let stdout_reader = std::thread::spawn(move || read_bounded(stdout_file));
-    let stderr_reader = std::thread::spawn(move || read_bounded(stderr_file));
+    let stdout_reader = std::thread::spawn(move || read_bounded(stdout_file, stdout_limit));
+    let stderr_reader = std::thread::spawn(move || read_bounded(stderr_file, OUTPUT_CAPTURE_LIMIT));
 
     let mut write_error = None;
     if let (Some(payload), Some(pipe)) = (stdin_payload, stdin_pipe) {
@@ -431,7 +451,7 @@ mod tests {
             std::env::temp_dir().join(format!("lsm-large-backup-output-{}", std::process::id()));
         let expected = vec![b'x'; 128 * 1024];
         fs::write(&path, &expected).unwrap();
-        let captured = read_bounded(File::open(&path).unwrap()).unwrap();
+        let captured = read_bounded(File::open(&path).unwrap(), 16 * 1024 * 1024).unwrap();
         fs::remove_file(path).unwrap();
         assert!(!captured.truncated);
         assert_eq!(captured.bytes, expected);
