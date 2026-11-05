@@ -933,6 +933,26 @@ mod tests {
     }
 
     #[test]
+    fn backup_evidence_rejects_writable_directory_and_unsafe_file() {
+        let root = temp_path("unsafe-backup-evidence");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o777)).unwrap();
+        let directory_result = ensure_secure_directory(&root);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let artifact = root.join("artifact");
+        fs::write(&artifact, b"backup").unwrap();
+        fs::set_permissions(&artifact, fs::Permissions::from_mode(0o644)).unwrap();
+        let file_result = verify_artifact(&artifact);
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            directory_result.is_err(),
+            "writable backup directory was accepted"
+        );
+        assert!(file_result.is_err(), "unsafe backup artifact was accepted");
+    }
+
+    #[test]
     fn backup_capture_fails_when_artifact_directory_cannot_be_synced() {
         if unsafe { libc::geteuid() } == 0 {
             return;
