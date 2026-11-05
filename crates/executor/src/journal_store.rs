@@ -80,6 +80,39 @@ impl DurableJournalStore {
         &self.root
     }
 
+    /// Inspect all durable journals. Unexpected files or invalid records are errors:
+    /// ignoring either could hide evidence of an interrupted storage mutation.
+    pub fn unfinished(&self) -> Result<Vec<OperationJournal>, JournalStoreError> {
+        ensure_secure_directory(&self.root, false)?;
+        let mut unfinished = Vec::new();
+        let entries = fs::read_dir(&self.root).map_err(|source| io_error(&self.root, source))?;
+        for entry in entries {
+            let entry = entry.map_err(|source| io_error(&self.root, source))?;
+            let name = entry.file_name();
+            let name = name.to_str().ok_or_else(|| {
+                JournalStoreError::InvalidRecord("non-UTF-8 journal directory entry".to_owned())
+            })?;
+            let id = name.strip_suffix(".json").ok_or_else(|| {
+                JournalStoreError::InvalidRecord(format!(
+                    "unexpected journal directory entry: {name}"
+                ))
+            })?;
+            let journal = self.load(id)?;
+            if !matches!(
+                journal.phase,
+                JournalPhase::Completed | JournalPhase::Aborted
+            ) {
+                unfinished.push(journal);
+            }
+        }
+        unfinished.sort_by(|a, b| a.journal_id.cmp(&b.journal_id));
+        Ok(unfinished)
+    }
+
+    pub(crate) fn prepare_directory(&self) -> Result<(), JournalStoreError> {
+        ensure_secure_directory(&self.root, true)
+    }
+
     pub fn persist_new(&self, journal: &OperationJournal) -> Result<PathBuf, JournalStoreError> {
         validate_journal(journal)?;
         ensure_secure_directory(&self.root, true)?;

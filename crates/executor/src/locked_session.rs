@@ -63,6 +63,12 @@ pub enum LockedSessionError {
     DurableJournalMismatch,
     #[error("durable journal persistence failed: {0}")]
     DurableJournal(#[from] JournalStoreError),
+    #[error("unfinished storage mutation requires reconciliation: journal {journal_id}, target {target}, phase {phase:?}")]
+    UnfinishedMutation {
+        journal_id: String,
+        target: String,
+        phase: JournalPhase,
+    },
 }
 
 impl<'a> LockedExecutionSession<'a> {
@@ -160,6 +166,24 @@ impl<'a> LockedExecutionSession<'a> {
         journal_store: Option<&'a DurableJournalStore>,
     ) -> Result<Self, LockedSessionError> {
         validate_handoff(handoff)?;
+
+        // Old journal records do not contain a complete resource identity. While
+        // holding the host-wide lock, conservatively block all writes if any
+        // previous operation may have crossed a mutation boundary.
+        if let Some(store) = journal_store {
+            store.prepare_directory()?;
+            if let Some(previous) = store
+                .unfinished()?
+                .into_iter()
+                .find(|journal| journal.mutation_may_have_started)
+            {
+                return Err(LockedSessionError::UnfinishedMutation {
+                    journal_id: previous.journal_id,
+                    target: previous.target,
+                    phase: previous.phase,
+                });
+            }
+        }
 
         let mut journal = OperationJournal::new(handoff.guard());
         journal.apply(JournalTransition::HostLockAcquired)?;
@@ -676,6 +700,21 @@ mod tests {
         assert_eq!(session.journal().phase, JournalPhase::IdentityRevalidated);
         drop(session);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn malformed_existing_journal_blocks_a_new_durable_session() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("malformed-existing-journal");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(format!("{}.json", "a".repeat(64))), b"{").unwrap();
+        let store = DurableJournalStore::at(&root);
+        let result = LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store);
+        assert!(result.is_err(), "invalid journal evidence must fail closed");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
