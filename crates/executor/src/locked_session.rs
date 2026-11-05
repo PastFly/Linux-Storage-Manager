@@ -191,6 +191,9 @@ impl<'a> LockedExecutionSession<'a> {
         }
 
         let mut journal = OperationJournal::new(handoff.guard());
+        if let Some(store) = journal_store {
+            journal.journal_id = next_attempt_id(store, &journal)?;
+        }
         journal.apply(JournalTransition::HostLockAcquired)?;
         debug_assert_eq!(journal.phase, JournalPhase::HostLockHeld);
         if let Some(store) = journal_store {
@@ -379,6 +382,39 @@ impl<'a> LockedExecutionSession<'a> {
             Some(journal_store),
         )
     }
+}
+
+fn next_attempt_id(
+    store: &DurableJournalStore,
+    proposed: &OperationJournal,
+) -> Result<String, JournalStoreError> {
+    // Called only while the host lock is held. Preserve every prior attempt and
+    // permit a new ID only when the matching previous attempt was safely aborted.
+    for attempt in 0_u64..1024 {
+        let candidate = if attempt == 0 {
+            proposed.journal_id.clone()
+        } else {
+            let mut hash = Sha256::new();
+            hash.update(b"linux-storage-manager:journal-attempt:v1\0");
+            hash.update(proposed.journal_id.as_bytes());
+            hash.update(attempt.to_le_bytes());
+            format!("{:x}", hash.finalize())
+        };
+        match store.load(&candidate) {
+            Err(JournalStoreError::NotFound(_)) => return Ok(candidate),
+            Err(error) => return Err(error),
+            Ok(previous)
+                if previous.phase == JournalPhase::Aborted
+                    && !previous.mutation_may_have_started
+                    && previous.plan_id == proposed.plan_id
+                    && previous.target == proposed.target
+                    && previous.baseline_manifest_digest == proposed.baseline_manifest_digest => {}
+            Ok(_) => return Err(JournalStoreError::AlreadyExists(candidate)),
+        }
+    }
+    Err(JournalStoreError::InvalidRecord(
+        "too many retained attempts for this plan".to_owned(),
+    ))
 }
 
 fn build_session_id(handoff: &FrozenExecutionHandoff, lock_path: &Path) -> String {
