@@ -1,5 +1,6 @@
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,7 +9,7 @@ use lsm_planner::{
     ExactApprovalBinding, ExecutionStartBinding, JournalEvent, JournalPhase, OperationJournal,
     VerifiedMutationBoundaryBinding, JOURNAL_DIRECTORY,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const MAX_JOURNAL_BYTES: u64 = 1024 * 1024;
@@ -17,6 +18,81 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone)]
 pub struct DurableJournalStore {
     root: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JournalInspection {
+    pub unfinished: Vec<OperationJournal>,
+    pub unclassified: Vec<UnclassifiedJournalEvidence>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UnclassifiedJournalEvidence {
+    #[serde(serialize_with = "serialize_path_lossy")]
+    pub path: PathBuf,
+    pub path_bytes_hex: String,
+    pub identity: Option<JournalFileIdentity>,
+    pub verified_duplicate_link: bool,
+    pub staged_journal: Option<OperationJournal>,
+    pub problem: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct JournalFileIdentity {
+    pub device_id: u64,
+    pub inode: u64,
+}
+
+fn serialize_path_lossy<S: serde::Serializer>(
+    path: &Path,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&path.to_string_lossy())
+}
+
+fn diagnostic_entry(
+    path: PathBuf,
+    staged_journal: Option<OperationJournal>,
+    problem: Option<String>,
+    verified_duplicate_link: bool,
+) -> UnclassifiedJournalEvidence {
+    let identity = fs::symlink_metadata(&path)
+        .ok()
+        .filter(|metadata| {
+            trusted_journal_file_with_links(metadata, 1)
+                || trusted_journal_file_with_links(metadata, 2)
+        })
+        .map(|metadata| JournalFileIdentity {
+            device_id: metadata.dev(),
+            inode: metadata.ino(),
+        });
+    let path_bytes_hex = path
+        .as_os_str()
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    UnclassifiedJournalEvidence {
+        path,
+        path_bytes_hex,
+        identity,
+        verified_duplicate_link,
+        staged_journal,
+        problem,
+    }
+}
+
+fn staging_journal_id(name: &str) -> Option<&str> {
+    let (id, suffix) = name.strip_prefix('.')?.split_once(".tmp-")?;
+    validate_journal_id(id).ok()?;
+    let (pid, sequence) = suffix.split_once('-')?;
+    fn canonical_number(value: &str) -> bool {
+        !value.is_empty()
+            && value.bytes().all(|byte| byte.is_ascii_digit())
+            && (value.len() == 1 || !value.starts_with('0'))
+            && value.parse::<u64>().is_ok()
+    }
+    (canonical_number(pid) && pid != "0" && canonical_number(sequence)).then_some(id)
 }
 
 #[derive(Debug, Error)]
@@ -43,6 +119,8 @@ pub enum JournalStoreError {
         #[source]
         source: io::Error,
     },
+    #[error("duplicate link was removed but directory sync failed; inspect operations again: {0}")]
+    DuplicateRemovalSyncUncertain(Box<JournalStoreError>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +156,70 @@ impl DurableJournalStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Read-only inventory: preserve and report every unusual entry while the
+    /// mutation path remains fail-closed on the strict `all` enumeration.
+    pub fn inspect(&self) -> Result<JournalInspection, JournalStoreError> {
+        ensure_secure_directory(&self.root, false)?;
+        let mut result = JournalInspection {
+            unfinished: Vec::new(),
+            unclassified: Vec::new(),
+        };
+        for entry in fs::read_dir(&self.root).map_err(|source| io_error(&self.root, source))? {
+            let entry = entry.map_err(|source| io_error(&self.root, source))?;
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_str();
+            if let Some(id) = name.and_then(|name| name.strip_suffix(".json")) {
+                match self.load(id) {
+                    Ok(journal)
+                        if !matches!(
+                            journal.phase,
+                            JournalPhase::Completed | JournalPhase::Aborted
+                        ) =>
+                    {
+                        result.unfinished.push(journal)
+                    }
+                    Ok(_) => {}
+                    Err(error) => result.unclassified.push(diagnostic_entry(
+                        path,
+                        None,
+                        Some(error.to_string()),
+                        false,
+                    )),
+                }
+                continue;
+            }
+            let staged_id = name.and_then(staging_journal_id);
+            let staged = staged_id.map(|id| match self.load_at(&path, id) {
+                Ok(journal) => Ok((journal, false)),
+                Err(primary) => self
+                    .load_linked_staging(&path, id)
+                    .map(|journal| (journal, true))
+                    .map_err(|_| primary),
+            });
+            let (staged_journal, problem, verified_duplicate_link) = match staged {
+                Some(Ok((journal, duplicate))) => (Some(journal), None, duplicate),
+                Some(Err(error)) => (None, Some(error.to_string()), false),
+                None => (
+                    None,
+                    Some("unrecognized journal directory entry".to_owned()),
+                    false,
+                ),
+            };
+            result.unclassified.push(diagnostic_entry(
+                path,
+                staged_journal,
+                problem,
+                verified_duplicate_link,
+            ));
+        }
+        result
+            .unfinished
+            .sort_by(|a, b| a.journal_id.cmp(&b.journal_id));
+        result.unclassified.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(result)
     }
 
     /// Inspect all durable journals. Unexpected files or invalid records are errors:
@@ -250,15 +392,136 @@ impl DurableJournalStore {
         ensure_secure_directory(&self.root, false)?;
 
         let path = self.path_for(journal_id)?;
-        let metadata = match fs::symlink_metadata(&path) {
+        self.load_at(&path, journal_id)
+    }
+
+    fn load_at(
+        &self,
+        path: &Path,
+        journal_id: &str,
+    ) -> Result<OperationJournal, JournalStoreError> {
+        self.load_at_with_links(path, journal_id, 1)
+    }
+
+    fn load_linked_staging(
+        &self,
+        path: &Path,
+        journal_id: &str,
+    ) -> Result<OperationJournal, JournalStoreError> {
+        let final_path = self.path_for(journal_id)?;
+        let staged = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+        let final_metadata =
+            fs::symlink_metadata(&final_path).map_err(|source| io_error(&final_path, source))?;
+        if !trusted_journal_file_with_links(&staged, 2)
+            || !trusted_journal_file_with_links(&final_metadata, 2)
+            || staged.dev() != final_metadata.dev()
+            || staged.ino() != final_metadata.ino()
+        {
+            return Err(JournalStoreError::NotRegularFile(path.to_path_buf()));
+        }
+        self.load_at_with_links(path, journal_id, 2)
+    }
+
+    pub(crate) fn remove_linked_staging_duplicate(
+        &self,
+        staging: &Path,
+        shown: &OperationJournal,
+        identity: JournalFileIdentity,
+    ) -> Result<(), JournalStoreError> {
+        self.remove_linked_staging_with_sync(staging, shown, identity, sync_directory)
+    }
+
+    fn remove_linked_staging_with_sync(
+        &self,
+        staging: &Path,
+        shown: &OperationJournal,
+        identity: JournalFileIdentity,
+        sync: impl Fn(&Path) -> Result<(), JournalStoreError>,
+    ) -> Result<(), JournalStoreError> {
+        ensure_secure_directory(&self.root, false)?;
+        if staging.parent() != Some(self.root.as_path())
+            || staging
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(staging_journal_id)
+                != Some(shown.journal_id.as_str())
+        {
+            return Err(JournalStoreError::InvalidRecord(
+                "staging name does not identify the displayed journal".to_owned(),
+            ));
+        }
+        if self.load_linked_staging(staging, &shown.journal_id)? != *shown {
+            return Err(JournalStoreError::InvalidRecord(
+                "staged journal changed after it was displayed".to_owned(),
+            ));
+        }
+        let final_path = self.path_for(&shown.journal_id)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(&final_path)
+            .map_err(|source| io_error(&final_path, source))?;
+        let final_metadata = file
+            .metadata()
+            .map_err(|source| io_error(&final_path, source))?;
+        let staged_metadata =
+            fs::symlink_metadata(staging).map_err(|source| io_error(staging, source))?;
+        if !trusted_journal_file_with_links(&final_metadata, 2)
+            || !trusted_journal_file_with_links(&staged_metadata, 2)
+            || final_metadata.dev() != staged_metadata.dev()
+            || final_metadata.ino() != staged_metadata.ino()
+            || final_metadata.dev() != identity.device_id
+            || final_metadata.ino() != identity.inode
+        {
+            return Err(JournalStoreError::NotRegularFile(staging.to_path_buf()));
+        }
+        file.sync_all()
+            .map_err(|source| io_error(&final_path, source))?;
+        // The original operation may have crashed before publishing either
+        // name durably. Sync both links before unlinking the duplicate.
+        sync(&self.root)?;
+        // A cooperating concurrent operation cannot pass the host lock. Check
+        // again after the potentially slow sync in case an external actor
+        // changed the staging path while the operator was waiting.
+        let current = fs::symlink_metadata(staging).map_err(|source| io_error(staging, source))?;
+        let final_current = file
+            .metadata()
+            .map_err(|source| io_error(&final_path, source))?;
+        let final_path_current =
+            fs::symlink_metadata(&final_path).map_err(|source| io_error(&final_path, source))?;
+        if !trusted_journal_file_with_links(&current, 2)
+            || !trusted_journal_file_with_links(&final_current, 2)
+            || !trusted_journal_file_with_links(&final_path_current, 2)
+            || current.dev() != identity.device_id
+            || current.ino() != identity.inode
+            || final_current.dev() != identity.device_id
+            || final_current.ino() != identity.inode
+            || final_path_current.dev() != identity.device_id
+            || final_path_current.ino() != identity.inode
+        {
+            return Err(JournalStoreError::NotRegularFile(staging.to_path_buf()));
+        }
+        fs::remove_file(staging).map_err(|source| io_error(staging, source))?;
+        sync(&self.root)
+            .map_err(|error| JournalStoreError::DuplicateRemovalSyncUncertain(Box::new(error)))
+    }
+
+    fn load_at_with_links(
+        &self,
+        path: &Path,
+        journal_id: &str,
+        allowed_links: u64,
+    ) -> Result<OperationJournal, JournalStoreError> {
+        validate_journal_id(journal_id)?;
+        let metadata = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
                 return Err(JournalStoreError::NotFound(journal_id.to_owned()));
             }
-            Err(source) => return Err(io_error(&path, source)),
+            Err(source) => return Err(io_error(path, source)),
         };
-        if !trusted_journal_file(&metadata) {
-            return Err(JournalStoreError::NotRegularFile(path));
+        if !trusted_journal_file_with_links(&metadata, allowed_links) {
+            return Err(JournalStoreError::NotRegularFile(path.to_path_buf()));
         }
         if metadata.len() > MAX_JOURNAL_BYTES {
             return Err(JournalStoreError::TooLarge);
@@ -267,19 +530,19 @@ impl DurableJournalStore {
         let file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-            .open(&path)
-            .map_err(|source| io_error(&path, source))?;
-        let opened = file.metadata().map_err(|source| io_error(&path, source))?;
-        if !trusted_journal_file(&opened)
+            .open(path)
+            .map_err(|source| io_error(path, source))?;
+        let opened = file.metadata().map_err(|source| io_error(path, source))?;
+        if !trusted_journal_file_with_links(&opened, allowed_links)
             || opened.dev() != metadata.dev()
             || opened.ino() != metadata.ino()
         {
-            return Err(JournalStoreError::NotRegularFile(path));
+            return Err(JournalStoreError::NotRegularFile(path.to_path_buf()));
         }
         let mut bytes = Vec::new();
         file.take(MAX_JOURNAL_BYTES + 1)
             .read_to_end(&mut bytes)
-            .map_err(|source| io_error(&path, source))?;
+            .map_err(|source| io_error(path, source))?;
         if bytes.len() as u64 > MAX_JOURNAL_BYTES {
             return Err(JournalStoreError::TooLarge);
         }
@@ -767,11 +1030,15 @@ fn is_lower_hex_digest(value: &str) -> bool {
 }
 
 pub(crate) fn trusted_journal_file(metadata: &fs::Metadata) -> bool {
+    trusted_journal_file_with_links(metadata, 1)
+}
+
+fn trusted_journal_file_with_links(metadata: &fs::Metadata, allowed_links: u64) -> bool {
     metadata.is_file()
         && !metadata.file_type().is_symlink()
         && metadata.uid() == unsafe { libc::geteuid() }
         && metadata.mode() & 0o7777 == 0o600
-        && metadata.nlink() == 1
+        && metadata.nlink() == allowed_links
 }
 
 pub(crate) fn trusted_journal_directory(metadata: &fs::Metadata, is_root: bool) -> bool {
@@ -907,6 +1174,220 @@ mod tests {
             retry.is_err(),
             "an existing unsynced directory must not make a retry succeed"
         );
+    }
+
+    #[test]
+    fn inspection_reports_valid_staged_journal_without_authorizing_writes() {
+        let root = root("staged-diagnostics");
+        let store = DurableJournalStore::at(&root);
+        let journal = journal();
+        let path = store.persist_new(&journal).unwrap();
+        let staging = root.join(format!(".{}.tmp-123-1", journal.journal_id));
+        fs::copy(&path, &staging).unwrap();
+        let inspection = store.inspect().unwrap();
+        assert_eq!(inspection.unfinished, vec![journal.clone()]);
+        assert_eq!(inspection.unclassified.len(), 1);
+        assert_eq!(inspection.unclassified[0].path, staging);
+        assert_eq!(
+            inspection.unclassified[0].staged_journal.as_ref(),
+            Some(&journal)
+        );
+        assert!(!inspection.unclassified[0].verified_duplicate_link);
+        assert!(store.all().is_err());
+        assert!(staging.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inspection_reports_truncated_staging_as_unclassified() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = root("truncated-staging");
+        let store = DurableJournalStore::at(&root);
+        let journal = journal();
+        store.persist_new(&journal).unwrap();
+        let staging = root.join(format!(".{}.tmp-123-1", journal.journal_id));
+        fs::write(&staging, b"{\"phase\":\"execut").unwrap();
+        fs::set_permissions(&staging, fs::Permissions::from_mode(0o600)).unwrap();
+        let inspection = store.inspect().unwrap();
+        assert_eq!(inspection.unclassified.len(), 1);
+        assert!(inspection.unclassified[0].staged_journal.is_none());
+        assert!(inspection.unclassified[0]
+            .problem
+            .as_deref()
+            .unwrap()
+            .contains("JSON"));
+        assert!(store.all().is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inspection_recognizes_durable_hard_link_pair_without_permitting_writes() {
+        let root = root("staged-hard-link");
+        let store = DurableJournalStore::at(&root);
+        let journal = journal();
+        let final_path = store.persist_new(&journal).unwrap();
+        let staging = root.join(format!(".{}.tmp-123-1", journal.journal_id));
+        fs::hard_link(&final_path, &staging).unwrap();
+        let inspection = store.inspect().unwrap();
+        let staged = inspection
+            .unclassified
+            .iter()
+            .find(|entry| entry.path == staging)
+            .unwrap();
+        assert_eq!(staged.staged_journal.as_ref(), Some(&journal));
+        assert!(staged.verified_duplicate_link);
+        assert!(store.all().is_err());
+        assert!(final_path.exists() && staging.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_reconciliation_does_not_unlink_before_directory_sync() {
+        let root = root("staged-sync-failure");
+        let store = DurableJournalStore::at(&root);
+        let journal = journal();
+        let final_path = store.persist_new(&journal).unwrap();
+        let staging = root.join(format!(".{}.tmp-123-1", journal.journal_id));
+        fs::hard_link(&final_path, &staging).unwrap();
+        let metadata = fs::metadata(&staging).unwrap();
+        let identity = JournalFileIdentity {
+            device_id: metadata.dev(),
+            inode: metadata.ino(),
+        };
+        let result = store.remove_linked_staging_with_sync(&staging, &journal, identity, |_| {
+            Err(JournalStoreError::InvalidRecord(
+                "injected directory sync failure".to_owned(),
+            ))
+        });
+        assert!(result.is_err());
+        assert!(final_path.exists() && staging.exists());
+        assert_eq!(fs::metadata(&final_path).unwrap().nlink(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_reconciliation_detects_path_replacement_during_sync() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = root("staged-replaced-during-sync");
+        let store = DurableJournalStore::at(&root);
+        let journal = journal();
+        let final_path = store.persist_new(&journal).unwrap();
+        let staging = root.join(format!(".{}.tmp-123-1", journal.journal_id));
+        let moved = root.join("preserved-original-link");
+        fs::hard_link(&final_path, &staging).unwrap();
+        let metadata = fs::metadata(&staging).unwrap();
+        let identity = JournalFileIdentity {
+            device_id: metadata.dev(),
+            inode: metadata.ino(),
+        };
+        let result = store.remove_linked_staging_with_sync(&staging, &journal, identity, |path| {
+            fs::rename(&staging, &moved).unwrap();
+            fs::write(&staging, b"unrelated evidence").unwrap();
+            fs::set_permissions(&staging, fs::Permissions::from_mode(0o600)).unwrap();
+            sync_directory(path)
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&staging).unwrap(), b"unrelated evidence");
+        assert!(final_path.exists() && moved.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_reconciliation_detects_final_journal_moved_during_sync() {
+        let root = root("staged-final-moved-during-sync");
+        let store = DurableJournalStore::at(&root);
+        let journal = journal();
+        let final_path = store.persist_new(&journal).unwrap();
+        let staging = root.join(format!(".{}.tmp-123-1", journal.journal_id));
+        let moved = root.with_extension("moved-journal");
+        fs::hard_link(&final_path, &staging).unwrap();
+        let metadata = fs::metadata(&staging).unwrap();
+        let identity = JournalFileIdentity {
+            device_id: metadata.dev(),
+            inode: metadata.ino(),
+        };
+        let result = store.remove_linked_staging_with_sync(&staging, &journal, identity, |path| {
+            fs::rename(&final_path, &moved).unwrap();
+            sync_directory(path)
+        });
+        assert!(result.is_err());
+        assert!(staging.exists() && moved.exists());
+        fs::remove_file(moved).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_reconciliation_reports_uncertain_final_sync() {
+        use std::cell::Cell;
+        let root = root("staged-second-sync-failure");
+        let store = DurableJournalStore::at(&root);
+        let journal = journal();
+        let final_path = store.persist_new(&journal).unwrap();
+        let staging = root.join(format!(".{}.tmp-123-1", journal.journal_id));
+        fs::hard_link(&final_path, &staging).unwrap();
+        let metadata = fs::metadata(&staging).unwrap();
+        let identity = JournalFileIdentity {
+            device_id: metadata.dev(),
+            inode: metadata.ino(),
+        };
+        let calls = Cell::new(0);
+        let result = store.remove_linked_staging_with_sync(&staging, &journal, identity, |path| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                sync_directory(path)
+            } else {
+                Err(JournalStoreError::InvalidRecord(
+                    "injected second sync failure".to_owned(),
+                ))
+            }
+        });
+        assert!(matches!(
+            result,
+            Err(JournalStoreError::DuplicateRemovalSyncUncertain(_))
+        ));
+        assert!(!staging.exists());
+        assert_eq!(store.load(&journal.journal_id).unwrap(), journal);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inspection_json_preserves_non_utf8_filename_bytes() {
+        use std::os::unix::ffi::OsStringExt;
+        let root = root("nonutf8-evidence");
+        let store = DurableJournalStore::at(&root);
+        store.persist_new(&journal()).unwrap();
+        let path = root.join(std::ffi::OsString::from_vec(vec![b'x', 0xff, b'\n']));
+        fs::write(&path, b"evidence").unwrap();
+        let inspection = store.inspect().unwrap();
+        let entry = inspection
+            .unclassified
+            .iter()
+            .find(|entry| entry.path == path)
+            .unwrap();
+        assert!(entry.path_bytes_hex.ends_with("78ff0a"));
+        let json = serde_json::to_string(&inspection).unwrap();
+        assert!(json.contains("78ff0a"));
+        assert!(store.all().is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inspection_does_not_mislabel_arbitrary_filenames_as_staging() {
+        let root = root("invalid-staging-name");
+        let store = DurableJournalStore::at(&root);
+        let journal = journal();
+        let final_path = store.persist_new(&journal).unwrap();
+        let bogus = root.join(format!(".{}.tmp-garbage", journal.journal_id));
+        fs::copy(&final_path, &bogus).unwrap();
+        let inspection = store.inspect().unwrap();
+        let entry = inspection
+            .unclassified
+            .iter()
+            .find(|entry| entry.path == bogus)
+            .unwrap();
+        assert!(entry.staged_journal.is_none());
+        assert!(entry.problem.is_some());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

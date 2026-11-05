@@ -60,6 +60,13 @@ enum Command {
         /// Full 64-character journal ID reported by operations.
         journal_id: String,
     },
+    /// Remove a verified duplicate staging link while preserving the durable journal.
+    ReconcileDuplicate {
+        /// Full journal ID reported by operations.
+        journal_id: String,
+        /// Exact staging filename reported by operations.
+        staging_name: String,
+    },
     /// Explain whether a mount point or block device can be grown with currently known capacity.
     Explain {
         /// Mount point (for example / or /var) or block-device path.
@@ -243,6 +250,7 @@ fn run() -> Result<ExitCode> {
             println!("{}", serde_json::to_string_pretty(&snapshot.diagnostics)?);
         }
         Some(Command::Operations { json }) => {
+            use std::os::unix::ffi::OsStrExt;
             let diagnostics =
                 read_operation_diagnostics(&lsm_executor::DurableJournalStore::default())?;
             if json {
@@ -251,13 +259,16 @@ fn run() -> Result<ExitCode> {
                     serde_json::to_string_pretty(&serde_json::json!({
                         "journal_directory_exists": diagnostics.journal_directory_exists,
                         "unfinished_extend_journals": diagnostics.unfinished,
-                        "unclassified_runtime_evidence": diagnostics.unclassified,
+                        "unclassified_journal_entries": diagnostics.unclassified_journals,
+                        "unclassified_runtime_evidence": diagnostics.unclassified.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+                        "unclassified_runtime_evidence_bytes_hex": diagnostics.unclassified.iter().map(|path| path.as_os_str().as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>()).collect::<Vec<_>>(),
+                        "snapshot_may_be_changing": true,
                         "reconciliation_required": diagnostics.reconciliation_required,
                         "execution_authorized": false,
                     }))?
                 );
             } else {
-                println!("Operation evidence (read-only; not an authorization to write):");
+                println!("Operation evidence (read-only, unlocked snapshot; it may be changing and does not authorize writes):");
                 if !diagnostics.journal_directory_exists {
                     println!("Extend journal directory has not been initialized.");
                 }
@@ -271,7 +282,19 @@ fn run() -> Result<ExitCode> {
                     );
                 }
                 for path in &diagnostics.unclassified {
-                    println!("Unclassified runtime evidence: {}", path.display());
+                    println!("Unclassified runtime evidence: {:?}", path.as_os_str());
+                }
+                for entry in &diagnostics.unclassified_journals {
+                    println!(
+                        "Unclassified journal evidence: {:?}",
+                        entry.path.as_os_str()
+                    );
+                    if let Some(journal) = &entry.staged_journal {
+                        println!("  Staged journal {}: target {}, phase {:?}, mutation may have started: {}", journal.journal_id, journal.target, journal.phase, journal.mutation_may_have_started);
+                    }
+                    if let Some(problem) = &entry.problem {
+                        println!("  Could not validate evidence: {problem:?}");
+                    }
                 }
                 if diagnostics.reconciliation_required {
                     println!("Manual investigation required. Preserve journals and backups; do not retry a potentially started operation.");
@@ -308,6 +331,65 @@ fn run() -> Result<ExitCode> {
             let reconciled =
                 lsm_executor::reconcile_abandoned_prewrite(&store, &journal, &confirmation)?;
             println!("Journal {} recorded as aborted before mutation; no storage operation was executed.", reconciled.journal_id);
+        }
+        Some(Command::ReconcileDuplicate {
+            journal_id,
+            staging_name,
+        }) => {
+            use std::io::{BufRead, BufReader, Write};
+            let store = lsm_executor::DurableJournalStore::default();
+            let inspection = store.inspect()?;
+            let entry = inspection
+                .unclassified
+                .iter()
+                .find(|entry| {
+                    entry.path.file_name().and_then(|name| name.to_str())
+                        == Some(staging_name.as_str())
+                })
+                .ok_or_else(|| anyhow::anyhow!("staging evidence was not found"))?;
+            let journal = entry
+                .staged_journal
+                .as_ref()
+                .filter(|journal| journal.journal_id == journal_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "staging evidence is not a validated journal with the requested ID"
+                    )
+                })?;
+            let identity = entry
+                .identity
+                .filter(|_| entry.verified_duplicate_link)
+                .ok_or_else(|| anyhow::anyhow!("staging file is not a verified duplicate link"))?;
+            let mut tty = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/tty")?;
+            writeln!(tty, "Remove duplicate journal link (the durable journal is preserved):\nJournal: {}\nTarget: {}\nPhase: {:?}\nMutation may have started: {}\nStaging: {:?}\nDevice: {} inode: {}", journal.journal_id, journal.target, journal.phase, journal.mutation_may_have_started, entry.path.as_os_str(), identity.device_id, identity.inode)?;
+            write!(
+                tty,
+                "Type REMOVE DUPLICATE {} to confirm: ",
+                journal.journal_id
+            )?;
+            tty.flush()?;
+            let mut confirmation = String::new();
+            BufReader::new(&tty).read_line(&mut confirmation)?;
+            if confirmation.ends_with('\n') {
+                confirmation.pop();
+                if confirmation.ends_with('\r') {
+                    confirmation.pop();
+                }
+            }
+            lsm_executor::reconcile_duplicate_staging(
+                &store,
+                &entry.path,
+                journal,
+                identity,
+                &confirmation,
+            )?;
+            println!(
+                "Duplicate link removed; journal {} remains and no storage operation was executed.",
+                journal.journal_id
+            );
         }
         Some(Command::Explain { target }) => {
             let snapshot = discover_snapshot()?;
@@ -730,6 +812,7 @@ struct OperationDiagnostics {
     journal_directory_exists: bool,
     unfinished: Vec<lsm_planner::OperationJournal>,
     unclassified: Vec<PathBuf>,
+    unclassified_journals: Vec<lsm_executor::UnclassifiedJournalEvidence>,
     reconciliation_required: bool,
 }
 
@@ -801,18 +884,21 @@ fn read_operation_diagnostics(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => return Err(error.into()),
     };
-    let unfinished = if journal_directory_exists {
-        store.unfinished()?
+    let (unfinished, unclassified_journals) = if journal_directory_exists {
+        let inspection = store.inspect()?;
+        (inspection.unfinished, inspection.unclassified)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     let unclassified = store.unclassified_runtime_evidence()?;
-    let reconciliation_required =
-        unfinished.iter().any(|j| j.mutation_may_have_started) || !unclassified.is_empty();
+    let reconciliation_required = unfinished.iter().any(|j| j.mutation_may_have_started)
+        || !unclassified.is_empty()
+        || !unclassified_journals.is_empty();
     Ok(OperationDiagnostics {
         journal_directory_exists,
         unfinished,
         unclassified,
+        unclassified_journals,
         reconciliation_required,
     })
 }
@@ -1035,6 +1121,26 @@ mod extend_handoff_cli_tests {
         assert_eq!(diagnostics.unclassified, vec![evidence.clone()]);
         assert_eq!(std::fs::read(&evidence).unwrap(), b"preserve");
         assert!(!store.root().exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn diagnostics_reports_and_preserves_interrupted_journal_staging() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("lsm-cli-staging-evidence-{}", std::process::id()));
+        let directory = root.join("journal");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!(".{}.tmp-42-1", "a".repeat(64)));
+        std::fs::write(&path, b"incomplete").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let store = lsm_executor::DurableJournalStore::at(&directory);
+        let diagnostics = read_operation_diagnostics(&store).unwrap();
+        assert!(diagnostics.reconciliation_required);
+        assert_eq!(diagnostics.unclassified_journals.len(), 1);
+        assert_eq!(diagnostics.unclassified_journals[0].path, path);
+        assert!(diagnostics.unclassified_journals[0].problem.is_some());
+        assert_eq!(std::fs::read(&path).unwrap(), b"incomplete");
         std::fs::remove_dir_all(root).unwrap();
     }
 
