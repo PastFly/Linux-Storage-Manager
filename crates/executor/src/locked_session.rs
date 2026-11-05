@@ -708,6 +708,61 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "disposable-loop-harness")]
+    fn filesystem_health_rejects_untrusted_executable_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let (mut snapshot, capabilities) = fixture();
+        snapshot.mounts.clear();
+        snapshot.storage.block_devices[0].children[0].children[0]
+            .mountpoints
+            .clear();
+        snapshot.filesystem_preflight[0].mountpoint = None;
+        let plan = plan_extend(
+            &snapshot,
+            &capabilities,
+            ExtendRequest {
+                target: "/dev/vg0/root".into(),
+                growth: Growth::ByBytes(GIB),
+            },
+        )
+        .unwrap();
+        let handoff = build_frozen_execution_handoff(&snapshot, &capabilities, &plan).unwrap();
+        let path = lock_path();
+        let root = journal_root("untrusted-health-tool");
+        std::fs::create_dir(&root).unwrap();
+        let marker = root.join("executed");
+        let tool = root.join("e2fsck");
+        std::fs::write(
+            &tool,
+            format!("#!/bin/sh\nprintf injected > '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut session = LockedExecutionSession::begin_at_path(&handoff, &path).unwrap();
+        assert_eq!(
+            session.revalidate(&snapshot, &capabilities).unwrap().status,
+            LockedRevalidationStatus::Revalidated
+        );
+        let result = crate::execute_explicit_filesystem_health_check(
+            &session,
+            &snapshot,
+            &capabilities,
+            &tool,
+        );
+        assert!(
+            result.is_err(),
+            "untrusted filesystem health tool was accepted"
+        );
+        assert!(
+            !marker.exists(),
+            "untrusted filesystem health tool was executed"
+        );
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn other_runtime_journal_evidence_blocks_new_extend_session() {
         let (snapshot, capabilities) = fixture();
         let handoff = handoff(&snapshot, &capabilities);
