@@ -5,9 +5,7 @@ use lsm_planner::{
 };
 use thiserror::Error;
 
-use crate::{
-    DurableJournalStore, HostLockError, HostStorageLock, JournalFileIdentity, JournalStoreError,
-};
+use crate::{DurableJournalStore, HostLockError, HostStorageLock, JournalStoreError};
 
 #[derive(Debug, Error)]
 pub enum ReconciliationError {
@@ -42,41 +40,6 @@ pub fn reconcile_abandoned_prewrite(
     )
 }
 
-/// Remove only a second name for the exact displayed durable journal inode.
-/// This never executes or resumes any storage operation.
-pub fn reconcile_duplicate_staging(
-    store: &DurableJournalStore,
-    staging: &Path,
-    shown_journal: &OperationJournal,
-    identity: JournalFileIdentity,
-    confirmation: &str,
-) -> Result<(), ReconciliationError> {
-    reconcile_duplicate_at(
-        store,
-        staging,
-        shown_journal,
-        identity,
-        confirmation,
-        Path::new(HOST_STORAGE_LOCK_PATH),
-    )
-}
-
-fn reconcile_duplicate_at(
-    store: &DurableJournalStore,
-    staging: &Path,
-    shown_journal: &OperationJournal,
-    identity: JournalFileIdentity,
-    confirmation: &str,
-    lock_path: &Path,
-) -> Result<(), ReconciliationError> {
-    let _lock = HostStorageLock::try_acquire_path(lock_path)?;
-    if confirmation != format!("REMOVE DUPLICATE {}", shown_journal.journal_id) {
-        return Err(ReconciliationError::ConfirmationMismatch);
-    }
-    store.remove_linked_staging_duplicate(staging, shown_journal, identity)?;
-    Ok(())
-}
-
 fn reconcile_prewrite_at(
     store: &DurableJournalStore,
     shown_journal: &OperationJournal,
@@ -108,11 +71,12 @@ fn reconcile_prewrite_at(
     ) {
         return Err(ReconciliationError::Terminal);
     }
+    let previous = journal.clone();
     journal.apply(JournalTransition::Abort {
         reason:
             "operator reconciled abandoned pre-write operation; no mutation boundary was crossed",
     })?;
-    store.persist(&journal)?;
+    store.persist_if_matches(&previous, &journal)?;
     Ok(journal)
 }
 
@@ -122,15 +86,6 @@ mod tests {
     use lsm_planner::{JournalPhase, OperationJournal};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
-
-    fn identity(path: &Path) -> JournalFileIdentity {
-        use std::os::unix::fs::MetadataExt;
-        let metadata = fs::metadata(path).unwrap();
-        JournalFileIdentity {
-            device_id: metadata.dev(),
-            inode: metadata.ino(),
-        }
-    }
 
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -203,7 +158,7 @@ mod tests {
         let (root, store, shown) = fixture();
         let mut changed = shown.clone();
         changed.apply(JournalTransition::HostLockAcquired).unwrap();
-        store.persist(&changed).unwrap();
+        store.test_overwrite(&changed).unwrap();
         let result = reconcile_prewrite_at(
             &store,
             &shown,
@@ -238,89 +193,6 @@ mod tests {
         ));
         assert_eq!(store.load(&journal.journal_id).unwrap(), journal);
         assert!(staging.exists());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn duplicate_staging_reconciliation_retains_exact_durable_journal() {
-        let (root, store, journal) = fixture();
-        let final_path = store.root().join(format!("{}.json", journal.journal_id));
-        let staging = store
-            .root()
-            .join(format!(".{}.tmp-123-1", journal.journal_id));
-        fs::hard_link(&final_path, &staging).unwrap();
-        let shown_identity = identity(&staging);
-        let lock = root.join("lock/storage.lock");
-        assert!(
-            reconcile_duplicate_at(&store, &staging, &journal, shown_identity, "yes", &lock)
-                .is_err()
-        );
-        assert!(staging.exists());
-        reconcile_duplicate_at(
-            &store,
-            &staging,
-            &journal,
-            shown_identity,
-            &format!("REMOVE DUPLICATE {}", journal.journal_id),
-            &lock,
-        )
-        .unwrap();
-        assert!(!staging.exists());
-        assert_eq!(store.load(&journal.journal_id).unwrap(), journal);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn duplicate_staging_reconciliation_never_removes_a_distinct_file() {
-        let (root, store, journal) = fixture();
-        let final_path = store.root().join(format!("{}.json", journal.journal_id));
-        let staging = store
-            .root()
-            .join(format!(".{}.tmp-123-1", journal.journal_id));
-        fs::copy(&final_path, &staging).unwrap();
-        let shown_identity = identity(&staging);
-        let result = reconcile_duplicate_at(
-            &store,
-            &staging,
-            &journal,
-            shown_identity,
-            &format!("REMOVE DUPLICATE {}", journal.journal_id),
-            &root.join("lock/storage.lock"),
-        );
-        assert!(result.is_err());
-        assert!(staging.exists());
-        assert_eq!(store.load(&journal.journal_id).unwrap(), journal);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn duplicate_staging_rejects_replacement_pair_after_display() {
-        use std::os::unix::fs::PermissionsExt;
-        let (root, store, journal) = fixture();
-        let final_path = store.root().join(format!("{}.json", journal.journal_id));
-        let staging = store
-            .root()
-            .join(format!(".{}.tmp-123-1", journal.journal_id));
-        fs::hard_link(&final_path, &staging).unwrap();
-        let shown_identity = identity(&staging);
-        let old_file = fs::File::open(&final_path).unwrap();
-        let bytes = fs::read(&final_path).unwrap();
-        fs::remove_file(&staging).unwrap();
-        fs::remove_file(&final_path).unwrap();
-        fs::write(&final_path, &bytes).unwrap();
-        fs::set_permissions(&final_path, fs::Permissions::from_mode(0o600)).unwrap();
-        fs::hard_link(&final_path, &staging).unwrap();
-        let result = reconcile_duplicate_at(
-            &store,
-            &staging,
-            &journal,
-            shown_identity,
-            &format!("REMOVE DUPLICATE {}", journal.journal_id),
-            &root.join("lock/storage.lock"),
-        );
-        assert!(result.is_err());
-        assert!(staging.exists());
-        drop(old_file);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -366,7 +238,7 @@ mod tests {
         journal
             .apply(JournalTransition::ExecutionStarted { binding: &binding })
             .unwrap();
-        store.persist(&journal).unwrap();
+        store.test_overwrite(&journal).unwrap();
         let result = reconcile_prewrite_at(
             &store,
             &journal,

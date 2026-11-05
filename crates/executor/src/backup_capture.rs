@@ -878,7 +878,7 @@ mod tests {
                 reason: "operator confirmed no mutation",
             })
             .unwrap();
-        store.persist(&first_journal).unwrap();
+        store.test_overwrite(&first_journal).unwrap();
         let mut second =
             crate::LockedExecutionSession::begin_durable_at_paths(&handoff, &lock, &store).unwrap();
         second.revalidate(&snapshot, &capabilities).unwrap();

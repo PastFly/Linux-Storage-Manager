@@ -39,6 +39,13 @@ jobs:
           cargo test --locked -p lsm-executor --lib missing_earlier_attempt_blocks_new_session -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo test --locked -p lsm-executor --lib backup_receipt_from_previous_session_cannot_authorize_a_new_attempt -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo test --locked -p lsm-executor --lib separate_attempts_capture_distinct_backups_without_reusing_prior_evidence -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib pinned_load_ -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib journal_inventory_ -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib journal_update_ -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib interrupted_journal_exchange_ -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib successful_journal_updates_retain_ -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib runtime_inventory_detects_ -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib new_unclassified_journal_after_session_start_ -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo test --locked -p linux-storage-manager-cli --bin storagemgr diagnostics_ -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo clippy --locked -p lsm-executor --lib -- -D warnings 2>&1 | tee -a backup-path-test.log || failed=1
           cargo clippy --locked -p linux-storage-manager-cli --bin storagemgr -- -D warnings 2>&1 | tee -a backup-path-test.log || failed=1
