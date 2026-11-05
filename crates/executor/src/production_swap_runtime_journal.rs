@@ -869,7 +869,7 @@ fn ensure_secure_directory(
 
         match fs::symlink_metadata(&current) {
             Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                if !crate::journal_store::trusted_journal_directory(&metadata, current == path) {
                     return Err(ProductionSwapRuntimeJournalError::UnsafeDirectory(current));
                 }
             }
@@ -883,7 +883,7 @@ fn ensure_secure_directory(
                 }
                 let metadata =
                     fs::symlink_metadata(&current).map_err(|source| io_error(&current, source))?;
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                if !crate::journal_store::trusted_journal_directory(&metadata, current == path) {
                     return Err(ProductionSwapRuntimeJournalError::UnsafeDirectory(current));
                 }
             }
@@ -963,6 +963,20 @@ mod tests {
             "lsm-swap-runtime-journal-{}-{stamp}-{name}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn swap_journal_rejects_writable_ancestor() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = temp_root("writable-ancestor");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o777)).unwrap();
+        let store = ProductionSwapRuntimeJournalStore::at(parent.join("journal"));
+        assert!(matches!(
+            store.persist_new(&fixture_journal()),
+            Err(ProductionSwapRuntimeJournalError::UnsafeDirectory(_))
+        ));
+        fs::remove_dir_all(parent).unwrap();
     }
 
     #[test]
