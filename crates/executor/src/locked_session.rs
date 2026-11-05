@@ -679,6 +679,64 @@ mod tests {
     }
 
     #[test]
+    fn unfinished_mutation_blocks_a_new_plan_for_the_same_storage() {
+        let (snapshot, capabilities) = fixture();
+        let first_handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("unfinished-mutation-new-plan");
+        let store = DurableJournalStore::at(&root);
+        let mut first =
+            LockedExecutionSession::begin_durable_at_paths(&first_handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut first, &first_handoff, &snapshot, &capabilities);
+        let frozen = crate::freeze_execution_intent(&first, &approval).unwrap();
+        let validated =
+            crate::validate_and_bind_native_manifest(crate::compile_native_manifest(&frozen))
+                .unwrap();
+        let steps = validated
+            .manifest()
+            .steps
+            .iter()
+            .filter(|step| step.role == crate::FrozenIntentRole::MutationCandidate)
+            .map(|step| step.plan_step_id)
+            .collect::<Vec<_>>();
+        let binding = build_execution_start_binding(
+            first.journal(),
+            frozen.manifest_id(),
+            validated.digest(),
+            &first_handoff.target_identity().manifest_digest,
+            &steps,
+        )
+        .unwrap();
+        first.persist_execution_started(&binding).unwrap();
+        let previous = store.load(&first.journal().journal_id).unwrap();
+        drop(first);
+
+        let plan = plan_extend(
+            &snapshot,
+            &capabilities,
+            ExtendRequest {
+                target: "/".into(),
+                growth: Growth::ByBytes(2 * GIB),
+            },
+        )
+        .unwrap();
+        let second_handoff =
+            build_frozen_execution_handoff(&snapshot, &capabilities, &plan).unwrap();
+        assert_ne!(
+            first_handoff.guard().guard_id,
+            second_handoff.guard().guard_id
+        );
+        let second = LockedExecutionSession::begin_durable_at_paths(&second_handoff, &path, &store);
+        assert!(
+            second.is_err(),
+            "an unfinished mutation must block a new plan"
+        );
+        assert_eq!(store.load(&previous.journal_id).unwrap(), previous);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn durable_session_start_refuses_to_overwrite_existing_journal() {
         let (snapshot, capabilities) = fixture();
         let handoff = handoff(&snapshot, &capabilities);
