@@ -306,7 +306,7 @@ fn run() -> Result<ExitCode> {
                 }
             }
             let reconciled =
-                lsm_executor::reconcile_abandoned_prewrite(&store, &journal_id, &confirmation)?;
+                lsm_executor::reconcile_abandoned_prewrite(&store, &journal, &confirmation)?;
             println!("Journal {} recorded as aborted before mutation; no storage operation was executed.", reconciled.journal_id);
         }
         Some(Command::Explain { target }) => {

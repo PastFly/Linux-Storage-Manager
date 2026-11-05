@@ -17,6 +17,8 @@ pub enum ReconciliationError {
     Journal(#[from] JournalError),
     #[error("the exact journal-specific confirmation did not match")]
     ConfirmationMismatch,
+    #[error("the journal changed since it was shown; inspect it again")]
+    JournalChanged,
     #[error("mutation may have started; manual investigation is required and this procedure cannot resolve it")]
     AmbiguousMutation,
     #[error("the journal is already terminal")]
@@ -27,12 +29,12 @@ pub enum ReconciliationError {
 /// Ambiguous operations remain blocked and are never retried by this procedure.
 pub fn reconcile_abandoned_prewrite(
     store: &DurableJournalStore,
-    journal_id: &str,
+    shown_journal: &OperationJournal,
     confirmation: &str,
 ) -> Result<OperationJournal, ReconciliationError> {
     reconcile_prewrite_at(
         store,
-        journal_id,
+        shown_journal,
         confirmation,
         Path::new(HOST_STORAGE_LOCK_PATH),
     )
@@ -40,12 +42,15 @@ pub fn reconcile_abandoned_prewrite(
 
 fn reconcile_prewrite_at(
     store: &DurableJournalStore,
-    journal_id: &str,
+    shown_journal: &OperationJournal,
     confirmation: &str,
     lock_path: &Path,
 ) -> Result<OperationJournal, ReconciliationError> {
     let _lock = HostStorageLock::try_acquire_path(lock_path)?;
-    let mut journal = store.load(journal_id)?;
+    let mut journal = store.load(&shown_journal.journal_id)?;
+    if &journal != shown_journal {
+        return Err(ReconciliationError::JournalChanged);
+    }
     if confirmation != format!("ABORT {}", journal.journal_id) {
         return Err(ReconciliationError::ConfirmationMismatch);
     }
@@ -109,11 +114,11 @@ mod tests {
     fn abandoned_prewrite_journal_is_aborted_only_with_exact_confirmation() {
         let (root, store, journal) = fixture();
         let lock = root.join("lock/storage.lock");
-        assert!(reconcile_prewrite_at(&store, &journal.journal_id, "yes", &lock).is_err());
+        assert!(reconcile_prewrite_at(&store, &journal, "yes", &lock).is_err());
         assert_eq!(store.load(&journal.journal_id).unwrap(), journal);
         let result = reconcile_prewrite_at(
             &store,
-            &journal.journal_id,
+            &journal,
             &format!("ABORT {}", journal.journal_id),
             &lock,
         )
@@ -133,7 +138,7 @@ mod tests {
         assert!(matches!(
             reconcile_prewrite_at(
                 &store,
-                &journal.journal_id,
+                &journal,
                 &format!("ABORT {}", journal.journal_id),
                 &path
             ),
@@ -141,6 +146,23 @@ mod tests {
         ));
         assert_eq!(store.load(&journal.journal_id).unwrap(), journal);
         drop(guard);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reconciliation_rejects_journal_changed_after_confirmation_was_shown() {
+        let (root, store, shown) = fixture();
+        let mut changed = shown.clone();
+        changed.apply(JournalTransition::HostLockAcquired).unwrap();
+        store.persist(&changed).unwrap();
+        let result = reconcile_prewrite_at(
+            &store,
+            &shown,
+            &format!("ABORT {}", shown.journal_id),
+            &root.join("lock/storage.lock"),
+        );
+        assert!(matches!(result, Err(ReconciliationError::JournalChanged)));
+        assert_eq!(store.load(&shown.journal_id).unwrap(), changed);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -189,7 +211,7 @@ mod tests {
         store.persist(&journal).unwrap();
         let result = reconcile_prewrite_at(
             &store,
-            &journal.journal_id,
+            &journal,
             &format!("ABORT {}", journal.journal_id),
             &root.join("lock/storage.lock"),
         );
