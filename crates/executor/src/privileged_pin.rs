@@ -133,7 +133,7 @@ pub(crate) fn snapshot_trusted_tool(
     }
     let fd = unsafe {
         libc::memfd_create(
-            b"lsm-backup-tool\0".as_ptr().cast(),
+            c"lsm-backup-tool".as_ptr(),
             libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
         )
     };
