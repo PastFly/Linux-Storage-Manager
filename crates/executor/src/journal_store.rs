@@ -1681,14 +1681,17 @@ mod tests {
     }
 
     #[test]
-    fn journal_inventory_accepts_closing_unchanged_existing_writer() {
+    fn journal_inventory_fails_closed_when_existing_writer_closes() {
         let root = root("inventory-close-unchanged-writer");
         let store = DurableJournalStore::at(&root);
-        let expected = journal();
-        let path = store.persist_new(&expected).unwrap();
+        let path = store.persist_new(&journal()).unwrap();
         let writer = OpenOptions::new().write(true).open(&path).unwrap();
         let result = store.all_with_hook(|| drop(writer));
-        assert_eq!(result.unwrap(), vec![expected]);
+        assert!(matches!(
+            result,
+            Err(JournalStoreError::ChangedDuringInspection)
+        ));
+        assert!(path.exists());
         fs::remove_dir_all(root).unwrap();
     }
 
