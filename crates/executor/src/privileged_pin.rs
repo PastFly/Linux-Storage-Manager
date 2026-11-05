@@ -297,6 +297,35 @@ mod tests {
     }
 
     #[test]
+    fn pinned_backup_tool_cannot_change_after_last_verification() {
+        let root = temp_path("backup-content-after-verification");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("vgcfgbackup");
+        fs::write(&path, fs::read("/usr/bin/true").unwrap()).unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).unwrap();
+        let expected = identity_for_file(&path, PrivilegedProgram::Vgcfgbackup);
+        let opened = File::open(&path).unwrap();
+        receipt_from_open_file(&opened, &expected).unwrap();
+        fs::write(&path, fs::read("/usr/bin/false").unwrap()).unwrap();
+        let result = crate::privileged_exec::execute_descriptor_stage(
+            &opened,
+            PrivilegedProgram::Vgcfgbackup,
+            &["vgcfgbackup".into()],
+            "/usr/sbin:/usr/bin:/sbin:/bin",
+            "C",
+            None,
+        )
+        .unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            result.exit_code, 0,
+            "changed executable content reached launch"
+        );
+    }
+
+    #[test]
     fn in_place_change_of_opened_tool_is_rejected_before_use() {
         let root = temp_path("in-place-change");
         fs::create_dir_all(&root).unwrap();

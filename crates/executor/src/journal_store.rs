@@ -839,6 +839,31 @@ mod tests {
     }
 
     #[test]
+    fn journal_with_multiple_links_is_rejected() {
+        let root = root("multiple-links");
+        let store = DurableJournalStore::at(&root);
+        let journal = journal();
+        let path = store.persist_new(&journal).unwrap();
+        fs::hard_link(&path, root.join("extra-link")).unwrap();
+        let result = store.load(&journal.journal_id);
+        let _ = fs::remove_dir_all(root);
+        assert!(matches!(result, Err(JournalStoreError::NotRegularFile(_))));
+    }
+
+    #[test]
+    fn journal_read_rejects_unsafe_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = root("unsafe-file-mode");
+        let store = DurableJournalStore::at(&root);
+        let journal = journal();
+        let path = store.persist_new(&journal).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let result = store.load(&journal.journal_id);
+        let _ = fs::remove_dir_all(root);
+        assert!(matches!(result, Err(JournalStoreError::NotRegularFile(_))));
+    }
+
+    #[test]
     fn writable_journal_directory_is_rejected() {
         use std::os::unix::fs::PermissionsExt;
         let root = root("writable-directory");
