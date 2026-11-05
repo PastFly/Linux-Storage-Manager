@@ -107,6 +107,7 @@ mod production_swap_runtime_preflight;
 mod production_swap_runtime_tool_lease;
 #[cfg(feature = "production-mutation-execution")]
 mod production_verified_step;
+mod reconciliation;
 #[cfg(feature = "trusted-discovery")]
 mod trusted_discovery;
 

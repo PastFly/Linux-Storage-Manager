@@ -1,0 +1,13 @@
+name: Reconciliation development tests
+on:
+  push:
+    branches: [feature/reconciliation-ci-test]
+permissions:
+  contents: read
+jobs:
+  reconciliation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - run: cargo test --locked -p lsm-executor --lib reconciliation::tests -- --nocapture
