@@ -8,7 +8,7 @@ use lsm_planner::{
     ExactApprovalBinding, ExecutionStartBinding, JournalEvent, JournalPhase, OperationJournal,
     VerifiedMutationBoundaryBinding, JOURNAL_DIRECTORY,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const MAX_JOURNAL_BYTES: u64 = 1024 * 1024;
@@ -17,6 +17,19 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone)]
 pub struct DurableJournalStore {
     root: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JournalInspection {
+    pub unfinished: Vec<OperationJournal>,
+    pub unclassified: Vec<UnclassifiedJournalEvidence>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UnclassifiedJournalEvidence {
+    pub path: PathBuf,
+    pub staged_journal: Option<OperationJournal>,
+    pub problem: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -78,6 +91,64 @@ impl DurableJournalStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Read-only inventory: preserve and report every unusual entry while the
+    /// mutation path remains fail-closed on the strict `all` enumeration.
+    pub fn inspect(&self) -> Result<JournalInspection, JournalStoreError> {
+        ensure_secure_directory(&self.root, false)?;
+        let mut result = JournalInspection {
+            unfinished: Vec::new(),
+            unclassified: Vec::new(),
+        };
+        for entry in fs::read_dir(&self.root).map_err(|source| io_error(&self.root, source))? {
+            let entry = entry.map_err(|source| io_error(&self.root, source))?;
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_str();
+            if let Some(id) = name.and_then(|name| name.strip_suffix(".json")) {
+                match self.load(id) {
+                    Ok(journal)
+                        if !matches!(
+                            journal.phase,
+                            JournalPhase::Completed | JournalPhase::Aborted
+                        ) =>
+                    {
+                        result.unfinished.push(journal)
+                    }
+                    Ok(_) => {}
+                    Err(error) => result.unclassified.push(UnclassifiedJournalEvidence {
+                        path,
+                        staged_journal: None,
+                        problem: Some(error.to_string()),
+                    }),
+                }
+                continue;
+            }
+            let staged_id = name
+                .and_then(|name| name.strip_prefix('.'))
+                .and_then(|name| name.split_once(".tmp-"))
+                .map(|(id, _)| id);
+            let staged = staged_id.map(|id| self.load_at(&path, id));
+            let (staged_journal, problem) = match staged {
+                Some(Ok(journal)) => (Some(journal), None),
+                Some(Err(error)) => (None, Some(error.to_string())),
+                None => (
+                    None,
+                    Some("unrecognized journal directory entry".to_owned()),
+                ),
+            };
+            result.unclassified.push(UnclassifiedJournalEvidence {
+                path,
+                staged_journal,
+                problem,
+            });
+        }
+        result
+            .unfinished
+            .sort_by(|a, b| a.journal_id.cmp(&b.journal_id));
+        result.unclassified.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(result)
     }
 
     /// Inspect all durable journals. Unexpected files or invalid records are errors:
@@ -250,15 +321,24 @@ impl DurableJournalStore {
         ensure_secure_directory(&self.root, false)?;
 
         let path = self.path_for(journal_id)?;
-        let metadata = match fs::symlink_metadata(&path) {
+        self.load_at(&path, journal_id)
+    }
+
+    fn load_at(
+        &self,
+        path: &Path,
+        journal_id: &str,
+    ) -> Result<OperationJournal, JournalStoreError> {
+        validate_journal_id(journal_id)?;
+        let metadata = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
                 return Err(JournalStoreError::NotFound(journal_id.to_owned()));
             }
-            Err(source) => return Err(io_error(&path, source)),
+            Err(source) => return Err(io_error(path, source)),
         };
         if !trusted_journal_file(&metadata) {
-            return Err(JournalStoreError::NotRegularFile(path));
+            return Err(JournalStoreError::NotRegularFile(path.to_path_buf()));
         }
         if metadata.len() > MAX_JOURNAL_BYTES {
             return Err(JournalStoreError::TooLarge);
@@ -267,19 +347,19 @@ impl DurableJournalStore {
         let file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-            .open(&path)
-            .map_err(|source| io_error(&path, source))?;
-        let opened = file.metadata().map_err(|source| io_error(&path, source))?;
+            .open(path)
+            .map_err(|source| io_error(path, source))?;
+        let opened = file.metadata().map_err(|source| io_error(path, source))?;
         if !trusted_journal_file(&opened)
             || opened.dev() != metadata.dev()
             || opened.ino() != metadata.ino()
         {
-            return Err(JournalStoreError::NotRegularFile(path));
+            return Err(JournalStoreError::NotRegularFile(path.to_path_buf()));
         }
         let mut bytes = Vec::new();
         file.take(MAX_JOURNAL_BYTES + 1)
             .read_to_end(&mut bytes)
-            .map_err(|source| io_error(&path, source))?;
+            .map_err(|source| io_error(path, source))?;
         if bytes.len() as u64 > MAX_JOURNAL_BYTES {
             return Err(JournalStoreError::TooLarge);
         }
@@ -907,6 +987,45 @@ mod tests {
             retry.is_err(),
             "an existing unsynced directory must not make a retry succeed"
         );
+    }
+
+    #[test]
+    fn inspection_reports_valid_staged_journal_without_authorizing_writes() {
+        let root = root("staged-diagnostics");
+        let store = DurableJournalStore::at(&root);
+        let journal = journal();
+        let path = store.persist_new(&journal).unwrap();
+        let staging = root.join(format!(".{}.tmp-123-1", journal.journal_id));
+        fs::copy(&path, &staging).unwrap();
+        let inspection = store.inspect().unwrap();
+        assert_eq!(inspection.unfinished, vec![journal.clone()]);
+        assert_eq!(inspection.unclassified.len(), 1);
+        assert_eq!(inspection.unclassified[0].path, staging);
+        assert_eq!(
+            inspection.unclassified[0].staged_journal.as_ref(),
+            Some(&journal)
+        );
+        assert!(store.all().is_err());
+        assert!(staging.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inspection_reports_truncated_staging_as_unclassified() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = root("truncated-staging");
+        let store = DurableJournalStore::at(&root);
+        let journal = journal();
+        store.persist_new(&journal).unwrap();
+        let staging = root.join(format!(".{}.tmp-123-1", journal.journal_id));
+        fs::write(&staging, b"{\"phase\":\"execut").unwrap();
+        fs::set_permissions(&staging, fs::Permissions::from_mode(0o600)).unwrap();
+        let inspection = store.inspect().unwrap();
+        assert_eq!(inspection.unclassified.len(), 1);
+        assert!(inspection.unclassified[0].staged_journal.is_none());
+        assert!(inspection.unclassified[0].problem.is_some());
+        assert!(store.all().is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
