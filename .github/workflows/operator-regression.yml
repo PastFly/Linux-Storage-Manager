@@ -44,3 +44,20 @@ jobs:
           name: backup-path-test-${{ github.run_id }}-${{ github.run_attempt }}
           path: backup-path-test.log
           if-no-files-found: warn
+
+  executable-memfd-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Verify pinned execution under memfd_noexec=1
+        shell: bash
+        run: |
+          set -euo pipefail
+          original=$(sysctl -n vm.memfd_noexec)
+          trap 'sudo sysctl -w "vm.memfd_noexec=${original}"' EXIT
+          sudo sysctl -w vm.memfd_noexec=1
+          cargo test --locked -p lsm-executor --lib pinned_backup_tool_cannot_change_after_last_verification -- --nocapture
