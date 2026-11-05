@@ -12,6 +12,10 @@ use crate::{PrivilegedCommandSpec, PrivilegedProgram};
 
 const TRUSTED_TOOL_DIRECTORIES: &[&str] = &["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 
+pub fn effective_user_is_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TrustedToolIdentity {
     pub program: PrivilegedProgram,

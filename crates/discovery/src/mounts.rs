@@ -1,4 +1,4 @@
-use std::process::Command;
+use crate::{DiscoveryCommandRunner, SystemDiscoveryRunner};
 
 use lsm_core::MountEntry;
 use serde::Deserialize;
@@ -15,14 +15,21 @@ pub enum MountDiscoveryError {
 }
 
 pub fn discover_mounts() -> Result<Vec<MountEntry>, MountDiscoveryError> {
-    let output = Command::new("findmnt")
-        .args([
+    discover_mounts_with_runner(&SystemDiscoveryRunner)
+}
+
+pub fn discover_mounts_with_runner(
+    runner: &dyn DiscoveryCommandRunner,
+) -> Result<Vec<MountEntry>, MountDiscoveryError> {
+    let output = runner.output(
+        "findmnt",
+        &[
             "--json",
             "--bytes",
             "--output",
             "SOURCE,TARGET,FSTYPE,OPTIONS",
-        ])
-        .output()?;
+        ],
+    )?;
 
     if !output.status.success() {
         return Err(MountDiscoveryError::CommandFailed {

@@ -1,24 +1,35 @@
+use crate::{DiscoveryCommandRunner, SystemDiscoveryRunner};
 use std::io::ErrorKind;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use lsm_core::{BlockDevice, FilesystemPreflightEvidence, FilesystemProbeState, StorageGraph};
 
 pub fn discover_filesystem_preflight(storage: &StorageGraph) -> Vec<FilesystemPreflightEvidence> {
+    discover_filesystem_preflight_with_runner(storage, &SystemDiscoveryRunner)
+}
+
+pub fn discover_filesystem_preflight_with_runner(
+    storage: &StorageGraph,
+    runner: &dyn DiscoveryCommandRunner,
+) -> Vec<FilesystemPreflightEvidence> {
     let mut evidence = Vec::new();
     for device in flatten(&storage.block_devices) {
         let Some(filesystem) = device.filesystem.as_ref() else {
             continue;
         };
         match filesystem.fs_type.as_str() {
-            "ext4" => evidence.push(probe_ext4(device)),
-            "xfs" => evidence.push(probe_xfs(device)),
+            "ext4" => evidence.push(probe_ext4(device, runner)),
+            "xfs" => evidence.push(probe_xfs(device, runner)),
             _ => {}
         }
     }
     evidence
 }
 
-fn probe_ext4(device: &BlockDevice) -> FilesystemPreflightEvidence {
+fn probe_ext4(
+    device: &BlockDevice,
+    runner: &dyn DiscoveryCommandRunner,
+) -> FilesystemPreflightEvidence {
     let device_name = device.path.clone().unwrap_or_else(|| device.name.clone());
     let mountpoint = first_real_mountpoint(device);
     let Some(path) = device.path.as_deref() else {
@@ -41,7 +52,7 @@ fn probe_ext4(device: &BlockDevice) -> FilesystemPreflightEvidence {
         );
     };
 
-    match Command::new("tune2fs").args(["-l", path]).output() {
+    match runner.output("tune2fs", &["-l", path]) {
         Ok(output) if output.status.success() => {
             let parsed = parse_tune2fs_list(&String::from_utf8_lossy(&output.stdout));
             let size_bytes = parsed.size_bytes();
@@ -112,7 +123,10 @@ fn probe_ext4(device: &BlockDevice) -> FilesystemPreflightEvidence {
     }
 }
 
-fn probe_xfs(device: &BlockDevice) -> FilesystemPreflightEvidence {
+fn probe_xfs(
+    device: &BlockDevice,
+    runner: &dyn DiscoveryCommandRunner,
+) -> FilesystemPreflightEvidence {
     let device_name = device.path.clone().unwrap_or_else(|| device.name.clone());
     let fs_version = device.filesystem.as_ref().and_then(|fs| fs.version.clone());
     let Some(mountpoint) = first_real_mountpoint(device) else {
@@ -136,10 +150,8 @@ fn probe_xfs(device: &BlockDevice) -> FilesystemPreflightEvidence {
         );
     };
 
-    let info = Command::new("xfs_info").arg(&mountpoint).output();
-    let grow = Command::new("xfs_growfs")
-        .args(["-n", mountpoint.as_str()])
-        .output();
+    let info = runner.output("xfs_info", &[mountpoint.as_str()]);
+    let grow = runner.output("xfs_growfs", &["-n", mountpoint.as_str()]);
 
     let mut features = Vec::new();
     let mut block_size_bytes = None;

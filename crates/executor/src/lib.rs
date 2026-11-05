@@ -107,6 +107,8 @@ mod production_swap_runtime_preflight;
 mod production_swap_runtime_tool_lease;
 #[cfg(feature = "production-mutation-execution")]
 mod production_verified_step;
+#[cfg(feature = "trusted-discovery")]
+mod trusted_discovery;
 
 pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError};
 pub use backup_capture::{
@@ -232,8 +234,8 @@ pub use privileged_start::{
     PrivilegedExecutionStartReceipt,
 };
 pub use privileged_tools::{
-    resolve_privileged_command_tools, resolve_trusted_privileged_tool, PrivilegedToolResolution,
-    TrustedToolError, TrustedToolIdentity,
+    effective_user_is_root, resolve_privileged_command_tools, resolve_trusted_privileged_tool,
+    PrivilegedToolResolution, TrustedToolError, TrustedToolIdentity,
 };
 pub use privileged_verify::{
     verify_privileged_layer_post_state, PrivilegedLayerVerificationError,
@@ -516,6 +518,8 @@ pub use production_verified_step::{
     execute_verify_and_persist_production_step, ProductionVerifiedMutationStep,
     ProductionVerifiedMutationStepError,
 };
+#[cfg(feature = "trusted-discovery")]
+pub use trusted_discovery::TrustedDiscoveryRunner;
 
 use std::fs::{self, File, OpenOptions};
 use std::io;

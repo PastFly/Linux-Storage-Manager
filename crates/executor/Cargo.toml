@@ -7,6 +7,7 @@ publish.workspace = true
 
 [features]
 default = []
+trusted-discovery = ["dep:lsm-discovery"]
 disposable-executor = []
 disposable-loop-harness = ["disposable-executor", "dep:lsm-discovery"]
 disposable-swap-migration-harness = ["disposable-executor", "dep:lsm-discovery"]
@@ -53,8 +54,8 @@ production-mutation-consent = ["production-mutation-activation"]
 production-mutation-execution-permit = ["production-mutation-consent"]
 production-chained-mutation-execution-permit = ["production-mutation-consent"]
 production-chained-mutation-execution = ["production-chained-mutation-execution-permit"]
-production-chained-verified-execution = ["production-chained-mutation-execution", "dep:lsm-discovery"]
-production-mutation-execution = ["production-mutation-execution-permit", "dep:lsm-discovery"]
+production-chained-verified-execution = ["production-chained-mutation-execution", "trusted-discovery"]
+production-mutation-execution = ["production-mutation-execution-permit", "trusted-discovery"]
 production-loop-harness = ["production-mutation-execution", "production-chained-verified-execution", "disposable-loop-harness"]
 
 [[bin]]
