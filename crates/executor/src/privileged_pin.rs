@@ -118,7 +118,7 @@ fn sha256_open_file(file: &File) -> Result<String, io::Error> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-fn receipt_from_open_file(
+pub(crate) fn receipt_from_open_file(
     file: &File,
     expected: &TrustedToolIdentity,
 ) -> Result<PinnedToolReceipt, PrivilegedToolPinError> {
@@ -149,7 +149,7 @@ fn receipt_from_open_file(
     })
 }
 
-fn pin_trusted_tool(
+pub(crate) fn pin_trusted_tool(
     expected: &TrustedToolIdentity,
 ) -> Result<(File, PinnedToolReceipt), PrivilegedToolPinError> {
     if expected.uid != 0
@@ -293,6 +293,22 @@ mod tests {
         assert_eq!(receipt.sha256, expected.sha256);
         assert_ne!(fs::metadata(&path).unwrap().ino(), expected.inode);
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn in_place_change_of_opened_tool_is_rejected_before_use() {
+        let root = temp_path("in-place-change");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("vgcfgbackup");
+        fs::write(&path, b"trusted executable").unwrap();
+        let expected = identity_for_file(&path, PrivilegedProgram::Vgcfgbackup);
+        let opened = File::open(&path).unwrap();
+        fs::write(&path, b"changed executable").unwrap();
+        assert!(matches!(
+            receipt_from_open_file(&opened, &expected),
+            Err(PrivilegedToolPinError::PinnedExecutableMismatch)
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 

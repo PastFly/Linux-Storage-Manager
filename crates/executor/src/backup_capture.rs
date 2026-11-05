@@ -1,8 +1,9 @@
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+#[cfg(test)]
+use std::process::Command;
 
 use lsm_planner::JournalPhase;
 use serde::Serialize;
@@ -111,6 +112,16 @@ impl BackupReceiptRevalidation {
 
 #[derive(Debug, Error)]
 pub enum BackupCaptureError {
+    #[error("trusted backup tool resolution failed: {0}")]
+    TrustedTool(#[from] crate::TrustedToolError),
+    #[error("trusted backup tool pinning failed: {0}")]
+    ToolPin(#[from] crate::PrivilegedToolPinError),
+    #[error("trusted backup tool identity changed before execution")]
+    ToolIdentityChanged,
+    #[error("backup tool descriptor execution failed: {0}")]
+    ToolExecution(#[from] crate::PrivilegedDescriptorExecError),
+    #[error("partition table backup exceeds the descriptor output limit")]
+    BackupOutputTruncated,
     #[error("metadata backup capture requires a successfully identity-revalidated locked session")]
     SessionNotRevalidated,
     #[error("mutation-enabled execution is forbidden in the backup capture foundation")]
@@ -182,48 +193,62 @@ trait CaptureRunner {
 
 struct SystemCaptureRunner;
 
+fn run_backup_tool(
+    program: crate::PrivilegedProgram,
+    args: Vec<String>,
+) -> Result<crate::DescriptorExecOutcome, BackupCaptureError> {
+    let expected = crate::resolve_trusted_privileged_tool(program)?;
+    let (file, _) = crate::privileged_pin::pin_trusted_tool(&expected)?;
+    if crate::resolve_trusted_privileged_tool(program)? != expected {
+        return Err(BackupCaptureError::ToolIdentityChanged);
+    }
+    crate::privileged_pin::receipt_from_open_file(&file, &expected)?;
+    let mut argv = vec![program.as_str().to_owned()];
+    argv.extend(args);
+    Ok(crate::privileged_exec::execute_descriptor_stage(
+        &file,
+        program,
+        &argv,
+        "/usr/sbin:/usr/bin:/sbin:/bin",
+        "C",
+        None,
+    )?)
+}
+
 impl CaptureRunner for SystemCaptureRunner {
     fn capture_partition_table(&self, disk: &str, output: &Path) -> Result<(), BackupCaptureError> {
-        let file = create_artifact_file(output)?;
-        let stdout = file
-            .try_clone()
-            .map_err(|source| io_error(output, source))?;
-        let status = Command::new("sfdisk")
-            .arg("--dump")
-            .arg(disk)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::null())
-            .env("LC_ALL", "C")
-            .env("LANG", "C")
-            .status()
-            .map_err(|source| io_error(Path::new("sfdisk"), source))?;
-        if !status.success() {
+        let mut file = create_artifact_file(output)?;
+        let result = run_backup_tool(
+            crate::PrivilegedProgram::Sfdisk,
+            vec!["--dump".into(), disk.into()],
+        )?;
+        if result.exit_code != 0 {
             return Err(BackupCaptureError::CommandFailed {
                 program: "sfdisk".to_owned(),
-                status: status.to_string(),
+                status: result.exit_code.to_string(),
             });
         }
+        if result.stdout_truncated {
+            return Err(BackupCaptureError::BackupOutputTruncated);
+        }
+        file.write_all(&result.stdout)
+            .map_err(|source| io_error(output, source))?;
         file.sync_all().map_err(|source| io_error(output, source))
     }
 
     fn capture_lvm_metadata(&self, vg_name: &str, output: &Path) -> Result<(), BackupCaptureError> {
         ensure_artifact_absent(output)?;
-        let status = Command::new("vgcfgbackup")
-            .arg("--file")
-            .arg(output)
-            .arg(vg_name)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .env("LC_ALL", "C")
-            .env("LANG", "C")
-            .status()
-            .map_err(|source| io_error(Path::new("vgcfgbackup"), source))?;
-        if !status.success() {
+        let output_arg = output
+            .to_str()
+            .ok_or_else(|| BackupCaptureError::UnsafeArtifact(output.to_path_buf()))?;
+        let result = run_backup_tool(
+            crate::PrivilegedProgram::Vgcfgbackup,
+            vec!["--file".into(), output_arg.into(), vg_name.into()],
+        )?;
+        if result.exit_code != 0 {
             return Err(BackupCaptureError::CommandFailed {
                 program: "vgcfgbackup".to_owned(),
-                status: status.to_string(),
+                status: result.exit_code.to_string(),
             });
         }
         let file = OpenOptions::new()
