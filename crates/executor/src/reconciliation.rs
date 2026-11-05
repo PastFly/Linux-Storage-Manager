@@ -196,6 +196,51 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_staging_reconciliation_retains_exact_durable_journal() {
+        let (root, store, journal) = fixture();
+        let final_path = store.root().join(format!("{}.json", journal.journal_id));
+        let staging = store
+            .root()
+            .join(format!(".{}.tmp-123-1", journal.journal_id));
+        fs::hard_link(&final_path, &staging).unwrap();
+        let lock = root.join("lock/storage.lock");
+        assert!(reconcile_duplicate_at(&store, &staging, &journal, "yes", &lock).is_err());
+        assert!(staging.exists());
+        reconcile_duplicate_at(
+            &store,
+            &staging,
+            &journal,
+            &format!("REMOVE DUPLICATE {}", journal.journal_id),
+            &lock,
+        )
+        .unwrap();
+        assert!(!staging.exists());
+        assert_eq!(store.load(&journal.journal_id).unwrap(), journal);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_staging_reconciliation_never_removes_a_distinct_file() {
+        let (root, store, journal) = fixture();
+        let final_path = store.root().join(format!("{}.json", journal.journal_id));
+        let staging = store
+            .root()
+            .join(format!(".{}.tmp-123-1", journal.journal_id));
+        fs::copy(&final_path, &staging).unwrap();
+        let result = reconcile_duplicate_at(
+            &store,
+            &staging,
+            &journal,
+            &format!("REMOVE DUPLICATE {}", journal.journal_id),
+            &root.join("lock/storage.lock"),
+        );
+        assert!(result.is_err());
+        assert!(staging.exists());
+        assert_eq!(store.load(&journal.journal_id).unwrap(), journal);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn reconciliation_never_aborts_a_possibly_executed_operation() {
         use lsm_planner::{build_execution_start_binding, ExactApprovalBinding};
         let (root, store, mut journal) = fixture();

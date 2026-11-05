@@ -168,9 +168,9 @@ impl DurableJournalStore {
                 continue;
             }
             let staged_id = name.and_then(staging_journal_id);
-            let staged = staged_id.map(|id| {
-                self.load_at(&path, id)
-                    .or_else(|_| self.load_linked_staging(&path, id))
+            let staged = staged_id.map(|id| match self.load_at(&path, id) {
+                Ok(journal) => Ok(journal),
+                Err(primary) => self.load_linked_staging(&path, id).map_err(|_| primary),
             });
             let (staged_journal, problem) = match staged {
                 Some(Ok(journal)) => (Some(journal), None),
@@ -1095,7 +1095,11 @@ mod tests {
         let inspection = store.inspect().unwrap();
         assert_eq!(inspection.unclassified.len(), 1);
         assert!(inspection.unclassified[0].staged_journal.is_none());
-        assert!(inspection.unclassified[0].problem.is_some());
+        assert!(inspection.unclassified[0]
+            .problem
+            .as_deref()
+            .unwrap()
+            .contains("JSON"));
         assert!(store.all().is_err());
         fs::remove_dir_all(root).unwrap();
     }

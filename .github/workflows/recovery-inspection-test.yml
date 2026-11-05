@@ -10,6 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88.0
+      - run: cargo test --locked -p lsm-executor --lib reconciliation::tests -- --nocapture
       - run: cargo test --locked -p lsm-executor --lib inspection_ -- --nocapture
       - run: cargo test --locked -p linux-storage-manager-cli --bin storagemgr diagnostics_ -- --nocapture
       - run: cargo clippy --locked -p linux-storage-manager-cli --bin storagemgr -- -D warnings
