@@ -917,6 +917,38 @@ mod tests {
     }
 
     #[test]
+    fn backup_capture_fails_when_artifact_directory_cannot_be_synced() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let (snapshot, capabilities) = direct_fixture();
+        let handoff = direct_handoff(&snapshot, &capabilities);
+        let manifest = crate::build_metadata_backup_manifest(&handoff).unwrap();
+        let lock = temp_path("sync-failure-lock").join("storage.lock");
+        let root = temp_path("sync-failure-artifacts");
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o300)).unwrap();
+        let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let result = capture_with_runner(
+            &session,
+            &manifest,
+            Some(&root),
+            &FakeRunner::new(b"valid backup"),
+        );
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        drop(session);
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(root);
+        assert!(
+            result.is_err(),
+            "backup directory sync failure must fail closed"
+        );
+    }
+
+    #[test]
     fn exact_revalidated_session_can_capture_manifest_with_fake_runner() {
         let (snapshot, capabilities) = direct_fixture();
         let handoff = direct_handoff(&snapshot, &capabilities);

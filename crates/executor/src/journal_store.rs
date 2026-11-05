@@ -868,6 +868,25 @@ mod tests {
     }
 
     #[test]
+    fn journal_creation_fails_when_parent_directory_cannot_be_synced() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let parent = root("unreadable-parent");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o300)).unwrap();
+        let store = DurableJournalStore::at(parent.join("journal"));
+        let result = store.persist_new(&journal());
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+        assert!(
+            result.is_err(),
+            "journal parent directory sync failure must fail closed"
+        );
+    }
+
+    #[test]
     fn journal_with_multiple_links_is_rejected() {
         let root = root("multiple-links");
         let store = DurableJournalStore::at(&root);
