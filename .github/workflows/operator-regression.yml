@@ -28,8 +28,9 @@ jobs:
           cargo test --locked -p lsm-executor --lib writable_journal_directory_is_rejected -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo test --locked -p lsm-executor --lib other_runtime_journal_evidence_blocks_new_extend_session -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo test --locked -p lsm-executor --lib backup_table_output_preserves_a_large_dump -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
-          cargo test --locked -p linux-storage-manager-cli --bin storagemgr operations_diagnostics_accepts_json_without_mutating_commands -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p linux-storage-manager-cli --bin storagemgr diagnostics_ -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo clippy --locked -p lsm-executor --lib -- -D warnings 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo clippy --locked -p linux-storage-manager-cli --bin storagemgr -- -D warnings 2>&1 | tee -a backup-path-test.log || failed=1
           exit "$failed"
       - name: Preserve regression output
         if: always()
