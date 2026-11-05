@@ -1681,6 +1681,18 @@ mod tests {
     }
 
     #[test]
+    fn journal_inventory_accepts_closing_unchanged_existing_writer() {
+        let root = root("inventory-close-unchanged-writer");
+        let store = DurableJournalStore::at(&root);
+        let expected = journal();
+        let path = store.persist_new(&expected).unwrap();
+        let writer = OpenOptions::new().write(true).open(&path).unwrap();
+        let result = store.all_with_hook(|| drop(writer));
+        assert_eq!(result.unwrap(), vec![expected]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn runtime_inventory_detects_creation_in_already_scanned_directory() {
         let root = root("runtime-concurrent-create");
         fs::create_dir(&root).unwrap();
