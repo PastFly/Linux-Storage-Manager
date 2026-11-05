@@ -55,6 +55,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Abort an abandoned journal only when no mutation could have started.
+    ReconcilePrewrite {
+        /// Full 64-character journal ID reported by operations.
+        journal_id: String,
+    },
     /// Explain whether a mount point or block device can be grown with currently known capacity.
     Explain {
         /// Mount point (for example / or /var) or block-device path.
@@ -277,6 +282,32 @@ fn run() -> Result<ExitCode> {
             } else {
                 ExitCode::SUCCESS
             });
+        }
+        Some(Command::ReconcilePrewrite { journal_id }) => {
+            use std::io::{BufRead, BufReader, Write};
+            let store = lsm_executor::DurableJournalStore::default();
+            let journal = store.load(&journal_id)?;
+            if journal.mutation_may_have_started {
+                anyhow::bail!("mutation may have started; preserve the journal and investigate before taking any further action");
+            }
+            let mut tty = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/tty")?;
+            writeln!(tty, "Abandon pre-write operation:\nJournal: {}\nPlan: {}\nTarget: {}\nPhase: {:?}\nBaseline identity: {}", journal.journal_id, journal.plan_id, journal.target, journal.phase, journal.baseline_manifest_digest)?;
+            write!(tty, "Type ABORT {} to confirm: ", journal.journal_id)?;
+            tty.flush()?;
+            let mut confirmation = String::new();
+            BufReader::new(&tty).read_line(&mut confirmation)?;
+            if confirmation.ends_with('\n') {
+                confirmation.pop();
+                if confirmation.ends_with('\r') {
+                    confirmation.pop();
+                }
+            }
+            let reconciled =
+                lsm_executor::reconcile_abandoned_prewrite(&store, &journal_id, &confirmation)?;
+            println!("Journal {} recorded as aborted before mutation; no storage operation was executed.", reconciled.journal_id);
         }
         Some(Command::Explain { target }) => {
             let snapshot = discover_snapshot()?;
