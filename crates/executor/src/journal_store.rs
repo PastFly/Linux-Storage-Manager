@@ -758,7 +758,7 @@ fn is_lower_hex_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
-fn trusted_journal_file(metadata: &fs::Metadata) -> bool {
+pub(crate) fn trusted_journal_file(metadata: &fs::Metadata) -> bool {
     metadata.is_file()
         && !metadata.file_type().is_symlink()
         && metadata.uid() == unsafe { libc::geteuid() }
@@ -766,7 +766,7 @@ fn trusted_journal_file(metadata: &fs::Metadata) -> bool {
         && metadata.nlink() == 1
 }
 
-fn trusted_journal_directory(metadata: &fs::Metadata, is_root: bool) -> bool {
+pub(crate) fn trusted_journal_directory(metadata: &fs::Metadata, is_root: bool) -> bool {
     let uid = metadata.uid();
     let mode = metadata.mode();
     let owner_ok = uid == 0 || uid == unsafe { libc::geteuid() };

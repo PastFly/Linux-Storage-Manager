@@ -1,6 +1,6 @@
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
@@ -503,7 +503,7 @@ fn verify_existing_secure_directory(path: &Path) -> Result<(), BackupCaptureErro
 
         let metadata =
             fs::symlink_metadata(&current).map_err(|source| io_error(&current, source))?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        if !crate::journal_store::trusted_journal_directory(&metadata, current == path) {
             return Err(BackupCaptureError::UnsafeDirectory(current));
         }
     }
@@ -581,7 +581,7 @@ fn ensure_secure_directory(path: &Path) -> Result<(), BackupCaptureError> {
         }
         match fs::symlink_metadata(&current) {
             Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                if !crate::journal_store::trusted_journal_directory(&metadata, current == path) {
                     return Err(BackupCaptureError::UnsafeDirectory(current));
                 }
                 let parent = current
@@ -599,7 +599,7 @@ fn ensure_secure_directory(path: &Path) -> Result<(), BackupCaptureError> {
                 }
                 let metadata =
                     fs::symlink_metadata(&current).map_err(|source| io_error(&current, source))?;
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                if !crate::journal_store::trusted_journal_directory(&metadata, current == path) {
                     return Err(BackupCaptureError::UnsafeDirectory(current));
                 }
                 let parent = current
@@ -640,7 +640,7 @@ fn create_artifact_file(path: &Path) -> Result<File, BackupCaptureError> {
 
 fn verify_artifact(path: &Path) -> Result<(u64, String), BackupCaptureError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if !crate::journal_store::trusted_journal_file(&metadata) {
         return Err(BackupCaptureError::UnsafeArtifact(path.to_path_buf()));
     }
     if metadata.len() == 0 {
@@ -655,6 +655,13 @@ fn verify_artifact(path: &Path) -> Result<(u64, String), BackupCaptureError> {
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
         .open(path)
         .map_err(|source| io_error(path, source))?;
+    let opened = file.metadata().map_err(|source| io_error(path, source))?;
+    if !crate::journal_store::trusted_journal_file(&opened)
+        || opened.dev() != metadata.dev()
+        || opened.ino() != metadata.ino()
+    {
+        return Err(BackupCaptureError::UnsafeArtifact(path.to_path_buf()));
+    }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(MAX_BACKUP_ARTIFACT_BYTES + 1)
         .read_to_end(&mut bytes)
@@ -802,6 +809,7 @@ mod tests {
         ensure_secure_directory(&root).unwrap();
         let path = root.join("artifact");
         fs::write(&path, b"verified-backup").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
 
         let (size, digest) = verify_artifact(&path).unwrap();
 
@@ -818,6 +826,7 @@ mod tests {
         ensure_secure_directory(&root).unwrap();
         let path = root.join("artifact");
         fs::write(&path, b"").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
 
         assert!(matches!(
             verify_artifact(&path),
