@@ -19,8 +19,12 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo test --locked -p lsm-executor --lib backup_capture_does_not_execute_tools_from_untrusted_path -- --nocapture 2>&1 | tee backup-path-test.log
-          cargo test --locked -p lsm-executor --lib in_place_change_of_opened_tool_is_rejected_before_use -- --nocapture 2>&1 | tee -a backup-path-test.log
+          failed=0
+          cargo test --locked -p lsm-executor --lib backup_capture_does_not_execute_tools_from_untrusted_path -- --nocapture 2>&1 | tee backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib in_place_change_of_opened_tool_is_rejected_before_use -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib writable_journal_directory_is_rejected -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo test --locked -p lsm-executor --lib backup_table_output_preserves_a_large_dump -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
+          exit "$failed"
       - name: Preserve regression output
         if: always()
         uses: actions/upload-artifact@v4

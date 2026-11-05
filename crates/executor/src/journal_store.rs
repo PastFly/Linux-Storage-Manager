@@ -816,6 +816,22 @@ mod tests {
     }
 
     #[test]
+    fn writable_journal_directory_is_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = root("writable-directory");
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o777)).unwrap();
+        let store = DurableJournalStore::at(&root);
+        let result = store.persist_new(&journal());
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            result.is_err(),
+            "unsafe writable journal directory was accepted"
+        );
+    }
+
+    #[test]
     fn persist_new_never_replaces_existing_durable_identity() {
         let root = root("persist-new-no-replace");
         let store = DurableJournalStore::at(&root);

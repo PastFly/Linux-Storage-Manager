@@ -426,6 +426,18 @@ mod tests {
     }
 
     #[test]
+    fn backup_table_output_preserves_a_large_dump() {
+        let path =
+            std::env::temp_dir().join(format!("lsm-large-backup-output-{}", std::process::id()));
+        let expected = vec![b'x'; 128 * 1024];
+        fs::write(&path, &expected).unwrap();
+        let captured = read_bounded(File::open(&path).unwrap()).unwrap();
+        fs::remove_file(path).unwrap();
+        assert!(!captured.truncated);
+        assert_eq!(captured.bytes, expected);
+    }
+
+    #[test]
     fn descriptor_exec_runs_benign_true_without_path_lookup() {
         let file = benign_elf("true");
         let outcome = execute_descriptor_stage(
