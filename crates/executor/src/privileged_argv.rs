@@ -15,6 +15,8 @@ use crate::{
 pub enum PrivilegedProgram {
     Sfdisk,
     Vgcfgbackup,
+    E2fsck,
+    XfsScrub,
     Partx,
     Pvresize,
     Lvextend,
@@ -33,6 +35,8 @@ impl PrivilegedProgram {
         match self {
             Self::Sfdisk => "sfdisk",
             Self::Vgcfgbackup => "vgcfgbackup",
+            Self::E2fsck => "e2fsck",
+            Self::XfsScrub => "xfs_scrub",
             Self::Partx => "partx",
             Self::Pvresize => "pvresize",
             Self::Lvextend => "lvextend",

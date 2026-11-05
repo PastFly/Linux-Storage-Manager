@@ -193,7 +193,7 @@ trait CaptureRunner {
 
 struct SystemCaptureRunner;
 
-fn run_backup_tool(
+pub(crate) fn run_trusted_read_only_tool(
     program: crate::PrivilegedProgram,
     args: Vec<String>,
 ) -> Result<crate::DescriptorExecOutcome, BackupCaptureError> {
@@ -221,7 +221,7 @@ fn run_backup_tool(
 impl CaptureRunner for SystemCaptureRunner {
     fn capture_partition_table(&self, disk: &str, output: &Path) -> Result<(), BackupCaptureError> {
         let mut file = create_artifact_file(output)?;
-        let result = run_backup_tool(
+        let result = run_trusted_read_only_tool(
             crate::PrivilegedProgram::Sfdisk,
             vec!["--dump".into(), disk.into()],
         )?;
@@ -244,7 +244,7 @@ impl CaptureRunner for SystemCaptureRunner {
         let output_arg = output
             .to_str()
             .ok_or_else(|| BackupCaptureError::UnsafeArtifact(output.to_path_buf()))?;
-        let result = run_backup_tool(
+        let result = run_trusted_read_only_tool(
             crate::PrivilegedProgram::Vgcfgbackup,
             vec!["--file".into(), output_arg.into(), vg_name.into()],
         )?;

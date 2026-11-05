@@ -1,8 +1,6 @@
 use std::io;
 #[cfg(feature = "disposable-loop-harness")]
 use std::path::Path;
-#[cfg(feature = "disposable-loop-harness")]
-use std::process::{Command, Stdio};
 
 #[cfg(feature = "disposable-loop-harness")]
 use lsm_core::{HostCapabilities, HostSnapshot};
@@ -17,7 +15,7 @@ use thiserror::Error;
 
 use crate::LockedExecutionSession;
 #[cfg(feature = "disposable-loop-harness")]
-use crate::{disposable_exec::exact_safe_system_tool_path, MUTATION_ENABLED};
+use crate::MUTATION_ENABLED;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExplicitFilesystemHealthReceipt {
@@ -131,6 +129,10 @@ pub enum ExplicitFilesystemHealthError {
     UnsupportedCheck,
     #[error("selected filesystem health tool path is unsafe")]
     UnsafeToolPath,
+    #[error("trusted filesystem health tool failed validation: {0}")]
+    ToolProvenance(String),
+    #[error("filesystem health output exceeded the safe capture limit")]
+    OutputTruncated,
     #[error("filesystem health check failed with status {status:?}: {stderr}")]
     CommandFailed { status: Option<i32>, stderr: String },
     #[error("planner capability verification failed: {0}")]
@@ -197,7 +199,14 @@ pub fn execute_explicit_filesystem_health_check(
         return Err(ExplicitFilesystemHealthError::UnsupportedCheck);
     }
 
-    if !exact_safe_system_tool_path(tool_path, &check.tool)? {
+    let program = match check.tool.as_str() {
+        "e2fsck" => crate::PrivilegedProgram::E2fsck,
+        "xfs_scrub" => crate::PrivilegedProgram::XfsScrub,
+        _ => return Err(ExplicitFilesystemHealthError::UnsupportedCheck),
+    };
+    let trusted = crate::resolve_trusted_privileged_tool(program)
+        .map_err(|error| ExplicitFilesystemHealthError::ToolProvenance(error.to_string()))?;
+    if std::fs::canonicalize(tool_path)? != Path::new(&trusted.canonical_path) {
         return Err(ExplicitFilesystemHealthError::UnsafeToolPath);
     }
     if check.requires_unmounted {
@@ -216,18 +225,14 @@ pub fn execute_explicit_filesystem_health_check(
         }
     }
 
-    let output = Command::new(tool_path)
-        .args(&check.args)
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()?;
-    if !output.status.success() {
+    let output = crate::backup_capture::run_trusted_read_only_tool(program, check.args.clone())
+        .map_err(|error| ExplicitFilesystemHealthError::ToolProvenance(error.to_string()))?;
+    if output.stdout_truncated || output.stderr_truncated {
+        return Err(ExplicitFilesystemHealthError::OutputTruncated);
+    }
+    if output.exit_code != 0 {
         return Err(ExplicitFilesystemHealthError::CommandFailed {
-            status: output.status.code(),
+            status: Some(output.exit_code),
             stderr: stderr_summary(&output.stderr),
         });
     }
