@@ -1,4 +1,4 @@
-use std::process::Command;
+use crate::{DiscoveryCommandRunner, SystemDiscoveryRunner};
 
 use lsm_core::{LvmInventory, LvmLogicalVolume, LvmPhysicalVolume, LvmVolumeGroup};
 use serde::Deserialize;
@@ -31,34 +31,45 @@ pub enum LvmDiscoveryError {
 }
 
 pub fn discover_lvm() -> Result<LvmInventory, LvmDiscoveryError> {
+    discover_lvm_with_runner(&SystemDiscoveryRunner)
+}
+
+pub fn discover_lvm_with_runner(
+    runner: &dyn DiscoveryCommandRunner,
+) -> Result<LvmInventory, LvmDiscoveryError> {
     Ok(LvmInventory {
-        physical_volumes: parse_pvs_json(&run_report(
+        physical_volumes: parse_pvs_json(&run_report(runner,
             "pvs", "pv_name,pv_uuid,vg_name,pv_size,pv_free,pe_start",
         )?)?,
-        volume_groups: parse_vgs_json(&run_report(
+        volume_groups: parse_vgs_json(&run_report(runner,
             "vgs",
             "vg_name,vg_uuid,vg_size,vg_free,pv_count,lv_count,vg_extent_size,vg_free_count,vg_missing_pv_count,vg_attr",
         )?)?,
-        logical_volumes: parse_lvs_json(&run_report(
+        logical_volumes: parse_lvs_json(&run_report(runner,
             "lvs", "lv_name,lv_path,lv_uuid,vg_name,lv_size,lv_attr,lv_layout,lv_role",
         )?)?,
     })
 }
 
-fn run_report(command: &'static str, columns: &str) -> Result<String, LvmDiscoveryError> {
+fn run_report(
+    runner: &dyn DiscoveryCommandRunner,
+    command: &'static str,
+    columns: &str,
+) -> Result<String, LvmDiscoveryError> {
     // --readonly intentionally is not used: it omits device-mapper activation/use facts.
-    let output = Command::new(command)
-        .env("LC_ALL", "C")
-        .args([
-            "--reportformat",
-            "json",
-            "--units",
-            "b",
-            "--nosuffix",
-            "--options",
-            columns,
-        ])
-        .output()
+    let output = runner
+        .output(
+            command,
+            &[
+                "--reportformat",
+                "json",
+                "--units",
+                "b",
+                "--nosuffix",
+                "--options",
+                columns,
+            ],
+        )
         .map_err(|source| LvmDiscoveryError::Io { command, source })?;
     if !output.status.success() {
         return Err(LvmDiscoveryError::CommandFailed {

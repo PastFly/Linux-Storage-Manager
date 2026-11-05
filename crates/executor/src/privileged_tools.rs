@@ -12,17 +12,6 @@ use crate::{PrivilegedCommandSpec, PrivilegedProgram};
 
 const TRUSTED_TOOL_DIRECTORIES: &[&str] = &["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 
-/// Run only the fixed, read-only lsblk inventory command using the same
-/// verified executable snapshot as other trusted utility calls.
-pub fn run_trusted_storage_inventory(
-) -> Result<crate::DescriptorExecOutcome, crate::BackupCaptureError> {
-    crate::backup_capture::run_trusted_read_only_tool(
-        PrivilegedProgram::Lsblk,
-        vec!["--json".into(), "--bytes".into(), "--output".into(),
-             "NAME,KNAME,PATH,TYPE,SIZE,START,LOG-SEC,FSTYPE,FSVER,MOUNTPOINTS,PKNAME,MODEL,SERIAL,UUID,PARTUUID,PTTYPE".into()],
-    )
-}
-
 pub fn effective_user_is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }

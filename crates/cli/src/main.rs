@@ -2,9 +2,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use lsm_core::BlockDevice;
 use lsm_discovery::{
-    analyze_extendability, discover_capabilities, discover_filesystem_space, discover_fstab,
-    discover_hibernation_resume_evidence, discover_lvm, discover_mounts, discover_partition_tables,
-    discover_path_occupancy, discover_snapshot, discover_storage, discover_swaps,
+    analyze_extendability, discover_filesystem_space, discover_fstab,
+    discover_hibernation_resume_evidence, discover_path_occupancy, discover_swaps,
 };
 use lsm_planner::{
     analyze_layer_route, analyze_swap_migration_safety, analyze_swapfile_destination,
@@ -693,14 +692,62 @@ struct OperationDiagnostics {
 
 fn discover_storage_for_cli() -> Result<lsm_core::StorageGraph> {
     if !lsm_executor::effective_user_is_root() {
-        return Ok(discover_storage()?);
+        return Ok(lsm_discovery::discover_storage()?);
     }
-    let output = lsm_executor::run_trusted_storage_inventory()?;
-    if output.exit_code != 0 || output.stdout_truncated || output.stderr_truncated {
-        anyhow::bail!("trusted lsblk inventory failed or exceeded the capture limit");
+    Ok(lsm_discovery::discover_storage_with_runner(
+        &lsm_executor::TrustedDiscoveryRunner,
+    )?)
+}
+
+fn discover_snapshot() -> Result<lsm_core::HostSnapshot> {
+    if lsm_executor::effective_user_is_root() {
+        Ok(lsm_discovery::discover_snapshot_with_runner(
+            &lsm_executor::TrustedDiscoveryRunner,
+        )?)
+    } else {
+        Ok(lsm_discovery::discover_snapshot()?)
     }
-    let json = std::str::from_utf8(&output.stdout)?;
-    Ok(lsm_discovery::parse_lsblk_json(json)?)
+}
+
+fn discover_capabilities() -> lsm_core::HostCapabilities {
+    if lsm_executor::effective_user_is_root() {
+        lsm_discovery::discover_capabilities_with_runner(&lsm_executor::TrustedDiscoveryRunner)
+    } else {
+        lsm_discovery::discover_capabilities()
+    }
+}
+
+fn discover_lvm() -> Result<lsm_core::LvmInventory> {
+    if lsm_executor::effective_user_is_root() {
+        Ok(lsm_discovery::discover_lvm_with_runner(
+            &lsm_executor::TrustedDiscoveryRunner,
+        )?)
+    } else {
+        Ok(lsm_discovery::discover_lvm()?)
+    }
+}
+
+fn discover_mounts() -> Result<Vec<lsm_core::MountEntry>> {
+    if lsm_executor::effective_user_is_root() {
+        Ok(lsm_discovery::discover_mounts_with_runner(
+            &lsm_executor::TrustedDiscoveryRunner,
+        )?)
+    } else {
+        Ok(lsm_discovery::discover_mounts()?)
+    }
+}
+
+fn discover_partition_tables(
+    graph: &lsm_core::StorageGraph,
+) -> Result<Vec<lsm_core::PartitionTable>> {
+    if lsm_executor::effective_user_is_root() {
+        Ok(lsm_discovery::discover_partition_tables_with_runner(
+            graph,
+            &lsm_executor::TrustedDiscoveryRunner,
+        )?)
+    } else {
+        Ok(lsm_discovery::discover_partition_tables(graph)?)
+    }
 }
 
 fn read_operation_diagnostics(

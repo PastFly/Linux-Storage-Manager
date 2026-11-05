@@ -1,7 +1,9 @@
 use std::thread;
 use std::time::Duration;
 
-use lsm_discovery::{discover_capabilities, discover_snapshot, SnapshotDiscoveryError};
+use lsm_discovery::{
+    discover_capabilities_with_runner, discover_snapshot_with_runner, SnapshotDiscoveryError,
+};
 use lsm_planner::{
     capture_target_identity, IdentityGuardError, PlannerError, TargetIdentityManifest,
 };
@@ -93,7 +95,7 @@ fn discover_verified_post_state(
     let mut last_transient_error = None;
 
     for attempt in 0..POST_MUTATION_REDISCOVERY_ATTEMPTS {
-        let snapshot = match discover_snapshot() {
+        let snapshot = match discover_snapshot_with_runner(&crate::TrustedDiscoveryRunner) {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 last_transient_error = Some(ProductionVerifiedMutationStepError::Discovery(error));
@@ -105,7 +107,7 @@ fn discover_verified_post_state(
             }
         };
 
-        let capabilities = discover_capabilities();
+        let capabilities = discover_capabilities_with_runner(&crate::TrustedDiscoveryRunner);
         if !session.handoff().matches_capabilities(&capabilities)? {
             return Err(ProductionVerifiedMutationStepError::CapabilityInventoryMismatch);
         }

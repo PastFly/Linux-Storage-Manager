@@ -4,11 +4,11 @@ use lsm_core::{CollectorState, CollectorStatus, HostSnapshot};
 use thiserror::Error;
 
 use crate::{
-    diagnose_storage, discover_filesystem_preflight, discover_fstab, discover_lvm, discover_mounts,
-    discover_partition_tables, discover_storage, discover_swaps, reconcile_snapshot,
-    DiscoveryError, FstabDiscoveryError, LvmDiscoveryError, MountDiscoveryError,
-    PartitionTableDiscoveryError, SwapDiscoveryError,
+    diagnose_storage, discover_fstab, discover_swaps, reconcile_snapshot, DiscoveryError,
+    FstabDiscoveryError, LvmDiscoveryError, MountDiscoveryError, PartitionTableDiscoveryError,
+    SwapDiscoveryError,
 };
+use crate::{DiscoveryCommandRunner, SystemDiscoveryRunner};
 
 #[derive(Debug, Error)]
 pub enum SnapshotDiscoveryError {
@@ -17,7 +17,13 @@ pub enum SnapshotDiscoveryError {
 }
 
 pub fn discover_snapshot() -> Result<HostSnapshot, SnapshotDiscoveryError> {
-    let storage = discover_storage()?;
+    discover_snapshot_with_runner(&SystemDiscoveryRunner)
+}
+
+pub fn discover_snapshot_with_runner(
+    runner: &dyn DiscoveryCommandRunner,
+) -> Result<HostSnapshot, SnapshotDiscoveryError> {
+    let storage = crate::discover_storage_with_runner(runner)?;
     let diagnostics = diagnose_storage(&storage);
     let mut collectors = vec![CollectorStatus {
         component: "lsblk".to_owned(),
@@ -25,7 +31,7 @@ pub fn discover_snapshot() -> Result<HostSnapshot, SnapshotDiscoveryError> {
         detail: None,
     }];
 
-    let partition_tables = match discover_partition_tables(&storage) {
+    let partition_tables = match crate::discover_partition_tables_with_runner(&storage, runner) {
         Ok(value) => {
             collectors.push(complete("partition_tables"));
             value
@@ -36,7 +42,7 @@ pub fn discover_snapshot() -> Result<HostSnapshot, SnapshotDiscoveryError> {
         }
     };
 
-    let mounts = match discover_mounts() {
+    let mounts = match crate::discover_mounts_with_runner(runner) {
         Ok(value) => {
             collectors.push(complete("mounts"));
             value
@@ -69,7 +75,7 @@ pub fn discover_snapshot() -> Result<HostSnapshot, SnapshotDiscoveryError> {
         }
     };
 
-    let lvm = match discover_lvm() {
+    let lvm = match crate::discover_lvm_with_runner(runner) {
         Ok(value) => {
             collectors.push(complete("lvm"));
             Some(value)
@@ -80,7 +86,7 @@ pub fn discover_snapshot() -> Result<HostSnapshot, SnapshotDiscoveryError> {
         }
     };
 
-    let filesystem_preflight = discover_filesystem_preflight(&storage);
+    let filesystem_preflight = crate::discover_filesystem_preflight_with_runner(&storage, runner);
     collectors.push(complete("filesystem_preflight"));
 
     let mut snapshot = HostSnapshot {

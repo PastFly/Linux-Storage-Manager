@@ -11,13 +11,21 @@ if [[ ${binary} != /* || ! -x ${binary} ]]; then
   exit 2
 fi
 root=$(mktemp -d)
-trap 'rm -f -- "${root}/lsblk" "${root}/executed"; rmdir -- "${root}"' EXIT
-cat > "${root}/lsblk" <<'EOF'
+tools=(lsblk findmnt pvs vgs lvs sfdisk tune2fs xfs_info xfs_growfs)
+cleanup() {
+  for tool in "${tools[@]}"; do rm -f -- "${root}/${tool}"; done
+  rm -f -- "${root}/executed"
+  rmdir -- "${root}"
+}
+trap cleanup EXIT
+for tool in "${tools[@]}"; do
+cat > "${root}/${tool}" <<'EOF'
 #!/bin/sh
 printf injected > "$LSM_TEST_MARKER"
 printf '{"blockdevices":[]}'
 EOF
-chmod 755 "${root}/lsblk"
+chmod 755 "${root}/${tool}"
+done
 PATH="${root}:/usr/sbin:/usr/bin:/sbin:/bin" LSM_TEST_MARKER="${root}/executed" \
   "${binary}" json > /dev/null
 if [[ -e ${root}/executed ]]; then
@@ -27,7 +35,7 @@ fi
 PATH="${root}:/usr/sbin:/usr/bin:/sbin:/bin" LSM_TEST_MARKER="${root}/executed" \
   "${binary}" snapshot > /dev/null
 if [[ -e ${root}/executed ]]; then
-  echo 'Untrusted lsblk from PATH was executed by root snapshot discovery' >&2
+  echo 'An untrusted utility from PATH was executed by root snapshot discovery' >&2
   exit 1
 fi
 echo 'TRUSTED_DISCOVERY_PATH_OK'
