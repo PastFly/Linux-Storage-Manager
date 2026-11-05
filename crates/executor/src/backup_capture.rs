@@ -199,15 +199,15 @@ fn run_backup_tool(
 ) -> Result<crate::DescriptorExecOutcome, BackupCaptureError> {
     let expected = crate::resolve_trusted_privileged_tool(program)?;
     let (file, _) = crate::privileged_pin::pin_trusted_tool(&expected)?;
+    let snapshot = crate::privileged_pin::snapshot_trusted_tool(&file, &expected)?;
     if crate::resolve_trusted_privileged_tool(program)? != expected {
         return Err(BackupCaptureError::ToolIdentityChanged);
     }
-    crate::privileged_pin::receipt_from_open_file(&file, &expected)?;
     let mut argv = vec![program.as_str().to_owned()];
     argv.extend(args);
     Ok(
         crate::privileged_exec::execute_descriptor_stage_with_stdout_limit(
-            &file,
+            &snapshot,
             program,
             &argv,
             "/usr/sbin:/usr/bin:/sbin:/bin",
