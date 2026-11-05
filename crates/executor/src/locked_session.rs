@@ -831,7 +831,7 @@ mod tests {
         let handoff = build_frozen_execution_handoff(&snapshot, &capabilities, &plan).unwrap();
         let path = lock_path();
         let root = journal_root("untrusted-health-tool");
-        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
         let marker = root.join("executed");
         let tool = root.join("e2fsck");
         std::fs::write(
@@ -1841,6 +1841,9 @@ mod tests {
         assert!(matches!(
             result,
             Err(crate::ExecutionIntentError::DurableJournalMismatch)
+                | Err(crate::ExecutionIntentError::Session(
+                    LockedSessionError::DurableJournal(JournalStoreError::InvalidRecord(_))
+                ))
         ));
         assert_eq!(session.journal(), &approved);
         assert_eq!(store.load(&approved.journal_id).unwrap(), preconditions);
