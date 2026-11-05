@@ -328,6 +328,7 @@ fn ensure_secure_backup(
         "{}.pre-partition-removal.sfdisk",
         journal.journal_id
     ));
+    let fresh_dump = capture_partition_dump(disk)?;
 
     match fs::symlink_metadata(&path) {
         Ok(metadata) => {
@@ -343,7 +344,6 @@ fn ensure_secure_backup(
             }
         }
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
-            let bytes = capture_partition_dump(disk)?;
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -351,7 +351,7 @@ fn ensure_secure_backup(
                 .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
                 .open(&path)
                 .map_err(|source| io_error(&path, source))?;
-            if let Err(source) = file.write_all(&bytes) {
+            if let Err(source) = file.write_all(&fresh_dump) {
                 let _ = fs::remove_file(&path);
                 return Err(io_error(&path, source));
             }
@@ -375,21 +375,30 @@ fn ensure_secure_backup(
         return Err(ProductionSwapPartitionRemovalPreflightError::BackupMismatch);
     }
     let mut bytes = Vec::new();
-    OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
         .open(&path)
-        .map_err(|source| io_error(&path, source))?
+        .map_err(|source| io_error(&path, source))?;
+    (&file)
         .take(MAX_PARTITION_BACKUP_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|source| io_error(&path, source))?;
-    if bytes.is_empty()
-        || bytes.len() as u64 > MAX_PARTITION_BACKUP_BYTES
-        || !String::from_utf8_lossy(&bytes).contains(disk)
-    {
+    if !backup_matches_fresh_dump(&bytes, &fresh_dump, disk) {
         return Err(ProductionSwapPartitionRemovalPreflightError::BackupMismatch);
     }
+    file.sync_all().map_err(|source| io_error(&path, source))?;
+    File::open(store.root())
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| io_error(store.root(), source))?;
     Ok((path, sha256(&bytes)))
+}
+
+fn backup_matches_fresh_dump(backup: &[u8], fresh_dump: &[u8], disk: &str) -> bool {
+    !backup.is_empty()
+        && backup.len() as u64 <= MAX_PARTITION_BACKUP_BYTES
+        && backup == fresh_dump
+        && String::from_utf8_lossy(backup).contains(disk)
 }
 
 fn capture_partition_dump(
@@ -510,6 +519,14 @@ mod tests {
     use super::*;
     use lsm_core::PartitionTable;
     use serde_json::json;
+
+    #[test]
+    fn truncated_partition_backup_is_never_accepted() {
+        let partial = b"label: dos\ndevice: /dev/sda\n";
+        let full = b"label: dos\ndevice: /dev/sda\n\n/dev/sda1 : start=2048, size=4096\n";
+        assert!(!backup_matches_fresh_dump(partial, full, "/dev/sda"));
+        assert!(backup_matches_fresh_dump(full, full, "/dev/sda"));
+    }
 
     #[test]
     fn partition_dump_rejects_untrusted_device_paths() {
