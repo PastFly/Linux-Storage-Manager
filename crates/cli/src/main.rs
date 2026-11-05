@@ -828,6 +828,12 @@ mod extend_handoff_cli_tests {
     use super::*;
 
     #[test]
+    fn operations_diagnostics_accepts_json_without_mutating_commands() {
+        assert!(Cli::try_parse_from(["storagemgr", "operations", "--json"]).is_ok());
+        assert!(Cli::try_parse_from(["storagemgr", "operations", "--reconcile"]).is_err());
+    }
+
+    #[test]
     fn freeze_handoff_accepts_max_and_json() {
         let cli = Cli::try_parse_from([
             "storagemgr",
