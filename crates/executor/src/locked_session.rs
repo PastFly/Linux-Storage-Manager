@@ -901,6 +901,33 @@ mod tests {
     }
 
     #[test]
+    fn reconciled_prewrite_plan_gets_a_new_attempt_without_overwriting_history() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("reconciled-new-attempt");
+        let store = DurableJournalStore::at(&root);
+        let first =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let mut abandoned = first.journal().clone();
+        drop(first);
+        abandoned
+            .apply(JournalTransition::Abort {
+                reason: "confirmed abandoned before mutation",
+            })
+            .unwrap();
+        store.persist(&abandoned).unwrap();
+        let second =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        assert_ne!(second.journal().journal_id, abandoned.journal_id);
+        assert_eq!(store.load(&abandoned.journal_id).unwrap(), abandoned);
+        assert!(!second.journal().mutation_may_have_started);
+        drop(second);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn second_locked_session_is_busy_until_first_is_dropped() {
         let (snapshot, capabilities) = fixture();
         let handoff = handoff(&snapshot, &capabilities);
