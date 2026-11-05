@@ -34,6 +34,8 @@ jobs:
           cargo test --locked -p linux-storage-manager-cli --bin storagemgr diagnostics_ -- --nocapture 2>&1 | tee -a backup-path-test.log || failed=1
           cargo clippy --locked -p lsm-executor --lib -- -D warnings 2>&1 | tee -a backup-path-test.log || failed=1
           cargo clippy --locked -p linux-storage-manager-cli --bin storagemgr -- -D warnings 2>&1 | tee -a backup-path-test.log || failed=1
+          cargo build --locked -p linux-storage-manager-cli --bin storagemgr 2>&1 | tee -a backup-path-test.log || failed=1
+          sudo bash tests/integration/trusted-discovery.sh --allow-disposable-vm-tests "$PWD/target/debug/storagemgr" 2>&1 | tee -a backup-path-test.log || failed=1
           exit "$failed"
       - name: Preserve regression output
         if: always()

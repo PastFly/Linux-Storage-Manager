@@ -750,16 +750,17 @@ mod tests {
             session.revalidate(&snapshot, &capabilities).unwrap().status,
             LockedRevalidationStatus::Revalidated
         );
+        crate::resolve_trusted_privileged_tool(crate::PrivilegedProgram::E2fsck).unwrap();
         let result = crate::execute_explicit_filesystem_health_check(
             &session,
             &snapshot,
             &capabilities,
             &tool,
         );
-        assert!(
-            result.is_err(),
-            "untrusted filesystem health tool was accepted"
-        );
+        assert!(matches!(
+            result,
+            Err(crate::ExplicitFilesystemHealthError::UnsafeToolPath)
+        ));
         assert!(
             !marker.exists(),
             "untrusted filesystem health tool was executed"
