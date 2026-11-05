@@ -8,12 +8,12 @@ use std::time::Duration;
 
 use lsm_executor::{
     approve_exact_plan, bind_disposable_execution_permit,
-    bind_verified_disposable_execution_permit, build_metadata_backup_manifest,
-    build_pre_mutation_evidence, build_pre_mutation_evidence_with_filesystem_health,
-    capture_disposable_loop_ownership, capture_metadata_backups_at_disposable_root,
-    compile_disposable_lvm_growth_commands, compile_native_manifest, execute_disposable_command,
-    execute_explicit_filesystem_health_check, freeze_execution_intent,
-    persist_disposable_execution_start, revalidate_metadata_backup_receipt_at_disposable_root,
+    bind_verified_disposable_execution_permit, build_pre_mutation_evidence,
+    build_pre_mutation_evidence_with_filesystem_health, capture_disposable_loop_ownership,
+    capture_metadata_backups_at_disposable_root, compile_disposable_lvm_growth_commands,
+    compile_native_manifest, execute_disposable_command, execute_explicit_filesystem_health_check,
+    freeze_execution_intent, persist_disposable_execution_start,
+    revalidate_metadata_backup_receipt_at_disposable_root,
     verify_and_complete_disposable_execution, verify_and_continue_disposable_boundary,
     verify_disposable_loop_association_row, verify_preconditions, DisposableProgram,
     DisposableToolPaths, DurableJournalStore, LockedExecutionSession, LockedRevalidationStatus,
@@ -118,7 +118,7 @@ fn run() -> HarnessResult<()> {
         )));
     }
 
-    let backup_manifest = build_metadata_backup_manifest(&handoff)?;
+    let backup_manifest = lsm_executor::build_metadata_backup_manifest_for_session(&session)?;
     let backup_receipt =
         capture_metadata_backups_at_disposable_root(&session, &backup_manifest, &args.backup_root)?;
     let backup_revalidation = revalidate_metadata_backup_receipt_at_disposable_root(
@@ -438,6 +438,8 @@ fn run() -> HarnessResult<()> {
 
     let journal_id = persisted.journal_id.clone();
     drop(session);
+    let backup_root = args.backup_root.canonicalize()?;
+    remove_owned_directory(&backup_root.join(&journal_id), &backup_root)?;
     remove_owned_directory(&args.backup_root, &owned_root)?;
     remove_owned_directory(&args.journal_root, &owned_root)?;
 
