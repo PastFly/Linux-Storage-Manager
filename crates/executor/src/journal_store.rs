@@ -109,6 +109,35 @@ impl DurableJournalStore {
         Ok(unfinished)
     }
 
+    /// Enumerate evidence owned by other runtime journal formats. Until their
+    /// typed recovery validators are connected, no entry may be treated as safe.
+    pub fn unclassified_runtime_evidence(&self) -> Result<Vec<PathBuf>, JournalStoreError> {
+        let parent = self
+            .root
+            .parent()
+            .ok_or_else(|| JournalStoreError::UnsafeDirectory(self.root.clone()))?;
+        let mut evidence = Vec::new();
+        for name in [
+            "create-runtime",
+            "create-mount-runtime",
+            "create-persistent-config",
+            "swap-runtime",
+        ] {
+            let directory = parent.join(name);
+            match fs::symlink_metadata(&directory) {
+                Ok(_) => ensure_secure_directory(&directory, false)?,
+                Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
+                Err(source) => return Err(io_error(&directory, source)),
+            }
+            for entry in fs::read_dir(&directory).map_err(|source| io_error(&directory, source))? {
+                let entry = entry.map_err(|source| io_error(&directory, source))?;
+                evidence.push(entry.path());
+            }
+        }
+        evidence.sort();
+        Ok(evidence)
+    }
+
     pub(crate) fn prepare_directory(&self) -> Result<(), JournalStoreError> {
         ensure_secure_directory(&self.root, true)
     }
