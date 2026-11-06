@@ -867,6 +867,7 @@ mod tests {
         session.revalidate(&snapshot, &capabilities).unwrap();
         let record = recovery_fixture(&session, session.session_id(), &"2".repeat(64));
         let evidence = recovery_evidence(&session, &snapshot, &capabilities, &record);
+        std::fs::create_dir_all(&record_root).unwrap();
         crate::backup_recovery_storage::store(&record_root, &record, record.binding()).unwrap();
         let proof = crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &record);
         // A crash before the transition leaves the independently durable record unbound.
@@ -921,6 +922,7 @@ mod tests {
             recovery_fixture(&session, &"f".repeat(64), &"2".repeat(64)),
         ] {
             let record_root = journal_root("recovery-mismatch-record");
+            std::fs::create_dir_all(&record_root).unwrap();
             crate::backup_recovery_storage::store(&record_root, &bad, bad.binding()).unwrap();
             let proof = crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &bad);
             assert!(crate::preconditions::verify_preconditions_with_recovery(
@@ -959,6 +961,7 @@ mod tests {
             session.revalidate(&snapshot, &capabilities).unwrap();
             let record = recovery_fixture(&session, session.session_id(), &"2".repeat(64));
             let evidence = recovery_evidence(&session, &snapshot, &capabilities, &record);
+            std::fs::create_dir_all(&record_root).unwrap();
             crate::backup_recovery_storage::store(&record_root, &record, record.binding()).unwrap();
             if stage == "after" {
                 let proof =
