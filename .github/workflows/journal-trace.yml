@@ -27,16 +27,17 @@ jobs:
           set +e
           evidence="${RUNNER_TEMP}/journal-trace"
           mkdir -p "$evidence"
-          for mode in serial parallel-1 parallel-2 parallel-3; do
+          for mode in serial parallel-{1..12}; do
             threads=16
             if [ "$mode" = serial ]; then threads=1; fi
             strace -ff -ttt -yy -s 256 -o "$evidence/$mode.trace" \
-              -e trace=openat,close,renameat2,clone,clone3,execve,execveat,inotify_init1,inotify_add_watch \
+              -e trace=openat,close,fsync,fdatasync,rename,renameat,renameat2,clone,clone3,fork,vfork,execve,execveat,inotify_init1,inotify_add_watch \
               cargo test --locked -p lsm-executor --lib -- \
-              --test-threads="$threads" --nocapture > "$evidence/$mode.log" 2>&1
+              --test-threads="$threads" > "$evidence/$mode.log" 2>&1
             status=$?
             printf '%s exit=%s\n' "$mode" "$status"
             grep -E 'journal directory event:|test result:' "$evidence/$mode.log" | tail -20
+            if [ "$mode" != serial ] && [ "$status" -ne 0 ]; then break; fi
           done
       - name: Upload syscall and test logs
         if: always()
