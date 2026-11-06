@@ -74,18 +74,30 @@ mod linux {
         }
     }
     fn wait_dead(pidfd: RawFd) -> io::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(10);
         let mut p = libc::pollfd {
             fd: pidfd,
             events: libc::POLLIN,
             revents: 0,
         };
         loop {
-            let n = unsafe { libc::poll(&mut p, 1, -1) };
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "child pidfd wait timed out",
+                ));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let timeout = remaining.as_millis().min(i32::MAX as u128) as i32;
+            let n = unsafe { libc::poll(&mut p, 1, timeout) };
             if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
                 continue;
             }
             if n < 0 {
                 return Err(io::Error::last_os_error());
+            }
+            if n == 0 {
+                continue;
             }
             if p.revents & libc::POLLIN != 0 {
                 return Ok(());
@@ -119,15 +131,24 @@ mod linux {
     }
     fn kill_group(kill: &File) -> io::Result<()> {
         let one = b'1';
+        let mut interruptions = 0;
         loop {
             let n = unsafe { libc::write(kill.as_raw_fd(), (&one as *const u8).cast(), 1) };
             if n == 1 {
                 return Ok(());
             }
             if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                interruptions += 1;
+                if interruptions > 64 {
+                    return Err(io::Error::other("cgroup.kill repeatedly interrupted"));
+                }
                 continue;
             }
-            return Err(io::Error::last_os_error());
+            return Err(if n < 0 {
+                io::Error::last_os_error()
+            } else {
+                error("short cgroup.kill write")
+            });
         }
     }
     fn signal_pidfd(fd: RawFd) -> io::Result<()> {
@@ -140,23 +161,10 @@ mod linux {
                 0,
             )
         };
-        if result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+        if result == 0 {
             Ok(())
         } else {
             Err(io::Error::last_os_error())
-        }
-    }
-    fn wait_child(child: libc::pid_t) -> io::Result<()> {
-        let mut status = 0;
-        loop {
-            let n = unsafe { libc::waitpid(child, &mut status, 0) };
-            if n == child {
-                return Ok(());
-            }
-            if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(io::Error::last_os_error());
         }
     }
     fn stop_and_reap(
@@ -165,21 +173,71 @@ mod linux {
         kill: &File,
         events: &mut File,
     ) -> io::Result<()> {
-        // Both actions matter: before migration, the blocked child is outside group.
+        // Both operations are attempted and their individual errors retained.
         let signal_result = signal_pidfd(child_pidfd);
         let group_result = kill_group(kill);
-        let wait_result = wait_child(child);
+        let mut errors = Vec::new();
+        if let Err(ref error) = signal_result {
+            errors.push(format!("pidfd signal: {error}"));
+        }
+        if let Err(ref error) = group_result {
+            errors.push(format!("cgroup kill: {error}"));
+        }
+        if signal_result.is_err() && group_result.is_err() {
+            return Err(io::Error::other(errors.join("; ")));
+        }
         let deadline = Instant::now() + Duration::from_secs(10);
-        while populated(events)? {
+        let wait_result = loop {
             if Instant::now() >= deadline {
-                return Err(error("cgroup did not become empty"));
+                break Err(error("child or cgroup did not stop before deadline"));
+            }
+            let mut item = libc::pollfd {
+                fd: child_pidfd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let polled = unsafe { libc::poll(&mut item, 1, 0) };
+            if polled < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                break Err(error);
+            }
+            if item.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+                break Err(error("worker pidfd poll failed"));
+            }
+            let empty = match populated(events) {
+                Ok(value) => !value,
+                Err(error) => break Err(error),
+            };
+            if item.revents & libc::POLLIN != 0 && empty {
+                let mut status = 0;
+                let waited = unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) };
+                if waited == child {
+                    if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+                        break Ok(());
+                    }
+                    break Err(error("unexpected worker wait status"));
+                }
+                if waited < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    break Err(error);
+                }
             }
             std::thread::sleep(Duration::from_millis(10));
+        };
+        if let Err(error) = wait_result {
+            errors.push(format!("stop confirmation: {error}"));
         }
-        signal_result?;
-        group_result?;
-        wait_result?;
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(io::Error::other(errors.join("; ")))
+        }
     }
     fn sealed_self() -> io::Result<File> {
         let original = File::open("/proc/self/exe")?;
@@ -435,7 +493,13 @@ mod linux {
         drop(go_read);
         drop(ready_write);
         if let Some(e) = clone_error {
-            return Err(e);
+            return Err(if restore_err == 0 {
+                e
+            } else {
+                io::Error::other(format!(
+                    "clone3 failed: {e}; signal mask restore failed: {restore_err}"
+                ))
+            });
         }
         let child = result as libc::pid_t;
         if raw_child_pidfd < 0 {
@@ -448,9 +512,11 @@ mod linux {
         }
         let child_pidfd = unsafe { File::from_raw_fd(raw_child_pidfd) };
         if restore_err != 0 {
-            let _ = signal_pidfd(child_pidfd.as_raw_fd());
-            let _ = wait_child(child);
-            return Err(io::Error::from_raw_os_error(restore_err));
+            drop(go_write);
+            let cleanup = stop_and_reap(child, child_pidfd.as_raw_fd(), &kill, &mut events);
+            return Err(io::Error::other(format!(
+                "signal mask restore failed: {restore_err}; cleanup: {cleanup:?}"
+            )));
         }
         let run = (|| -> io::Result<()> {
             // The external manager must acquire a pidfd before early-stop testing.
@@ -563,6 +629,17 @@ mod linux {
         }
     }
 
+    pub fn main() -> io::Result<()> {
+        let args: Vec<_> = std::env::args_os().collect();
+        if args.len() == 2 && args[1] == "--worker" {
+            return worker();
+        }
+        if args.len() != 3 {
+            return Err(error("usage: gated-launch-proof GROUP CASE"));
+        }
+        let case = args[2].to_str().ok_or_else(|| error("invalid case"))?;
+        launcher(Path::new(&args[1]), case)
+    }
     #[cfg(test)]
     mod stop_tests {
         use super::*;
@@ -608,18 +685,6 @@ mod linux {
                 "both errors must be reported: {message}"
             );
         }
-    }
-
-    pub fn main() -> io::Result<()> {
-        let args: Vec<_> = std::env::args_os().collect();
-        if args.len() == 2 && args[1] == "--worker" {
-            return worker();
-        }
-        if args.len() != 3 {
-            return Err(error("usage: gated-launch-proof GROUP CASE"));
-        }
-        let case = args[2].to_str().ok_or_else(|| error("invalid case"))?;
-        launcher(Path::new(&args[1]), case)
     }
 }
 

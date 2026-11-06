@@ -38,6 +38,10 @@ impl gated::ExternalGuard for TestGuard {
     // This local duplicate checks callback ordering only. It is not a
     // protected transfer to an independent manager.
     fn register_worker(&mut self, worker_pidfd: &File) -> io::Result<()> {
+        if std::env::var_os("LSM_TEST_REGISTER_FAIL").as_deref() == Some(std::ffi::OsStr::new("1"))
+        {
+            return Err(io::Error::other("injected pidfd registration failure"));
+        }
         if self.worker_pidfd.is_some() {
             return Err(io::Error::other("worker pidfd registered twice"));
         }
