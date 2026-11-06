@@ -172,6 +172,15 @@ impl<'a> LockedExecutionSession<'a> {
         lock: HostStorageLock,
         journal_store: Option<&'a DurableJournalStore>,
     ) -> Result<Self, LockedSessionError> {
+        Self::begin_with_lock_format(handoff, lock, journal_store, false)
+    }
+
+    fn begin_with_lock_format(
+        handoff: &'a FrozenExecutionHandoff,
+        lock: HostStorageLock,
+        journal_store: Option<&'a DurableJournalStore>,
+        recovery_binding: bool,
+    ) -> Result<Self, LockedSessionError> {
         validate_handoff(handoff)?;
 
         // Old journal records do not contain a complete resource identity. While
@@ -199,7 +208,11 @@ impl<'a> LockedExecutionSession<'a> {
             None
         };
 
-        let mut journal = OperationJournal::new(handoff.guard());
+        let mut journal = if recovery_binding {
+            OperationJournal::new_with_recovery_v2(handoff.guard())
+        } else {
+            OperationJournal::new(handoff.guard())
+        };
         if let Some(history) = &history {
             journal.journal_id = next_attempt_id(history, &journal)?;
         }
@@ -442,6 +455,21 @@ impl<'a> LockedExecutionSession<'a> {
             handoff,
             HostStorageLock::try_acquire_path(lock_path)?,
             Some(journal_store),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_durable_recovery_at_paths(
+        handoff: &'a FrozenExecutionHandoff,
+        lock_path: &Path,
+        journal_store: &'a DurableJournalStore,
+    ) -> Result<Self, LockedSessionError> {
+        validate_handoff(handoff)?;
+        Self::begin_with_lock_format(
+            handoff,
+            HostStorageLock::try_acquire_path(lock_path)?,
+            Some(journal_store),
+            true,
         )
     }
 }
@@ -734,6 +762,34 @@ mod tests {
         assert_eq!(session.journal().phase, JournalPhase::PreconditionsVerified);
         let persisted = store.load(&session.journal().journal_id).unwrap();
         assert_eq!(persisted, *session.journal());
+    }
+
+    #[test]
+    fn recovery_attempt_starts_with_durable_v2_and_cannot_skip_binding() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("recovery-v2-begin");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_recovery_at_paths(&handoff, &path, &store)
+                .unwrap();
+        assert_eq!(session.journal().schema_version, 2);
+        assert_eq!(session.journal().phase, JournalPhase::HostLockHeld);
+        assert_eq!(
+            store.load(&session.journal().journal_id).unwrap(),
+            *session.journal()
+        );
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        assert!(session.persist_preconditions_verified().is_err());
+        assert_eq!(session.journal().phase, JournalPhase::IdentityRevalidated);
+        assert_eq!(
+            store.load(&session.journal().journal_id).unwrap(),
+            *session.journal()
+        );
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
