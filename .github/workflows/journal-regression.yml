@@ -46,6 +46,8 @@ jobs:
           sudo python3 -I .github/diagnostics/test-backup-observer.py /tmp/lsm-observer-target/release/lsm-observer /sys/fs/cgroup
       - name: Test recovery evidence format
         run: cargo test --locked -p lsm-executor --lib backup_recovery_record::tests
+      - name: Test journal recovery binding
+        run: cargo test --locked -p lsm-executor --lib journal_store::tests::journal_v2
       - name: Exercise observer in the actual CLI binary
         run: |
           cargo build --locked -p linux-storage-manager-cli --target-dir /tmp/lsm-cli-observer

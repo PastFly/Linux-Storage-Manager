@@ -541,7 +541,13 @@ mod tests {
         reordered.artifacts[1].ordinal = 2;
         let mut removed = payload.clone();
         removed.artifacts.pop();
-        for changed in [reordered, removed] {
+        let mut added = payload.clone();
+        let mut third = added.artifacts[1].clone();
+        third.ordinal = 3;
+        third.primary_path = "/var/lib/lsm/backups/another-vg".into();
+        third.recovery_path = "/var/lib/lsm/backups/another-vg.recovery".into();
+        added.artifacts.push(third);
+        for changed in [reordered, removed, added] {
             let changed_id = record_id(&changed).unwrap();
             let bytes = serde_json::to_vec(&BackupRecoveryRecord {
                 record_id: changed_id.clone(),

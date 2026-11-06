@@ -1665,6 +1665,153 @@ mod tests {
         );
     }
 
+    // Test-only wire fixtures, independent of a future v2 Rust constructor.
+    fn preconditions_wire(schema_version: u32) -> serde_json::Value {
+        let mut value = serde_json::to_value(journal()).unwrap();
+        value["schema_version"] = json!(schema_version);
+        value["phase"] = json!("preconditions_verified");
+        value["events"] = json!([
+            {"sequence":1,"from":"planned","to":"host_lock_held","code":"host-lock-acquired","detail":"lock held"},
+            {"sequence":2,"from":"host_lock_held","to":"identity_revalidated","code":"identity-revalidated","detail":"identity matched"},
+            {"sequence":3,"from":"identity_revalidated","to":"preconditions_verified","code":"preconditions-verified","detail":"evidence verified"}
+        ]);
+        value
+    }
+
+    fn recovery_binding() -> serde_json::Value {
+        json!({"record_id": digest('d'), "session_id": digest('e'), "handoff_id": digest('f')})
+    }
+
+    fn decoded_wire(value: &serde_json::Value) -> Result<OperationJournal, JournalStoreError> {
+        decode_journal(&serde_json::to_vec(value).unwrap(), &digest('a'))
+    }
+
+    fn append_valid_approval(mut previous: OperationJournal) -> OperationJournal {
+        let mut approval = ExactApprovalBinding {
+            schema_version: 1,
+            approval_id: String::new(),
+            plan_id: previous.plan_id.clone(),
+            evidence_bundle_id: digest('1'),
+            target_manifest_digest: previous.baseline_manifest_digest.clone(),
+            locked_session_id: digest('e'),
+            preconditions_journal_digest: crate::preconditions::journal_digest(&previous).unwrap(),
+        };
+        approval.approval_id = approval.expected_approval_id().unwrap();
+        let plan_id = previous.plan_id.clone();
+        previous
+            .apply(JournalTransition::ExactPlanApproved {
+                approved_plan_id: &plan_id,
+                approval: &approval,
+            })
+            .unwrap();
+        previous
+    }
+
+    fn legacy_approved_wire() -> serde_json::Value {
+        let mut wire = preconditions_wire(1);
+        let previous = decoded_wire(&wire).unwrap();
+        let mut approval = ExactApprovalBinding {
+            schema_version: 1,
+            approval_id: String::new(),
+            plan_id: previous.plan_id.clone(),
+            evidence_bundle_id: digest('1'),
+            target_manifest_digest: previous.baseline_manifest_digest.clone(),
+            locked_session_id: digest('e'),
+            preconditions_journal_digest: crate::preconditions::journal_digest(&previous).unwrap(),
+        };
+        approval.approval_id = approval.expected_approval_id().unwrap();
+        wire["approval"] = serde_json::to_value(approval).unwrap();
+        wire["phase"] = json!("approved");
+        wire["events"].as_array_mut().unwrap().push(json!({
+            "sequence":4,"from":"preconditions_verified","to":"approved",
+            "code":"exact-plan-approved","detail":"legacy approved"
+        }));
+        wire
+    }
+
+    #[test]
+    fn legacy_v1_journal_serialization_and_digest_remain_identical() {
+        let legacy = journal();
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&bytes)),
+            "4e8f189cc6b5c245f14f1c5e76f1f8706b9538fdb19e25856b2c054fa12e664c"
+        );
+        let loaded = decode_journal(&bytes, &legacy.journal_id).unwrap();
+        assert_eq!(serde_json::to_vec(&loaded).unwrap(), bytes);
+        assert_eq!(
+            loaded.resume_disposition(),
+            ResumeDisposition::RestartFromFreshPlan
+        );
+    }
+
+    #[test]
+    fn journal_v2_requires_and_preserves_recovery_binding_before_approval() {
+        let mut wire = preconditions_wire(2);
+        assert!(decoded_wire(&wire).is_err());
+        wire["recovery_binding"] = recovery_binding();
+        let loaded = decoded_wire(&wire).unwrap();
+        assert_eq!(loaded.phase, JournalPhase::PreconditionsVerified);
+        assert_eq!(
+            serde_json::to_value(&loaded).unwrap()["recovery_binding"],
+            recovery_binding()
+        );
+        let approved = append_valid_approval(loaded);
+        assert_eq!(approved.phase, JournalPhase::Approved);
+        assert_eq!(
+            serde_json::to_value(&approved).unwrap()["recovery_binding"],
+            recovery_binding()
+        );
+    }
+
+    #[test]
+    fn journal_v2_rejects_binding_replacement_removal_and_schema_downgrade() {
+        let root = root("v2-binding-immutable");
+        let store = DurableJournalStore::at(&root);
+        let mut wire = preconditions_wire(2);
+        wire["recovery_binding"] = recovery_binding();
+        let previous = decoded_wire(&wire).unwrap();
+        store.persist_new(&previous).unwrap();
+
+        let mut removed = wire.clone();
+        removed.as_object_mut().unwrap().remove("recovery_binding");
+        assert!(decoded_wire(&removed).is_err());
+
+        let mut replaced = wire.clone();
+        replaced["recovery_binding"]["record_id"] = json!(digest('2'));
+        let replaced = append_valid_approval(decoded_wire(&replaced).unwrap());
+        assert!(store.persist_if_matches(&previous, &replaced).is_err());
+        assert_eq!(store.load(&previous.journal_id).unwrap(), previous);
+
+        let downgraded = decoded_wire(&legacy_approved_wire()).unwrap();
+        assert!(store.persist_if_matches(&previous, &downgraded).is_err());
+        assert_eq!(store.load(&previous.journal_id).unwrap(), previous);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_v1_preconditions_are_readable_but_cannot_gain_new_approval() {
+        let mut previous = decoded_wire(&preconditions_wire(1)).unwrap();
+        let mut approval = ExactApprovalBinding {
+            schema_version: 1,
+            approval_id: String::new(),
+            plan_id: previous.plan_id.clone(),
+            evidence_bundle_id: digest('1'),
+            target_manifest_digest: previous.baseline_manifest_digest.clone(),
+            locked_session_id: digest('e'),
+            preconditions_journal_digest: crate::preconditions::journal_digest(&previous).unwrap(),
+        };
+        approval.approval_id = approval.expected_approval_id().unwrap();
+        let plan_id = previous.plan_id.clone();
+        assert!(previous
+            .apply(JournalTransition::ExactPlanApproved {
+                approved_plan_id: &plan_id,
+                approval: &approval
+            })
+            .is_err());
+        assert_eq!(previous.phase, JournalPhase::PreconditionsVerified);
+    }
+
     #[test]
     fn pinned_load_rejects_file_replaced_after_open() {
         let root = root("load-replaced-after-open");
