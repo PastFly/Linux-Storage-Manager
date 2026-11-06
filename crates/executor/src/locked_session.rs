@@ -712,6 +712,47 @@ mod tests {
     }
 
     #[test]
+    fn operator_confirmation_is_exact_and_bound_to_durable_evidence() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("operator-exact-confirmation");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let (_evidence, verified) =
+            verified_preconditions(&mut session, &handoff, &snapshot, &capabilities);
+        let phrase = crate::operator_confirmation_phrase(&verified);
+        for rejected in [
+            "yes".to_owned(),
+            format!("{phrase} "),
+            phrase.to_lowercase(),
+        ] {
+            assert!(matches!(
+                crate::approve_operator_plan(&mut session, &verified, &rejected),
+                Err(crate::ExactPlanApprovalError::OperatorConfirmationMismatch)
+            ));
+            assert_preconditions_verified_is_durable(&session, &store);
+        }
+        let approval = crate::approve_operator_plan(&mut session, &verified, &phrase).unwrap();
+        assert_eq!(approval.plan_id(), verified.plan_id());
+        assert_eq!(approval.evidence_bundle_id(), verified.bundle_id());
+        assert_eq!(
+            approval.target_manifest_digest(),
+            verified.target_manifest_digest()
+        );
+        assert_eq!(
+            store.load(&session.journal().journal_id).unwrap(),
+            *session.journal()
+        );
+        assert_eq!(session.journal().phase, JournalPhase::Approved);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn unchanged_fresh_state_revalidates_while_lock_is_held() {
         let (snapshot, capabilities) = fixture();
         let handoff = handoff(&snapshot, &capabilities);

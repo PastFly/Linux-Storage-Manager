@@ -101,6 +101,8 @@ impl ExactPlanApproval {
 
 #[derive(Debug, Error)]
 pub enum ExactPlanApprovalError {
+    #[error("operator confirmation did not match the exact evidence bundle")]
+    OperatorConfirmationMismatch,
     #[error("exact plan approval requires the journal to be exactly preconditions_verified")]
     SessionNotPreconditionsVerified,
     #[error("exact plan approval requires a durable journal store")]
@@ -131,6 +133,20 @@ pub enum ExactPlanApprovalError {
     Serialization(#[from] serde_json::Error),
     #[error("locked-session durable approval transition failed: {0}")]
     Session(#[from] LockedSessionError),
+}
+
+/// Text that must be entered for this exact precondition evidence bundle.
+pub fn operator_confirmation_phrase(verification: &PreconditionsVerification) -> String {
+    format!("EXTEND {}", verification.bundle_id())
+}
+
+/// Bind an operator's exact confirmation to the current durable session.
+pub fn approve_operator_plan(
+    _session: &mut LockedExecutionSession<'_>,
+    _verification: &PreconditionsVerification,
+    _confirmation: &str,
+) -> Result<ExactPlanApproval, ExactPlanApprovalError> {
+    Err(ExactPlanApprovalError::OperatorConfirmationMismatch)
 }
 
 pub fn approve_exact_plan(

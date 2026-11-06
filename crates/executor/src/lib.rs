@@ -113,7 +113,10 @@ mod production_verified_step;
 #[cfg(feature = "trusted-discovery")]
 mod trusted_discovery;
 
-pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError};
+pub use approval::{
+    approve_exact_plan, approve_operator_plan, operator_confirmation_phrase, ExactPlanApproval,
+    ExactPlanApprovalError,
+};
 pub use backup_capture::{
     capture_metadata_backups, revalidate_metadata_backup_receipt, BackupArtifactReceipt,
     BackupCaptureError, BackupReceiptRevalidation, MetadataBackupReceipt,
