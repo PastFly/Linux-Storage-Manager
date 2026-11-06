@@ -1027,7 +1027,9 @@ unsafe fn launcher_child(spec: &LauncherSpec<'_>) -> ! {
             libc::SIGSTOP,
         ) != 0
     {
-        libc::_exit(119);
+        // Encode the failing syscall's errno in the wait status for the
+        // disposable fixture; do not log or allocate in the clone child.
+        libc::_exit(128 + (*libc::__errno_location() & 127));
     }
     let mut first = 3u32;
     for &raw in spec.keep {
@@ -1474,7 +1476,11 @@ fn manager_inner(
             }
             if unsafe { info.si_pid() } != 0 {
                 if info.si_code != libc::CLD_STOPPED {
-                    return Err(invalid("post-timeout launcher exited"));
+                    return Err(io::Error::other(format!(
+                        "post-timeout launcher event code={} status={}",
+                        info.si_code,
+                        unsafe { info.si_status() }
+                    )));
                 }
                 break;
             }
