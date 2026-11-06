@@ -55,7 +55,7 @@ def manager_main(executable, group, backup, second_backup, marker, report_fd, pr
         pidfd = os.pidfd_open(os.getpid())
         group_fd = os.open(group, os.O_RDONLY | os.O_DIRECTORY)
         source_fd = os.open(backup, os.O_RDONLY)
-        retained = os.dup(source_fd) if retained_duplicate else None
+        retained = os.dup(source_fd) if retained_duplicate or second_backup is not None else None
         sources = [source_fd]
         if second_backup is not None:
             sources.append(os.open(second_backup, os.O_RDONLY))
@@ -75,6 +75,13 @@ def manager_main(executable, group, backup, second_backup, marker, report_fd, pr
             code = observer.wait(timeout=8)
             if code != 4:
                 raise AssertionError('unexpected refusal exit code ' + str(code))
+            if retained is not None:
+                try:
+                    writable = os.open(backup, os.O_WRONLY | os.O_NONBLOCK)
+                except OSError as error:
+                    raise AssertionError('partial setup left lease on retained descriptor') from error
+                os.close(writable)
+                os.close(retained)
             os.write(report_fd, b'{"refused":true}\n')
             os._exit(0)
         if reply != b'R':

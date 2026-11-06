@@ -2,7 +2,7 @@
 #[cfg(target_os = "linux")]
 mod linux {
     use libc::{c_int, c_void};
-    use std::ffi::OsStr;
+    use std::ffi::{CString, OsStr};
     use std::io;
     use std::mem::{size_of, zeroed};
     use std::os::unix::ffi::OsStrExt;
@@ -13,6 +13,7 @@ mod linux {
     const MAX_FDS: usize = MAX_LEASES + 2;
     const CONTROL_FD: c_int = 3;
     const CGROUP2_SUPER_MAGIC: u64 = 0x6367_7270;
+    const PROC_SUPER_MAGIC: u64 = 0x9fa0;
     // Linux UAPI values on x86_64 and aarch64, the prototype's supported targets.
     const F_SETSIG: c_int = 10;
     const F_SETOWN_EX: c_int = 15;
@@ -303,11 +304,52 @@ mod linux {
         if events < 0 || kill_fd < 0 || populated(events) != Some(false) {
             exit(4);
         }
-        for &fd in &fds[2..count as usize + 2] {
-            if !take_read_lease(fd) {
+        // SCM_RIGHTS duplicates an open-file description, so putting the lease
+        // on it would let a sender-side duplicate keep the lease after our exit.
+        // Reopen each received inode in this single-threaded process instead.
+        let proc_fd = unsafe {
+            libc::open(
+                c"/proc/self/fd".as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        let mut proc_stat: libc::statfs = unsafe { zeroed() };
+        if proc_fd < 0
+            || unsafe { libc::fstatfs(proc_fd, &mut proc_stat) } != 0
+            || proc_stat.f_type as u64 != PROC_SUPER_MAGIC
+        {
+            exit(4);
+        }
+        let mut identities = Vec::with_capacity(count as usize);
+        for fd in &mut fds[2..count as usize + 2] {
+            let mut original: libc::stat = unsafe { zeroed() };
+            if unsafe { libc::fstat(*fd, &mut original) } != 0
+                || identities.contains(&(original.st_dev, original.st_ino))
+            {
                 exit(4);
             }
+            identities.push((original.st_dev, original.st_ino));
+            let name = CString::new(fd.to_string()).unwrap_or_else(|_| exit(4));
+            let reopened = unsafe {
+                libc::openat(
+                    proc_fd,
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK,
+                )
+            };
+            let mut current: libc::stat = unsafe { zeroed() };
+            if reopened < 0
+                || unsafe { libc::fstat(reopened, &mut current) } != 0
+                || current.st_dev != original.st_dev
+                || current.st_ino != original.st_ino
+                || !take_read_lease(reopened)
+            {
+                exit(4);
+            }
+            unsafe { libc::close(*fd) };
+            *fd = reopened;
         }
+        unsafe { libc::close(proc_fd) };
         let ack = || unsafe { libc::send(CONTROL_FD, b"R".as_ptr().cast(), 1, libc::MSG_NOSIGNAL) };
         if manager_dead || signal_ready(signal_fd) != Some(false) || ack() != 1 {
             kill_and_wait(kill_fd, events);
