@@ -1853,6 +1853,57 @@ mod tests {
     }
 
     #[test]
+    fn replacement_during_isolated_write_preserves_both_inodes() {
+        let root = root("isolated-writer-replacement");
+        let store = DurableJournalStore::at(&root);
+        store.persist_new(&journal()).unwrap();
+        let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
+        let mut ready = [-1; 2];
+        let mut release = [-1; 2];
+        assert_eq!(
+            unsafe { libc::pipe2(ready.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        assert_eq!(
+            unsafe { libc::pipe2(release.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                directory.write_staged_file_paused(
+                    std::ffi::OsStr::new(".staged-test"),
+                    b"original",
+                    ready[1],
+                    release[0],
+                )
+            });
+            let mut byte = 0_u8;
+            assert_eq!(
+                unsafe { libc::read(ready[0], (&mut byte as *mut u8).cast(), 1) },
+                1
+            );
+            fs::rename(root.join(".staged-test"), root.join("saved-original")).unwrap();
+            fs::write(root.join(".staged-test"), b"replacement").unwrap();
+            assert_eq!(
+                unsafe { libc::write(release[1], (&byte as *const u8).cast(), 1) },
+                1
+            );
+            assert!(matches!(
+                writer.join().unwrap(),
+                Err(JournalStoreError::ChangedDuringInspection)
+            ));
+        });
+        assert_eq!(fs::read(root.join("saved-original")).unwrap(), b"original");
+        assert_eq!(fs::read(root.join(".staged-test")).unwrap(), b"replacement");
+        for fd in ready.into_iter().chain(release) {
+            unsafe {
+                libc::close(fd);
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn write_through_retained_staging_writer_invalidates_inventory() {
         let root = root("retained-own-writer-write");
         let store = DurableJournalStore::at(&root);
