@@ -427,3 +427,27 @@ fn inspect_bound(
 #[cfg(test)]
 #[path = "recovery_inspector_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+struct TestAdmission<'a> {
+    _session: &'a LockedExecutionSession<'a>,
+}
+
+#[cfg(test)]
+impl TestAdmission<'_> {
+    fn revalidate(&mut self) -> Result<(), InspectionError> {
+        Err(InspectionError::Invalid)
+    }
+}
+
+#[cfg(test)]
+fn admit_for_test<'a>(
+    _session: &'a LockedExecutionSession<'a>,
+    _store: &DurableJournalStore,
+) -> Result<TestAdmission<'a>, InspectionError> {
+    Err(InspectionError::Invalid)
+}
+
+#[cfg(test)]
+#[path = "recovery_admission_tests.rs"]
+mod admission_tests;
