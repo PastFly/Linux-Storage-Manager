@@ -186,6 +186,7 @@ fn inspect_unbound_with_hook(
     let names = bounded_names(&root)?;
     let mut candidates = Vec::new();
     let mut unrecognized = Vec::new();
+    let mut handoffs = Vec::new();
     let expected = [
         journal.journal_id.clone(),
         format!("{}.recovery", journal.journal_id),
@@ -223,9 +224,17 @@ fn inspect_unbound_with_hook(
             return Err(InspectionError::Invalid);
         }
         watch.require_unchanged()?;
-        drop(watch);
-        drop(handoff);
+        // Keep every watch alive while later handoffs are inspected. A
+        // transient change after the first scan must invalidate the result.
+        handoffs.push((handoff, watch, entries));
         after_handoff(&handoff_path);
+    }
+    for (handoff, watch, entries) in &mut handoffs {
+        handoff.verify_namespace()?;
+        if bounded_names(handoff)? != *entries {
+            return Err(InspectionError::Invalid);
+        }
+        watch.require_unchanged()?;
     }
     root.verify_namespace()?;
     if bounded_names(&root)? != names {
@@ -351,6 +360,11 @@ fn inspect_bound(
         }
         let pn = p.file_name().ok_or(InspectionError::Invalid)?;
         let rn = r.file_name().ok_or(InspectionError::Invalid)?;
+        let mut canonical_recovery_name = pn.to_os_string();
+        canonical_recovery_name.push(".recovery");
+        if rn != canonical_recovery_name {
+            return Err(InspectionError::Invalid);
+        }
         let pfile = primary_dir.open_file(pn)?;
         let rfile = recovery_dir.open_file(rn)?;
         let pmeta = check_file(
