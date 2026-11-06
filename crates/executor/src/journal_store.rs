@@ -1670,6 +1670,19 @@ mod tests {
 
     #[test]
     fn journal_inventory_fails_closed_when_existing_writer_closes() {
+        const MARKER: &str = "LSM_TEST_UNKNOWN_WRITER_CLOSE";
+        if std::env::var_os(MARKER).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "journal_store::tests::journal_inventory_fails_closed_when_existing_writer_closes",
+                ])
+                .env(MARKER, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
         let root = root("inventory-close-unchanged-writer");
         let store = DurableJournalStore::at(&root);
         let path = store.persist_new(&journal()).unwrap();
