@@ -142,11 +142,20 @@ pub fn operator_confirmation_phrase(verification: &PreconditionsVerification) ->
 
 /// Bind an operator's exact confirmation to the current durable session.
 pub fn approve_operator_plan(
-    _session: &mut LockedExecutionSession<'_>,
-    _verification: &PreconditionsVerification,
-    _confirmation: &str,
+    session: &mut LockedExecutionSession<'_>,
+    verification: &PreconditionsVerification,
+    confirmation: &str,
 ) -> Result<ExactPlanApproval, ExactPlanApprovalError> {
-    Err(ExactPlanApprovalError::OperatorConfirmationMismatch)
+    if confirmation != operator_confirmation_phrase(verification) {
+        return Err(ExactPlanApprovalError::OperatorConfirmationMismatch);
+    }
+    approve_exact_plan(
+        session,
+        verification,
+        verification.plan_id(),
+        verification.bundle_id(),
+        verification.target_manifest_digest(),
+    )
 }
 
 pub fn approve_exact_plan(
