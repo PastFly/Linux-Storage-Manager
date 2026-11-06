@@ -16,7 +16,7 @@ use crate::sealed_recovery::{
 use crate::LockedExecutionSession;
 use crate::{DurableJournalStore, HostStorageLock, JournalStoreError};
 use lsm_planner::{JournalPhase, OperationJournal};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
@@ -428,24 +428,265 @@ fn inspect_bound(
 #[path = "recovery_inspector_tests.rs"]
 mod tests;
 
+/// Experimental admission observation. It is not wired to the execution or
+/// cleanup paths. Namespace checks are sequential; privileged root/mount edits
+/// remain outside the model. The lock and pins are never exposed by value.
+struct AdmissionSnapshot {
+    backup_dir: JournalDir,
+    backup_watch: DirectoryWatch,
+    backup_names: Vec<OsString>,
+    journal_dir: JournalDir,
+    journal_watch: DirectoryWatch,
+    journal_names: Vec<OsString>,
+    journal_root: PathBuf,
+    journals: Vec<OperationJournal>,
+    handoffs: Vec<(JournalDir, DirectoryWatch, Vec<OsString>)>,
+    inspections: Vec<Inspection>,
+    invalidated: bool,
+}
+
+impl AdmissionSnapshot {
+    fn revalidate(&mut self) -> Result<(), InspectionError> {
+        if self.invalidated {
+            return Err(InspectionError::Invalid);
+        }
+        let result = self.revalidate_inner();
+        if result.is_err() {
+            self.invalidated = true;
+        }
+        result
+    }
+
+    fn revalidate_inner(&mut self) -> Result<(), InspectionError> {
+        self.backup_dir.verify_namespace()?;
+        self.journal_dir.verify_namespace()?;
+        require_procfs(&[self.backup_dir.file(), self.journal_dir.file()])?;
+        if bounded_names(&self.backup_dir)? != self.backup_names
+            || bounded_names(&self.journal_dir)? != self.journal_names
+        {
+            return Err(InspectionError::Invalid);
+        }
+        for (dir, watch, names) in &mut self.handoffs {
+            dir.verify_namespace()?;
+            if bounded_names(dir)? != *names {
+                return Err(InspectionError::Invalid);
+            }
+            watch.require_unchanged()?;
+        }
+        for inspection in &mut self.inspections {
+            let Inspection::Bound { _pins, .. } = inspection else {
+                return Err(InspectionError::Invalid);
+            };
+            for dir in [
+                &_pins._record_dir,
+                &_pins._primary_dir,
+                &_pins._recovery_dir,
+            ] {
+                dir.verify_namespace()?;
+            }
+            _pins._record_watch.require_unchanged()?;
+            _pins._primary_watch.require_unchanged()?;
+            _pins._recovery_watch.require_unchanged()?;
+        }
+        if DurableJournalStore::at(&self.journal_root).all()? != self.journals {
+            return Err(InspectionError::Invalid);
+        }
+        self.backup_watch.require_unchanged()?;
+        self.journal_watch.require_unchanged()?;
+        Ok(())
+    }
+}
+
+fn collect_admission(
+    store: &DurableJournalStore,
+    ignored_root: Option<&OsStr>,
+) -> Result<AdmissionSnapshot, InspectionError> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Err(InspectionError::Invalid);
+    }
+    let backup_dir = JournalDir::open(Path::new(crate::BACKUP_DIRECTORY))?;
+    let journal_dir = JournalDir::open(store.root())?;
+    require_procfs(&[backup_dir.file(), journal_dir.file()])?;
+    let mut backup_watch = backup_dir.watch_namespace()?;
+    let mut journal_watch = journal_dir.watch_namespace()?;
+    backup_dir.verify_namespace()?;
+    journal_dir.verify_namespace()?;
+    let backup_names = bounded_names(&backup_dir)?;
+    // The new preflight is bounded, but store.all() itself still uses the
+    // existing unbounded journal inventory. Do not claim a global memory bound.
+    let journal_names = bounded_names(&journal_dir)?;
+    let journals = store.all()?;
+    let mut expected: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for journal in &journals {
+        if journal.schema_version != 2
+            || journal.phase != JournalPhase::Aborted
+            || journal.mutation_may_have_started
+        {
+            return Err(InspectionError::Invalid);
+        }
+        let binding = journal
+            .recovery_binding
+            .as_ref()
+            .ok_or(InspectionError::Invalid)?;
+        if !valid_digest(&journal.journal_id)
+            || !valid_digest(&binding.handoff_id)
+            || !valid_digest(&binding.record_id)
+            || !valid_digest(&binding.session_id)
+        {
+            return Err(InspectionError::Invalid);
+        }
+        expected
+            .entry(binding.handoff_id.clone())
+            .or_default()
+            .push(journal.journal_id.clone());
+    }
+    let mut root_expected = expected.keys().map(OsString::from).collect::<Vec<_>>();
+    if let Some(ignored) = ignored_root {
+        root_expected.push(ignored.to_os_string());
+    }
+    root_expected.sort();
+    if backup_names != root_expected {
+        return Err(InspectionError::Invalid);
+    }
+    let mut handoffs = Vec::new();
+    for (handoff_id, ids) in &expected {
+        let dir = JournalDir::open(&Path::new(crate::BACKUP_DIRECTORY).join(handoff_id))?;
+        require_procfs(&[dir.file()])?;
+        let mut watch = dir.watch_namespace()?;
+        dir.verify_namespace()?;
+        let names = bounded_names(&dir)?;
+        let mut expected_names = Vec::new();
+        for id in ids {
+            expected_names.push(OsString::from(id));
+            expected_names.push(OsString::from(format!("{id}.record")));
+            expected_names.push(OsString::from(format!("{id}.recovery")));
+        }
+        expected_names.sort();
+        if names != expected_names {
+            return Err(InspectionError::Invalid);
+        }
+        watch.require_unchanged()?;
+        handoffs.push((dir, watch, names));
+    }
+    let mut inspections = Vec::new();
+    for journal in &journals {
+        let inspected = inspect_in_store(store, &journal.journal_id)?;
+        if !matches!(
+            &inspected,
+            Inspection::Bound {
+                phase: JournalPhase::Aborted,
+                mutation_may_have_started: false,
+                ..
+            }
+        ) {
+            return Err(InspectionError::Invalid);
+        }
+        inspections.push(inspected);
+    }
+    if bounded_names(&backup_dir)? != backup_names || bounded_names(&journal_dir)? != journal_names
+    {
+        return Err(InspectionError::Invalid);
+    }
+    backup_watch.require_unchanged()?;
+    journal_watch.require_unchanged()?;
+    let mut snapshot = AdmissionSnapshot {
+        backup_dir,
+        backup_watch,
+        backup_names,
+        journal_dir,
+        journal_watch,
+        journal_names,
+        journal_root: store.root().to_path_buf(),
+        journals,
+        handoffs,
+        inspections,
+        invalidated: false,
+    };
+    snapshot.revalidate()?;
+    Ok(snapshot)
+}
+
+pub(crate) struct SystemAdmission {
+    snapshot: AdmissionSnapshot,
+    _lock: HostStorageLock,
+}
+impl SystemAdmission {
+    pub(crate) fn revalidate(&mut self) -> Result<(), InspectionError> {
+        self.snapshot.revalidate()
+    }
+}
+
+/// This opt-in experiment is deliberately not called by production paths.
+pub(crate) fn admit_system(lock: HostStorageLock) -> Result<SystemAdmission, InspectionError> {
+    if lock.path() != Path::new(lsm_planner::HOST_STORAGE_LOCK_PATH) {
+        return Err(InspectionError::Invalid);
+    }
+    let store = DurableJournalStore::at(lsm_planner::JOURNAL_DIRECTORY);
+    let snapshot = collect_admission(&store, None)?;
+    Ok(SystemAdmission {
+        snapshot,
+        _lock: lock,
+    })
+}
+
 #[cfg(test)]
 struct TestAdmission<'a> {
+    snapshot: AdmissionSnapshot,
     _session: &'a LockedExecutionSession<'a>,
 }
 
 #[cfg(test)]
 impl TestAdmission<'_> {
     fn revalidate(&mut self) -> Result<(), InspectionError> {
-        Err(InspectionError::Invalid)
+        self.snapshot.revalidate()
     }
 }
 
 #[cfg(test)]
 fn admit_for_test<'a>(
-    _session: &'a LockedExecutionSession<'a>,
-    _store: &DurableJournalStore,
+    session: &'a LockedExecutionSession<'a>,
+    store: &DurableJournalStore,
 ) -> Result<TestAdmission<'a>, InspectionError> {
-    Err(InspectionError::Invalid)
+    let expected = session
+        .lock_path()
+        .parent()
+        .ok_or(InspectionError::Invalid)?
+        .join("journal");
+    if store.root() != expected || !crate::sealed_recovery::tests::disposable_mount() {
+        return Err(InspectionError::Invalid);
+    }
+    // Only test binaries recognize the authenticated disposable mount marker.
+    let snapshot = collect_admission(store, Some(OsStr::new(".lsm-sealed-disposable")))?;
+    Ok(TestAdmission {
+        snapshot,
+        _session: session,
+    })
+}
+
+#[cfg(test)]
+struct TestRestartAdmission {
+    _snapshot: AdmissionSnapshot,
+    _lock: HostStorageLock,
+}
+
+#[cfg(test)]
+fn admit_after_restart_for_test(
+    lock: HostStorageLock,
+    store: &DurableJournalStore,
+) -> Result<TestRestartAdmission, InspectionError> {
+    let expected = lock
+        .path()
+        .parent()
+        .ok_or(InspectionError::Invalid)?
+        .join("journal");
+    if store.root() != expected || !crate::sealed_recovery::tests::disposable_mount() {
+        return Err(InspectionError::Invalid);
+    }
+    let snapshot = collect_admission(store, Some(OsStr::new(".lsm-sealed-disposable")))?;
+    Ok(TestRestartAdmission {
+        _snapshot: snapshot,
+        _lock: lock,
+    })
 }
 
 #[cfg(test)]
