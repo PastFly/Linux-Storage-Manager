@@ -10,6 +10,7 @@ libc = ctypes.CDLL(None, use_errno=True)
 AT_FDCWD = -100
 AT_SYMLINK_FOLLOW = 0x400
 IN_CLOSE_WRITE = 0x8
+IN_MODIFY = 0x2
 
 
 def check(result):
@@ -33,7 +34,8 @@ with tempfile.TemporaryDirectory(prefix="lsm-close-probe-") as temporary:
         inherited = os.dup(writer)
         os.close(writer)
         watch = check(libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK))
-        check(libc.inotify_add_watch(watch, os.fsencode(journal), IN_CLOSE_WRITE))
+        check(libc.inotify_add_watch(watch, os.fsencode(journal), IN_MODIFY | IN_CLOSE_WRITE))
+        os.write(inherited, b"later write\n")
         os.close(inherited)
         try:
             data = os.read(watch, 4096)

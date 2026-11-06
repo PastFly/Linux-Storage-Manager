@@ -1731,6 +1731,25 @@ mod tests {
     }
 
     #[test]
+    fn write_through_retained_staging_writer_invalidates_inventory() {
+        let root = root("retained-own-writer-write");
+        let store = DurableJournalStore::at(&root);
+        store.persist_new(&journal()).unwrap();
+        let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
+        let writer = directory.create_file(std::ffi::OsStr::new(".staged-test")).unwrap();
+        let mut inherited = writer.try_clone().unwrap();
+        drop(writer);
+        let mut watch = directory.watch().unwrap();
+        inherited.write_all(b"unexpected mutation").unwrap();
+        assert!(matches!(
+            watch.require_unchanged(),
+            Err(JournalStoreError::ChangedDuringInspection)
+        ));
+        drop(inherited);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn runtime_inventory_detects_creation_in_already_scanned_directory() {
         let root = root("runtime-concurrent-create");
         fs::create_dir(&root).unwrap();
