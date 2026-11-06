@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
@@ -227,6 +227,20 @@ pub struct PinnedMetadataBackups<'a> {
 }
 
 impl PinnedMetadataBackups<'_> {
+    pub(crate) fn validate_for_session(
+        &self,
+        session: &LockedExecutionSession<'_>,
+    ) -> Result<(), BackupCaptureError> {
+        if self.receipt.session_id != session.session_id()
+            || self.receipt.journal_id != session.journal().journal_id
+            || self.receipt.plan_id != session.journal().plan_id
+            || self.receipt.target_manifest_digest != session.journal().baseline_manifest_digest
+        {
+            return Err(BackupCaptureError::LeaseMismatch);
+        }
+        self.validate()
+    }
+
     pub fn validate(&self) -> Result<(), BackupCaptureError> {
         if !revalidate_receipt_at_root(self.manifest, self.receipt, self.root_override.as_deref())?
             .matches()
@@ -370,7 +384,7 @@ pub(crate) fn run_trusted_read_only_tool(
 
 impl CaptureRunner for SystemCaptureRunner {
     fn capture_partition_table(&self, disk: &str, output: &Path) -> Result<(), BackupCaptureError> {
-        let mut file = create_artifact_file(output)?;
+        ensure_artifact_absent(output)?;
         let result = run_trusted_read_only_tool(
             crate::PrivilegedProgram::Sfdisk,
             vec!["--dump".into(), disk.into()],
@@ -384,9 +398,15 @@ impl CaptureRunner for SystemCaptureRunner {
         if result.stdout_truncated {
             return Err(BackupCaptureError::BackupOutputTruncated);
         }
-        file.write_all(&result.stdout)
-            .map_err(|source| io_error(output, source))?;
-        file.sync_all().map_err(|source| io_error(output, source))
+        let parent = output
+            .parent()
+            .ok_or_else(|| BackupCaptureError::UnsafeArtifact(output.to_path_buf()))?;
+        let name = output
+            .file_name()
+            .ok_or_else(|| BackupCaptureError::UnsafeArtifact(output.to_path_buf()))?;
+        let directory = crate::journal_fd::JournalDir::open(parent)?;
+        let _pin = directory.write_staged_file(name, &result.stdout)?;
+        Ok(())
     }
 
     fn capture_lvm_metadata(&self, vg_name: &str, output: &Path) -> Result<(), BackupCaptureError> {
@@ -406,7 +426,6 @@ impl CaptureRunner for SystemCaptureRunner {
         }
         let file = OpenOptions::new()
             .read(true)
-            .write(true)
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
             .open(output)
             .map_err(|source| io_error(output, source))?;
@@ -816,17 +835,6 @@ fn ensure_artifact_absent(path: &Path) -> Result<(), BackupCaptureError> {
     }
 }
 
-fn create_artifact_file(path: &Path) -> Result<File, BackupCaptureError> {
-    ensure_artifact_absent(path)?;
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|source| io_error(path, source))
-}
-
 fn verify_artifact(path: &Path) -> Result<(u64, String, u64, u64, File), BackupCaptureError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     if !crate::journal_store::trusted_journal_file(&metadata) {
@@ -964,6 +972,18 @@ mod tests {
                 payload,
             }
         }
+
+        fn write_artifact(&self, output: &Path) -> Result<(), BackupCaptureError> {
+            let parent = output
+                .parent()
+                .ok_or_else(|| BackupCaptureError::UnsafeArtifact(output.to_path_buf()))?;
+            let name = output
+                .file_name()
+                .ok_or_else(|| BackupCaptureError::UnsafeArtifact(output.to_path_buf()))?;
+            let directory = crate::journal_fd::JournalDir::open(parent)?;
+            let _pin = directory.write_staged_file(name, self.payload)?;
+            Ok(())
+        }
     }
 
     impl CaptureRunner for FakeRunner {
@@ -976,11 +996,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(("sfdisk".to_owned(), disk.to_owned()));
-            let mut file = create_artifact_file(output)?;
-            use std::io::Write;
-            file.write_all(self.payload)
-                .map_err(|source| io_error(output, source))?;
-            file.sync_all().map_err(|source| io_error(output, source))
+            self.write_artifact(output)
         }
 
         fn capture_lvm_metadata(
@@ -992,11 +1008,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(("vgcfgbackup".to_owned(), vg_name.to_owned()));
-            let mut file = create_artifact_file(output)?;
-            use std::io::Write;
-            file.write_all(self.payload)
-                .map_err(|source| io_error(output, source))?;
-            file.sync_all().map_err(|source| io_error(output, source))
+            self.write_artifact(output)
         }
     }
 
@@ -1030,6 +1042,12 @@ mod tests {
         let pin = pin_backup_at_test_root(&manifest, &receipt, &root).unwrap();
         fs::rename(&path, root.join("renamed")).unwrap();
         assert!(pin.validate().is_err());
+        fs::rename(root.join("renamed"), &path).unwrap();
+        assert!(pin.validate().is_err());
+        assert!(
+            pin.validate().is_err(),
+            "a rejected lease must never become valid again"
+        );
         drop(pin);
         drop(receipt);
         let _ = fs::remove_dir_all(lock.parent().unwrap());

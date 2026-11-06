@@ -12,8 +12,8 @@ use lsm_executor::{
     execute_explicit_filesystem_health_check, execute_verify_and_persist_production_chained_step,
     execute_verify_and_persist_production_step, freeze_execution_intent,
     inspect_production_activation_readiness, inspect_production_chained_activation_readiness,
-    pin_default_production_chained_mutation_consent, pin_default_production_mutation_consent,
-    prepare_continuation_production_chained_mutation_step,
+    pin_backup_at_test_root, pin_default_production_chained_mutation_consent,
+    pin_default_production_mutation_consent, prepare_continuation_production_chained_mutation_step,
     prepare_continuation_production_mutation_step, prepare_first_production_chained_mutation_step,
     prepare_first_production_mutation_step, revalidate_metadata_backup_receipt_at_disposable_root,
     seal_production_chained_mutation_activation_intent, seal_production_mutation_activation_intent,
@@ -273,6 +273,9 @@ fn run() -> HarnessResult<()> {
             &validated,
             &execution,
             &initial_identity,
+            &backup_manifest,
+            &backup_receipt,
+            &args.backup_root,
         )?,
         4 => execute_chained_production_profile(
             &mut session,
@@ -332,7 +335,11 @@ fn execute_narrow_production_profile(
     validated: &lsm_executor::ValidatedNativeManifest,
     execution: &lsm_planner::ExecutionStartBinding,
     initial_identity: &lsm_planner::TargetIdentityManifest,
+    backup_manifest: &lsm_executor::MetadataBackupManifest,
+    backup_receipt: &lsm_executor::MetadataBackupReceipt,
+    backup_root: &Path,
 ) -> HarnessResult<ProductionProfileOutcome> {
+    let backup_pin = pin_backup_at_test_root(backup_manifest, backup_receipt, backup_root)?;
     let readiness = inspect_production_activation_readiness(validated, execution, initial_identity);
     if !readiness.ready() {
         return Err(boxed(format!(
@@ -359,6 +366,7 @@ fn execute_narrow_production_profile(
         session,
         first.descriptor_chain(&activation, &consent_lease),
         initial_identity,
+        &backup_pin,
     )?;
 
     match first_result.durable_disposition {
@@ -382,6 +390,7 @@ fn execute_narrow_production_profile(
         session,
         second.descriptor_chain(&activation, &consent_lease),
         &first_result.fresh_identity,
+        &backup_pin,
     )?;
 
     if second_result.durable_disposition != PrivilegedDurableDisposition::Complete {

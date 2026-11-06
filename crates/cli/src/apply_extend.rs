@@ -8,7 +8,7 @@ use lsm_executor::{
     build_pre_mutation_evidence_with_filesystem_health, capture_metadata_backups,
     compile_native_manifest, execute_explicit_filesystem_health_check,
     execute_verify_and_persist_production_step, freeze_execution_intent,
-    inspect_production_activation_readiness, operator_confirmation_phrase,
+    inspect_production_activation_readiness, operator_confirmation_phrase, pin_metadata_backups,
     prepare_continuation_production_mutation_step, prepare_first_production_mutation_step,
     record_and_pin_operator_production_mutation_consent, resolve_trusted_privileged_tool,
     revalidate_metadata_backup_receipt, seal_production_mutation_activation_intent,
@@ -202,6 +202,7 @@ fn run_locked(
             current_backup.blockers().join("; ")
         );
     }
+    let backup_pin = pin_metadata_backups(&backup_manifest, &backup)?;
     let intent = freeze_execution_intent(session, &approval)?;
     let validated = validate_and_bind_native_manifest(compile_native_manifest(&intent))?;
     let executable_snapshot = lsm_executor::discover_snapshot_trusted()?;
@@ -267,6 +268,7 @@ fn run_locked(
         session,
         first.descriptor_chain(&activation, &lease),
         &identity,
+        &backup_pin,
     )?;
     if outcome.durable_disposition
         != (PrivilegedDurableDisposition::Continue {
@@ -289,6 +291,7 @@ fn run_locked(
         session,
         next.descriptor_chain(&activation, &lease),
         &outcome.fresh_identity,
+        &backup_pin,
     )?;
     if final_outcome.durable_disposition != PrivilegedDurableDisposition::Complete
         || session.journal().phase != JournalPhase::Completed

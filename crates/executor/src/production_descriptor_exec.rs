@@ -7,12 +7,12 @@ use crate::privileged_exec::execute_authorized_privileged_descriptor_launch;
 #[cfg(feature = "production-mutation-execution")]
 use crate::{
     classify_privileged_process_outcome, persist_privileged_durable_transition,
-    revalidate_pinned_production_mutation_consent, LockedExecutionSession,
+    revalidate_pinned_production_mutation_consent, LockedExecutionSession, PinnedMetadataBackups,
     PrivilegedDescriptorSequenceOutcome, PrivilegedProcessReceipt, PrivilegedRuntimeDisposition,
     ProductionMutationConsentReceipt,
 };
 use crate::{
-    LockedSessionError, PinnedPrivilegedTools, PinnedProductionMutationConsent,
+    BackupCaptureError, LockedSessionError, PinnedPrivilegedTools, PinnedProductionMutationConsent,
     PrivilegedCommandSpec, PrivilegedDescriptorExecError, PrivilegedDescriptorLaunchSpec,
     PrivilegedDurableTransitionError, PrivilegedHelperRequest, PrivilegedLaunchPermit,
     PrivilegedProcessReceiptError, ProductionMutationActivationIntent,
@@ -38,6 +38,8 @@ pub struct ProductionDescriptorExecutionChain<'a> {
 
 #[derive(Debug, Error)]
 pub enum ProductionDescriptorExecutionError {
+    #[error("pinned metadata backup verification failed: {0}")]
+    Backup(#[from] BackupCaptureError),
     #[error("production mutation execution feature is not compiled")]
     FeatureDisabled,
     #[error("durable execution journal is not at an executing mutation boundary")]
@@ -224,6 +226,7 @@ fn validate_gate(
 pub(crate) fn execute_production_descriptor_launch_raw(
     session: &mut LockedExecutionSession<'_>,
     chain: ProductionDescriptorExecutionChain<'_>,
+    backups: &PinnedMetadataBackups<'_>,
 ) -> Result<PrivilegedDescriptorSequenceOutcome, ProductionDescriptorExecutionError> {
     let activation = chain.activation;
     if !PRODUCTION_MUTATION_DESCRIPTOR_EXEC_COMPILED {
@@ -251,13 +254,24 @@ pub(crate) fn execute_production_descriptor_launch_raw(
         return Err(error);
     }
 
+    if let Err(error) = backups.validate_for_session(session) {
+        session.persist_interrupted("pinned metadata backup changed before spawn")?;
+        return Err(error.into());
+    }
+
     match execute_authorized_privileged_descriptor_launch(
         chain.launch_permit,
         chain.launch,
         chain.pinned,
         chain.command,
     ) {
-        Ok(outcome) => Ok(outcome),
+        Ok(outcome) => {
+            if let Err(error) = backups.validate_for_session(session) {
+                session.persist_interrupted("pinned metadata backup changed during execution")?;
+                return Err(error.into());
+            }
+            Ok(outcome)
+        }
         Err(error) => {
             session.persist_interrupted(
                 "production descriptor execution failed after the durable mutation boundary",
@@ -280,8 +294,9 @@ pub(crate) fn execute_production_descriptor_launch_raw(
 pub(crate) fn execute_and_classify_production_descriptor_launch(
     session: &mut LockedExecutionSession<'_>,
     chain: ProductionDescriptorExecutionChain<'_>,
+    backups: &PinnedMetadataBackups<'_>,
 ) -> Result<PrivilegedProcessReceipt, ProductionDescriptorExecutionError> {
-    let outcome = execute_production_descriptor_launch_raw(session, chain)?;
+    let outcome = execute_production_descriptor_launch_raw(session, chain, backups)?;
     let receipt =
         match classify_privileged_process_outcome(chain.launch_permit, chain.launch, &outcome) {
             Ok(receipt) => receipt,

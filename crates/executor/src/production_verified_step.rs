@@ -164,6 +164,7 @@ pub fn execute_verify_and_persist_production_step(
     session: &mut LockedExecutionSession<'_>,
     chain: ProductionDescriptorExecutionChain<'_>,
     before_identity: &TargetIdentityManifest,
+    backups: &crate::PinnedMetadataBackups<'_>,
 ) -> Result<ProductionVerifiedMutationStep, ProductionVerifiedMutationStepError> {
     if let Err(error) = verify_before_identity(chain, before_identity) {
         enter_recovery(
@@ -173,7 +174,8 @@ pub fn execute_verify_and_persist_production_step(
         return Err(error);
     }
 
-    let process_receipt = execute_and_classify_production_descriptor_launch(session, chain)?;
+    let process_receipt =
+        execute_and_classify_production_descriptor_launch(session, chain, backups)?;
     if process_receipt.disposition == PrivilegedRuntimeDisposition::RecoveryRequired {
         return Err(ProductionVerifiedMutationStepError::RecoveryRequired);
     }
