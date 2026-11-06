@@ -36,6 +36,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exercise disposable observer prototype
+        run: |
+          cc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -o /tmp/lsm-observer .github/diagnostics/backup-observer.c
+          sudo python3 -I .github/diagnostics/test-backup-observer.py /tmp/lsm-observer /sys/fs/cgroup
       - name: Check disposable runner cgroup and pidfd primitives
         run: |
           sudo python3 - <<'PY'
