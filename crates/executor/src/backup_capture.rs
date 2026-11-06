@@ -1191,6 +1191,7 @@ mod tests {
 
         assert!(!receipt.mutation_enabled());
         assert_eq!(receipt.manifest_id(), manifest.manifest_id());
+        assert_eq!(serde_json::to_value(&receipt).unwrap()["schema_version"], 2);
         assert_eq!(receipt.handoff_id(), handoff.handoff_id());
         assert_eq!(receipt.artifacts().len(), 1);
         assert_eq!(
