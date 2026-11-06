@@ -44,16 +44,20 @@ mod linux {
         }
     }
 
+    fn trusted_read_file(fd: c_int, stat: &mut libc::stat) -> bool {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        flags >= 0
+            && flags & (libc::O_ACCMODE | libc::O_PATH) == libc::O_RDONLY
+            && unsafe { libc::fstat(fd, stat) } == 0
+            && stat.st_mode & libc::S_IFMT == libc::S_IFREG
+            && stat.st_uid == 0
+            && stat.st_mode & 0o7777 == 0o600
+            && stat.st_nlink == 1
+    }
+
     fn take_read_lease(fd: c_int) -> bool {
         let mut stat: libc::stat = unsafe { zeroed() };
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if flags < 0
-            || flags & libc::O_ACCMODE != libc::O_RDONLY
-            || unsafe { libc::fstat(fd, &mut stat) } < 0
-            || stat.st_mode & libc::S_IFMT != libc::S_IFREG
-            || stat.st_uid != 0
-            || stat.st_mode & 0o777 != 0o600
-            || stat.st_nlink != 1
+        if !trusted_read_file(fd, &mut stat)
             || unsafe { libc::fcntl(fd, libc::F_GETLEASE) } != libc::F_UNLCK
         {
             return false;
@@ -75,11 +79,7 @@ mod linux {
             && actual.kind == owner.kind
             && actual.pid == owner.pid
             && unsafe { libc::fcntl(fd, libc::F_GETLEASE) } == libc::F_RDLCK
-            && unsafe { libc::fstat(fd, &mut stat) } == 0
-            && stat.st_mode & libc::S_IFMT == libc::S_IFREG
-            && stat.st_uid == 0
-            && stat.st_mode & 0o777 == 0o600
-            && stat.st_nlink == 1
+            && trusted_read_file(fd, &mut stat)
     }
 
     fn exit(code: c_int) -> ! {
@@ -323,7 +323,8 @@ mod linux {
         let mut identities = Vec::with_capacity(count as usize);
         for fd in &mut fds[2..count as usize + 2] {
             let mut original: libc::stat = unsafe { zeroed() };
-            if unsafe { libc::fstat(*fd, &mut original) } != 0
+            if !trusted_read_file(*fd, &mut original)
+                || unsafe { libc::fcntl(*fd, libc::F_GETLEASE) } != libc::F_UNLCK
                 || identities.contains(&(original.st_dev, original.st_ino))
             {
                 exit(4);
