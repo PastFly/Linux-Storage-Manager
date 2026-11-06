@@ -63,6 +63,12 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::other(message)
 }
 fn pidfd(pid: libc::pid_t) -> io::Result<File> {
+    // Test hook catches any regression to opening the launcher's parent by PID.
+    if std::env::var_os("LSM_TEST_DENY_MANAGER_PIDFD_OPEN").as_deref() == Some(OsStr::new("1"))
+        && pid == unsafe { libc::getppid() }
+    {
+        return Err(invalid("numeric manager pidfd_open refused by test"));
+    }
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) as i32 };
     if fd < 0 {
         Err(io::Error::last_os_error())
@@ -186,7 +192,13 @@ impl gated::ExternalGuard for ManagerGuard {
         channel::require_live_sender(self.pidfd.as_raw_fd(), self.manager)
     }
 }
-pub fn launcher(group_path: &Path, manager: &OsStr, raw: &OsStr, marker: &Path) -> io::Result<()> {
+pub fn launcher(
+    group_path: &Path,
+    manager: &OsStr,
+    raw: &OsStr,
+    manager_raw: &OsStr,
+    marker: &Path,
+) -> io::Result<()> {
     let manager = manager
         .to_str()
         .and_then(|s| s.parse::<libc::pid_t>().ok())
@@ -196,17 +208,25 @@ pub fn launcher(group_path: &Path, manager: &OsStr, raw: &OsStr, marker: &Path) 
         .and_then(|s| s.parse::<i32>().ok())
         .filter(|&s| s >= 3)
         .ok_or_else(|| invalid("invalid channel"))?;
+    let manager_raw = manager_raw
+        .to_str()
+        .and_then(|s| s.parse::<i32>().ok())
+        .filter(|&fd| fd >= 3 && fd != raw)
+        .ok_or_else(|| invalid("invalid manager pidfd"))?;
     let socket = unsafe { File::from_raw_fd(raw) };
+    let manager_fd = unsafe { File::from_raw_fd(manager_raw) };
+    for fd in [socket.as_raw_fd(), manager_fd.as_raw_fd()] {
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
     // Disposable barriers identify attempts to reopen manager by numeric PID.
     if std::env::var_os("LSM_TEST_STOP_BEFORE_MANAGER_PIDFD").as_deref() == Some(OsStr::new("1"))
         && unsafe { libc::raise(libc::SIGSTOP) } != 0
     {
         return Err(io::Error::last_os_error());
     }
-    if std::env::var_os("LSM_TEST_DENY_MANAGER_PIDFD_OPEN").as_deref() == Some(OsStr::new("1")) {
-        return Err(invalid("numeric manager pidfd_open refused by test"));
-    }
-    let manager_fd = pidfd(manager)?;
+    channel::require_live_sender(manager_fd.as_raw_fd(), manager)?;
     let group = File::open(group_path)?;
     let m = group.metadata()?;
     let mut guard = ManagerGuard {
@@ -465,19 +485,27 @@ fn run_manager(
     let (manager, launcher) = socket_pair()?;
     let marker = backup.with_extension("worker");
     let raw = launcher.as_raw_fd();
+    let manager_identity = pidfd(unsafe { libc::getpid() })?;
+    let manager_raw = manager_identity.as_raw_fd();
+    if raw < 3 || manager_raw < 3 || raw == manager_raw {
+        return Err(invalid("invalid inherited descriptors"));
+    }
     let mut command = Command::new("/proc/self/exe");
     command
         .arg("--diagnostic-launcher")
         .arg(&path)
         .arg(unsafe { libc::getpid() }.to_string())
         .arg(raw.to_string())
+        .arg(manager_raw.to_string())
         .arg(&marker)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     unsafe {
         command.pre_exec(move || {
-            if libc::fcntl(raw, libc::F_SETFD, 0) == 0 {
+            if libc::fcntl(raw, libc::F_SETFD, 0) == 0
+                && libc::fcntl(manager_raw, libc::F_SETFD, 0) == 0
+            {
                 Ok(())
             } else {
                 Err(io::Error::last_os_error())

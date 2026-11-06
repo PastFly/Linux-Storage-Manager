@@ -219,12 +219,13 @@ fn main() {
         return;
     }
     #[cfg(feature = "diagnostic-backup-watchdog")]
-    if args.len() == 6 && args[1] == "--diagnostic-launcher" {
+    if args.len() == 7 && args[1] == "--diagnostic-launcher" {
         if let Err(error) = diagnostic_manager::launcher(
             Path::new(&args[2]),
             &args[3],
             &args[4],
-            Path::new(&args[5]),
+            &args[5],
+            Path::new(&args[6]),
         ) {
             eprintln!("diagnostic launcher: {error}");
             std::process::exit(1);
