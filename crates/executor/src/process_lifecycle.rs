@@ -684,6 +684,59 @@ fn inherited_group(
     group.verify()?;
     Ok(group)
 }
+// Once the guard has authorised this scope, it must not let any possible
+// creator survive the guard's own exit. On ambiguity keep the pinned FDs and
+// retry; no timeout is reported as successful cleanup.
+fn guard_stop_creator_and_scope(manager: &File, group: &Group, socket: &File) {
+    let mut alerted = false;
+    loop {
+        let mut item = libc::pollfd {
+            fd: manager.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let n = unsafe { libc::poll(&mut item, 1, 0) };
+        if n == 1
+            && item.revents & libc::POLLIN != 0
+            && item.revents & (libc::POLLERR | libc::POLLNVAL) == 0
+        {
+            break;
+        }
+        if n == 0 {
+            let killed = unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    manager.as_raw_fd(),
+                    libc::SIGKILL,
+                    ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            };
+            if killed != 0
+                && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+                && !alerted
+            {
+                let _ = send(socket, b'E');
+                alerted = true;
+            }
+        } else if !alerted {
+            let _ = send(socket, b'E');
+            alerted = true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // A killed creator cannot later repopulate this scope. Never release the
+    // pinned group on an ambiguous kill/empty result.
+    if group.stop().is_err() {
+        if !alerted {
+            let _ = send(socket, b'E');
+        }
+        while group.stop().is_err() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
 fn guard(args: &[OsString]) -> io::Result<()> {
     if args.len() != 10 {
         return Err(invalid("invalid guard arguments"));
@@ -751,12 +804,7 @@ fn guard(args: &[OsString]) -> io::Result<()> {
     let launcher = match registration {
         Ok(launcher) => launcher,
         Err(error) => {
-            if group.stop().is_err() {
-                let _ = send(&socket, b'E');
-                while group.stop().is_err() {
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            }
+            guard_stop_creator_and_scope(&manager_fd, &group, &socket);
             return Err(error);
         }
     };
@@ -808,13 +856,7 @@ fn guard(args: &[OsString]) -> io::Result<()> {
         }
         deadline = Instant::now() + Duration::from_secs(2);
     }
-    // Never release the guard's group FD on an ambiguous kill/empty result.
-    if group.stop().is_err() {
-        let _ = send(&socket, b'E');
-        while group.stop().is_err() {
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
+    guard_stop_creator_and_scope(&manager_fd, &group, &socket);
     Ok(())
 }
 
