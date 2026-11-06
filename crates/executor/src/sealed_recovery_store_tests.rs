@@ -4,6 +4,7 @@ use crate::sealed_recovery::{
     SealedRecovery,
 };
 use std::fs::{self, File, OpenOptions};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 fn record_dir(manifest: &crate::MetadataBackupManifest) -> PathBuf {
@@ -29,6 +30,14 @@ fn publishes_sealed_record_at_real_attempt_path() {
         let result =
             PublishedRecovery::publish(session, sealed, File::open(&root).unwrap()).unwrap();
         let path = root.join(format!("{}.json", expected_record.record_id()));
+        let pending = root.join(format!(".{}.pending", expected_record.record_id()));
+        let final_meta = fs::metadata(&path).unwrap();
+        let pending_meta = fs::metadata(&pending).unwrap();
+        assert_eq!(
+            (final_meta.dev(), final_meta.ino()),
+            (pending_meta.dev(), pending_meta.ino())
+        );
+        assert_eq!(final_meta.nlink(), 2);
         assert_eq!(result.record_path, path);
         let measurement = result.measurement;
         drop(result);
@@ -88,9 +97,10 @@ fn publication_failures_preserve_staging_or_final_record() {
     }
     for stage in [
         PublicationStage::Created,
+        PublicationStage::ReservationSynced,
         PublicationStage::WrittenAndSynced,
         PublicationStage::SealedAndSynced,
-        PublicationStage::Renamed,
+        PublicationStage::Linked,
         PublicationStage::DirectorySynced,
     ] {
         with_fixture(|session, manifest, receipt, copies| {
@@ -112,7 +122,7 @@ fn publication_failures_preserve_staging_or_final_record() {
             assert!(result.is_err());
             let name = if matches!(
                 stage,
-                PublicationStage::Renamed | PublicationStage::DirectorySynced
+                PublicationStage::Linked | PublicationStage::DirectorySynced
             ) {
                 format!("{id}.json")
             } else {
@@ -120,11 +130,26 @@ fn publication_failures_preserve_staging_or_final_record() {
             };
             let path = root.join(name);
             assert!(path.is_file());
-            assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+            let published = matches!(
+                stage,
+                PublicationStage::Linked | PublicationStage::DirectorySynced
+            );
+            assert_eq!(
+                fs::read_dir(&root).unwrap().count(),
+                if published { 2 } else { 1 }
+            );
+            if published {
+                let pending = fs::metadata(root.join(format!(".{id}.pending"))).unwrap();
+                let final_meta = fs::metadata(root.join(format!("{id}.json"))).unwrap();
+                assert_eq!(
+                    (pending.dev(), pending.ino(), pending.nlink()),
+                    (final_meta.dev(), final_meta.ino(), 2)
+                );
+            }
             if matches!(
                 stage,
                 PublicationStage::SealedAndSynced
-                    | PublicationStage::Renamed
+                    | PublicationStage::Linked
                     | PublicationStage::DirectorySynced
             ) {
                 assert!(crate::backup_verity::measure(&File::open(path).unwrap()).is_ok());
@@ -244,6 +269,119 @@ fn publication_never_publishes_substituted_staging_inode() {
 }
 
 #[test]
+fn publication_rejects_record_filesystem_without_verity() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    const OPT_IN: &str = "LSM_TEST_SEALED_RECORD_TMPFS";
+    const CHILD: &str = "LSM_TEST_SEALED_RECORD_TMPFS_CHILD";
+    if skip_supported() || std::env::var(OPT_IN).as_deref() != Ok("1") {
+        return;
+    }
+    if std::env::var(CHILD).as_deref() != Ok("1") {
+        // The mount is made only in this freshly created private namespace.
+        let output = std::process::Command::new("unshare")
+            .args(["--mount", "--propagation", "private", "--"])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "sealed_recovery_store::tests::publication_rejects_record_filesystem_without_verity",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    assert_ne!(
+        fs::read_link("/proc/self/ns/mnt").unwrap(),
+        fs::read_link("/proc/1/ns/mnt").unwrap(),
+        "the disposable mount must be in a separate mount namespace"
+    );
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo").unwrap();
+    let root_mount = mountinfo
+        .lines()
+        .find(|line| {
+            line.split_once(" - ")
+                .is_some_and(|(before, _)| before.split_whitespace().nth(4) == Some("/"))
+        })
+        .unwrap();
+    let before = root_mount.split_once(" - ").unwrap().0;
+    assert!(!before
+        .split_whitespace()
+        .any(|field| field.starts_with("shared:")));
+
+    struct TmpfsMount {
+        target: CString,
+        active: bool,
+    }
+    impl TmpfsMount {
+        fn unmount(&mut self) {
+            assert_eq!(unsafe { libc::umount2(self.target.as_ptr(), 0) }, 0);
+            self.active = false;
+        }
+    }
+    impl Drop for TmpfsMount {
+        fn drop(&mut self) {
+            if self.active {
+                // Namespace teardown also removes the mount if this fails.
+                unsafe {
+                    libc::umount2(self.target.as_ptr(), libc::MNT_DETACH);
+                }
+            }
+        }
+    }
+
+    with_fixture(|session, manifest, receipt, copies| {
+        let sealed = SealedRecovery::seal(session, manifest, receipt, copies).unwrap();
+        let id = sealed.record().record_id().to_owned();
+        let root = record_dir(manifest);
+        fs::create_dir(&root).unwrap();
+        let target = CString::new(root.as_os_str().as_bytes()).unwrap();
+        let rc = unsafe {
+            libc::mount(
+                c"tmpfs".as_ptr(),
+                target.as_ptr(),
+                c"tmpfs".as_ptr(),
+                libc::MS_NOSUID | libc::MS_NODEV,
+                c"mode=0700,size=4m".as_ptr().cast(),
+            )
+        };
+        assert_eq!(rc, 0, "{}", io::Error::last_os_error());
+        let mut mount = TmpfsMount {
+            target,
+            active: true,
+        };
+        let mut wrote = false;
+        let result = PublishedRecovery::publish_inner(
+            session,
+            sealed,
+            File::open(&root).unwrap(),
+            |stage| {
+                if stage == PublicationStage::WrittenAndSynced {
+                    wrote = true;
+                }
+                Ok(())
+            },
+        );
+        assert!(wrote, "failure must occur at or after the written record");
+        assert!(
+            matches!(result, Err(PublicationError::Io(ref error)) if matches!(error.raw_os_error(), Some(libc::ENOTTY | libc::EOPNOTSUPP)))
+        );
+        assert!(root.join(format!(".{id}.pending")).is_file());
+        assert!(!root.join(format!("{id}.json")).exists());
+        mount.unmount();
+        fs::remove_dir(root).unwrap();
+    });
+}
+
+#[test]
 fn publication_preserves_orphans_after_sigkill() {
     use std::io::Write;
     use std::os::unix::process::ExitStatusExt;
@@ -276,8 +414,11 @@ fn publication_preserves_orphans_after_sigkill() {
                 |current| {
                     let matched = matches!(
                         (stage.as_str(), current),
-                        ("sealed", PublicationStage::SealedAndSynced)
-                            | ("renamed", PublicationStage::Renamed)
+                        ("created", PublicationStage::Created)
+                            | ("reserved", PublicationStage::ReservationSynced)
+                            | ("written", PublicationStage::WrittenAndSynced)
+                            | ("sealed", PublicationStage::SealedAndSynced)
+                            | ("linked", PublicationStage::Linked)
                             | ("synced", PublicationStage::DirectorySynced)
                     );
                     if matched {
@@ -292,7 +433,9 @@ fn publication_preserves_orphans_after_sigkill() {
         });
         return;
     }
-    for stage in ["sealed", "renamed", "synced"] {
+    for stage in [
+        "created", "reserved", "written", "sealed", "linked", "synced",
+    ] {
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -324,17 +467,33 @@ fn publication_preserves_orphans_after_sigkill() {
         assert!(primary.starts_with(crate::BACKUP_DIRECTORY));
         assert_eq!(recovery.parent(), primary.parent());
         assert_eq!(record_root.parent(), primary.parent());
-        let record_name = if stage == "sealed" {
+        let published = matches!(stage, "linked" | "synced");
+        let record_name = if !published {
             format!(".{id}.pending")
         } else {
             format!("{id}.json")
         };
         let record_path = record_root.join(record_name);
-        assert_eq!(fs::read_dir(&record_root).unwrap().count(), 1);
-        let bytes = fs::read(&record_path).unwrap();
-        let record = crate::backup_recovery_record::decode(&bytes, id).unwrap();
-        assert_eq!(record.schema_version(), 3);
-        assert!(crate::backup_verity::measure(&File::open(record_path).unwrap()).is_ok());
+        assert_eq!(
+            fs::read_dir(&record_root).unwrap().count(),
+            if published { 2 } else { 1 }
+        );
+        if published {
+            let pending = fs::metadata(record_root.join(format!(".{id}.pending"))).unwrap();
+            let final_meta = fs::metadata(record_root.join(format!("{id}.json"))).unwrap();
+            assert_eq!(
+                (pending.dev(), pending.ino(), pending.nlink()),
+                (final_meta.dev(), final_meta.ino(), 2)
+            );
+        }
+        if matches!(stage, "sealed" | "linked" | "synced") {
+            let bytes = fs::read(&record_path).unwrap();
+            let record = crate::backup_recovery_record::decode(&bytes, id).unwrap();
+            assert_eq!(record.schema_version(), 3);
+            assert!(crate::backup_verity::measure(&File::open(record_path).unwrap()).is_ok());
+        } else {
+            assert!(crate::backup_verity::measure(&File::open(record_path).unwrap()).is_err());
+        }
         fs::remove_dir_all(&primary).unwrap();
         fs::remove_dir_all(&recovery).unwrap();
         fs::remove_dir_all(&record_root).unwrap();

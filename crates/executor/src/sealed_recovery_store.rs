@@ -3,6 +3,10 @@
 //! The record digest identifies bytes but does not authenticate them against
 //! arbitrary root. Namespace checks are point-in-time; no claim is made about
 //! transient privileged mount/rename changes or disk failure independence.
+//! A successful publication retains both staging and final hard links to the
+//! same sealed inode. Before the reservation-directory fsync, a power loss may
+//! leave no staging name; the journal remains unapproved and prewrite. No
+//! orphan is silently removed, and recovery still needs an independent anchor.
 #![allow(dead_code)]
 
 use crate::backup_recovery_record::{decode_v3_with_trusted_context, BackupRecoveryRecord};
@@ -17,6 +21,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 const MAX_RECORD_BYTES: usize = 64 * 1024;
@@ -69,10 +74,11 @@ impl SelfWatch {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PublicationStage {
     Created,
+    ReservationSynced,
     WrittenAndSynced,
     SealedAndSynced,
     BeforePublish,
-    Renamed,
+    Linked,
     DirectorySynced,
 }
 
@@ -126,9 +132,13 @@ fn validate_record(
     record: &BackupRecoveryRecord,
     bytes: &[u8],
     measurement: [u8; 32],
+    expected_links: u64,
 ) -> Result<(), PublicationError> {
     let initial = file.metadata()?;
-    if !crate::journal_store::trusted_journal_file(&initial)
+    if !initial.is_file()
+        || initial.uid() != unsafe { libc::geteuid() }
+        || initial.mode() & 0o7777 != 0o600
+        || initial.nlink() != expected_links
         || initial.len() as usize != bytes.len()
         || bytes.len() > MAX_RECORD_BYTES
     {
@@ -211,6 +221,10 @@ impl PublishedRecovery {
             libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
         )?;
         hook(PublicationStage::Created)?;
+        // Before this succeeds, a power loss may lose the staging name; the
+        // attempt is still prewrite and has no journal binding or approval.
+        sync_directory_chain(&root)?;
+        hook(PublicationStage::ReservationSynced)?;
         writer.write_all(&bytes)?;
         writer.sync_all()?;
         hook(PublicationStage::WrittenAndSynced)?;
@@ -240,6 +254,7 @@ impl PublishedRecovery {
             &record,
             &bytes,
             measurement,
+            1,
         )?;
         directory.sync()?;
         hook(PublicationStage::SealedAndSynced)?;
@@ -250,8 +265,22 @@ impl PublishedRecovery {
             return Err(PublicationError::Changed);
         }
         hook(PublicationStage::BeforePublish)?;
-        directory.publish_new(OsStr::new(&staging), OsStr::new(&final_name))?;
-        hook(PublicationStage::Renamed)?;
+        let final_c = CString::new(final_name.as_bytes()).map_err(|_| PublicationError::Changed)?;
+        // Link the pinned, sealed inode itself; the destination must not exist.
+        // AT_EMPTY_PATH requires CAP_DAC_READ_SEARCH and may fail closed.
+        if unsafe {
+            libc::linkat(
+                staged.as_raw_fd(),
+                c"".as_ptr(),
+                directory.file().as_raw_fd(),
+                final_c.as_ptr(),
+                libc::AT_EMPTY_PATH,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error().into());
+        }
+        hook(PublicationStage::Linked)?;
         directory.sync()?;
         sync_directory_chain(&root)?;
         hook(PublicationStage::DirectorySynced)?;
@@ -262,8 +291,23 @@ impl PublishedRecovery {
             &record,
             &bytes,
             measurement,
+            2,
         )?;
-        if bounded_names(&directory)? != [OsStr::new(&final_name)] {
+        validate_record(
+            &staged,
+            &directory,
+            OsStr::new(&staging),
+            &record,
+            &bytes,
+            measurement,
+            2,
+        )?;
+        let mut expected_names = vec![
+            OsStr::new(&final_name).to_os_string(),
+            OsStr::new(&staging).to_os_string(),
+        ];
+        expected_names.sort();
+        if bounded_names(&directory)? != expected_names {
             return Err(PublicationError::Changed);
         }
         sealed.revalidate(session)?;
