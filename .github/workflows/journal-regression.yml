@@ -5,6 +5,11 @@ on:
     branches: ["master"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      lifecycle_case:
+        description: Optional single disposable lifecycle case
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -75,13 +80,20 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.88.0
       - name: Test guarded lifecycle on disposable cgroups
+        env:
+          LIFECYCLE_CASE: ${{ inputs.lifecycle_case }}
         run: |
           cargo test --locked --manifest-path .github/diagnostics/Cargo.toml --features diagnostic-process-lifecycle --bin lsm-process-lifecycle-runner non_cgroup_root_is_rejected_without_changes -- --test-threads=1
           cargo build --locked --manifest-path .github/diagnostics/Cargo.toml --features diagnostic-process-lifecycle --bin lsm-process-lifecycle-runner --target-dir /tmp/lsm-process-lifecycle
           sudo mkdir /sys/fs/cgroup/lsm-process-lifecycle-test
           trap 'sudo rmdir /sys/fs/cgroup/lsm-process-lifecycle-test || true' EXIT
           status=0
-          for case in manager-before-clone manager-before-registration manager-stopped-before-launcher manager-before-go guard-before-go manager-after-go guard-after-go; do
+          cases=(manager-before-clone manager-before-registration manager-stopped-before-launcher manager-before-go guard-before-go manager-after-go guard-after-go)
+          if [[ -n "$LIFECYCLE_CASE" ]]; then
+            [[ " ${cases[*]} " == *" $LIFECYCLE_CASE "* ]] || exit 1
+            cases=("$LIFECYCLE_CASE")
+          fi
+          for case in "${cases[@]}"; do
             sudo env LSM_TEST_DISPOSABLE_CGROUP=/sys/fs/cgroup/lsm-process-lifecycle-test python3 -I .github/diagnostics/test-process-lifecycle.py /tmp/lsm-process-lifecycle/debug/lsm-process-lifecycle-runner /sys/fs/cgroup/lsm-process-lifecycle-test "$case" || status=1
           done
           exit "$status"
