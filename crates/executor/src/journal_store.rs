@@ -1720,6 +1720,42 @@ mod tests {
     }
 
     #[test]
+    fn isolated_writer_reports_io_error_and_preserves_stage() {
+        let root = root("writer-enospc");
+        let store = DurableJournalStore::at(&root);
+        store.persist_new(&journal()).unwrap();
+        let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
+        let name = std::ffi::OsStr::new(".staged-test");
+        let error = directory
+            .write_staged_file_failing(name, b"record", libc::ENOSPC)
+            .unwrap_err();
+        assert!(
+            matches!(error, JournalStoreError::Io { source, .. } if source.raw_os_error() == Some(libc::ENOSPC))
+        );
+        assert!(root.join(name).exists());
+        assert!(store.all().is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_fork_does_not_create_staging_evidence() {
+        let root = root("writer-fork-failure");
+        let store = DurableJournalStore::at(&root);
+        store.persist_new(&journal()).unwrap();
+        let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
+        let name = std::ffi::OsStr::new(".staged-test");
+        let error = directory
+            .write_staged_file_fork_fails(name, b"record")
+            .unwrap_err();
+        assert!(
+            matches!(error, JournalStoreError::Io { source, .. } if source.raw_os_error() == Some(libc::EAGAIN))
+        );
+        assert!(!root.join(name).exists());
+        assert_eq!(store.all().unwrap(), vec![journal()]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn automatic_sigchld_reaping_rejects_writer_before_creating_stage() {
         const MARKER: &str = "LSM_TEST_AUTOMATIC_SIGCHLD_REAPING";
         if let Some(mode) = std::env::var_os(MARKER) {
