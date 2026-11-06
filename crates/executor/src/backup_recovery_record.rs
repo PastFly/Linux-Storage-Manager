@@ -933,6 +933,12 @@ mod tests {
         let trusted = payload.binding.clone();
         let bytes = record.encode().unwrap();
         assert!(decode_with_trusted_context(&bytes, record.record_id(), &trusted).is_ok());
+        let mut downgraded = payload.clone();
+        downgraded.schema_version = 2;
+        assert!(BackupRecoveryRecord::new(downgraded).is_err());
+        let mut another_session = trusted.clone();
+        another_session.session_id = "7".repeat(64);
+        assert!(decode_with_trusted_context(&bytes, record.record_id(), &another_session).is_err());
         for primary in [true, false] {
             let mut changed = payload.clone();
             let verity = changed.artifacts[0].verity.as_mut().unwrap();
