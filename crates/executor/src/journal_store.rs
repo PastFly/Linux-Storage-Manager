@@ -1,12 +1,10 @@
 #[cfg(test)]
 use std::fs::OpenOptions;
 use std::fs::{self, DirBuilder, File};
-use std::io::{self, Read};
 #[cfg(test)]
 use std::io::Write;
+use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
-#[cfg(test)]
-use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -793,10 +791,11 @@ impl DurableJournalStore {
         validate_journal(journal)?;
         ensure_secure_directory(&self.root, true)?;
 
-        let bytes = serde_json::to_vec(journal)?;
+        let mut bytes = serde_json::to_vec(journal)?;
         if bytes.len() as u64 > MAX_JOURNAL_BYTES {
             return Err(JournalStoreError::TooLarge);
         }
+        bytes.push(b'\n');
 
         let final_path = self.path_for(&journal.journal_id)?;
         match fs::symlink_metadata(&final_path) {
@@ -811,20 +810,11 @@ impl DurableJournalStore {
 
         let temp_path = self.temp_path(&journal.journal_id);
         let result = (|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-                .open(&temp_path)
-                .map_err(|source| io_error(&temp_path, source))?;
-
-            file.write_all(&bytes)
-                .map_err(|source| io_error(&temp_path, source))?;
-            file.write_all(b"\n")
-                .map_err(|source| io_error(&temp_path, source))?;
-            file.sync_all()
-                .map_err(|source| io_error(&temp_path, source))?;
+            let directory = crate::journal_fd::JournalDir::open(&self.root)?;
+            let name = temp_path
+                .file_name()
+                .ok_or_else(|| JournalStoreError::NotRegularFile(temp_path.clone()))?;
+            let file = directory.write_staged_file(name, &bytes)?;
             drop(file);
 
             fs::rename(&temp_path, &final_path).map_err(|source| io_error(&final_path, source))?;
@@ -1581,6 +1571,15 @@ mod tests {
         ))
     }
 
+    fn fixture_file(root: &Path, path: &Path, bytes: &[u8]) {
+        let directory = crate::journal_fd::JournalDir::open(root).unwrap();
+        drop(
+            directory
+                .write_staged_file(path.file_name().unwrap(), bytes)
+                .unwrap(),
+        );
+    }
+
     #[test]
     fn pinned_load_rejects_file_replaced_after_open() {
         let root = root("load-replaced-after-open");
@@ -1712,9 +1711,83 @@ mod tests {
         store.persist_new(&journal()).unwrap();
         let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
         let name = std::ffi::OsStr::new(".staged-test");
-        assert!(directory.write_staged_file_crashing(name, b"record").is_err());
+        assert!(directory
+            .write_staged_file_crashing(name, b"record")
+            .is_err());
         assert!(root.join(name).exists());
         assert!(store.all().is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fork_before_writer_closes_cannot_inherit_its_descriptor() {
+        let root = root("fork-during-isolated-writer");
+        let store = DurableJournalStore::at(&root);
+        store.persist_new(&journal()).unwrap();
+        let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
+        let mut ready = [-1; 2];
+        let mut release_writer = [-1; 2];
+        let mut release_exec = [-1; 2];
+        assert_eq!(
+            unsafe { libc::pipe2(ready.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        assert_eq!(
+            unsafe { libc::pipe2(release_writer.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        assert_eq!(
+            unsafe { libc::pipe2(release_exec.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                directory.write_staged_file_paused(
+                    std::ffi::OsStr::new(".staged-test"),
+                    b"record",
+                    ready[1],
+                    release_writer[0],
+                )
+            });
+            let mut byte = 0_u8;
+            assert_eq!(
+                unsafe { libc::read(ready[0], (&mut byte as *mut u8).cast(), 1) },
+                1
+            );
+            let pid = unsafe { libc::fork() };
+            if pid == 0 {
+                unsafe {
+                    if libc::read(release_exec[0], (&mut byte as *mut u8).cast(), 1) != 1 {
+                        libc::_exit(1);
+                    }
+                    let program = b"/usr/bin/true\0";
+                    let argv = [program.as_ptr().cast(), std::ptr::null()];
+                    libc::execv(program.as_ptr().cast(), argv.as_ptr());
+                    libc::_exit(127);
+                }
+            }
+            assert!(pid > 0);
+            assert_eq!(
+                unsafe { libc::write(release_writer[1], (&byte as *const u8).cast(), 1) },
+                1
+            );
+            let staged = writer.join().unwrap().unwrap();
+            let mut watch = directory.watch().unwrap();
+            assert_eq!(
+                unsafe { libc::write(release_exec[1], (&byte as *const u8).cast(), 1) },
+                1
+            );
+            let mut status = 0;
+            assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+            assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+            assert!(watch.require_unchanged().is_ok());
+            drop(staged);
+        });
+        for fd in ready.into_iter().chain(release_writer).chain(release_exec) {
+            unsafe {
+                libc::close(fd);
+            }
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1922,7 +1995,7 @@ mod tests {
         let journal = journal();
         let path = store.persist_new(&journal).unwrap();
         let staging = root.join(format!(".{}.tmp-123-1", journal.journal_id));
-        fs::copy(&path, &staging).unwrap();
+        fixture_file(&root, &staging, &fs::read(&path).unwrap());
         let inspection = store.inspect().unwrap();
         assert_eq!(inspection.unfinished, vec![journal.clone()]);
         assert_eq!(inspection.unclassified.len(), 1);
@@ -1945,7 +2018,7 @@ mod tests {
         let journal = journal();
         store.persist_new(&journal).unwrap();
         let staging = root.join(format!(".{}.tmp-123-1", journal.journal_id));
-        fs::write(&staging, b"{\"phase\":\"execut").unwrap();
+        fixture_file(&root, &staging, b"{\"phase\":\"execut");
         fs::set_permissions(&staging, fs::Permissions::from_mode(0o600)).unwrap();
         let inspection = store.inspect().unwrap();
         assert_eq!(inspection.unclassified.len(), 1);
@@ -1987,7 +2060,7 @@ mod tests {
         let store = DurableJournalStore::at(&root);
         store.persist_new(&journal()).unwrap();
         let path = root.join(std::ffi::OsString::from_vec(vec![b'x', 0xff, b'\n']));
-        fs::write(&path, b"evidence").unwrap();
+        fixture_file(&root, &path, b"evidence");
         let inspection = store.inspect().unwrap();
         let entry = inspection
             .unclassified
@@ -2008,7 +2081,7 @@ mod tests {
         let journal = journal();
         let final_path = store.persist_new(&journal).unwrap();
         let bogus = root.join(format!(".{}.tmp-garbage", journal.journal_id));
-        fs::copy(&final_path, &bogus).unwrap();
+        fixture_file(&root, &bogus, &fs::read(&final_path).unwrap());
         let inspection = store.inspect().unwrap();
         let entry = inspection
             .unclassified

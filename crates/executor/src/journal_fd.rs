@@ -48,6 +48,13 @@ struct WriterReport {
     reserved: i32,
 }
 
+#[derive(Clone, Copy)]
+struct WriterControls {
+    crash_after_create: bool,
+    ready_fd: libc::c_int,
+    release_fd: libc::c_int,
+}
+
 // Called only in the post-fork child. Do not allocate, lock, panic, or run
 // destructors here: other threads may have held library locks during fork.
 unsafe fn isolated_writer(
@@ -55,9 +62,14 @@ unsafe fn isolated_writer(
     name: *const libc::c_char,
     bytes: &[u8],
     report_fd: libc::c_int,
-    crash_after_create: bool,
+    controls: WriterControls,
 ) -> ! {
-    let mut report = WriterReport { device: 0, inode: 0, error: 0, reserved: 0 };
+    let mut report = WriterReport {
+        device: 0,
+        inode: 0,
+        error: 0,
+        reserved: 0,
+    };
     let fd = libc::openat(
         directory,
         name,
@@ -67,17 +79,32 @@ unsafe fn isolated_writer(
     if fd < 0 {
         report.error = *libc::__errno_location();
     } else {
-        if crash_after_create { libc::_exit(73); }
+        if controls.crash_after_create {
+            libc::_exit(73);
+        }
+        if controls.ready_fd >= 0 {
+            let mut byte = 1_u8;
+            if libc::write(controls.ready_fd, (&byte as *const u8).cast(), 1) != 1
+                || libc::read(controls.release_fd, (&mut byte as *mut u8).cast(), 1) != 1
+            {
+                libc::_exit(74);
+            }
+        }
         let mut offset = 0;
         while offset < bytes.len() {
             let written = libc::write(fd, bytes.as_ptr().add(offset).cast(), bytes.len() - offset);
             if written < 0 {
                 let error = *libc::__errno_location();
-                if error == libc::EINTR { continue; }
+                if error == libc::EINTR {
+                    continue;
+                }
                 report.error = error;
                 break;
             }
-            if written == 0 { report.error = libc::EIO; break; }
+            if written == 0 {
+                report.error = libc::EIO;
+                break;
+            }
             offset += written as usize;
         }
         if report.error == 0 && libc::fsync(fd) != 0 {
@@ -101,7 +128,11 @@ unsafe fn isolated_writer(
         (&report as *const WriterReport).cast(),
         std::mem::size_of::<WriterReport>(),
     );
-    libc::_exit(if written == std::mem::size_of::<WriterReport>() as isize { 0 } else { 1 });
+    libc::_exit(if written == std::mem::size_of::<WriterReport>() as isize {
+        0
+    } else {
+        1
+    });
 }
 
 /// An open descriptor for every path component. The directory is addressed only
@@ -181,7 +212,15 @@ impl JournalDir {
         name: &std::ffi::OsStr,
         bytes: &[u8],
     ) -> Result<File, JournalStoreError> {
-        self.write_staged_file_inner(name, bytes, false)
+        self.write_staged_file_inner(
+            name,
+            bytes,
+            WriterControls {
+                crash_after_create: false,
+                ready_fd: -1,
+                release_fd: -1,
+            },
+        )
     }
 
     #[cfg(test)]
@@ -190,14 +229,41 @@ impl JournalDir {
         name: &std::ffi::OsStr,
         bytes: &[u8],
     ) -> Result<File, JournalStoreError> {
-        self.write_staged_file_inner(name, bytes, true)
+        self.write_staged_file_inner(
+            name,
+            bytes,
+            WriterControls {
+                crash_after_create: true,
+                ready_fd: -1,
+                release_fd: -1,
+            },
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn write_staged_file_paused(
+        &self,
+        name: &std::ffi::OsStr,
+        bytes: &[u8],
+        ready_fd: libc::c_int,
+        release_fd: libc::c_int,
+    ) -> Result<File, JournalStoreError> {
+        self.write_staged_file_inner(
+            name,
+            bytes,
+            WriterControls {
+                crash_after_create: false,
+                ready_fd,
+                release_fd,
+            },
+        )
     }
 
     fn write_staged_file_inner(
         &self,
         name: &std::ffi::OsStr,
         bytes: &[u8],
-        crash_after_create: bool,
+        controls: WriterControls,
     ) -> Result<File, JournalStoreError> {
         let path = self.path.join(name);
         let c_name = CString::new(name.as_bytes())
@@ -211,11 +277,13 @@ impl JournalDir {
         let mut all_signals = unsafe { std::mem::zeroed::<libc::sigset_t>() };
         let mut old_signals = unsafe { std::mem::zeroed::<libc::sigset_t>() };
         unsafe { libc::sigfillset(&mut all_signals) };
-        let mask_error = unsafe {
-            libc::pthread_sigmask(libc::SIG_BLOCK, &all_signals, &mut old_signals)
-        };
+        let mask_error =
+            unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &all_signals, &mut old_signals) };
         if mask_error != 0 {
-            unsafe { libc::close(pipe[0]); libc::close(pipe[1]); }
+            unsafe {
+                libc::close(pipe[0]);
+                libc::close(pipe[1]);
+            }
             return Err(failure(&path, io::Error::from_raw_os_error(mask_error)));
         }
         let directory_fd = self.file().as_raw_fd();
@@ -223,14 +291,19 @@ impl JournalDir {
         if pid == 0 {
             unsafe {
                 libc::close(pipe[0]);
-                isolated_writer(directory_fd, c_name.as_ptr(), bytes, pipe[1], crash_after_create);
+                isolated_writer(directory_fd, c_name.as_ptr(), bytes, pipe[1], controls);
             }
         }
-        let fork_error = if pid < 0 { Some(io::Error::last_os_error()) } else { None };
-        let restore_error = unsafe {
-            libc::pthread_sigmask(libc::SIG_SETMASK, &old_signals, std::ptr::null_mut())
+        let fork_error = if pid < 0 {
+            Some(io::Error::last_os_error())
+        } else {
+            None
         };
-        unsafe { libc::close(pipe[1]); }
+        let restore_error =
+            unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &old_signals, std::ptr::null_mut()) };
+        unsafe {
+            libc::close(pipe[1]);
+        }
         let mut result_pipe = unsafe { File::from_raw_fd(pipe[0]) };
         if let Some(error) = fork_error {
             return Err(failure(&path, error));
@@ -238,10 +311,14 @@ impl JournalDir {
         let mut status = 0;
         loop {
             let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
-            if waited == pid { break; }
+            if waited == pid {
+                break;
+            }
             if waited < 0 {
                 let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted { continue; }
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
                 return Err(failure(&path, error));
             }
         }
@@ -249,14 +326,21 @@ impl JournalDir {
             return Err(failure(&path, io::Error::from_raw_os_error(restore_error)));
         }
         if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
-            return Err(failure(&path, io::Error::other("journal writer terminated unexpectedly")));
+            return Err(failure(
+                &path,
+                io::Error::other("journal writer terminated unexpectedly"),
+            ));
         }
         let mut report = [0_u8; 24];
-        result_pipe.read_exact(&mut report).map_err(|source| failure(&path, source))?;
+        result_pipe
+            .read_exact(&mut report)
+            .map_err(|source| failure(&path, source))?;
         let device = u64::from_ne_bytes(report[0..8].try_into().unwrap());
         let inode = u64::from_ne_bytes(report[8..16].try_into().unwrap());
         let error = i32::from_ne_bytes(report[16..20].try_into().unwrap());
-        if error != 0 { return Err(failure(&path, io::Error::from_raw_os_error(error))); }
+        if error != 0 {
+            return Err(failure(&path, io::Error::from_raw_os_error(error)));
+        }
         let file = self.open_file(name)?;
         let metadata = file.metadata().map_err(|source| failure(&path, source))?;
         if metadata.dev() != device || metadata.ino() != inode {
