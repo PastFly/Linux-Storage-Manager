@@ -501,4 +501,4 @@ impl SealedRecovery {
 
 #[cfg(test)]
 #[path = "sealed_recovery_tests.rs"]
-mod tests;
+pub(crate) mod tests;

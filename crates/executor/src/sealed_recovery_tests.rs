@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 // Nothing under the actual backup directory is touched before all checks pass.
-fn disposable_mount() -> bool {
+pub(crate) fn disposable_mount() -> bool {
     if std::env::var("LSM_TEST_SEALED_DISPOSABLE").as_deref() != Ok("1") {
         return false;
     }
@@ -50,7 +50,7 @@ fn disposable_mount() -> bool {
     true
 }
 
-fn with_fixture(
+pub(crate) fn with_fixture(
     f: impl FnOnce(
         &crate::LockedExecutionSession<'_>,
         &crate::MetadataBackupManifest,
