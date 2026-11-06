@@ -1,0 +1,14 @@
+[workspace]
+
+[package]
+name = "lsm-observer-prototype"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "lsm-observer"
+path = "backup-observer.rs"
+
+[dependencies]
+libc = "=0.2.189"
