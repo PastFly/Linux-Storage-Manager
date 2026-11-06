@@ -122,17 +122,27 @@ def run_case(executable, parent, case):
     assert signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL, 'test parent must reap its child'
     root = parent / ('lsm-lifecycle-case-' + uuid.uuid4().hex)
     root.mkdir(mode=0o700)
+    source = root
     child = None
     fds = []
     control = None
     peer = None
-    temp = tempfile.TemporaryDirectory(prefix='lsm-lifecycle-marker-')
+    temp = None
     try:
+        temp = tempfile.TemporaryDirectory(prefix='lsm-lifecycle-marker-')
+        if case == 'manager-stopped-before-launcher':
+            # Some kernels snapshot CLONE_INTO_CGROUP kill_seq from the source.
+            # Both operations occur while the unique disposable source is empty.
+            source = root / 'manager-source'
+            source.mkdir(mode=0o700)
+            assert empty(source), 'test source cgroup unexpectedly populated'
+            (source / 'cgroup.kill').write_text('1')
+            assert empty(source), 'test source cgroup changed during setup'
         control, peer = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
         control.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
 
         def attach_case():
-            fd = os.open(root / 'cgroup.procs', os.O_WRONLY | os.O_CLOEXEC)
+            fd = os.open(source / 'cgroup.procs', os.O_WRONLY | os.O_CLOEXEC)
             os.write(fd, str(os.getpid()).encode('ascii'))
             os.close(fd)
 
@@ -291,6 +301,9 @@ def run_case(executable, parent, case):
                 child.wait(timeout=TIMEOUT)
             for item in root.iterdir():
                 if item.is_dir():
+                    if item.name == 'manager-source':
+                        item.rmdir()
+                        continue
                     assert item.name.startswith('lsm-lifecycle-'), 'unexpected scope'
                     for nested in item.iterdir():
                         if nested.is_dir():
@@ -314,10 +327,11 @@ def run_case(executable, parent, case):
                         endpoint.close()
                     except OSError as error:
                         cleanup_errors.append(str(error))
-            try:
-                temp.cleanup()
-            except OSError as error:
-                cleanup_errors.append(str(error))
+            if temp is not None:
+                try:
+                    temp.cleanup()
+                except OSError as error:
+                    cleanup_errors.append(str(error))
             if cleanup_errors:
                 print('resource cleanup errors: ' + '; '.join(cleanup_errors), file=sys.stderr)
                 if not active_error:
