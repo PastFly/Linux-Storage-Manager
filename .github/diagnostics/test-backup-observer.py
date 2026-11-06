@@ -186,7 +186,7 @@ def run_case(executable, parent_group, name):
                     os.close(writable)
                     print('PASS: failed second lease released first lease')
                 else:
-                    print('PASS: preexisting writer prevented READY')
+                    print('PASS:', name, 'prevented READY')
                 return
             if name == 'retained-duplicate':
                 _, status = os.waitpid(manager_pid, 0)

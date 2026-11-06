@@ -219,6 +219,62 @@ mod tests {
 
     use super::*;
 
+    // Red-phase stubs. Production adapter checks replace these before use.
+    fn verify_receipt_artifacts(
+        _binding: &RecoveryBinding,
+        _artifacts: &[crate::BackupArtifactReceipt],
+        _expected_receipt_id: &str,
+    ) -> bool {
+        true
+    }
+
+    fn check_trusted_context(_record: &BackupRecoveryRecord, _trusted: &RecoveryBinding) -> bool {
+        true
+    }
+
+    #[test]
+    fn receipt_v2_rejects_artifact_substitution_with_original_receipt_id() {
+        let binding = decode(FIXTURE.as_bytes(), RECORD_ID)
+            .unwrap()
+            .payload
+            .binding;
+        let mut artifact = crate::BackupArtifactReceipt {
+            ordinal: 1,
+            kind: crate::MetadataBackupKind::PartitionTable,
+            artifact_path: "/var/lib/lsm/backups/primary".into(),
+            expected_identity: crate::BackupExpectedIdentity::PartitionTable {
+                disk: "/dev/vda".into(),
+                table_label: "gpt".into(),
+                table_id: Some("123".into()),
+            },
+            device_id: 123,
+            inode: 456,
+            size_bytes: 42,
+            sha256: "2".repeat(64),
+        };
+        let original_id = "573c963f221eeb5287715a6dd620a3f7b3f84f31facbccdb4de567f8c32001fe";
+        assert!(verify_receipt_artifacts(
+            &binding,
+            &[artifact.clone()],
+            original_id
+        ));
+        artifact.sha256 = "3".repeat(64);
+        assert!(!verify_receipt_artifacts(
+            &binding,
+            &[artifact],
+            original_id
+        ));
+    }
+
+    #[test]
+    fn valid_record_id_cannot_override_trusted_session_context() {
+        let record = decode(FIXTURE.as_bytes(), RECORD_ID).unwrap();
+        let mut trusted = record.payload.binding.clone();
+        assert!(check_trusted_context(&record, &trusted));
+        trusted.session_id = "9".repeat(64);
+        assert!(!check_trusted_context(&record, &trusted));
+    }
+
     #[test]
     fn independently_computed_valid_record_is_accepted() {
         let result = decode(FIXTURE.as_bytes(), RECORD_ID);
