@@ -1936,6 +1936,49 @@ mod tests {
     }
 
     #[test]
+    fn journal_v2_cannot_start_as_executing_without_prior_durable_phases() {
+        let root = root("v2-new-executing");
+        let store = DurableJournalStore::at(&root);
+        let mut wire = preconditions_wire(2);
+        wire["recovery_binding"] = recovery_binding();
+        let previous = decoded_wire(&wire).unwrap();
+        let mut executing = append_valid_approval(previous);
+        let execution = build_execution_start_binding(
+            &executing,
+            &digest('2'),
+            &digest('3'),
+            &executing.baseline_manifest_digest,
+            &[1],
+        )
+        .unwrap();
+        executing
+            .apply(JournalTransition::ExecutionStarted {
+                binding: &execution,
+            })
+            .unwrap();
+
+        // All history is internally consistent, but none of it was durable.
+        let result = store.persist_new(&executing);
+        assert!(
+            matches!(result, Err(JournalStoreError::InvalidRecord(_))),
+            "a new v2 journal must not begin in Executing: {result:?}"
+        );
+        assert!(!root.join(format!("{}.json", executing.journal_id)).exists());
+    }
+
+    #[test]
+    fn journal_v2_can_start_at_host_lock_held() {
+        let root = root("v2-new-host-lock-held");
+        let store = DurableJournalStore::at(&root);
+        let mut initial = journal();
+        initial.schema_version = 2;
+        initial.apply(JournalTransition::HostLockAcquired).unwrap();
+        store.persist_new(&initial).unwrap();
+        assert_eq!(store.load(&initial.journal_id).unwrap(), initial);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn journal_rejects_v1_binding_and_v2_binding_before_preconditions() {
         let mut legacy = serde_json::to_value(journal()).unwrap();
         legacy["recovery_binding"] = recovery_binding();
