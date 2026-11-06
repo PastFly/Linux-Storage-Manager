@@ -260,11 +260,14 @@ impl Group {
         }
         Ok(())
     }
-    fn stop(&self) -> io::Result<()> {
+    fn stop(&self, creator: Option<&File>) -> io::Result<()> {
         // Do not let a pathname mismatch prevent killing the pinned group.
         let identity = self.verify();
         let mut retries = 0;
         loop {
+            if let Some(creator) = creator {
+                trace_guard_stop(creator)?;
+            }
             let n = unsafe { libc::write(self.kill.as_raw_fd(), b"1".as_ptr().cast(), 1) };
             if n == 1 {
                 break;
@@ -684,6 +687,42 @@ fn inherited_group(
     group.verify()?;
     Ok(group)
 }
+// Disposable fault-test hook at the actual cgroup.kill write boundary. A
+// matching trace records the real pinned creator pidfd poll, then the test
+// releases a bounded barrier. Absent the explicit path this is a no-op.
+fn trace_guard_stop(creator: &File) -> io::Result<()> {
+    let Some(path) = std::env::var_os("LSM_TEST_GUARD_STOP_TRACE_PATH").map(PathBuf::from) else {
+        return Ok(());
+    };
+    let mut item = libc::pollfd {
+        fd: creator.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let n = unsafe { libc::poll(&mut item, 1, 0) };
+    let temp = path.with_extension("tmp");
+    std::fs::write(&temp, format!("{n} {}", item.revents))?;
+    std::fs::rename(temp, &path)?;
+    let hold = path.with_extension("hold");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while hold.exists() {
+        if Instant::now() >= deadline {
+            return Err(invalid("guard stop trace barrier timed out"));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+fn trace_injected_fault(path: &Path, kind: &str) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path.with_extension("seen"))
+    {
+        let _ = writeln!(file, "{kind}");
+    }
+}
+
 // Once the guard has authorised this scope, it must not let any possible
 // creator survive the guard's own exit. On ambiguity keep the pinned FDs and
 // retry; no timeout is reported as successful cleanup.
@@ -695,7 +734,17 @@ fn guard_stop_creator_and_scope(manager: &File, group: &Group, socket: &File) {
             events: libc::POLLIN,
             revents: 0,
         };
-        let n = unsafe { libc::poll(&mut item, 1, 0) };
+        let fault_path = std::env::var_os("LSM_TEST_GUARD_FAULT_PATH").map(PathBuf::from);
+        let fault = std::env::var_os("LSM_TEST_GUARD_FAULT");
+        let injected = fault_path.as_ref().is_some_and(|path| path.exists());
+        let n = if injected && fault.as_deref() == Some(OsStr::new("poll")) {
+            if let Some(path) = &fault_path {
+                trace_injected_fault(path, "poll");
+            }
+            -1
+        } else {
+            unsafe { libc::poll(&mut item, 1, 0) }
+        };
         if n == 1
             && item.revents & libc::POLLIN != 0
             && item.revents & (libc::POLLERR | libc::POLLNVAL) == 0
@@ -703,19 +752,35 @@ fn guard_stop_creator_and_scope(manager: &File, group: &Group, socket: &File) {
             break;
         }
         if n == 0 {
-            let killed = unsafe {
-                libc::syscall(
-                    libc::SYS_pidfd_send_signal,
-                    manager.as_raw_fd(),
-                    libc::SIGKILL,
-                    ptr::null::<libc::siginfo_t>(),
-                    0,
-                )
+            let result = if injected && fault.as_deref() == Some(OsStr::new("kill")) {
+                if let Some(path) = &fault_path {
+                    trace_injected_fault(path, "kill");
+                }
+                Err(libc::EPERM)
+            } else if injected && fault.as_deref() == Some(OsStr::new("esrch")) {
+                if let Some(path) = &fault_path {
+                    trace_injected_fault(path, "esrch");
+                }
+                Err(libc::ESRCH)
+            } else {
+                let killed = unsafe {
+                    libc::syscall(
+                        libc::SYS_pidfd_send_signal,
+                        manager.as_raw_fd(),
+                        libc::SIGKILL,
+                        ptr::null::<libc::siginfo_t>(),
+                        0,
+                    )
+                };
+                if killed == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error()
+                        .raw_os_error()
+                        .unwrap_or(libc::EIO))
+                }
             };
-            if killed != 0
-                && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-                && !alerted
-            {
+            if result.is_err_and(|error| error != libc::ESRCH) && !alerted {
                 let _ = send(socket, b'E');
                 alerted = true;
             }
@@ -727,11 +792,11 @@ fn guard_stop_creator_and_scope(manager: &File, group: &Group, socket: &File) {
     }
     // A killed creator cannot later repopulate this scope. Never release the
     // pinned group on an ambiguous kill/empty result.
-    if group.stop().is_err() {
+    if group.stop(Some(manager)).is_err() {
         if !alerted {
             let _ = send(socket, b'E');
         }
-        while group.stop().is_err() {
+        while group.stop(Some(manager)).is_err() {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
@@ -1142,7 +1207,8 @@ fn spawn_atomic_launcher(
         executable: executable.as_raw_fd(),
         stop_before_exec: std::env::var_os("LSM_TEST_LIFECYCLE_STOP_MANAGER_AFTER_GUARD")
             .as_deref()
-            == Some(OsStr::new("1")),
+            == Some(OsStr::new("1"))
+            || std::env::var_os("LSM_TEST_GUARD_FAULT").is_some(),
         argv: &argv,
         env: &env,
     };
@@ -1444,6 +1510,57 @@ fn manager_inner(
     send(&guard_socket, b'I')?;
     readable(&guard_socket, guard_fd, Duration::from_secs(2))?;
     receive(&guard_socket, guard_pid, b'R')?;
+    if std::env::var_os("LSM_TEST_GUARD_FAULT").is_some() {
+        *launcher_slot = Some(spawn_atomic_launcher(&group.directory, &[], &[])?);
+        let sentinel = launcher_slot.as_ref().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let mut info: libc::siginfo_t = unsafe { zeroed() };
+            if unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    sentinel.pid as libc::id_t,
+                    &mut info,
+                    libc::WSTOPPED | libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            } != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if unsafe { info.si_pid() } != 0 {
+                if info.si_code != libc::CLD_STOPPED {
+                    return Err(invalid("fault sentinel exited"));
+                }
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(invalid("fault sentinel stop timed out"));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        send_fds(
+            test_socket,
+            b'F',
+            &[
+                own_fd.as_raw_fd(),
+                guard_fd.as_raw_fd(),
+                sentinel.pidfd.as_raw_fd(),
+            ],
+        )?;
+        println!(
+            "FAULT-GATE {guard_pid} {} {}",
+            sentinel.pid,
+            group.path.display()
+        );
+        io::stdout().flush()?;
+        let mut item = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let _ = unsafe { libc::poll(&mut item, 1, 10000) };
+        return Err(invalid("fault test barrier ended"));
+    }
     if std::env::var_os("LSM_TEST_LIFECYCLE_STOP_MANAGER_AFTER_GUARD").as_deref()
         == Some(OsStr::new("1"))
     {
@@ -1763,7 +1880,7 @@ pub(crate) fn run_disposable_manager(root: &Path) -> io::Result<()> {
     let mut launcher = None;
     let run = manager_inner(&group, &marker, &test_socket, &mut guard, &mut launcher);
     let signal_launcher = signal_launcher(&mut launcher);
-    let stop_group = group.stop();
+    let stop_group = group.stop(None);
     let reap_launcher = reap_launcher(&mut launcher);
     let signal_guard = if stop_group.is_ok() {
         signal_child(&mut guard)

@@ -130,7 +130,7 @@ def run_case(executable, parent, case):
     temp = None
     try:
         temp = tempfile.TemporaryDirectory(prefix='lsm-lifecycle-marker-')
-        if case == 'manager-stopped-before-launcher':
+        if case in ('manager-stopped-before-launcher', 'guard-signals-stopped-manager'):
             # Some kernels snapshot CLONE_INTO_CGROUP kill_seq from the source.
             # Both operations occur while the unique disposable source is empty.
             source = root / 'manager-source'
@@ -153,15 +153,70 @@ def run_case(executable, parent, case):
             environment['LSM_TEST_LIFECYCLE_STOP_BEFORE_CLONE'] = '1'
         if case == 'manager-before-registration':
             environment['LSM_TEST_LIFECYCLE_STOP_BEFORE_REGISTRATION'] = '1'
-        if case == 'manager-stopped-before-launcher':
+        if case in ('manager-stopped-before-launcher', 'guard-signals-stopped-manager'):
             environment['LSM_TEST_LIFECYCLE_STOP_MANAGER_AFTER_GUARD'] = '1'
+        if case in ('guard-fault-poll', 'guard-fault-kill', 'guard-fault-esrch'):
+            environment['LSM_TEST_GUARD_FAULT'] = case.removeprefix('guard-fault-')
+            fault_path = pathlib.Path(temp.name) / 'fault'
+            fault_path.write_text('active')
+            environment['LSM_TEST_GUARD_FAULT_PATH'] = str(fault_path)
+            stop_trace = pathlib.Path(temp.name) / 'guard-stop.trace'
+            stop_trace.with_suffix('.hold').write_text('hold')
+            environment['LSM_TEST_GUARD_STOP_TRACE_PATH'] = str(stop_trace)
         child = subprocess.Popen([executable, '--manager', str(root)], stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
                                  pass_fds=(peer.fileno(),), preexec_fn=attach_case, env=environment)
         peer.close()
         peer = None
         parts = read_line(child.stdout).split()
-        if case == 'manager-stopped-before-launcher':
+        if case in ('guard-fault-poll', 'guard-fault-kill', 'guard-fault-esrch'):
+            assert len(parts) == 4 and parts[0] == 'FAULT-GATE', ('unexpected fault barrier', parts)
+            guard_pid, sentinel_pid = map(int, parts[1:3])
+            group = pathlib.Path(parts[3])
+            assert group.name == 'worker' and group.parent.parent == root and group.parent.name.startswith('lsm-lifecycle-')
+            fds.extend(receive_fds(control, child.pid, b'F', 3))
+            assert [pidfd_pid(fd) for fd in fds] == [child.pid, guard_pid, sentinel_pid]
+            assert str(sentinel_pid) in (group.parent / 'cgroup.procs').read_text().split()
+            assert empty(group) and not empty(group.parent), 'fault sentinel not isolated in scope'
+            signal.pidfd_send_signal(fds[0], signal.SIGSTOP)
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                if '\nState:\tT' in (pathlib.Path('/proc') / str(child.pid) / 'status').read_text():
+                    break
+                time.sleep(.005)
+            else:
+                raise AssertionError('manager did not stop before guard fault')
+            deadline = time.monotonic() + 5
+            injected = []
+            while time.monotonic() < deadline:
+                if fault_path.with_suffix('.seen').exists():
+                    injected = fault_path.with_suffix('.seen').read_text().split('\n')[:-1]
+                    if len(injected) >= 2:
+                        break
+                time.sleep(.01)
+            expected_fault = case.removeprefix('guard-fault-')
+            assert len(injected) >= 2 and all(line == expected_fault for line in injected), 'specific guard fault branch did not run repeatedly'
+            assert not stop_trace.exists(), 'cgroup.kill path entered before confirmed creator death'
+            assert not poll_dead(fds[0], 0), 'creator unexpectedly exited while fault active'
+            assert not poll_dead(fds[1], 0), 'guard exited while creator was live'
+            assert not poll_dead(fds[2], 0) and not empty(group.parent), 'scope killed before creator death'
+            fault_path.unlink()
+            wait_dead(fds[0], 'creator after fault release')
+            assert child.wait(timeout=TIMEOUT) == -signal.SIGKILL
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not stop_trace.exists():
+                time.sleep(.01)
+            assert stop_trace.exists(), 'guard did not reach cgroup.kill boundary after creator death'
+            count, events = map(int, stop_trace.read_text().split())
+            assert count == 1 and events & select.POLLIN and not events & (select.POLLERR | select.POLLNVAL), 'creator pidfd was not confirmed dead at cgroup.kill'
+            assert not poll_dead(fds[2], 0), 'sentinel exited before cgroup.kill barrier release'
+            stop_trace.with_suffix('.hold').unlink()
+            wait_dead(fds[2], 'scope sentinel after creator death')
+            wait_dead(fds[1], 'guard after cleanup')
+            wait_empty(group.parent)
+            print('PASS:', case, flush=True)
+            return
+        if case in ('manager-stopped-before-launcher', 'guard-signals-stopped-manager'):
             assert len(parts) == 3 and parts[0] == 'MANAGER-GATE', ('unexpected manager barrier', parts)
             guard_pid = int(parts[1])
             group = pathlib.Path(parts[2])
@@ -177,6 +232,15 @@ def run_case(executable, parent, case):
                 time.sleep(.005)
             else:
                 raise AssertionError('manager did not stop at barrier')
+            if case == 'guard-signals-stopped-manager':
+                # The test does not SIGKILL manager: only the live guard can
+                # terminate the stopped, pinned creator in this fixture.
+                wait_dead(fds[0], 'stopped manager after guard timeout')
+                assert child.wait(timeout=TIMEOUT) == -signal.SIGKILL, 'manager was not SIGKILLed'
+                wait_dead(fds[1], 'guard after stopping creator')
+                wait_empty(group.parent)
+                print('PASS:', case, flush=True)
+                return
             if not poll_dead(fds[1], 3500):
                 # A guard that keeps holding the scope is also fail-closed.
                 signal.pidfd_send_signal(fds[0], signal.SIGKILL)
@@ -345,7 +409,7 @@ def main():
     parent = pathlib.Path(sys.argv[2]).resolve(strict=True)
     assert parent != pathlib.Path('/sys/fs/cgroup') and parent.is_relative_to('/sys/fs/cgroup')
     assert os.environ.get('LSM_TEST_DISPOSABLE_CGROUP') == str(parent)
-    assert sys.argv[3] in ('manager-stopped-before-launcher', 'manager-before-registration', 'manager-before-clone', 'manager-before-go', 'guard-before-go', 'manager-after-go', 'guard-after-go')
+    assert sys.argv[3] in ('guard-fault-poll', 'guard-fault-kill', 'guard-fault-esrch', 'guard-signals-stopped-manager', 'manager-stopped-before-launcher', 'manager-before-registration', 'manager-before-clone', 'manager-before-go', 'guard-before-go', 'manager-after-go', 'guard-after-go')
     run_case(executable, parent, sys.argv[3])
 
 
