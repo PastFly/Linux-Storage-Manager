@@ -1322,6 +1322,87 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    // Temporary red-phase stub: the production guard API will replace this call.
+    fn arm_backup_finalization_guard(
+        _session: &LockedExecutionSession<'_>,
+    ) -> Result<(), LockedSessionError> {
+        Ok(())
+    }
+
+    #[test]
+    fn pending_backup_finalization_blocks_new_session_after_completed_journal() {
+        let (snapshot, capabilities) = fixture();
+        let first_handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("pending-backup-finalization");
+        let store = DurableJournalStore::at(&root);
+        let mut first =
+            LockedExecutionSession::begin_durable_at_paths(&first_handoff, &path, &store).unwrap();
+        let approval = approved_session(&mut first, &first_handoff, &snapshot, &capabilities);
+        let frozen = crate::freeze_execution_intent(&first, &approval).unwrap();
+        let validated =
+            crate::validate_and_bind_native_manifest(crate::compile_native_manifest(&frozen))
+                .unwrap();
+        let steps = validated
+            .manifest()
+            .steps
+            .iter()
+            .filter(|step| step.role == crate::FrozenIntentRole::MutationCandidate)
+            .map(|step| step.plan_step_id)
+            .collect::<Vec<_>>();
+        let binding = build_execution_start_binding(
+            first.journal(),
+            frozen.manifest_id(),
+            validated.digest(),
+            &first_handoff.target_identity().manifest_digest,
+            &steps,
+        )
+        .unwrap();
+        first.persist_execution_started(&binding).unwrap();
+        first.persist_verification_started().unwrap();
+        first
+            .persist_verification_passed_continue(steps[0], steps[1], &"7".repeat(64))
+            .unwrap();
+        first.persist_verification_started().unwrap();
+        arm_backup_finalization_guard(&first).unwrap();
+        first
+            .persist_verified_completed(steps[1], &"8".repeat(64))
+            .unwrap();
+        let completed = first.journal().clone();
+        assert_eq!(completed.phase, JournalPhase::Completed);
+        drop(first); // Simulated crash before observer DISARM and final backup validation.
+
+        let plan = plan_extend(
+            &snapshot,
+            &capabilities,
+            ExtendRequest {
+                target: "/".into(),
+                growth: Growth::ByBytes(2 * GIB),
+            },
+        )
+        .unwrap();
+        let second_handoff =
+            build_frozen_execution_handoff(&snapshot, &capabilities, &plan).unwrap();
+        let second = LockedExecutionSession::begin_durable_at_paths(&second_handoff, &path, &store);
+        assert!(
+            second.is_err(),
+            "pending finalization must block a different plan after restart"
+        );
+        assert_eq!(store.load(&completed.journal_id).unwrap(), completed);
+        let inspection = store.inspect().unwrap();
+        assert!(
+            inspection.unclassified.iter().any(|entry| entry
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("backup-finalization")),
+            "pending evidence must remain on disk"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn exact_execution_start_binding_advances_durable_journal_atomically() {
         let (snapshot, capabilities) = fixture();
