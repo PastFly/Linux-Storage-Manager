@@ -2,6 +2,16 @@
 #[path = "gated-worker-module.rs"]
 mod gated;
 
+#[cfg(feature = "diagnostic-backup-watchdog")]
+#[path = "../../crates/executor/src/backup_supervisor.rs"]
+mod backup_supervisor;
+#[cfg(feature = "diagnostic-backup-watchdog")]
+#[path = "diagnostic-controller-channel.rs"]
+mod diagnostic_channel;
+#[cfg(feature = "diagnostic-backup-watchdog")]
+#[path = "diagnostic-controller-manager.rs"]
+mod diagnostic_manager;
+
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{self, Read};
@@ -181,6 +191,39 @@ fn run(group_path: &Path, mode: &str, marker: &Path) -> io::Result<()> {
 }
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
+    #[cfg(feature = "diagnostic-backup-watchdog")]
+    if args.len() == 5 && args[1] == "--diagnostic-manager" {
+        if let Err(error) = diagnostic_manager::manager(
+            Path::new(&args[2]),
+            args[3].as_os_str(),
+            Path::new(&args[4]),
+        ) {
+            eprintln!("diagnostic manager: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    #[cfg(feature = "diagnostic-backup-watchdog")]
+    if args.len() == 6 && args[1] == "--diagnostic-launcher" {
+        if let Err(error) = diagnostic_manager::launcher(
+            Path::new(&args[2]),
+            &args[3],
+            &args[4],
+            Path::new(&args[5]),
+        ) {
+            eprintln!("diagnostic launcher: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    #[cfg(feature = "diagnostic-backup-watchdog")]
+    if args.len() == 3 && args[1] == "--payload-session" {
+        if let Err(error) = diagnostic_manager::payload(Path::new(&args[2])) {
+            eprintln!("diagnostic payload: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.len() == 3 && args[1] == "--payload" {
         if let Err(error) = std::fs::write(&args[2], b"started") {
             eprintln!("payload: {error}");

@@ -369,6 +369,20 @@ fn receive_byte(socket: &File, expected_pid: libc::pid_t, expected: u8) -> io::R
     Ok(())
 }
 
+#[cfg(feature = "diagnostic-backup-watchdog")]
+pub(crate) fn diagnostic_receive_byte(
+    socket: &File,
+    expected_pid: libc::pid_t,
+    expected: u8,
+) -> io::Result<()> {
+    receive_byte(socket, expected_pid, expected)
+}
+
+#[cfg(feature = "diagnostic-backup-watchdog")]
+pub(crate) fn diagnostic_wait_peer(socket: &File, pidfd: &File) -> io::Result<()> {
+    wait_readable(socket, pidfd)
+}
+
 fn receive_ready(socket: &File, expected_pid: libc::pid_t) -> io::Result<()> {
     receive_byte(socket, expected_pid, b'R')
 }
@@ -460,8 +474,12 @@ impl BackupSupervisor {
         Self::start_inner(backups, root, executable, false)
     }
 
-    #[cfg(all(test, feature = "diagnostic-backup-watchdog"))]
-    fn start_watchdog_at(backups: Vec<File>, root: &Path, executable: &OsStr) -> io::Result<Self> {
+    #[cfg(feature = "diagnostic-backup-watchdog")]
+    pub(crate) fn start_watchdog_at(
+        backups: Vec<File>,
+        root: &Path,
+        executable: &OsStr,
+    ) -> io::Result<Self> {
         Self::start_inner(backups, root, executable, true)
     }
 
@@ -578,6 +596,144 @@ impl BackupSupervisor {
             return Err(invalid("cgroup became populated"));
         }
         Ok(supervisor)
+    }
+
+    // Diagnostic access is deliberately not an execution permit. The manager
+    // must monitor observer, launcher and worker continuously and fail closed.
+    #[cfg(feature = "diagnostic-backup-watchdog")]
+    pub(crate) fn diagnostic_group(&self) -> io::Result<(File, PathBuf)> {
+        let group = self
+            .group
+            .as_ref()
+            .ok_or_else(|| invalid("group unavailable"))?;
+        group.verify()?;
+        Ok((
+            group.directory.try_clone()?,
+            group.root.join(OsStr::from_bytes(group.name.as_bytes())),
+        ))
+    }
+
+    #[cfg(feature = "diagnostic-backup-watchdog")]
+    pub(crate) fn diagnostic_observer(&self) -> io::Result<(File, libc::pid_t)> {
+        Ok((
+            self.observer_pidfd.try_clone()?,
+            self.child
+                .as_ref()
+                .ok_or_else(|| invalid("observer unavailable"))?
+                .id() as libc::pid_t,
+        ))
+    }
+
+    #[cfg(feature = "diagnostic-backup-watchdog")]
+    pub(crate) fn diagnostic_heartbeat(&self) -> io::Result<()> {
+        require_observer_alive(&self.observer_pidfd)?;
+        let socket = self
+            .socket
+            .as_ref()
+            .ok_or_else(|| invalid("observer socket unavailable"))?;
+        if unsafe {
+            libc::send(
+                socket.as_raw_fd(),
+                b"H".as_ptr().cast(),
+                1,
+                libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT,
+            )
+        } != 1
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "observer heartbeat timed out",
+                ));
+            }
+            let mut items = [
+                libc::pollfd {
+                    fd: socket.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: self.observer_pidfd.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let millis = deadline
+                .saturating_duration_since(now)
+                .as_millis()
+                .clamp(1, i32::MAX as u128) as i32;
+            let result =
+                unsafe { libc::poll(items.as_mut_ptr(), items.len() as libc::nfds_t, millis) };
+            if result < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if result == 0 {
+                continue;
+            }
+            if items[1].revents != 0 || items[0].revents != libc::POLLIN {
+                return Err(invalid("observer heartbeat connection failed"));
+            }
+            break;
+        }
+        receive_byte(
+            socket,
+            self.child
+                .as_ref()
+                .ok_or_else(|| invalid("observer unavailable"))?
+                .id() as libc::pid_t,
+            b'H',
+        )?;
+        require_observer_alive(&self.observer_pidfd)
+    }
+
+    #[cfg(feature = "diagnostic-backup-watchdog")]
+    pub(crate) fn diagnostic_kill_and_wait(&self) -> io::Result<()> {
+        let group = self
+            .group
+            .as_ref()
+            .ok_or_else(|| invalid("group unavailable"))?;
+        // Always attempt the pinned cgroup.kill, even if its pathname changed.
+        let identity = group.verify();
+        let mut interruptions = 0;
+        loop {
+            let n = unsafe { libc::write(group._kill.as_raw_fd(), b"1".as_ptr().cast(), 1) };
+            if n == 1 {
+                break;
+            }
+            let error = if n < 0 {
+                io::Error::last_os_error()
+            } else {
+                invalid("short cgroup.kill write")
+            };
+            if error.kind() == io::ErrorKind::Interrupted && interruptions < 64 {
+                interruptions += 1;
+                continue;
+            }
+            return Err(io::Error::other(format!(
+                "cgroup.kill: {error}; identity: {identity:?}"
+            )));
+        }
+        let deadline = Instant::now() + TIMEOUT;
+        while populated(&group.events)? {
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("cgroup remained populated; identity: {identity:?}"),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        identity?;
+        group.verify()
     }
 
     /// A point-in-time process/socket check, not proof that no SIGIO is

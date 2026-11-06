@@ -1,6 +1,7 @@
 //! Diagnostic manager/launcher channel tests; never an operator authorization.
 //! Linux disposable CI only. This is a transport, not a worker binding or guard.
-#![cfg(test)]
+#![cfg(any(test, feature = "diagnostic-backup-watchdog"))]
+#![allow(dead_code)]
 use std::fs::File;
 use std::io;
 use std::mem::{size_of, zeroed};
@@ -33,7 +34,7 @@ fn require_packet_socket(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-fn require_live_sender(pidfd: RawFd, sender: libc::pid_t) -> io::Result<()> {
+pub(crate) fn require_live_sender(pidfd: RawFd, sender: libc::pid_t) -> io::Result<()> {
     if sender <= 0
         || std::fs::read_link(format!("/proc/self/fd/{pidfd}"))?.as_os_str() != "anon_inode:[pidfd]"
     {
@@ -66,7 +67,7 @@ fn require_live_sender(pidfd: RawFd, sender: libc::pid_t) -> io::Result<()> {
     Err(io::Error::other("sender pidfd poll interrupted repeatedly"))
 }
 
-fn send_worker_pidfd(socket: RawFd, pidfd: RawFd) -> io::Result<()> {
+pub(crate) fn send_worker_pidfd(socket: RawFd, pidfd: RawFd) -> io::Result<()> {
     require_packet_socket(socket)?;
     let mut byte = b'W';
     let mut iov = libc::iovec {
@@ -99,7 +100,7 @@ fn send_worker_pidfd(socket: RawFd, pidfd: RawFd) -> io::Result<()> {
 // This authenticates the *sender* and owns the received descriptor. It does
 // not yet authorize GO: the manager must independently bind that descriptor
 // to the worker and pinned cgroup before use.
-fn receive_worker_pidfd(
+pub(crate) fn receive_worker_pidfd(
     socket: RawFd,
     sender_pidfd: RawFd,
     sender: libc::pid_t,
