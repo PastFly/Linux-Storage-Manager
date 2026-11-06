@@ -65,6 +65,9 @@ jobs:
       - name: Test gated worker module on disposable cgroups
         run: |
           sudo python3 -I .github/diagnostics/test-gated-worker-module.py /tmp/lsm-observer-target/release/lsm-gated-module-harness /sys/fs/cgroup
+      - name: Test failed worker registration on disposable cgroup
+        run: |
+          sudo env LSM_DISPOSABLE_CGROUP=1 python3 -I .github/diagnostics/test-gated-register-failure.py /tmp/lsm-observer-target/release/lsm-gated-module-harness /sys/fs/cgroup
       - name: Test recovery evidence format
         run: cargo test --locked -p lsm-executor --lib backup_recovery_record::tests
       - name: Test journal recovery binding
