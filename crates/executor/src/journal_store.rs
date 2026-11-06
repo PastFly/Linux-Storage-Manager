@@ -1720,6 +1720,34 @@ mod tests {
     }
 
     #[test]
+    fn ignored_sigchld_rejects_writer_before_creating_stage() {
+        const MARKER: &str = "LSM_TEST_IGNORED_SIGCHLD";
+        if std::env::var_os(MARKER).is_some() {
+            let root = root("ignored-sigchld");
+            fs::create_dir(&root).unwrap();
+            let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
+            unsafe {
+                libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+            }
+            assert!(directory
+                .write_staged_file(std::ffi::OsStr::new(".staged-test"), b"record")
+                .is_err());
+            assert!(!root.join(".staged-test").exists());
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "journal_store::tests::ignored_sigchld_rejects_writer_before_creating_stage",
+            ])
+            .env(MARKER, "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
     fn fork_before_writer_closes_cannot_inherit_its_descriptor() {
         let root = root("fork-during-isolated-writer");
         let store = DurableJournalStore::at(&root);
