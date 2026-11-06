@@ -118,6 +118,24 @@ fn store_with_hook(
     trusted: &RecoveryBinding,
     before_publication: impl FnOnce() -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
+    store_with_hooks(root, record, trusted, before_publication, |_, _| Ok(()))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HookPoint {
+    BeforeStaging,
+    AfterStagingBeforeWatch,
+    AfterPrePublicationCheck,
+    AfterPublicationBeforeWatch,
+}
+
+fn store_with_hooks(
+    root: &Path,
+    record: &BackupRecoveryRecord,
+    trusted: &RecoveryBinding,
+    before_publication: impl FnOnce() -> Result<(), StorageError>,
+    mut hook: impl FnMut(HookPoint, &str) -> Result<(), StorageError>,
+) -> Result<(), StorageError> {
     let id = record.record_id();
     if !valid_id(id) {
         return Err(StorageError::Changed);
@@ -133,9 +151,11 @@ fn store_with_hook(
         STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
     let final_name = format!("{id}.json");
+    hook(HookPoint::BeforeStaging, &staging)?;
     let created = directory.write_staged_file(OsStr::new(&staging), &bytes)?;
     let created_metadata = created.metadata()?;
     directory.sync()?;
+    hook(HookPoint::AfterStagingBeforeWatch, &staging)?;
     let mut watch = directory.watch()?;
     let (staged_record, staged, staged_metadata) =
         read_pinned(&directory, OsStr::new(&staging), id, trusted)?;
@@ -148,8 +168,10 @@ fn store_with_hook(
     if !same_version(&staged_metadata, &staged.metadata()?) {
         return Err(StorageError::Changed);
     }
+    hook(HookPoint::AfterPrePublicationCheck, &staging)?;
     directory.publish_new(OsStr::new(&staging), OsStr::new(&final_name))?;
     directory.sync()?;
+    hook(HookPoint::AfterPublicationBeforeWatch, &staging)?;
     let mut published_watch = directory.watch_namespace()?;
     let (published, pinned, published_metadata) =
         read_pinned(&directory, OsStr::new(&final_name), id, trusted)?;
@@ -169,6 +191,7 @@ fn store_with_hook(
 mod tests {
     use super::*;
     use crate::backup_recovery_record::{RecoveryArtifact, RecoveryIdentity, RecoveryPayload};
+    use std::cell::Cell;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -214,6 +237,151 @@ mod tests {
         ));
         fs::create_dir(&path).unwrap();
         path
+    }
+
+    fn nested_directory() -> (PathBuf, PathBuf) {
+        let outer = temporary_directory();
+        let ancestor = outer.join("ancestor");
+        let root = ancestor.join("records");
+        fs::create_dir(&ancestor).unwrap();
+        fs::create_dir(&root).unwrap();
+        (outer, root)
+    }
+
+    fn rename_and_restore_ancestor(outer: &Path) {
+        let ancestor = outer.join("ancestor");
+        let moved = outer.join("ancestor-moved");
+        fs::rename(&ancestor, &moved).unwrap();
+        fs::rename(&moved, &ancestor).unwrap();
+    }
+
+    #[test]
+    fn transient_ancestor_rename_before_staging_is_rejected() {
+        let (outer, root) = nested_directory();
+        let (record, trusted) = fixture();
+        let reached = Cell::new(false);
+        let result = store_with_hooks(
+            &root,
+            &record,
+            &trusted,
+            || Ok(()),
+            |point, _| {
+                if point == HookPoint::BeforeStaging {
+                    reached.set(true);
+                    rename_and_restore_ancestor(&outer);
+                }
+                Ok(())
+            },
+        );
+        fs::remove_dir_all(outer).unwrap();
+        assert!(reached.get(), "the intended gap was not reached");
+        assert!(result.is_err(), "transient ancestor change was accepted");
+    }
+
+    #[test]
+    fn transient_ancestor_rename_before_publication_is_rejected() {
+        let (outer, root) = nested_directory();
+        let (record, trusted) = fixture();
+        let reached = Cell::new(false);
+        let result = store_with_hook(&root, &record, &trusted, || {
+            reached.set(true);
+            rename_and_restore_ancestor(&outer);
+            Ok(())
+        });
+        fs::remove_dir_all(outer).unwrap();
+        assert!(reached.get(), "the intended gap was not reached");
+        assert!(result.is_err(), "transient ancestor change was accepted");
+    }
+
+    #[test]
+    fn transient_ancestor_rename_after_staging_before_watch_is_rejected() {
+        let (outer, root) = nested_directory();
+        let (record, trusted) = fixture();
+        let reached = Cell::new(false);
+        let result = store_with_hooks(
+            &root,
+            &record,
+            &trusted,
+            || Ok(()),
+            |point, _| {
+                if point == HookPoint::AfterStagingBeforeWatch {
+                    reached.set(true);
+                    rename_and_restore_ancestor(&outer);
+                }
+                Ok(())
+            },
+        );
+        fs::remove_dir_all(outer).unwrap();
+        assert!(reached.get(), "the intended gap was not reached");
+        assert!(result.is_err(), "transient ancestor change was accepted");
+    }
+
+    #[test]
+    fn transient_staging_replacement_after_watch_check_is_rejected() {
+        let root = temporary_directory();
+        let (record, trusted) = fixture();
+        let reached = Cell::new(false);
+        let result = store_with_hooks(
+            &root,
+            &record,
+            &trusted,
+            || Ok(()),
+            |point, staging| {
+                if point == HookPoint::AfterPrePublicationCheck {
+                    reached.set(true);
+                    let path = root.join(staging);
+                    let saved = root.join("saved-staging");
+                    fs::rename(&path, &saved).unwrap();
+                    fs::write(&path, b"foreign evidence").unwrap();
+                    fs::remove_file(&path).unwrap();
+                    fs::rename(&saved, &path).unwrap();
+                }
+                Ok(())
+            },
+        );
+        fs::remove_dir_all(root).unwrap();
+        assert!(reached.get(), "the intended gap was not reached");
+        assert!(
+            result.is_err(),
+            "transient staging replacement was accepted"
+        );
+    }
+
+    #[test]
+    fn transient_ancestor_rename_after_publication_is_rejected() {
+        let (outer, root) = nested_directory();
+        let (record, trusted) = fixture();
+        let reached = Cell::new(false);
+        let result = store_with_hooks(
+            &root,
+            &record,
+            &trusted,
+            || Ok(()),
+            |point, _| {
+                if point == HookPoint::AfterPublicationBeforeWatch {
+                    reached.set(true);
+                    rename_and_restore_ancestor(&outer);
+                }
+                Ok(())
+            },
+        );
+        fs::remove_dir_all(outer).unwrap();
+        assert!(reached.get(), "the intended gap was not reached");
+        assert!(result.is_err(), "transient ancestor change was accepted");
+    }
+
+    #[test]
+    fn load_rejects_and_preserves_orphan_staging_next_to_final_record() {
+        let root = temporary_directory();
+        let (record, trusted) = fixture();
+        store(&root, &record, &trusted).unwrap();
+        let orphan = root.join(format!(".{}.tmp-999-1", record.record_id()));
+        fs::write(&orphan, b"unknown staging evidence").unwrap();
+        let result = load(&root, record.record_id(), &trusted);
+        let evidence = fs::read(&orphan).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(evidence, b"unknown staging evidence");
+        assert!(result.is_err(), "load accepted unresolved staging evidence");
     }
 
     #[test]
