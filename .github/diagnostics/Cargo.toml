@@ -6,6 +6,9 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[lib]
+path = "diagnostic-controller-channel.rs"
+
 [[bin]]
 name = "lsm-observer"
 path = "backup-observer.rs"

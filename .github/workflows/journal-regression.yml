@@ -80,6 +80,8 @@ jobs:
       - name: Test gated child launch on disposable cgroups
         run: |
           sudo python3 -I .github/diagnostics/test-gated-launch.py /tmp/lsm-observer-target/release/lsm-gated-launch-proof /sys/fs/cgroup
+      - name: Test authenticated worker pidfd transfer
+        run: cargo test --locked --manifest-path .github/diagnostics/Cargo.toml --lib -- --test-threads=1
       - name: Test gated worker module on disposable cgroups
         run: |
           sudo python3 -I .github/diagnostics/test-gated-worker-module.py /tmp/lsm-observer-target/release/lsm-gated-module-harness /sys/fs/cgroup
