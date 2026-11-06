@@ -1018,18 +1018,22 @@ struct LauncherSpec<'a> {
 // The post-clone path performs only stack operations and async-signal-safe
 // kernel calls. The caller is single-threaded and has blocked signals.
 unsafe fn launcher_child(spec: &LauncherSpec<'_>) -> ! {
-    // Disposable test barrier: the child is already inside the guarded scope.
-    if spec.stop_before_exec
-        && libc::syscall(
+    // Disposable-only trace: one raw write before the first test syscall,
+    // allowing CI to distinguish pre-userspace death from tgkill failure.
+    if spec.stop_before_exec {
+        let entered = b"lifecycle child: entered\n";
+        libc::write(libc::STDERR_FILENO, entered.as_ptr().cast(), entered.len());
+        if libc::syscall(
             libc::SYS_tgkill,
             libc::getpid(),
             libc::syscall(libc::SYS_gettid),
             libc::SIGSTOP,
         ) != 0
-    {
-        // Encode the failing syscall's errno in the wait status for the
-        // disposable fixture; do not log or allocate in the clone child.
-        libc::_exit(128 + (*libc::__errno_location() & 127));
+        {
+            libc::_exit(128 + (*libc::__errno_location() & 127));
+        }
+        let resumed = b"lifecycle child: stop returned\n";
+        libc::write(libc::STDERR_FILENO, resumed.as_ptr().cast(), resumed.len());
     }
     let mut first = 3u32;
     for &raw in spec.keep {
