@@ -1,18 +1,20 @@
 mod approval;
 mod backup_capture;
 mod backup_manifest;
-#[cfg(all(test, target_os = "linux"))]
-mod backup_verity;
 #[cfg(feature = "production-mutation-execution")]
 mod backup_observer;
 #[cfg(test)]
 mod backup_recovery_collector;
 #[cfg(test)]
 mod backup_recovery_record;
+#[cfg(all(test, target_os = "linux"))]
+mod backup_recovery_reopen;
 #[cfg(test)]
 mod backup_recovery_storage;
 #[cfg(test)]
 mod backup_supervisor;
+#[cfg(all(test, target_os = "linux"))]
+mod backup_verity;
 mod disposable_argv;
 #[cfg(feature = "disposable-executor")]
 mod disposable_exec;

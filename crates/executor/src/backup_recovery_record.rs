@@ -569,6 +569,34 @@ pub(crate) fn decode_with_trusted_context(
     Ok(record)
 }
 
+/// Decode only a v3 record under an independently supplied trusted anchor.
+/// This checks metadata; callers must still verify the actual files.
+pub(crate) fn decode_v3_with_trusted_context(
+    bytes: &[u8],
+    expected_id: &str,
+    trusted: &RecoveryBinding,
+) -> Result<BackupRecoveryRecord, RecordError> {
+    let record = decode_with_trusted_context(bytes, expected_id, trusted)?;
+    if record.payload.schema_version != 3 {
+        return Err(RecordError::BindingMismatch);
+    }
+    Ok(record)
+}
+
+impl BackupRecoveryRecord {
+    pub(crate) fn artifacts(&self) -> &[RecoveryArtifact] {
+        &self.payload.artifacts
+    }
+
+    pub(crate) fn binding(&self) -> &RecoveryBinding {
+        &self.payload.binding
+    }
+
+    pub(crate) fn schema_version(&self) -> u32 {
+        self.payload.schema_version
+    }
+}
+
 #[cfg(test)]
 mod tests {
     const RECORD_ID: &str = "54a186958ab3c29898a9213a1b8d2a6d374a817e29079649efa304842a204d5c";
