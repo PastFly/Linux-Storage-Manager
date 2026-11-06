@@ -19,6 +19,8 @@ mod backup_verity;
 mod sealed_recovery;
 #[cfg(all(target_os = "linux", any(test, feature = "experimental-sealed-recovery")))]
 mod sealed_recovery_store;
+#[cfg(all(target_os = "linux", any(test, feature = "experimental-sealed-recovery")))]
+mod recovery_inspector;
 mod disposable_argv;
 #[cfg(feature = "disposable-executor")]
 mod disposable_exec;

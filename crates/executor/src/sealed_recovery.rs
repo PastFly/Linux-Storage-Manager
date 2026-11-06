@@ -229,7 +229,7 @@ pub(crate) fn live_metadata(directory: &JournalDir, name: &OsStr) -> Result<Meta
     Ok(unsafe { File::from_raw_fd(raw) }.metadata()?)
 }
 
-fn check_file(
+pub(crate) fn check_file(
     file: &File,
     directory: &JournalDir,
     name: &OsStr,
