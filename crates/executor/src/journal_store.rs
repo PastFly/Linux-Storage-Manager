@@ -1899,6 +1899,41 @@ mod tests {
     }
 
     #[test]
+    fn journal_v2_cannot_persist_multiple_phases_in_one_update() {
+        let root = root("v2-multiple-phases");
+        let store = DurableJournalStore::at(&root);
+        let mut wire = preconditions_wire(2);
+        wire["recovery_binding"] = recovery_binding();
+        let previous = decoded_wire(&wire).unwrap();
+        store.persist_new(&previous).unwrap();
+
+        // Construct a structurally valid approval and execution in memory,
+        // without persisting the intervening Approved state.
+        let mut jumped = append_valid_approval(previous.clone());
+        let execution = build_execution_start_binding(
+            &jumped,
+            &digest('2'),
+            &digest('3'),
+            &jumped.baseline_manifest_digest,
+            &[1],
+        )
+        .unwrap();
+        jumped
+            .apply(JournalTransition::ExecutionStarted {
+                binding: &execution,
+            })
+            .unwrap();
+
+        let result = store.persist(&jumped);
+        assert!(
+            matches!(result, Err(JournalStoreError::InvalidRecord(_))),
+            "one durable update must not skip the Approved phase: {result:?}"
+        );
+        assert_eq!(store.load(&previous.journal_id).unwrap(), previous);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn journal_rejects_v1_binding_and_v2_binding_before_preconditions() {
         let mut legacy = serde_json::to_value(journal()).unwrap();
         legacy["recovery_binding"] = recovery_binding();
