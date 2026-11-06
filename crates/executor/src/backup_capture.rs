@@ -16,6 +16,7 @@ use crate::{
 };
 
 const MAX_BACKUP_ARTIFACT_BYTES: u64 = 16 * 1024 * 1024;
+const BACKUP_RECEIPT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BackupArtifactReceipt {
@@ -23,6 +24,8 @@ pub struct BackupArtifactReceipt {
     pub kind: MetadataBackupKind,
     pub artifact_path: String,
     pub expected_identity: BackupExpectedIdentity,
+    pub device_id: u64,
+    pub inode: u64,
     pub size_bytes: u64,
     pub sha256: String,
 }
@@ -323,12 +326,14 @@ fn capture_with_runner(
             }
         }
 
-        let (size_bytes, sha256) = verify_artifact(&actual_path)?;
+        let (size_bytes, sha256, device_id, inode) = verify_artifact(&actual_path)?;
         receipts.push(BackupArtifactReceipt {
             ordinal: requirement.ordinal,
             kind: requirement.kind,
             artifact_path: requirement.artifact_path.clone(),
             expected_identity: requirement.expected_identity.clone(),
+            device_id,
+            inode,
             size_bytes,
             sha256,
         });
@@ -337,7 +342,7 @@ fn capture_with_runner(
     sync_backup_directory(artifact_root)?;
 
     let receipt_id = fingerprint(&(
-        1_u32,
+        BACKUP_RECEIPT_SCHEMA_VERSION,
         manifest.manifest_id(),
         manifest.handoff_id(),
         manifest.plan_id(),
@@ -349,7 +354,7 @@ fn capture_with_runner(
     ))?;
 
     Ok(MetadataBackupReceipt {
-        schema_version: 1,
+        schema_version: BACKUP_RECEIPT_SCHEMA_VERSION,
         receipt_id,
         manifest_id: manifest.manifest_id().to_owned(),
         handoff_id: manifest.handoff_id().to_owned(),
@@ -372,7 +377,7 @@ fn revalidate_receipt_at_root(
     if manifest.mutation_enabled() || receipt.mutation_enabled || MUTATION_ENABLED {
         blockers.push("mutation-enabled backup evidence is forbidden".to_owned());
     }
-    if receipt.schema_version != 1 {
+    if receipt.schema_version != BACKUP_RECEIPT_SCHEMA_VERSION {
         blockers.push("receipt schema version is unsupported".to_owned());
     }
     if receipt.manifest_id != manifest.manifest_id()
@@ -393,7 +398,7 @@ fn revalidate_receipt_at_root(
     }
 
     let expected_receipt_id = fingerprint(&(
-        1_u32,
+        BACKUP_RECEIPT_SCHEMA_VERSION,
         manifest.manifest_id(),
         manifest.handoff_id(),
         manifest.plan_id(),
@@ -489,7 +494,13 @@ fn revalidate_receipt_at_root(
         }
 
         match verify_artifact(&actual_path) {
-            Ok((size_bytes, sha256)) => {
+            Ok((size_bytes, sha256, device_id, inode)) => {
+                if device_id != artifact.device_id || inode != artifact.inode {
+                    blockers.push(format!(
+                        "receipt artifact {} inode identity changed",
+                        artifact.ordinal
+                    ));
+                }
                 if size_bytes != artifact.size_bytes {
                     blockers.push(format!(
                         "receipt artifact {} size changed: expected {}, found {}",
@@ -678,7 +689,7 @@ fn create_artifact_file(path: &Path) -> Result<File, BackupCaptureError> {
         .map_err(|source| io_error(path, source))
 }
 
-fn verify_artifact(path: &Path) -> Result<(u64, String), BackupCaptureError> {
+fn verify_artifact(path: &Path) -> Result<(u64, String, u64, u64), BackupCaptureError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     if !crate::journal_store::trusted_journal_file(&metadata) {
         return Err(BackupCaptureError::UnsafeArtifact(path.to_path_buf()));
@@ -712,7 +723,12 @@ fn verify_artifact(path: &Path) -> Result<(u64, String), BackupCaptureError> {
     if bytes.is_empty() {
         return Err(BackupCaptureError::EmptyArtifact);
     }
-    Ok((bytes.len() as u64, format!("{:x}", Sha256::digest(&bytes))))
+    Ok((
+        bytes.len() as u64,
+        format!("{:x}", Sha256::digest(&bytes)),
+        opened.dev(),
+        opened.ino(),
+    ))
 }
 
 fn fingerprint(value: &impl Serialize) -> Result<String, serde_json::Error> {
@@ -845,6 +861,47 @@ mod tests {
     }
 
     #[test]
+    fn revalidation_rejects_same_content_replacement_with_different_inode() {
+        let (snapshot, capabilities) = direct_fixture();
+        let handoff = direct_handoff(&snapshot, &capabilities);
+        let root = temp_path("same-content-inode-replacement");
+        fs::create_dir(&root).unwrap();
+        let lock = root.join("lock/storage.lock");
+        let store = crate::DurableJournalStore::at(root.join("journals"));
+        let backup_root = root.join("backups");
+        let mut session =
+            crate::LockedExecutionSession::begin_durable_at_paths(&handoff, &lock, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let manifest = crate::build_metadata_backup_manifest_for_session(&session).unwrap();
+        let receipt = capture_with_runner(
+            &session,
+            &manifest,
+            Some(&backup_root),
+            &FakeRunner::new(b"identical backup"),
+        )
+        .unwrap();
+        let name = Path::new(&receipt.artifacts()[0].artifact_path)
+            .file_name()
+            .unwrap();
+        let path = backup_root.join(&session.journal().journal_id).join(name);
+        let original = File::open(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"identical backup").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_ne!(
+            original.metadata().unwrap().ino(),
+            fs::metadata(&path).unwrap().ino()
+        );
+        assert!(
+            !revalidate_receipt_at_root(&manifest, &receipt, Some(&backup_root))
+                .unwrap()
+                .matches()
+        );
+        drop(session);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn separate_attempts_capture_distinct_backups_without_reusing_prior_evidence() {
         use lsm_planner::JournalTransition;
         let (snapshot, capabilities) = direct_fixture();
@@ -912,7 +969,7 @@ mod tests {
         fs::write(&path, b"verified-backup").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
 
-        let (size, digest) = verify_artifact(&path).unwrap();
+        let (size, digest, _, _) = verify_artifact(&path).unwrap();
 
         assert_eq!(size, 15);
         assert_eq!(digest.len(), 64);
@@ -1135,6 +1192,7 @@ mod tests {
 
         assert!(!receipt.mutation_enabled());
         assert_eq!(receipt.manifest_id(), manifest.manifest_id());
+        assert_eq!(serde_json::to_value(&receipt).unwrap()["schema_version"], 2);
         assert_eq!(receipt.handoff_id(), handoff.handoff_id());
         assert_eq!(receipt.artifacts().len(), 1);
         assert_eq!(
