@@ -89,7 +89,7 @@ jobs:
           sudo mkdir /sys/fs/cgroup/lsm-process-lifecycle-test
           trap 'sudo rmdir /sys/fs/cgroup/lsm-process-lifecycle-test || true' EXIT
           status=0
-          cases=(manager-before-clone manager-before-registration manager-stopped-before-launcher manager-before-go guard-before-go manager-after-go guard-after-go)
+          cases=(manager-before-clone manager-before-registration manager-stopped-before-launcher manager-before-go guard-before-go manager-after-go guard-after-go guard-signals-stopped-manager guard-fault-poll guard-fault-kill guard-fault-esrch)
           if [[ -n "$LIFECYCLE_CASE" ]]; then
             [[ " ${cases[*]} " == *" $LIFECYCLE_CASE "* ]] || exit 1
             cases=("$LIFECYCLE_CASE")
