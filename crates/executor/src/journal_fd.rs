@@ -888,6 +888,8 @@ impl JournalDir {
             return Err(failure(&self.path, io::Error::last_os_error()));
         }
         let file = unsafe { File::from_raw_fd(fd) };
+        #[cfg(test)]
+        let mut diagnostic_paths = Vec::new();
         let leaf_mask = libc::IN_CREATE
             | libc::IN_DELETE
             | libc::IN_MOVED_FROM
@@ -910,13 +912,22 @@ impl JournalDir {
             } else {
                 libc::IN_ATTRIB | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF | libc::IN_UNMOUNT
             };
-            if unsafe { libc::inotify_add_watch(file.as_raw_fd(), path.as_ptr(), mask) } < 0 {
+            let wd = unsafe { libc::inotify_add_watch(file.as_raw_fd(), path.as_ptr(), mask) };
+            if wd < 0 {
                 return Err(failure(&self.path, io::Error::last_os_error()));
+            }
+            #[cfg(test)]
+            if std::env::var_os("LSM_COLLECTOR_WATCH_DIAGNOSTICS").is_some() {
+                let proc_path = PathBuf::from(format!("/proc/self/fd/{}", node.as_raw_fd()));
+                let resolved = fs::read_link(&proc_path).unwrap_or(proc_path);
+                diagnostic_paths.push((wd, resolved));
             }
         }
         Ok(DirectoryWatch {
             file,
             path: self.path.clone(),
+            #[cfg(test)]
+            diagnostic_paths,
         })
     }
 }
@@ -924,6 +935,8 @@ impl JournalDir {
 pub(crate) struct DirectoryWatch {
     file: File,
     path: PathBuf,
+    #[cfg(test)]
+    diagnostic_paths: Vec<(libc::c_int, PathBuf)>,
 }
 
 impl DirectoryWatch {
@@ -932,7 +945,39 @@ impl DirectoryWatch {
         loop {
             match self.file.read(&mut bytes) {
                 Ok(0) => return Err(JournalStoreError::ChangedDuringInspection),
-                Ok(_) => return Err(JournalStoreError::ChangedDuringInspection),
+                Ok(length) => {
+                    #[cfg(test)]
+                    if std::env::var_os("LSM_COLLECTOR_WATCH_DIAGNOSTICS").is_some() {
+                        let header_size = std::mem::size_of::<libc::inotify_event>();
+                        let mut offset = 0usize;
+                        while length.saturating_sub(offset) >= header_size {
+                            let event = unsafe {
+                                std::ptr::read_unaligned(
+                                    bytes.as_ptr().add(offset).cast::<libc::inotify_event>(),
+                                )
+                            };
+                            let Some(end) = offset
+                                .checked_add(header_size)
+                                .and_then(|n| n.checked_add(event.len as usize))
+                                .filter(|n| *n <= length)
+                            else {
+                                eprintln!("directory watch: malformed event at offset={offset}, length={length}");
+                                break;
+                            };
+                            let name = &bytes[offset + header_size..end];
+                            let watched = self
+                                .diagnostic_paths
+                                .iter()
+                                .find(|(wd, _)| *wd == event.wd)
+                                .map(|(_, path)| path.as_path());
+                            eprintln!("directory watch: wd={} mask={:#x} cookie={} path={watched:?} name={:?}", event.wd, event.mask, event.cookie, String::from_utf8_lossy(name).trim_end_matches('\0'));
+                            offset = end;
+                        }
+                    }
+                    #[cfg(not(test))]
+                    let _ = length;
+                    return Err(JournalStoreError::ChangedDuringInspection);
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(error) => return Err(failure(&self.path, error)),
