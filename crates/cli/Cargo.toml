@@ -14,7 +14,7 @@ anyhow.workspace = true
 clap.workspace = true
 lsm-core = { path = "../core" }
 lsm-discovery = { path = "../discovery" }
-lsm-executor = { path = "../executor", features = ["trusted-discovery"] }
+lsm-executor = { path = "../executor", features = ["trusted-discovery", "production-mutation-execution"] }
 lsm-planner = { path = "../planner" }
 lsm-tui = { path = "../tui" }
 serde_json.workspace = true

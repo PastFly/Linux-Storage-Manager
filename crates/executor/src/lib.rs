@@ -168,7 +168,10 @@ pub use execution_intent::{
     FrozenExecutionIntentManifest, FrozenIntentAction, FrozenIntentRole, FrozenIntentStep,
     VerificationBarrierSpec,
 };
-#[cfg(feature = "disposable-loop-harness")]
+#[cfg(any(
+    feature = "disposable-loop-harness",
+    feature = "production-mutation-execution"
+))]
 pub use filesystem_health::execute_explicit_filesystem_health_check;
 pub use filesystem_health::{ExplicitFilesystemHealthError, ExplicitFilesystemHealthReceipt};
 pub use journal_store::{
@@ -289,6 +292,7 @@ pub use production_consent::{
 };
 pub use production_consent_lease::{
     pin_default_production_chained_mutation_consent, pin_default_production_mutation_consent,
+    pin_operator_production_mutation_consent, record_and_pin_operator_production_mutation_consent,
     revalidate_pinned_production_chained_mutation_consent,
     revalidate_pinned_production_mutation_consent, PinnedProductionMutationConsent,
     ProductionMutationConsentLeaseError,

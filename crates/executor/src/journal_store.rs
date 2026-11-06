@@ -1468,7 +1468,7 @@ pub(crate) fn trusted_journal_directory(metadata: &fs::Metadata, is_root: bool) 
     metadata.is_dir() && !metadata.file_type().is_symlink() && owner_ok && safe_mode
 }
 
-fn ensure_secure_directory(path: &Path, create: bool) -> Result<(), JournalStoreError> {
+pub(crate) fn ensure_secure_directory(path: &Path, create: bool) -> Result<(), JournalStoreError> {
     if !path.is_absolute() {
         return Err(JournalStoreError::UnsafeDirectory(path.to_path_buf()));
     }
