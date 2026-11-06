@@ -24,5 +24,9 @@ path = "gated-launch-proof.rs"
 name = "lsm-gated-module-harness"
 path = "gated-worker-module-harness.rs"
 
+[[bin]]
+name = "lsm-process-lifecycle-runner"
+path = "process-lifecycle-runner.rs"
+
 [dependencies]
 libc = "=0.2.189"
