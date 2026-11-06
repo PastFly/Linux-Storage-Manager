@@ -118,12 +118,13 @@ pub use approval::{
     ExactPlanApprovalError,
 };
 pub use backup_capture::{
-    capture_metadata_backups, revalidate_metadata_backup_receipt, BackupArtifactReceipt,
-    BackupCaptureError, BackupReceiptRevalidation, MetadataBackupReceipt,
+    capture_metadata_backups, pin_metadata_backups, revalidate_metadata_backup_receipt,
+    BackupArtifactReceipt, BackupCaptureError, BackupReceiptRevalidation, MetadataBackupReceipt,
+    PinnedMetadataBackups,
 };
 #[cfg(feature = "disposable-loop-harness")]
 pub use backup_capture::{
-    capture_metadata_backups_at_disposable_root,
+    capture_metadata_backups_at_disposable_root, pin_backup_at_test_root,
     revalidate_metadata_backup_receipt_at_disposable_root,
 };
 pub use backup_manifest::{

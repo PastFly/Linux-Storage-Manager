@@ -1,5 +1,7 @@
+use std::cell::RefCell;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 #[cfg(test)]
@@ -145,6 +147,10 @@ impl BackupReceiptRevalidation {
 
 #[derive(Debug, Error)]
 pub enum BackupCaptureError {
+    #[error("backup directory monitoring failed: {0}")]
+    Storage(#[from] crate::JournalStoreError),
+    #[error("backup lease or identity no longer matches the captured evidence")]
+    LeaseMismatch,
     #[error("trusted backup tool resolution failed: {0}")]
     TrustedTool(#[from] crate::TrustedToolError),
     #[error("trusted backup tool pinning failed: {0}")]
@@ -201,24 +207,115 @@ pub fn revalidate_metadata_backup_receipt(
     revalidate_receipt_at_root(manifest, receipt, None)
 }
 
-#[cfg(test)]
-struct BackupLeaseTestStub;
+struct ArtifactReadLease(File);
 
-#[cfg(test)]
-impl BackupLeaseTestStub {
-    fn validate(&self) -> Result<(), BackupCaptureError> {
-        Err(BackupCaptureError::UnsupportedCaptureCommand)
+impl Drop for ArtifactReadLease {
+    fn drop(&mut self) {
+        unsafe { libc::fcntl(self.0.as_raw_fd(), libc::F_SETLEASE, libc::F_UNLCK) };
     }
 }
 
-#[cfg(test)]
-fn pin_backup_at_test_root(
-    _manifest: &MetadataBackupManifest,
-    receipt: &MetadataBackupReceipt,
-    _root: &Path,
-) -> Result<BackupLeaseTestStub, BackupCaptureError> {
-    let _ = &receipt.pinned_artifacts;
-    Err(BackupCaptureError::UnsupportedCaptureCommand)
+/// Holds the exact captured inodes and refuses concurrent writers while the
+/// durable operation is in progress. The original files remain on disk.
+pub struct PinnedMetadataBackups<'a> {
+    manifest: &'a MetadataBackupManifest,
+    receipt: &'a MetadataBackupReceipt,
+    root_override: Option<PathBuf>,
+    directory: crate::journal_fd::JournalDir,
+    watch: RefCell<crate::journal_fd::DirectoryWatch>,
+    leases: Vec<ArtifactReadLease>,
+}
+
+impl PinnedMetadataBackups<'_> {
+    pub fn validate(&self) -> Result<(), BackupCaptureError> {
+        if !revalidate_receipt_at_root(self.manifest, self.receipt, self.root_override.as_deref())?
+            .matches()
+        {
+            return Err(BackupCaptureError::LeaseMismatch);
+        }
+        if self.leases.len() != self.receipt.artifacts.len() {
+            return Err(BackupCaptureError::LeaseMismatch);
+        }
+        for (lease, artifact) in self.leases.iter().zip(&self.receipt.artifacts) {
+            let metadata = lease
+                .0
+                .metadata()
+                .map_err(|error| io_error(Path::new(&artifact.artifact_path), error))?;
+            if metadata.dev() != artifact.device_id
+                || metadata.ino() != artifact.inode
+                || unsafe { libc::fcntl(lease.0.as_raw_fd(), libc::F_GETLEASE) } != libc::F_RDLCK
+            {
+                return Err(BackupCaptureError::LeaseMismatch);
+            }
+        }
+        self.directory.verify_namespace()?;
+        self.watch.borrow_mut().require_unchanged()?;
+        Ok(())
+    }
+}
+
+fn pin_backups_at_root<'a>(
+    manifest: &'a MetadataBackupManifest,
+    receipt: &'a MetadataBackupReceipt,
+    root_override: Option<&Path>,
+) -> Result<PinnedMetadataBackups<'a>, BackupCaptureError> {
+    if receipt.pinned_artifacts.len() != receipt.artifacts.len() || receipt.artifacts.is_empty() {
+        return Err(BackupCaptureError::LeaseMismatch);
+    }
+    let root = match root_override {
+        Some(root) if Path::new(manifest.artifact_directory()).ends_with(&receipt.journal_id) => {
+            root.join(&receipt.journal_id)
+        }
+        Some(root) => root.to_path_buf(),
+        None => PathBuf::from(manifest.artifact_directory()),
+    };
+    let directory = crate::journal_fd::JournalDir::open(&root)?;
+    let watch = RefCell::new(directory.watch()?);
+    let mut leases = Vec::with_capacity(receipt.artifacts.len());
+    for (file, artifact) in receipt.pinned_artifacts.iter().zip(&receipt.artifacts) {
+        let metadata = file.metadata().map_err(|error| io_error(&root, error))?;
+        if metadata.dev() != artifact.device_id || metadata.ino() != artifact.inode {
+            return Err(BackupCaptureError::LeaseMismatch);
+        }
+        // Reopen the pinned inode as a separate open-file description, so
+        // releasing one lease cannot unlock another guard for the same receipt.
+        let pinned = File::open(format!("/proc/self/fd/{}", file.as_raw_fd()))
+            .map_err(|error| io_error(&root, error))?;
+        let reopened = pinned.metadata().map_err(|error| io_error(&root, error))?;
+        if reopened.dev() != artifact.device_id || reopened.ino() != artifact.inode {
+            return Err(BackupCaptureError::LeaseMismatch);
+        }
+        if unsafe { libc::fcntl(pinned.as_raw_fd(), libc::F_SETLEASE, libc::F_RDLCK) } < 0 {
+            return Err(io_error(&root, io::Error::last_os_error()));
+        }
+        leases.push(ArtifactReadLease(pinned));
+    }
+    let pin = PinnedMetadataBackups {
+        manifest,
+        receipt,
+        root_override: root_override.map(Path::to_path_buf),
+        directory,
+        watch,
+        leases,
+    };
+    pin.validate()?;
+    Ok(pin)
+}
+
+pub fn pin_metadata_backups<'a>(
+    manifest: &'a MetadataBackupManifest,
+    receipt: &'a MetadataBackupReceipt,
+) -> Result<PinnedMetadataBackups<'a>, BackupCaptureError> {
+    pin_backups_at_root(manifest, receipt, None)
+}
+
+#[cfg(any(test, feature = "disposable-loop-harness"))]
+pub fn pin_backup_at_test_root<'a>(
+    manifest: &'a MetadataBackupManifest,
+    receipt: &'a MetadataBackupReceipt,
+    root: &Path,
+) -> Result<PinnedMetadataBackups<'a>, BackupCaptureError> {
+    pin_backups_at_root(manifest, receipt, Some(root))
 }
 
 #[cfg(feature = "disposable-loop-harness")]
