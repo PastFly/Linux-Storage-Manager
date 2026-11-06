@@ -377,6 +377,19 @@ pub fn prepare<G: ExternalGuard>(
             ))
         }));
     }
+    #[cfg(feature = "diagnostic-process-lifecycle")]
+    if std::env::var_os("LSM_TEST_LIFECYCLE_STOP_BEFORE_CLONE").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+        && unsafe { libc::raise(libc::SIGSTOP) } != 0
+    {
+        let error = io::Error::last_os_error();
+        let restore = unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &old, ptr::null_mut()) };
+        return Err(StartFailure::BeforeSpawn(if restore == 0 {
+            error
+        } else {
+            io::Error::other(format!("test barrier: {error}; restore: {restore}"))
+        }));
+    }
     let mut raw_pidfd: i32 = -1;
     let mut args: libc::clone_args = unsafe { zeroed() };
     args.flags = libc::CLONE_PIDFD as u64 | CLONE_INTO_CGROUP;

@@ -1,6 +1,10 @@
 //! Diagnostic manager/launcher channel tests; never an operator authorization.
 //! Linux disposable CI only. This is a transport, not a worker binding or guard.
-#![cfg(any(test, feature = "diagnostic-backup-watchdog"))]
+#![cfg(any(
+    test,
+    feature = "diagnostic-backup-watchdog",
+    feature = "diagnostic-process-lifecycle"
+))]
 #![allow(dead_code)]
 use std::fs::File;
 use std::io;
