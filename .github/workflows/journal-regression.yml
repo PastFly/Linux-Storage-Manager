@@ -76,6 +76,11 @@ jobs:
         run: |
           cargo build --locked -p linux-storage-manager-cli --target-dir /tmp/lsm-cli-observer
           sudo env LSM_TEST_OBSERVER_CLI=1 python3 -I .github/diagnostics/test-backup-observer.py /tmp/lsm-cli-observer/debug/storagemgr /sys/fs/cgroup
+      - name: Test observer-backed collector in disposable cgroup
+        run: |
+          sudo mkdir /sys/fs/cgroup/lsm-disposable-collector-test
+          trap 'sudo rmdir /sys/fs/cgroup/lsm-disposable-collector-test/* /sys/fs/cgroup/lsm-disposable-collector-test || true' EXIT
+          sudo env PATH="$PATH" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" LSM_TEST_DISPOSABLE_CGROUP=/sys/fs/cgroup/lsm-disposable-collector-test LSM_TEST_OBSERVER_EXE=/tmp/lsm-cli-observer/debug/storagemgr cargo test --locked -p lsm-executor --lib backup_recovery_collector::tests::observer_preparation_holds_both_copies_but_seal_stays_closed -- --ignored --exact --test-threads=1
       - name: Exercise disposable supervisor prototype
         run: |
           cargo test --locked -p lsm-executor --lib backup_supervisor::tests --no-run

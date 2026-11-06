@@ -181,6 +181,29 @@ impl PendingCopies {
     pub(crate) fn seal(self) -> Result<BackupRecoveryRecord, CollectorError> {
         Err(CollectorError::ObserverProofUnavailable)
     }
+
+    // Red-phase stub: never reports a successful observer.
+    fn observe_at(
+        self,
+        _root: &Path,
+        _executable: &OsStr,
+    ) -> Result<ObservedPending, CollectorError> {
+        Err(CollectorError::ObserverProofUnavailable)
+    }
+}
+
+struct ObservedPending;
+
+impl ObservedPending {
+    fn observer_pidfd_for_test(&self) -> Result<File, CollectorError> {
+        Err(CollectorError::ObserverProofUnavailable)
+    }
+    fn observer_alive(&self) -> Result<(), CollectorError> {
+        Err(CollectorError::ObserverProofUnavailable)
+    }
+    fn seal(self) -> Result<BackupRecoveryRecord, CollectorError> {
+        Err(CollectorError::ObserverProofUnavailable)
+    }
 }
 
 fn same_file(left: &Metadata, right: &Metadata) -> bool {
@@ -409,6 +432,7 @@ fn prepare_with_hook(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::AsRawFd;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::{FileExt, PermissionsExt};
 
@@ -456,6 +480,140 @@ mod tests {
         let _ = std::fs::remove_dir_all(lock.parent().unwrap());
         let _ = std::fs::remove_dir_all(recovery);
         let _ = std::fs::remove_dir_all(primary);
+    }
+
+    fn disposable_observer() -> (std::path::PathBuf, OsString) {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("LSM_TEST_DISPOSABLE_CGROUP")
+                .expect("explicit disposable cgroup required"),
+        );
+        let executable =
+            std::env::var_os("LSM_TEST_OBSERVER_EXE").expect("observer executable required");
+        assert!(root.starts_with("/sys/fs/cgroup") && root != Path::new("/sys/fs/cgroup"));
+        assert!(root.components().all(|part| matches!(
+            part,
+            std::path::Component::RootDir | std::path::Component::Normal(_)
+        )));
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        (root, executable)
+    }
+
+    fn wait_pidfd(pidfd: &File) {
+        let mut pollfd = libc::pollfd {
+            fd: pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(
+            unsafe { libc::poll(&mut pollfd, 1, 10_000) },
+            1,
+            "observer did not exit"
+        );
+        assert_ne!(pollfd.revents & libc::POLLIN, 0);
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly delegated disposable Linux cgroup and observer executable"]
+    fn observer_preparation_holds_both_copies_but_seal_stays_closed() {
+        let (root, executable) = disposable_observer();
+        let (manifest, receipt, trusted, lock, primary, recovery) =
+            fixture("collector-observer-ready");
+        let (source, copy) = paths(&receipt, &primary, &recovery);
+        let pending = prepare_at(&manifest, &receipt, &trusted, &primary, &recovery).unwrap();
+        let observed = pending
+            .observe_at(&root, &executable)
+            .expect("observer must acquire leases for both pinned files");
+        observed.observer_alive().unwrap();
+        assert_eq!(
+            std::fs::read(&source).unwrap(),
+            std::fs::read(&copy).unwrap()
+        );
+        let pidfd = observed.observer_pidfd_for_test().unwrap();
+        assert!(matches!(
+            observed.seal(),
+            Err(CollectorError::ObserverProofUnavailable)
+        ));
+        wait_pidfd(&pidfd);
+        assert!(source.exists() && copy.exists());
+        drop(receipt);
+        cleanup(&lock, &primary, &recovery);
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly delegated disposable Linux cgroup and observer executable"]
+    fn observer_refuses_retained_writer_before_ready() {
+        let (root, executable) = disposable_observer();
+        let (manifest, receipt, trusted, lock, primary, recovery) =
+            fixture("collector-observer-writer");
+        let (source, copy) = paths(&receipt, &primary, &recovery);
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&source)
+            .unwrap();
+        let pending = prepare_at(&manifest, &receipt, &trusted, &primary, &recovery).unwrap();
+        assert!(pending.observe_at(&root, &executable).is_err());
+        assert!(source.exists() && copy.exists());
+        drop(writer);
+        drop(receipt);
+        cleanup(&lock, &primary, &recovery);
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly delegated disposable Linux cgroup and observer executable"]
+    fn observer_stops_after_lease_break_and_cannot_seal() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let (root, executable) = disposable_observer();
+        let (manifest, receipt, trusted, lock, primary, recovery) =
+            fixture("collector-observer-break");
+        let (source, copy) = paths(&receipt, &primary, &recovery);
+        let pending = prepare_at(&manifest, &receipt, &trusted, &primary, &recovery).unwrap();
+        let observed = pending.observe_at(&root, &executable).unwrap();
+        let pidfd = observed.observer_pidfd_for_test().unwrap();
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&source);
+        assert!(matches!(writer, Err(ref error) if error.raw_os_error() == Some(libc::EAGAIN)));
+        wait_pidfd(&pidfd);
+        assert!(observed.observer_alive().is_err());
+        assert!(matches!(
+            observed.seal(),
+            Err(CollectorError::ObserverProofUnavailable)
+        ));
+        assert!(source.exists() && copy.exists());
+        drop(receipt);
+        cleanup(&lock, &primary, &recovery);
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly delegated disposable Linux cgroup and observer executable"]
+    fn observer_death_cannot_authorize_seal() {
+        let (root, executable) = disposable_observer();
+        let (manifest, receipt, trusted, lock, primary, recovery) =
+            fixture("collector-observer-death");
+        let pending = prepare_at(&manifest, &receipt, &trusted, &primary, &recovery).unwrap();
+        let observed = pending.observe_at(&root, &executable).unwrap();
+        let pidfd = observed.observer_pidfd_for_test().unwrap();
+        assert_eq!(
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    pidfd.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            },
+            0
+        );
+        wait_pidfd(&pidfd);
+        assert!(observed.observer_alive().is_err());
+        assert!(matches!(
+            observed.seal(),
+            Err(CollectorError::ObserverProofUnavailable)
+        ));
+        drop(receipt);
+        cleanup(&lock, &primary, &recovery);
     }
 
     #[test]
