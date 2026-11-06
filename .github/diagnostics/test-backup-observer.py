@@ -38,7 +38,7 @@ def observer_gone(pid):
         return True
 
 
-def manager_main(executable, group, backup, second_backup, marker, report_fd, prior_writer_fd, expect_refusal, malformed_quit):
+def manager_main(executable, group, backup, second_backup, marker, report_fd, prior_writer_fd, expect_refusal, malformed_quit, retained_duplicate):
     try:
         if prior_writer_fd is not None:
             os.close(prior_writer_fd)
@@ -55,6 +55,7 @@ def manager_main(executable, group, backup, second_backup, marker, report_fd, pr
         pidfd = os.pidfd_open(os.getpid())
         group_fd = os.open(group, os.O_RDONLY | os.O_DIRECTORY)
         source_fd = os.open(backup, os.O_RDONLY)
+        retained = os.dup(source_fd) if retained_duplicate else None
         sources = [source_fd]
         if second_backup is not None:
             sources.append(os.open(second_backup, os.O_RDONLY))
@@ -78,6 +79,18 @@ def manager_main(executable, group, backup, second_backup, marker, report_fd, pr
             os._exit(0)
         if reply != b'R':
             raise AssertionError('observer failed to return READY: ' + repr(reply))
+        if retained_duplicate:
+            manager_sock.sendall(b'Q')
+            if manager_sock.recv(1) != b'Q' or observer.wait(timeout=8) != 0:
+                raise AssertionError('observer did not disarm empty cgroup')
+            try:
+                writable = os.open(backup, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as error:
+                raise AssertionError('retained descriptor kept observer lease alive') from error
+            os.close(writable)
+            os.close(retained)
+            os.write(report_fd, b'{"duplicate_safe":true}\n')
+            os._exit(0)
         if malformed_quit:
             manager_sock.sendall(b'Qunexpected-trailing-data')
             try:
@@ -144,7 +157,8 @@ def run_case(executable, parent_group, name):
             if manager_pid == 0:
                 os.close(report_read)
                 manager_main(executable, group, backup, second_backup, marker, report_write,
-                             prior_writer_fd, name in ('prior-writer', 'partial-lease'), name == 'malformed-quit')
+                             prior_writer_fd, name in ('prior-writer', 'partial-lease'), name == 'malformed-quit',
+                             name == 'retained-duplicate')
                 os._exit(1)
             os.close(report_write)
             with os.fdopen(report_read, 'rb') as report:
@@ -163,6 +177,12 @@ def run_case(executable, parent_group, name):
                     print('PASS: failed second lease released first lease')
                 else:
                     print('PASS: preexisting writer prevented READY')
+                return
+            if name == 'retained-duplicate':
+                _, status = os.waitpid(manager_pid, 0)
+                manager_pid = None
+                assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0 and info['duplicate_safe']
+                print('PASS: retained descriptor does not retain lease')
                 return
             if name == 'malformed-quit':
                 _, status = os.waitpid(manager_pid, 0)
@@ -233,7 +253,7 @@ def main():
         raise AssertionError('observer executable missing')
     cases = ['prior-writer', 'manager-death', 'lease-break']
     if os.environ.get('LSM_TEST_OBSERVER_CLI') == '1':
-        cases.extend(('malformed-quit', 'partial-lease'))
+        cases.extend(('malformed-quit', 'partial-lease', 'retained-duplicate'))
     for name in cases:
         run_case(executable, parent_group, name)
 
