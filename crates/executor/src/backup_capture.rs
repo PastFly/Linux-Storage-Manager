@@ -845,6 +845,47 @@ mod tests {
     }
 
     #[test]
+    fn revalidation_rejects_same_content_replacement_with_different_inode() {
+        let (snapshot, capabilities) = direct_fixture();
+        let handoff = direct_handoff(&snapshot, &capabilities);
+        let root = temp_path("same-content-inode-replacement");
+        fs::create_dir(&root).unwrap();
+        let lock = root.join("lock/storage.lock");
+        let store = crate::DurableJournalStore::at(root.join("journals"));
+        let backup_root = root.join("backups");
+        let mut session =
+            crate::LockedExecutionSession::begin_durable_at_paths(&handoff, &lock, &store).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let manifest = crate::build_metadata_backup_manifest_for_session(&session).unwrap();
+        let receipt = capture_with_runner(
+            &session,
+            &manifest,
+            Some(&backup_root),
+            &FakeRunner::new(b"identical backup"),
+        )
+        .unwrap();
+        let name = Path::new(&receipt.artifacts()[0].artifact_path)
+            .file_name()
+            .unwrap();
+        let path = backup_root.join(&session.journal().journal_id).join(name);
+        let original = File::open(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"identical backup").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_ne!(
+            original.metadata().unwrap().ino(),
+            fs::metadata(&path).unwrap().ino()
+        );
+        assert!(
+            !revalidate_receipt_at_root(&manifest, &receipt, Some(&backup_root))
+                .unwrap()
+                .matches()
+        );
+        drop(session);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn separate_attempts_capture_distinct_backups_without_reusing_prior_evidence() {
         use lsm_planner::JournalTransition;
         let (snapshot, capabilities) = direct_fixture();
