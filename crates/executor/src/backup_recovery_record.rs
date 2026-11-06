@@ -462,6 +462,119 @@ mod tests {
 
     use super::*;
 
+    fn v2_fixture() -> BackupRecoveryRecord {
+        let mut payload = decode(FIXTURE.as_bytes(), RECORD_ID).unwrap().payload;
+        payload.schema_version = 2;
+        payload.binding.receipt_id =
+            "573c963f221eeb5287715a6dd620a3f7b3f84f31facbccdb4de567f8c32001fe".into();
+        payload.artifacts[0].capture_device_id = Some(123);
+        payload.artifacts[0].capture_inode = Some(456);
+        BackupRecoveryRecord::new(payload).unwrap()
+    }
+
+    #[test]
+    fn strict_decoder_rejects_v1_even_with_matching_anchor_and_context() {
+        let legacy = decode(FIXTURE.as_bytes(), RECORD_ID).unwrap();
+        assert!(matches!(
+            decode_with_trusted_context(FIXTURE.as_bytes(), RECORD_ID, &legacy.payload.binding),
+            Err(RecordError::BindingMismatch)
+        ));
+    }
+
+    #[test]
+    fn strict_decoder_rejects_each_changed_trusted_context_field() {
+        let record = v2_fixture();
+        let bytes = record.encode().unwrap();
+        let trusted = record.payload.binding.clone();
+        assert!(decode_with_trusted_context(&bytes, record.record_id(), &trusted).is_ok());
+
+        for field in 0..7 {
+            let mut changed = trusted.clone();
+            let value = match field {
+                0 => &mut changed.journal_id,
+                1 => &mut changed.session_id,
+                2 => &mut changed.handoff_id,
+                3 => &mut changed.plan_id,
+                4 => &mut changed.target_manifest_digest,
+                5 => &mut changed.manifest_id,
+                6 => &mut changed.receipt_id,
+                _ => unreachable!(),
+            };
+            *value = "9".repeat(64);
+            assert!(
+                matches!(
+                    decode_with_trusted_context(&bytes, record.record_id(), &changed),
+                    Err(RecordError::BindingMismatch)
+                ),
+                "trusted context field {field} was not checked"
+            );
+        }
+    }
+
+    #[test]
+    fn v2_receipt_rejects_reordered_and_removed_artifacts() {
+        let mut payload = v2_fixture().payload;
+        payload.binding.receipt_id =
+            "fe55941e493b7852597b24dba88d34467bbd94531c786a1b0c24d17894a762e3".into();
+        payload.artifacts.push(RecoveryArtifact {
+            ordinal: 2,
+            identity: RecoveryIdentity::LvmVolumeGroup {
+                vg_name: "vgdata".into(),
+                vg_uuid: "vg-uuid".into(),
+            },
+            primary_path: "/var/lib/lsm/backups/vg".into(),
+            recovery_path: "/var/lib/lsm/backups/vg.recovery".into(),
+            size_bytes: 64,
+            sha256: "3".repeat(64),
+            capture_device_id: Some(123),
+            capture_inode: Some(789),
+        });
+        let original = BackupRecoveryRecord::new(payload.clone()).unwrap();
+        let bytes = original.encode().unwrap();
+        assert!(
+            decode_with_trusted_context(&bytes, original.record_id(), &payload.binding).is_ok()
+        );
+
+        let mut reordered = payload.clone();
+        reordered.artifacts.swap(0, 1);
+        reordered.artifacts[0].ordinal = 1;
+        reordered.artifacts[1].ordinal = 2;
+        let mut removed = payload.clone();
+        removed.artifacts.pop();
+        for changed in [reordered, removed] {
+            let changed_id = record_id(&changed).unwrap();
+            let bytes = serde_json::to_vec(&BackupRecoveryRecord {
+                record_id: changed_id.clone(),
+                payload: changed,
+            })
+            .unwrap();
+            assert!(matches!(
+                decode_with_trusted_context(&bytes, &changed_id, &payload.binding),
+                Err(RecordError::BindingMismatch)
+            ));
+        }
+    }
+
+    #[test]
+    fn changed_recovery_path_cannot_override_original_trusted_anchor() {
+        let original = v2_fixture();
+        let trusted = original.payload.binding.clone();
+        let mut changed = original.payload.clone();
+        changed.artifacts[0].recovery_path = "/elsewhere/recovery".into();
+        let changed_id = record_id(&changed).unwrap();
+        let bytes = serde_json::to_vec(&BackupRecoveryRecord {
+            record_id: changed_id.clone(),
+            payload: changed,
+        })
+        .unwrap();
+        assert!(matches!(
+            decode_with_trusted_context(&bytes, original.record_id(), &trusted),
+            Err(RecordError::BindingMismatch)
+        ));
+        // A digest supplied by the modified record is not a trusted anchor.
+        assert!(decode_with_trusted_context(&bytes, &changed_id, &trusted).is_ok());
+    }
+
     #[test]
     fn receipt_v2_rejects_artifact_substitution_with_original_receipt_id() {
         let binding = decode(FIXTURE.as_bytes(), RECORD_ID)
