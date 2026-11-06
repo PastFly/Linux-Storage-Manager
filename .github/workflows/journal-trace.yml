@@ -25,14 +25,13 @@ jobs:
       - name: Probe anonymous staging inode close events
         run: python3 tools/journal_close_probe.py
       - name: Reproduce delayed close of the store's own writer
-        continue-on-error: true
         run: cargo test --locked -p lsm-executor --lib delayed_close_of_own_staging_writer -- --nocapture
       - name: Compare sequential and parallel test processes
         run: |
           set +e
           evidence="${RUNNER_TEMP}/journal-trace"
           mkdir -p "$evidence"
-          for mode in serial parallel-{1..12}; do
+          for mode in serial parallel-{1..3}; do
             threads=16
             if [ "$mode" = serial ]; then threads=1; fi
             strace -ff -ttt -yy -s 256 -o "$evidence/$mode.trace" \

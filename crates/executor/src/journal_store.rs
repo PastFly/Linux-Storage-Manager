@@ -1,9 +1,9 @@
 #[cfg(test)]
 use std::fs::OpenOptions;
 use std::fs::{self, DirBuilder, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 #[cfg(test)]
-use std::os::fd::AsRawFd;
+use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 #[cfg(test)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -518,10 +518,11 @@ impl DurableJournalStore {
         validate_journal(journal)?;
         ensure_secure_directory(&self.root, true)?;
         let directory = crate::journal_fd::JournalDir::open(&self.root)?;
-        let bytes = serde_json::to_vec(journal)?;
+        let mut bytes = serde_json::to_vec(journal)?;
         if bytes.len() as u64 > MAX_JOURNAL_BYTES {
             return Err(JournalStoreError::TooLarge);
         }
+        bytes.push(b'\n');
 
         let final_path = self.path_for(&journal.journal_id)?;
         let temp_path = self.temp_path(&journal.journal_id);
@@ -531,19 +532,13 @@ impl DurableJournalStore {
         let final_name = final_path
             .file_name()
             .ok_or_else(|| JournalStoreError::NotRegularFile(final_path.clone()))?;
-        let mut file = directory.create_file(temp_name)?;
+        let file = directory.write_staged_file(temp_name, &bytes)?;
         let created = file
             .metadata()
             .map_err(|source| io_error(&temp_path, source))?;
         if !trusted_journal_file(&created) {
             return Err(JournalStoreError::NotRegularFile(temp_path));
         }
-        file.write_all(&bytes)
-            .map_err(|source| io_error(&temp_path, source))?;
-        file.write_all(b"\n")
-            .map_err(|source| io_error(&temp_path, source))?;
-        file.sync_all()
-            .map_err(|source| io_error(&temp_path, source))?;
         directory.sync()?;
         directory.verify_namespace()?;
         match directory.publish_new(temp_name, final_name) {
@@ -574,15 +569,6 @@ impl DurableJournalStore {
         }
         directory.sync()?;
         directory.verify_namespace()?;
-        #[cfg(test)]
-        eprintln!(
-            "journal writer closing time={:?} pid={} thread={:?} fd={} path={:?}",
-            std::time::SystemTime::now(),
-            std::process::id(),
-            std::thread::current().id(),
-            file.as_raw_fd(),
-            final_path
-        );
         Ok(final_path)
     }
 
@@ -647,26 +633,18 @@ impl DurableJournalStore {
             return Err(JournalStoreError::ChangedDuringInspection);
         }
 
-        let bytes = serde_json::to_vec(journal)?;
+        let mut bytes = serde_json::to_vec(journal)?;
         if bytes.len() as u64 > MAX_JOURNAL_BYTES {
             return Err(JournalStoreError::TooLarge);
         }
-        let mut staged = directory.create_file(temp_name)?;
+        bytes.push(b'\n');
+        let staged = directory.write_staged_file(temp_name, &bytes)?;
         let staged_metadata = staged
             .metadata()
             .map_err(|source| io_error(&temp_path, source))?;
         if !trusted_journal_file(&staged_metadata) {
             return Err(JournalStoreError::NotRegularFile(temp_path));
         }
-        staged
-            .write_all(&bytes)
-            .map_err(|source| io_error(&temp_path, source))?;
-        staged
-            .write_all(b"\n")
-            .map_err(|source| io_error(&temp_path, source))?;
-        staged
-            .sync_all()
-            .map_err(|source| io_error(&temp_path, source))?;
         directory.sync()?;
         let mut watch = directory.watch()?;
         hook();
@@ -794,15 +772,6 @@ impl DurableJournalStore {
         {
             return Err(JournalStoreError::ChangedDuringInspection);
         }
-        #[cfg(test)]
-        eprintln!(
-            "journal writer closing time={:?} pid={} thread={:?} fd={} path={:?}",
-            std::time::SystemTime::now(),
-            std::process::id(),
-            std::thread::current().id(),
-            staged.as_raw_fd(),
-            final_path
-        );
         Ok(final_path)
     }
 
@@ -1717,13 +1686,17 @@ mod tests {
 
     #[test]
     fn delayed_close_of_own_staging_writer_does_not_invalidate_inventory() {
+        use std::os::fd::AsRawFd;
         let root = root("delayed-own-writer-close");
         let store = DurableJournalStore::at(&root);
         store.persist_new(&journal()).unwrap();
         let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
         let writer = directory
-            .create_file(std::ffi::OsStr::new(".staged-test"))
+            .write_staged_file(std::ffi::OsStr::new(".staged-test"), b"record")
             .unwrap();
+        let flags = unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_GETFL) };
+        assert!(flags >= 0);
+        assert_eq!(flags & libc::O_ACCMODE, libc::O_RDONLY);
         let inherited = writer.try_clone().unwrap();
         drop(writer);
         let mut watch = directory.watch().unwrap();
@@ -1733,16 +1706,32 @@ mod tests {
     }
 
     #[test]
+    fn crashed_isolated_writer_retains_staging_and_blocks_restart() {
+        let root = root("crashed-staging-writer");
+        let store = DurableJournalStore::at(&root);
+        store.persist_new(&journal()).unwrap();
+        let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
+        let name = std::ffi::OsStr::new(".staged-test");
+        assert!(directory.write_staged_file_crashing(name, b"record").is_err());
+        assert!(root.join(name).exists());
+        assert!(store.all().is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn write_through_retained_staging_writer_invalidates_inventory() {
         let root = root("retained-own-writer-write");
         let store = DurableJournalStore::at(&root);
         store.persist_new(&journal()).unwrap();
         let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
-        let writer = directory
-            .create_file(std::ffi::OsStr::new(".staged-test"))
+        let staged = directory
+            .write_staged_file(std::ffi::OsStr::new(".staged-test"), b"record")
             .unwrap();
-        let mut inherited = writer.try_clone().unwrap();
-        drop(writer);
+        let mut inherited = OpenOptions::new()
+            .write(true)
+            .open(root.join(".staged-test"))
+            .unwrap();
+        drop(staged);
         let mut watch = directory.watch().unwrap();
         inherited.write_all(b"unexpected mutation").unwrap();
         assert!(matches!(
