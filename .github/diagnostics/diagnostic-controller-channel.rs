@@ -351,6 +351,80 @@ mod tests {
         }
     }
 
+    fn send_test_packet(socket: RawFd, payload: &[u8], fds: &[RawFd]) {
+        let mut iov = libc::iovec {
+            iov_base: payload.as_ptr().cast_mut().cast(),
+            iov_len: payload.len(),
+        };
+        let mut ancillary = [0usize; 160];
+        let mut msg: libc::msghdr = unsafe { zeroed() };
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = ancillary.as_mut_ptr().cast();
+        msg.msg_controllen =
+            unsafe { libc::CMSG_SPACE(std::mem::size_of_val(fds) as u32) } as usize;
+        assert!(msg.msg_controllen <= size_of::<[usize; 160]>());
+        let header = unsafe { libc::CMSG_FIRSTHDR(&msg) };
+        unsafe {
+            (*header).cmsg_level = libc::SOL_SOCKET;
+            (*header).cmsg_type = libc::SCM_RIGHTS;
+            (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of_val(fds) as u32) as usize;
+            std::ptr::copy_nonoverlapping(
+                fds.as_ptr(),
+                libc::CMSG_DATA(header).cast::<RawFd>(),
+                fds.len(),
+            );
+        }
+        assert_eq!(
+            unsafe { libc::sendmsg(socket, &msg, libc::MSG_NOSIGNAL) },
+            payload.len() as isize
+        );
+    }
+
+    fn fd_count() -> usize {
+        std::fs::read_dir("/proc/self/fd").unwrap().count()
+    }
+
+    #[test]
+    fn received_pidfd_has_cloexec() {
+        let (manager, launcher) = pair();
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) as i32 };
+        assert!(raw >= 0);
+        let sender = unsafe { File::from_raw_fd(raw) };
+        send_worker_pidfd(launcher.as_raw_fd(), sender.as_raw_fd()).unwrap();
+        let received = receive_worker_pidfd(manager.as_raw_fd(), sender.as_raw_fd(), unsafe {
+            libc::getpid()
+        })
+        .unwrap();
+        let flags = unsafe { libc::fcntl(received.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0);
+    }
+
+    #[test]
+    fn malformed_packets_are_rejected_without_fd_leaks() {
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) as i32 };
+        assert!(raw >= 0);
+        let sender = unsafe { File::from_raw_fd(raw) };
+        let wrong = File::open("/dev/null").unwrap();
+        for case in 0..4 {
+            let (manager, launcher) = pair();
+            let pidfd = sender.as_raw_fd();
+            let (payload, passed) = match case {
+                0 => (b"W".as_slice(), vec![wrong.as_raw_fd()]),
+                1 => (b"W".as_slice(), vec![pidfd, pidfd]),
+                2 => (b"Wextra".as_slice(), vec![pidfd]),
+                // Exceeds the receiver's ancillary buffer and sets MSG_CTRUNC.
+                _ => (b"W".as_slice(), vec![pidfd; 200]),
+            };
+            send_test_packet(launcher.as_raw_fd(), payload, &passed);
+            let before = fd_count();
+            let result =
+                receive_worker_pidfd(manager.as_raw_fd(), pidfd, unsafe { libc::getpid() });
+            assert!(result.is_err(), "malformed case {case} accepted");
+            assert_eq!(fd_count(), before, "malformed case {case} leaked FDs");
+        }
+    }
+
     #[test]
     fn rejects_stream_socket_even_if_message_starts_with_valid_pidfd_packet() {
         let mut fds = [-1; 2];
