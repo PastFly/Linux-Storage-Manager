@@ -114,6 +114,7 @@ def run_case(executable, parent_group, name):
         backup = os.path.join(tmp, 'backup')
         with open(backup, 'wb') as f:
             f.write(b'disposable backup')
+        os.chmod(backup, 0o600)
         if name == 'prior-writer':
             prior_writer_fd = os.open(backup, os.O_WRONLY)
         report_read, report_write = os.pipe()

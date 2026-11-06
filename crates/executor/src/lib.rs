@@ -1,6 +1,8 @@
 mod approval;
 mod backup_capture;
 mod backup_manifest;
+#[cfg(feature = "production-mutation-execution")]
+mod backup_observer;
 mod disposable_argv;
 #[cfg(feature = "disposable-executor")]
 mod disposable_exec;
@@ -132,6 +134,8 @@ pub use backup_manifest::{
     BackupExpectedIdentity, BackupManifestError, MetadataBackupKind, MetadataBackupManifest,
     MetadataBackupRequirement, BACKUP_DIRECTORY,
 };
+#[cfg(feature = "production-mutation-execution")]
+pub use backup_observer::run_backup_observer;
 pub use disposable_argv::{
     compile_disposable_lvm_growth_commands, DisposableArgvError, DisposableCommandPlan,
     DisposableCommandSpec, DisposableProgram,
