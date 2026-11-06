@@ -26,6 +26,8 @@ jobs:
         run: python3 tools/journal_close_probe.py
       - name: Reproduce delayed close of the store's own writer
         run: cargo test --locked -p lsm-executor --lib delayed_close_of_own_staging_writer -- --nocapture
+      - name: Check pinned inode across concurrent fork
+        run: cargo test --locked -p lsm-executor --lib fork_before_writer_closes -- --nocapture
       - name: Compare sequential and parallel test processes
         run: |
           set +e

@@ -1795,6 +1795,22 @@ mod tests {
                 unsafe { libc::read(ready[0], (&mut byte as *mut u8).cast(), 1) },
                 1
             );
+            let expected = fs::metadata(root.join(".staged-test")).unwrap();
+            let inode_pinned_in_parent = fs::read_dir("/proc/self/fd")
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let fd = entry.file_name().to_str()?.parse::<libc::c_int>().ok()?;
+                    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+                    let metadata = fs::metadata(entry.path()).ok()?;
+                    Some(
+                        flags >= 0
+                            && flags & libc::O_ACCMODE == libc::O_RDONLY
+                            && metadata.dev() == expected.dev()
+                            && metadata.ino() == expected.ino(),
+                    )
+                })
+                .any(|matches| matches);
             let pid = unsafe { libc::fork() };
             if pid == 0 {
                 unsafe {
@@ -1822,6 +1838,10 @@ mod tests {
             assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
             assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
             assert!(watch.require_unchanged().is_ok());
+            assert!(
+                inode_pinned_in_parent,
+                "staging inode must remain pinned in the parent"
+            );
             drop(staged);
         });
         for fd in ready.into_iter().chain(release_writer).chain(release_exec) {
