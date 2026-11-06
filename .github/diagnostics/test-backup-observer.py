@@ -38,7 +38,7 @@ def observer_gone(pid):
         return True
 
 
-def manager_main(executable, group, backup, second_backup, marker, report_fd, prior_writer_fd, expect_refusal, malformed_quit, retained_duplicate):
+def manager_main(executable, group, backup, second_backup, marker, report_fd, prior_writer_fd, expect_refusal, malformed_quit, retained_duplicate, path_only):
     try:
         if prior_writer_fd is not None:
             os.close(prior_writer_fd)
@@ -54,7 +54,7 @@ def manager_main(executable, group, backup, second_backup, marker, report_fd, pr
         observer_sock.close()
         pidfd = os.pidfd_open(os.getpid())
         group_fd = os.open(group, os.O_RDONLY | os.O_DIRECTORY)
-        source_fd = os.open(backup, os.O_RDONLY)
+        source_fd = os.open(backup, os.O_PATH if path_only else os.O_RDONLY)
         retained = os.dup(source_fd) if retained_duplicate or second_backup is not None else None
         sources = [source_fd]
         if second_backup is not None:
@@ -164,8 +164,8 @@ def run_case(executable, parent_group, name):
             if manager_pid == 0:
                 os.close(report_read)
                 manager_main(executable, group, backup, second_backup, marker, report_write,
-                             prior_writer_fd, name in ('prior-writer', 'partial-lease', 'unsafe-mode'), name == 'malformed-quit',
-                             name == 'retained-duplicate')
+                             prior_writer_fd, name in ('prior-writer', 'partial-lease', 'unsafe-mode', 'opath'), name == 'malformed-quit',
+                             name == 'retained-duplicate', name == 'opath')
                 os._exit(1)
             os.close(report_write)
             with os.fdopen(report_read, 'rb') as report:
@@ -173,7 +173,7 @@ def run_case(executable, parent_group, name):
             if line.startswith('ERROR') or not line:
                 raise AssertionError('manager failed: ' + line)
             info = json.loads(line)
-            if name in ('prior-writer', 'partial-lease', 'unsafe-mode'):
+            if name in ('prior-writer', 'partial-lease', 'unsafe-mode', 'opath'):
                 _, status = os.waitpid(manager_pid, 0)
                 manager_pid = None
                 assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0 and info['refused']
@@ -260,7 +260,7 @@ def main():
         raise AssertionError('observer executable missing')
     cases = ['prior-writer', 'manager-death', 'lease-break']
     if os.environ.get('LSM_TEST_OBSERVER_CLI') == '1':
-        cases.extend(('malformed-quit', 'partial-lease', 'retained-duplicate', 'unsafe-mode'))
+        cases.extend(('malformed-quit', 'partial-lease', 'retained-duplicate', 'unsafe-mode', 'opath'))
     for name in cases:
         run_case(executable, parent_group, name)
 
