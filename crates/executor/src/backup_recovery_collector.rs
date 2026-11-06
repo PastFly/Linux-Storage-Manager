@@ -188,6 +188,16 @@ impl PendingCopies {
         Err(CollectorError::ObserverProofUnavailable)
     }
 
+    /// Test-only sealed-copy experiment. It cannot authorize mutation.
+    fn experimental_seal_verity(
+        self,
+        _manifest: &MetadataBackupManifest,
+        _receipt: &MetadataBackupReceipt,
+        _trusted: &RecoveryBinding,
+    ) -> Result<ExperimentalVerityCopies, CollectorError> {
+        Err(CollectorError::ObserverProofUnavailable)
+    }
+
     /// Starts a real observer, then rechecks the pinned copies and namespace.
     /// Returning is not proof against a pending or subsequent lease break.
     #[cfg(test)]
@@ -253,6 +263,13 @@ impl PendingCopies {
             supervisor,
         })
     }
+}
+
+/// Holds the descriptors and watches with the experimental metadata record.
+/// This is not a namespace guarantee, durable journal binding, or permit.
+struct ExperimentalVerityCopies {
+    _pending: PendingCopies,
+    record: BackupRecoveryRecord,
 }
 
 #[cfg(test)]
@@ -556,6 +573,87 @@ mod tests {
         let _ = std::fs::remove_dir_all(lock.parent().unwrap());
         let _ = std::fs::remove_dir_all(recovery);
         let _ = std::fs::remove_dir_all(primary);
+    }
+
+    fn require_disposable_verity_root() {
+        assert_eq!(
+            std::env::var("LSM_TEST_DISPOSABLE_VERITY").as_deref(),
+            Ok("1")
+        );
+        let root = std::path::PathBuf::from(
+            std::env::var_os("LSM_TEST_DISPOSABLE_VERITY_DIR").expect("disposable ext4 required"),
+        );
+        assert_eq!(
+            std::env::temp_dir(),
+            root,
+            "TMPDIR must be the disposable mount"
+        );
+        let directory = File::open(root).unwrap();
+        let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::fstatfs(directory.as_raw_fd(), &mut stat) },
+            0
+        );
+        assert_eq!(stat.f_type as u64, 0xef53);
+    }
+
+    #[test]
+    #[ignore = "requires explicitly designated disposable ext4 fs-verity filesystem"]
+    fn verity_experiment_seals_both_copies_and_records_their_measurements() {
+        require_disposable_verity_root();
+        let (manifest, receipt, trusted, lock, primary, recovery) = fixture("verity-record");
+        let (source, copy) = paths(&receipt, &primary, &recovery);
+        let pending = prepare_at(&manifest, &receipt, &trusted, &primary, &recovery).unwrap();
+        let sealed = pending
+            .experimental_seal_verity(&manifest, &receipt, &trusted)
+            .unwrap();
+        let document: serde_json::Value =
+            serde_json::from_slice(&sealed.record.encode().unwrap()).unwrap();
+        assert_eq!(document["payload"]["schema_version"], 3);
+        let artifact = &document["payload"]["artifacts"][0];
+        for (file, key) in [(&source, "primary_sha256"), (&copy, "recovery_sha256")] {
+            let held = File::open(file).unwrap();
+            let measured = crate::backup_verity::measure(&held).unwrap();
+            let hex = measured
+                .iter()
+                .map(|v| format!("{v:02x}"))
+                .collect::<String>();
+            assert_eq!(artifact["verity"][key], hex);
+            assert_eq!(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(file)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EPERM)
+            );
+        }
+        drop(sealed);
+        assert!(crate::backup_verity::measure(&File::open(&source).unwrap()).is_ok());
+        assert!(crate::backup_verity::measure(&File::open(&copy).unwrap()).is_ok());
+        drop(receipt);
+        cleanup(&lock, &primary, &recovery);
+    }
+
+    #[test]
+    #[ignore = "requires explicitly designated disposable ext4 fs-verity filesystem"]
+    fn verity_experiment_refuses_a_retained_writer_for_either_copy() {
+        require_disposable_verity_root();
+        for recovery_writer in [false, true] {
+            let (manifest, receipt, trusted, lock, primary, recovery) = fixture("verity-writer");
+            let (source, copy) = paths(&receipt, &primary, &recovery);
+            let pending = prepare_at(&manifest, &receipt, &trusted, &primary, &recovery).unwrap();
+            let writer = std::fs::OpenOptions::new()
+                .write(true)
+                .open(if recovery_writer { &copy } else { &source })
+                .unwrap();
+            assert!(pending
+                .experimental_seal_verity(&manifest, &receipt, &trusted)
+                .is_err());
+            drop(writer);
+            drop(receipt);
+            cleanup(&lock, &primary, &recovery);
+        }
     }
 
     fn disposable_observer() -> (std::path::PathBuf, OsString) {
