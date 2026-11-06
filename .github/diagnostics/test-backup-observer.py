@@ -260,7 +260,7 @@ def main():
         raise AssertionError('observer executable missing')
     cases = ['prior-writer', 'manager-death', 'lease-break']
     if os.environ.get('LSM_TEST_OBSERVER_CLI') == '1':
-        cases.extend(('malformed-quit', 'partial-lease', 'retained-duplicate', 'unsafe-mode', 'opath'))
+        cases.extend(('malformed-quit', 'partial-lease', 'retained-duplicate', 'opath', 'unsafe-mode'))
     for name in cases:
         run_case(executable, parent_group, name)
 

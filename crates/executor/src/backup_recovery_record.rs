@@ -169,10 +169,14 @@ fn record_id(payload: &RecoveryPayload) -> Result<String, RecordError> {
 impl BackupRecoveryRecord {
     pub(crate) fn new(payload: RecoveryPayload) -> Result<Self, RecordError> {
         validate_payload(&payload)?;
-        Ok(Self {
+        let record = Self {
             record_id: record_id(&payload)?,
             payload,
-        })
+        };
+        // Validate the complete envelope, not just the hashed payload, before
+        // exposing an ID that could be bound to durable state.
+        record.encode()?;
+        Ok(record)
     }
 
     pub(crate) fn record_id(&self) -> &str {
@@ -228,6 +232,40 @@ mod tests {
         assert_eq!(created.record_id(), RECORD_ID);
         let bytes = created.encode().unwrap();
         assert_eq!(decode(&bytes, RECORD_ID).unwrap(), original);
+    }
+
+    #[test]
+    fn constructor_never_returns_an_unencodable_record_at_size_limit() {
+        let original = decode(FIXTURE.as_bytes(), RECORD_ID).unwrap();
+        let mut payload = original.payload;
+        payload.artifacts.clear();
+        for index in 0..MAX_ARTIFACTS {
+            let mut artifact = decode(FIXTURE.as_bytes(), RECORD_ID)
+                .unwrap()
+                .payload
+                .artifacts
+                .remove(0);
+            artifact.ordinal = index as u32 + 1;
+            artifact.primary_path = format!("/primary/{index}/{}", "a".repeat(1800));
+            artifact.recovery_path = format!("/recovery/{index}/{}", "b".repeat(1800));
+            payload.artifacts.push(artifact);
+        }
+        // Locate a record whose payload fits but whose envelope crosses the limit.
+        let current = serde_json::to_vec(&payload).unwrap().len();
+        assert!(current < MAX_RECORD_BYTES - 50);
+        for index in 0..MAX_RECORD_BYTES - 50 - current {
+            payload.artifacts[index % MAX_ARTIFACTS]
+                .primary_path
+                .push('a');
+        }
+        assert!(serde_json::to_vec(&payload).unwrap().len() <= MAX_RECORD_BYTES);
+        assert!(validate_payload(&payload).is_ok());
+        if let Ok(record) = BackupRecoveryRecord::new(payload) {
+            assert!(
+                record.encode().is_ok(),
+                "constructor accepted an oversized envelope"
+            );
+        }
     }
 
     #[test]
