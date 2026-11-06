@@ -888,6 +888,7 @@ impl JournalDir {
             return Err(failure(&self.path, io::Error::last_os_error()));
         }
         let file = unsafe { File::from_raw_fd(fd) };
+        let mut watched_nodes = Vec::new();
         #[cfg(test)]
         let mut diagnostic_paths = Vec::new();
         let leaf_mask = libc::IN_CREATE
@@ -916,6 +917,22 @@ impl JournalDir {
             if wd < 0 {
                 return Err(failure(&self.path, io::Error::last_os_error()));
             }
+            // Duplicate descriptors mean two path nodes resolved to the same
+            // watched inode; filtering by one child name would be ambiguous.
+            if watched_nodes.iter().any(|node: &WatchedNode| node.wd == wd) {
+                return Err(JournalStoreError::ChangedDuringInspection);
+            }
+            let next_name = if index == last {
+                None
+            } else {
+                Some(
+                    self.names
+                        .get(index)
+                        .ok_or(JournalStoreError::ChangedDuringInspection)?
+                        .clone(),
+                )
+            };
+            watched_nodes.push(WatchedNode { wd, next_name });
             #[cfg(test)]
             if std::env::var_os("LSM_COLLECTOR_WATCH_DIAGNOSTICS").is_some() {
                 let proc_path = PathBuf::from(format!("/proc/self/fd/{}", node.as_raw_fd()));
@@ -926,57 +943,96 @@ impl JournalDir {
         Ok(DirectoryWatch {
             file,
             path: self.path.clone(),
+            watched_nodes,
             #[cfg(test)]
             diagnostic_paths,
         })
     }
 }
 
+struct WatchedNode {
+    wd: libc::c_int,
+    // None is the leaf; all events there remain blockers.
+    next_name: Option<OsString>,
+}
+
 pub(crate) struct DirectoryWatch {
     file: File,
     path: PathBuf,
+    watched_nodes: Vec<WatchedNode>,
     #[cfg(test)]
     diagnostic_paths: Vec<(libc::c_int, PathBuf)>,
 }
 
+fn irrelevant_sibling_attrib(
+    event: &libc::inotify_event,
+    raw_name: &[u8],
+    watched_nodes: &[WatchedNode],
+) -> bool {
+    if event.mask & !libc::IN_ISDIR != libc::IN_ATTRIB || event.cookie != 0 {
+        return false;
+    }
+    let Some(next_name) = watched_nodes
+        .iter()
+        .find(|node| node.wd == event.wd)
+        .and_then(|node| node.next_name.as_ref())
+    else {
+        // Unknown descriptor, overflow, and all leaf events fail closed.
+        return false;
+    };
+    let Some(end) = raw_name.iter().position(|byte| *byte == 0) else {
+        return false;
+    };
+    let name = &raw_name[..end];
+    if name.is_empty() || name.contains(&b'/') || raw_name[end..].iter().any(|byte| *byte != 0) {
+        return false;
+    }
+    name != next_name.as_os_str().as_bytes()
+}
+
 impl DirectoryWatch {
     pub(crate) fn require_unchanged(&mut self) -> Result<(), JournalStoreError> {
+        const MAX_EVENTS: usize = 1024;
         let mut bytes = [0_u8; 4096];
+        let mut processed = 0usize;
         loop {
             match self.file.read(&mut bytes) {
                 Ok(0) => return Err(JournalStoreError::ChangedDuringInspection),
                 Ok(length) => {
-                    #[cfg(test)]
-                    if std::env::var_os("LSM_COLLECTOR_WATCH_DIAGNOSTICS").is_some() {
-                        let header_size = std::mem::size_of::<libc::inotify_event>();
-                        let mut offset = 0usize;
-                        while length.saturating_sub(offset) >= header_size {
-                            let event = unsafe {
-                                std::ptr::read_unaligned(
-                                    bytes.as_ptr().add(offset).cast::<libc::inotify_event>(),
-                                )
-                            };
-                            let Some(end) = offset
-                                .checked_add(header_size)
-                                .and_then(|n| n.checked_add(event.len as usize))
-                                .filter(|n| *n <= length)
-                            else {
-                                eprintln!("directory watch: malformed event at offset={offset}, length={length}");
-                                break;
-                            };
-                            let name = &bytes[offset + header_size..end];
-                            let watched = self
-                                .diagnostic_paths
-                                .iter()
-                                .find(|(wd, _)| *wd == event.wd)
-                                .map(|(_, path)| path.as_path());
-                            eprintln!("directory watch: wd={} mask={:#x} cookie={} path={watched:?} name={:?}", event.wd, event.mask, event.cookie, String::from_utf8_lossy(name).trim_end_matches('\0'));
-                            offset = end;
+                    let header_size = std::mem::size_of::<libc::inotify_event>();
+                    let mut offset = 0usize;
+                    while offset < length {
+                        if length - offset < header_size {
+                            return Err(JournalStoreError::ChangedDuringInspection);
                         }
+                        let event = unsafe {
+                            std::ptr::read_unaligned(
+                                bytes.as_ptr().add(offset).cast::<libc::inotify_event>(),
+                            )
+                        };
+                        let end = offset
+                            .checked_add(header_size)
+                            .and_then(|n| n.checked_add(event.len as usize))
+                            .filter(|n| *n <= length)
+                            .ok_or(JournalStoreError::ChangedDuringInspection)?;
+                        let name = &bytes[offset + header_size..end];
+                        processed += 1;
+                        if processed > MAX_EVENTS
+                            || !irrelevant_sibling_attrib(&event, name, &self.watched_nodes)
+                        {
+                            #[cfg(test)]
+                            if std::env::var_os("LSM_COLLECTOR_WATCH_DIAGNOSTICS").is_some() {
+                                let watched = self
+                                    .diagnostic_paths
+                                    .iter()
+                                    .find(|(wd, _)| *wd == event.wd)
+                                    .map(|(_, path)| path.as_path());
+                                eprintln!("directory watch: wd={} mask={:#x} cookie={} path={watched:?} name={:?}", event.wd, event.mask, event.cookie, String::from_utf8_lossy(name).trim_end_matches('\0'));
+                            }
+                            return Err(JournalStoreError::ChangedDuringInspection);
+                        }
+                        offset = end;
                     }
-                    #[cfg(not(test))]
-                    let _ = length;
-                    return Err(JournalStoreError::ChangedDuringInspection);
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
@@ -989,10 +1045,111 @@ impl DirectoryWatch {
 #[cfg(test)]
 mod namespace_watch_tests {
     use super::*;
+    use std::os::unix::ffi::OsStringExt;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    // Red-phase stub; the real watch loop will call the bounded helper.
+    fn retry_interrupted(_consecutive: &mut usize) -> bool {
+        true
+    }
+
+    #[test]
+    fn repeated_interruption_exhausts_watch_retry_budget() {
+        let mut consecutive = 0;
+        for _ in 0..64 {
+            assert!(retry_interrupted(&mut consecutive));
+        }
+        assert!(!retry_interrupted(&mut consecutive));
+    }
+
+    #[test]
+    fn filter_blocks_self_leaf_unknown_overflow_and_unexpected_masks() {
+        let nodes = vec![
+            WatchedNode {
+                wd: 7,
+                next_name: Some(OsString::from_vec(vec![0xff, b'x'])),
+            },
+            WatchedNode {
+                wd: 8,
+                next_name: None,
+            },
+        ];
+        let event = |wd, mask, cookie| libc::inotify_event {
+            wd,
+            mask,
+            cookie,
+            len: 4,
+        };
+        let attr = libc::IN_ATTRIB | libc::IN_ISDIR;
+        assert!(irrelevant_sibling_attrib(
+            &event(7, attr, 0),
+            &[0xfe, b'x', 0, 0],
+            &nodes
+        ));
+        assert!(!irrelevant_sibling_attrib(
+            &event(7, attr, 0),
+            &[0xff, b'x', 0, 0],
+            &nodes
+        ));
+        assert!(!irrelevant_sibling_attrib(
+            &event(7, attr, 0),
+            &[0, 0, 0, 0],
+            &nodes
+        ));
+        assert!(!irrelevant_sibling_attrib(
+            &event(8, attr, 0),
+            b"x\0\0\0",
+            &nodes
+        ));
+        assert!(!irrelevant_sibling_attrib(
+            &event(9, attr, 0),
+            b"x\0\0\0",
+            &nodes
+        ));
+        assert!(!irrelevant_sibling_attrib(
+            &event(-1, libc::IN_Q_OVERFLOW, 0),
+            &[],
+            &nodes
+        ));
+        assert!(!irrelevant_sibling_attrib(
+            &event(7, libc::IN_IGNORED, 0),
+            b"x\0\0\0",
+            &nodes
+        ));
+        assert!(!irrelevant_sibling_attrib(
+            &event(7, attr | libc::IN_MODIFY, 0),
+            b"x\0\0\0",
+            &nodes
+        ));
+        assert!(!irrelevant_sibling_attrib(
+            &event(7, attr, 1),
+            b"x\0\0\0",
+            &nodes
+        ));
+        assert!(!irrelevant_sibling_attrib(
+            &event(7, attr, 0),
+            b"abcd",
+            &nodes
+        ));
+        assert!(!irrelevant_sibling_attrib(
+            &event(7, attr, 0),
+            b"x\0z\0",
+            &nodes
+        ));
+        assert!(!irrelevant_sibling_attrib(
+            &event(7, attr, 0),
+            b".\0\0\0",
+            &nodes
+        ));
+        assert!(!irrelevant_sibling_attrib(
+            &event(7, attr, 0),
+            b"..\0\0",
+            &nodes
+        ));
+    }
 
     fn fixture() -> (PathBuf, PathBuf, PathBuf, PathBuf) {
         let outer = std::env::temp_dir().join(format!(
