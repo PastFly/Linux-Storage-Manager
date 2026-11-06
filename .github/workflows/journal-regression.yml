@@ -61,7 +61,11 @@ jobs:
             cargo test --locked -p lsm-executor --lib backup_recovery_storage::tests -- --test-threads=16
           done
       - name: Test recovery copy collector
-        run: cargo test --locked -p lsm-executor --lib backup_recovery_collector::tests
+        run: |
+          LSM_COLLECTOR_WATCH_DIAGNOSTICS=1 cargo test --locked -p lsm-executor --lib backup_recovery_collector::tests -- --test-threads=1 --nocapture
+          for attempt in 1 2 3; do
+            LSM_COLLECTOR_WATCH_DIAGNOSTICS=1 cargo test --locked -p lsm-executor --lib backup_recovery_collector::tests -- --test-threads=16 --nocapture
+          done
       - name: Test v2 precondition attachment
         run: cargo test --locked -p lsm-executor --lib journal_store::tests::v2_
       - name: Test experimental journal binding model

@@ -17,6 +17,130 @@ use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
+/// Optional parallel watcher used only to diagnose test failures. Its watch
+/// descriptors are independent of `DirectoryWatch`; it never grants safety.
+struct WatchDiagnostics {
+    file: File,
+    paths: Vec<(libc::c_int, std::path::PathBuf)>,
+}
+
+impl WatchDiagnostics {
+    fn maybe_new(directory: &JournalDir) -> Result<Option<Self>, CollectorError> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        if std::env::var_os("LSM_COLLECTOR_WATCH_DIAGNOSTICS").is_none() {
+            return Ok(None);
+        }
+        let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let file = unsafe { File::from_raw_fd(fd) };
+        let nodes = directory.test_namespace_fds();
+        let mut paths = Vec::new();
+        for (index, node) in nodes.iter().enumerate() {
+            let proc_path = format!("/proc/self/fd/{node}");
+            let path = std::fs::read_link(&proc_path)?;
+            let c_path = std::ffi::CString::new(proc_path).map_err(|_| CollectorError::Changed)?;
+            let mask = if index + 1 == nodes.len() {
+                libc::IN_CREATE
+                    | libc::IN_DELETE
+                    | libc::IN_MOVED_FROM
+                    | libc::IN_MOVED_TO
+                    | libc::IN_MODIFY
+                    | libc::IN_ATTRIB
+                    | libc::IN_CLOSE_WRITE
+                    | libc::IN_DELETE_SELF
+                    | libc::IN_MOVE_SELF
+                    | libc::IN_UNMOUNT
+            } else {
+                libc::IN_ATTRIB | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF | libc::IN_UNMOUNT
+            };
+            let wd = unsafe { libc::inotify_add_watch(file.as_raw_fd(), c_path.as_ptr(), mask) };
+            if wd < 0 {
+                return Err(io::Error::last_os_error().into());
+            }
+            paths.push((wd, path));
+        }
+        Ok(Some(Self { file, paths }))
+    }
+
+    fn drain(&mut self, phase: &str, report: bool) -> Result<(), CollectorError> {
+        let mut bytes = [0u8; 8192];
+        loop {
+            let length = match self.file.read(&mut bytes) {
+                Ok(0) => return Err(CollectorError::Changed),
+                Ok(length) => length,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) => return Err(error.into()),
+            };
+            let header_size = std::mem::size_of::<libc::inotify_event>();
+            let mut offset = 0;
+            while offset < length {
+                if length - offset < header_size {
+                    return Err(CollectorError::Changed);
+                }
+                let event = unsafe {
+                    std::ptr::read_unaligned(
+                        bytes.as_ptr().add(offset).cast::<libc::inotify_event>(),
+                    )
+                };
+                let end = offset
+                    .checked_add(header_size)
+                    .and_then(|n| n.checked_add(event.len as usize))
+                    .filter(|n| *n <= length)
+                    .ok_or(CollectorError::Changed)?;
+                let name = &bytes[offset + header_size..end];
+                if report {
+                    let path = self
+                        .paths
+                        .iter()
+                        .find(|(wd, _)| *wd == event.wd)
+                        .map(|(_, path)| path.as_path());
+                    eprintln!("collector watch: phase={phase} wd={} mask={:#x} cookie={} path={path:?} name={:?}", event.wd, event.mask, event.cookie, String::from_utf8_lossy(name).trim_end_matches('\0'));
+                }
+                offset = end;
+            }
+        }
+    }
+}
+
+fn check_watch(
+    watch: &mut DirectoryWatch,
+    diagnostics: &mut Option<WatchDiagnostics>,
+    phase: &str,
+) -> Result<(), CollectorError> {
+    let result = watch.require_unchanged();
+    if let Some(diagnostics) = diagnostics {
+        diagnostics.drain(phase, result.is_err())?;
+        if result.is_err() {
+            eprintln!("collector watch failure: phase={phase}");
+        }
+    }
+    result.map_err(CollectorError::from)
+}
+
+fn trace_journal<T>(
+    phase: &str,
+    result: Result<T, JournalStoreError>,
+) -> Result<T, CollectorError> {
+    result.map_err(|error| {
+        if std::env::var_os("LSM_COLLECTOR_WATCH_DIAGNOSTICS").is_some() {
+            eprintln!("collector journal failure: phase={phase} error={error:?}");
+        }
+        error.into()
+    })
+}
+
+fn trace_collector<T>(phase: &str, result: Result<T, CollectorError>) -> Result<T, CollectorError> {
+    result.map_err(|error| {
+        if std::env::var_os("LSM_COLLECTOR_WATCH_DIAGNOSTICS").is_some() {
+            eprintln!("collector failure: phase={phase} error={error:?}");
+        }
+        error
+    })
+}
+
 const MAX_ARTIFACT_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -144,9 +268,15 @@ fn prepare_with_hook(
     {
         return Err(CollectorError::InvalidEvidence);
     }
-    primary_dir.verify_namespace()?;
-    recovery_dir.verify_namespace()?;
-    let mut primary_watch = primary_dir.watch_namespace()?;
+    let mut primary_diagnostics = WatchDiagnostics::maybe_new(&primary_dir)?;
+    let mut primary_watch = trace_journal("primary-watch-install", primary_dir.watch_namespace())?;
+    trace_journal("primary-initial-verify", primary_dir.verify_namespace())?;
+    check_watch(
+        &mut primary_watch,
+        &mut primary_diagnostics,
+        "primary-initial-check",
+    )?;
+    trace_journal("recovery-initial-verify", recovery_dir.verify_namespace())?;
     if !recovery_dir.names()?.is_empty() {
         return Err(CollectorError::Changed);
     }
@@ -156,33 +286,46 @@ fn prepare_with_hook(
         let name = Path::new(&artifact.artifact_path)
             .file_name()
             .ok_or(CollectorError::InvalidEvidence)?;
-        let (primary, original, bytes) = read_checked(
-            &primary_dir,
-            name,
-            artifact.size_bytes,
-            &artifact.sha256,
-            Some((artifact.device_id, artifact.inode)),
+        let (primary, original, bytes) = trace_collector(
+            "primary-initial-read",
+            read_checked(
+                &primary_dir,
+                name,
+                artifact.size_bytes,
+                &artifact.sha256,
+                Some((artifact.device_id, artifact.inode)),
+            ),
         )?;
         primary.sync_all()?;
-        primary_dir.verify_namespace()?;
-        primary_watch.require_unchanged()?;
+        trace_journal("primary-before-copy", primary_dir.verify_namespace())?;
+        check_watch(
+            &mut primary_watch,
+            &mut primary_diagnostics,
+            "primary-before-copy",
+        )?;
         let mut recovery_name = name.to_os_string();
         recovery_name.push(".recovery");
         // O_EXCL is implemented by the isolated journal writer: never reuse,
         // overwrite, or delete an existing/partially written recovery file.
-        let created = recovery_dir.write_staged_file(&recovery_name, &bytes)?;
+        let created = trace_journal(
+            "recovery-write",
+            recovery_dir.write_staged_file(&recovery_name, &bytes),
+        )?;
         let created_metadata = created.metadata()?;
         if !trusted_journal_file(&created_metadata) {
             return Err(CollectorError::InvalidEvidence);
         }
         recovery_dir.sync()?;
-        recovery_dir.verify_namespace()?;
-        let (recovery, recovered, _) = read_checked(
-            &recovery_dir,
-            &recovery_name,
-            artifact.size_bytes,
-            &artifact.sha256,
-            None,
+        trace_journal("recovery-after-copy", recovery_dir.verify_namespace())?;
+        let (recovery, recovered, _) = trace_collector(
+            "recovery-initial-read",
+            read_checked(
+                &recovery_dir,
+                &recovery_name,
+                artifact.size_bytes,
+                &artifact.sha256,
+                None,
+            ),
         )?;
         if !same_file(&created_metadata, &recovered)
             || (original.dev(), original.ino()) == (recovered.dev(), recovered.ino())
@@ -202,26 +345,34 @@ fn prepare_with_hook(
     }
     // New copies were written by us. Arm the watcher after publication, then
     // re-read pinned evidence. This is diagnostics, not a substitute for leases.
-    let mut recovery_watch = recovery_dir.watch_namespace()?;
+    let mut recovery_diagnostics = WatchDiagnostics::maybe_new(&recovery_dir)?;
+    let mut recovery_watch =
+        trace_journal("recovery-watch-install", recovery_dir.watch_namespace())?;
     for (artifact, pair) in receipt.artifacts().iter().zip(&pairs) {
         let name = Path::new(&artifact.artifact_path)
             .file_name()
             .ok_or(CollectorError::InvalidEvidence)?;
         let mut recovery_name = name.to_os_string();
         recovery_name.push(".recovery");
-        let (_, primary_metadata, _) = read_checked(
-            &primary_dir,
-            name,
-            artifact.size_bytes,
-            &artifact.sha256,
-            Some((artifact.device_id, artifact.inode)),
+        let (_, primary_metadata, _) = trace_collector(
+            "primary-final-read",
+            read_checked(
+                &primary_dir,
+                name,
+                artifact.size_bytes,
+                &artifact.sha256,
+                Some((artifact.device_id, artifact.inode)),
+            ),
         )?;
-        let (_, recovery_metadata, _) = read_checked(
-            &recovery_dir,
-            &recovery_name,
-            artifact.size_bytes,
-            &artifact.sha256,
-            None,
+        let (_, recovery_metadata, _) = trace_collector(
+            "recovery-final-read",
+            read_checked(
+                &recovery_dir,
+                &recovery_name,
+                artifact.size_bytes,
+                &artifact.sha256,
+                None,
+            ),
         )?;
         if !same_file(&primary_metadata, &pair._primary.metadata()?)
             || !same_file(&recovery_metadata, &pair._recovery.metadata()?)
@@ -231,10 +382,18 @@ fn prepare_with_hook(
     }
     primary_dir.sync()?;
     recovery_dir.sync()?;
-    primary_dir.verify_namespace()?;
-    recovery_dir.verify_namespace()?;
-    primary_watch.require_unchanged()?;
-    recovery_watch.require_unchanged()?;
+    trace_journal("primary-final-verify", primary_dir.verify_namespace())?;
+    trace_journal("recovery-final-verify", recovery_dir.verify_namespace())?;
+    check_watch(
+        &mut primary_watch,
+        &mut primary_diagnostics,
+        "primary-final-check",
+    )?;
+    check_watch(
+        &mut recovery_watch,
+        &mut recovery_diagnostics,
+        "recovery-final-check",
+    )?;
     if recovery_dir.names()? != expected_names {
         return Err(CollectorError::Changed);
     }
