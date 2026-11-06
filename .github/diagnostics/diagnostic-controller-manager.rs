@@ -378,6 +378,21 @@ pub fn launcher(
             )));
         }
     };
+    if std::env::var_os("LSM_TEST_STOP_AFTER_ACK_BEFORE_GO").as_deref() == Some(OsStr::new("1")) {
+        let barrier = (|| -> io::Result<()> {
+            send_byte(&guard.socket, b'B')?;
+            if unsafe { libc::raise(libc::SIGSTOP) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        })();
+        if let Err(error) = barrier {
+            let cleanup = super::stop_and_wait(&mut worker);
+            return Err(io::Error::other(format!(
+                "launcher barrier: {error}; cleanup: {cleanup:?}"
+            )));
+        }
+    }
     if let Err(error) = worker.go(&mut guard) {
         let cleanup = super::stop_and_wait(&mut worker);
         return Err(io::Error::other(format!(
@@ -807,6 +822,50 @@ fn run_manager(
     // after this point; it must never be interpreted as permission to mutate.
     guard.diagnostic_heartbeat()?;
     send_byte(&manager, b'A')?;
+    if std::env::var_os("LSM_TEST_STOP_AFTER_ACK_BEFORE_GO").as_deref() == Some(OsStr::new("1")) {
+        supervisor::diagnostic_wait_peer(&manager, launcher_fd)?;
+        supervisor::diagnostic_receive_byte(&manager, child.id() as libc::pid_t, b'B')?;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            if unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    child.id() as libc::id_t,
+                    &mut info,
+                    libc::WSTOPPED | libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            } != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if unsafe { info.si_pid() } != 0 {
+                if info.si_code != libc::CLD_STOPPED {
+                    return Err(invalid("launcher exited before post-ACK barrier"));
+                }
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(invalid("post-ACK barrier timed out"));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        println!(
+            "AFTER-ACK {observer_pid} {worker_pid} {} {}",
+            child.id(),
+            path.display()
+        );
+        io::stdout().flush()?;
+        let mut item = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut item, 1, 1000) } != 1 || item.revents != libc::POLLIN {
+            return Err(invalid("post-ACK manager barrier timed out"));
+        }
+        return Err(invalid("unexpected post-ACK barrier input"));
+    }
     let deadline = Instant::now() + Duration::from_secs(5);
     let descendant = loop {
         if Instant::now() >= deadline {
