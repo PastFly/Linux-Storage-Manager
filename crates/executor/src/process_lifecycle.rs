@@ -1011,12 +1011,24 @@ struct LauncherSpec<'a> {
     keep: &'a [RawFd],
     inherited: &'a [RawFd],
     executable: RawFd,
+    stop_before_exec: bool,
     argv: &'a [*const libc::c_char],
     env: &'a [*const libc::c_char],
 }
 // The post-clone path performs only stack operations and async-signal-safe
 // kernel calls. The caller is single-threaded and has blocked signals.
 unsafe fn launcher_child(spec: &LauncherSpec<'_>) -> ! {
+    // Disposable test barrier: the child is already inside the guarded scope.
+    if spec.stop_before_exec
+        && libc::syscall(
+            libc::SYS_tgkill,
+            libc::getpid(),
+            libc::syscall(libc::SYS_gettid),
+            libc::SIGSTOP,
+        ) != 0
+    {
+        libc::_exit(119);
+    }
     let mut first = 3u32;
     for &raw in spec.keep {
         let end = raw as u32;
@@ -1080,6 +1092,9 @@ fn spawn_atomic_launcher(
         keep: &keep,
         inherited,
         executable: executable.as_raw_fd(),
+        stop_before_exec: std::env::var_os("LSM_TEST_LIFECYCLE_STOP_MANAGER_AFTER_GUARD")
+            .as_deref()
+            == Some(OsStr::new("1")),
         argv: &argv,
         env: &env,
     };
