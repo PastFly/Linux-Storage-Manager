@@ -19,6 +19,7 @@ use crate::{
 };
 
 const MAX_BACKUP_ARTIFACT_BYTES: u64 = 16 * 1024 * 1024;
+const BACKUP_RECEIPT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BackupArtifactReceipt {
@@ -622,7 +623,7 @@ fn capture_with_runner(
     sync_backup_directory(artifact_root)?;
 
     let receipt_id = fingerprint(&(
-        1_u32,
+        BACKUP_RECEIPT_SCHEMA_VERSION,
         manifest.manifest_id(),
         manifest.handoff_id(),
         manifest.plan_id(),
@@ -634,7 +635,7 @@ fn capture_with_runner(
     ))?;
 
     Ok(MetadataBackupReceipt {
-        schema_version: 1,
+        schema_version: BACKUP_RECEIPT_SCHEMA_VERSION,
         receipt_id,
         manifest_id: manifest.manifest_id().to_owned(),
         handoff_id: manifest.handoff_id().to_owned(),
@@ -658,7 +659,7 @@ fn revalidate_receipt_at_root(
     if manifest.mutation_enabled() || receipt.mutation_enabled || MUTATION_ENABLED {
         blockers.push("mutation-enabled backup evidence is forbidden".to_owned());
     }
-    if receipt.schema_version != 1 {
+    if receipt.schema_version != BACKUP_RECEIPT_SCHEMA_VERSION {
         blockers.push("receipt schema version is unsupported".to_owned());
     }
     if receipt.manifest_id != manifest.manifest_id()
@@ -679,7 +680,7 @@ fn revalidate_receipt_at_root(
     }
 
     let expected_receipt_id = fingerprint(&(
-        1_u32,
+        BACKUP_RECEIPT_SCHEMA_VERSION,
         manifest.manifest_id(),
         manifest.handoff_id(),
         manifest.plan_id(),
@@ -1733,6 +1734,7 @@ mod tests {
 
         assert!(!receipt.mutation_enabled());
         assert_eq!(receipt.manifest_id(), manifest.manifest_id());
+        assert_eq!(serde_json::to_value(&receipt).unwrap()["schema_version"], 2);
         assert_eq!(receipt.handoff_id(), handoff.handoff_id());
         assert_eq!(receipt.artifacts().len(), 1);
         assert_eq!(
