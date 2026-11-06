@@ -1,6 +1,8 @@
 mod approval;
 mod backup_capture;
 mod backup_manifest;
+#[cfg(test)]
+mod backup_recovery_record;
 #[cfg(feature = "production-mutation-execution")]
 mod backup_observer;
 #[cfg(test)]
