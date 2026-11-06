@@ -31,6 +31,12 @@ jobs:
           shopt -s nullglob
           trap 'sudo rmdir /sys/fs/cgroup/lsm-disposable-watchdog-test/lsm-backup-* /sys/fs/cgroup/lsm-disposable-watchdog-test || true' EXIT
           sudo env PATH="$PATH" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" LSM_TEST_DISPOSABLE_CGROUP=/sys/fs/cgroup/lsm-disposable-watchdog-test LSM_TEST_OBSERVER_EXE=/tmp/lsm-watchdog-cli/debug/storagemgr cargo test --locked -p lsm-executor --features diagnostic-backup-watchdog --lib backup_supervisor::tests::watchdog_ -- --ignored --test-threads=1
+      - name: Test disposable manager and worker lifecycle
+        run: |
+          sudo mkdir /sys/fs/cgroup/lsm-disposable-lifecycle-test
+          shopt -s nullglob
+          trap 'sudo rmdir /sys/fs/cgroup/lsm-disposable-lifecycle-test/lsm-backup-* /sys/fs/cgroup/lsm-disposable-lifecycle-test || true' EXIT
+          sudo env LSM_TEST_DISPOSABLE_CGROUP=/sys/fs/cgroup/lsm-disposable-lifecycle-test python3 -I .github/diagnostics/test-controller-lifecycle.py /tmp/lsm-watchdog-cli/debug/storagemgr /tmp/lsm-watchdog-cli/debug/storagemgr /sys/fs/cgroup/lsm-disposable-lifecycle-test manager-death
 
   atomic-launch-probe:
     runs-on: ubuntu-24.04
