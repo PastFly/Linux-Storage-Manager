@@ -268,6 +268,21 @@ impl JournalDir {
         let path = self.path.join(name);
         let c_name = CString::new(name.as_bytes())
             .map_err(|_| JournalStoreError::UnsafeDirectory(path.clone()))?;
+        // With automatic reaping or an application reaper, waitpid cannot prove
+        // that our writer exited. Reject before creating any staging evidence.
+        let mut action = unsafe { std::mem::zeroed::<libc::sigaction>() };
+        if unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut action) } != 0 {
+            return Err(failure(&path, io::Error::last_os_error()));
+        }
+        if action.sa_sigaction != libc::SIG_DFL || action.sa_flags & libc::SA_NOCLDWAIT != 0 {
+            return Err(failure(
+                &path,
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "journal writer requires the default SIGCHLD disposition",
+                ),
+            ));
+        }
         let mut pipe = [-1; 2];
         if unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
             return Err(failure(&path, io::Error::last_os_error()));

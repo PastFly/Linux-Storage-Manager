@@ -1720,14 +1720,25 @@ mod tests {
     }
 
     #[test]
-    fn ignored_sigchld_rejects_writer_before_creating_stage() {
-        const MARKER: &str = "LSM_TEST_IGNORED_SIGCHLD";
-        if std::env::var_os(MARKER).is_some() {
+    fn automatic_sigchld_reaping_rejects_writer_before_creating_stage() {
+        const MARKER: &str = "LSM_TEST_AUTOMATIC_SIGCHLD_REAPING";
+        if let Some(mode) = std::env::var_os(MARKER) {
             let root = root("ignored-sigchld");
             fs::create_dir(&root).unwrap();
             let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
             unsafe {
-                libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+                let mut action = std::mem::zeroed::<libc::sigaction>();
+                libc::sigemptyset(&mut action.sa_mask);
+                if mode == "ignore" {
+                    action.sa_sigaction = libc::SIG_IGN;
+                } else {
+                    action.sa_sigaction = libc::SIG_DFL;
+                    action.sa_flags = libc::SA_NOCLDWAIT;
+                }
+                assert_eq!(
+                    libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut()),
+                    0
+                );
             }
             assert!(directory
                 .write_staged_file(std::ffi::OsStr::new(".staged-test"), b"record")
@@ -1736,15 +1747,17 @@ mod tests {
             fs::remove_dir_all(root).unwrap();
             return;
         }
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "journal_store::tests::ignored_sigchld_rejects_writer_before_creating_stage",
-            ])
-            .env(MARKER, "1")
-            .status()
-            .unwrap();
-        assert!(status.success());
+        for mode in ["ignore", "no-cldwait"] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "journal_store::tests::automatic_sigchld_reaping_rejects_writer_before_creating_stage",
+                ])
+                .env(MARKER, mode)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
     }
 
     #[test]
