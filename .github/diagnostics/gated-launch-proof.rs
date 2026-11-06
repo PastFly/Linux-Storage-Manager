@@ -563,6 +563,53 @@ mod linux {
         }
     }
 
+    #[cfg(test)]
+    mod stop_tests {
+        use super::*;
+        use std::io::Write;
+
+        #[test]
+        fn both_stop_failures_are_reported_without_blocking_on_live_child() {
+            let mut child = std::process::Command::new("/bin/sleep")
+                .arg("2")
+                .spawn()
+                .unwrap();
+            let path =
+                std::env::temp_dir().join(format!("lsm-stop-test-events-{}", std::process::id()));
+            let mut events = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            events.write_all(b"populated 0\n").unwrap();
+            let kill = File::open("/dev/null").unwrap();
+            let started = Instant::now();
+            let result = stop_and_reap(child.id() as libc::pid_t, -1, &kill, &mut events);
+            let elapsed = started.elapsed();
+            match child.try_wait() {
+                Ok(None) => {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                }
+                Ok(Some(_)) => {}
+                Err(error) if error.raw_os_error() == Some(libc::ECHILD) => {}
+                Err(error) => panic!("unexpected child state: {error}"),
+            }
+            std::fs::remove_file(path).unwrap();
+            let error = result.expect_err("both stop operations failed");
+            let message = error.to_string();
+            assert!(
+                elapsed < Duration::from_millis(500),
+                "stop blocked for {elapsed:?}"
+            );
+            assert!(
+                message.contains("pidfd") && message.contains("cgroup"),
+                "both errors must be reported: {message}"
+            );
+        }
+    }
+
     pub fn main() -> io::Result<()> {
         let args: Vec<_> = std::env::args_os().collect();
         if args.len() == 2 && args[1] == "--worker" {
