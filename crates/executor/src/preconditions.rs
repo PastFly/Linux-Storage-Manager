@@ -292,6 +292,17 @@ pub(crate) fn verify_preconditions_with_recovery_hook(
         session_id: binding.session_id.clone(),
         handoff_id: binding.handoff_id.clone(),
     };
+    // This detects the injected removal/replacement, but the check and journal
+    // CAS are not atomic. V2 approval remains unconditionally unavailable.
+    let current = crate::backup_recovery_storage::load(
+        &recovery.root,
+        recovery.record.record_id(),
+        recovery.record.binding(),
+    )
+    .map_err(|_| PreconditionsVerificationError::BackupBindingInvalid)?;
+    if current != record {
+        return Err(PreconditionsVerificationError::BackupBindingInvalid);
+    }
     session.persist_preconditions_with_test_recovery(&journal_binding)?;
     verified_preconditions(session, evidence)
 }
