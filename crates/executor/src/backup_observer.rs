@@ -7,7 +7,7 @@ mod linux {
     use std::mem::{size_of, zeroed};
     use std::os::unix::ffi::OsStrExt;
     use std::ptr;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     const MAX_LEASES: usize = 32;
     const MAX_FDS: usize = MAX_LEASES + 2;
@@ -132,6 +132,47 @@ mod linux {
         }
     }
 
+    // `msg` must be the untouched result of recvmsg into our bounded buffer.
+    // Even a rejected/truncated packet may have installed SCM_RIGHTS FDs.
+    fn close_received_rights(msg: &libc::msghdr) -> bool {
+        let mut header = unsafe { libc::CMSG_FIRSTHDR(msg) };
+        let mut found = false;
+        while !header.is_null() {
+            let len = unsafe { (*header).cmsg_len };
+            let minimum = unsafe { libc::CMSG_LEN(0) } as usize;
+            let offset = (header as usize).saturating_sub(msg.msg_control as usize);
+            if len < minimum || offset > msg.msg_controllen || len > msg.msg_controllen - offset {
+                return true;
+            }
+            if unsafe { (*header).cmsg_level } == libc::SOL_SOCKET
+                && unsafe { (*header).cmsg_type } == libc::SCM_RIGHTS
+            {
+                found = true;
+                let count = (len - minimum) / size_of::<c_int>();
+                let data = unsafe { libc::CMSG_DATA(header).cast::<c_int>() };
+                for index in 0..count {
+                    let fd = unsafe { ptr::read_unaligned(data.add(index)) };
+                    unsafe {
+                        libc::close(fd);
+                    }
+                }
+            }
+            header = unsafe { libc::CMSG_NXTHDR(msg, header) };
+        }
+        found
+    }
+
+    fn send_ack(fd: c_int, byte: u8) -> bool {
+        unsafe {
+            libc::send(
+                fd,
+                (&byte as *const u8).cast(),
+                1,
+                libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT,
+            ) == 1
+        }
+    }
+
     fn pidfd_for_peer(fd: c_int, peer_pid: libc::pid_t) -> Option<bool> {
         let target = std::fs::read_link(format!("/proc/self/fd/{fd}")).ok()?;
         if target.as_os_str() != OsStr::from_bytes(b"anon_inode:[pidfd]") {
@@ -164,6 +205,16 @@ mod linux {
             .and_then(|s| s.parse::<c_int>().ok());
         let Some(raw) = raw.filter(|&fd| fd >= 3) else {
             exit(2)
+        };
+        let diagnostic = match args.next() {
+            None => false,
+            Some(arg)
+                if cfg!(feature = "diagnostic-backup-watchdog")
+                    && arg == OsStr::new("--diagnostic-watchdog") =>
+            {
+                true
+            }
+            _ => exit(2),
         };
         if args.next().is_some() {
             exit(2);
@@ -351,8 +402,23 @@ mod linux {
             *fd = reopened;
         }
         unsafe { libc::close(proc_fd) };
-        let ack = || unsafe { libc::send(CONTROL_FD, b"R".as_ptr().cast(), 1, libc::MSG_NOSIGNAL) };
-        if manager_dead || signal_ready(signal_fd) != Some(false) || ack() != 1 {
+        if diagnostic {
+            let enabled: c_int = 1;
+            if unsafe {
+                libc::setsockopt(
+                    CONTROL_FD,
+                    libc::SOL_SOCKET,
+                    libc::SO_PASSCRED,
+                    (&enabled as *const c_int).cast(),
+                    size_of::<c_int>() as libc::socklen_t,
+                )
+            } != 0
+            {
+                kill_and_wait(kill_fd, events);
+                exit(5);
+            }
+        }
+        if manager_dead || signal_ready(signal_fd) != Some(false) || !send_ack(CONTROL_FD, b'R') {
             kill_and_wait(kill_fd, events);
             exit(5);
         }
@@ -373,9 +439,29 @@ mod linux {
                 revents: 0,
             },
         ];
+        // Diagnostic only; scheduling stalls and forced lease breaks remain unbounded.
+        const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(2);
+        let mut deadline = Instant::now() + WATCHDOG_TIMEOUT;
         loop {
-            let result =
-                unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as libc::nfds_t, -1) };
+            let timeout = if diagnostic {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                deadline
+                    .saturating_duration_since(now)
+                    .as_millis()
+                    .clamp(1, i32::MAX as u128) as i32
+            } else {
+                -1
+            };
+            let result = unsafe {
+                libc::poll(
+                    poll_fds.as_mut_ptr(),
+                    poll_fds.len() as libc::nfds_t,
+                    timeout,
+                )
+            };
             if result < 0 && interrupted() {
                 continue;
             }
@@ -384,6 +470,9 @@ mod linux {
                 || poll_fds[2].revents != 0
                 || poll_fds[1].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0
             {
+                break;
+            }
+            if diagnostic && Instant::now() >= deadline {
                 break;
             }
             if poll_fds[1].revents & libc::POLLIN != 0 {
@@ -395,29 +484,196 @@ mod linux {
                 let mut msg: libc::msghdr = unsafe { zeroed() };
                 msg.msg_iov = &mut iov;
                 msg.msg_iovlen = 1;
+                let mut control = [0usize; 16];
+                if diagnostic {
+                    msg.msg_control = control.as_mut_ptr().cast();
+                    msg.msg_controllen = size_of::<[usize; 16]>();
+                }
                 let n = unsafe { libc::recvmsg(CONTROL_FD, &mut msg, libc::MSG_CMSG_CLOEXEC) };
+                let received_rights = n >= 0 && close_received_rights(&msg);
+                let authenticated = if diagnostic && !received_rights {
+                    let header = unsafe { libc::CMSG_FIRSTHDR(&msg) };
+                    if header.is_null() {
+                        false
+                    } else {
+                        let len = unsafe { (*header).cmsg_len };
+                        let expected =
+                            unsafe { libc::CMSG_LEN(size_of::<libc::ucred>() as u32) } as usize;
+                        let space =
+                            unsafe { libc::CMSG_SPACE(size_of::<libc::ucred>() as u32) } as usize;
+                        if unsafe { (*header).cmsg_level } != libc::SOL_SOCKET
+                            || unsafe { (*header).cmsg_type } != libc::SCM_CREDENTIALS
+                            || len != expected
+                            || msg.msg_controllen != space
+                        {
+                            false
+                        } else {
+                            let credentials = unsafe {
+                                ptr::read_unaligned(libc::CMSG_DATA(header).cast::<libc::ucred>())
+                            };
+                            credentials.pid == peer.pid && credentials.uid == peer.uid
+                        }
+                    }
+                } else {
+                    !diagnostic && !received_rights && msg.msg_controllen == 0
+                };
+                if diagnostic
+                    && n == 1
+                    && byte == b'H'
+                    && msg.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) == 0
+                    && authenticated
+                    && signal_ready(signal_fd) == Some(false)
+                    && signal_ready(manager) == Some(false)
+                    && fds[2..count as usize + 2]
+                        .iter()
+                        .all(|&fd| unsafe { libc::fcntl(fd, libc::F_GETLEASE) } == libc::F_RDLCK)
+                {
+                    if !send_ack(CONTROL_FD, b'H') {
+                        break;
+                    }
+                    deadline = Instant::now() + WATCHDOG_TIMEOUT;
+                    continue;
+                }
                 if n == 1
                     && byte == b'Q'
                     && msg.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) == 0
-                    && msg.msg_controllen == 0
+                    && authenticated
                     && populated(events) == Some(false)
                     && signal_ready(signal_fd) == Some(false)
                     && fds[2..count as usize + 2]
                         .iter()
                         .all(|&fd| unsafe { libc::fcntl(fd, libc::F_GETLEASE) } == libc::F_RDLCK)
+                    && send_ack(CONTROL_FD, b'Q')
                 {
-                    let n = unsafe {
-                        libc::send(CONTROL_FD, b"Q".as_ptr().cast(), 1, libc::MSG_NOSIGNAL)
-                    };
-                    if n == 1 {
-                        exit(0);
-                    }
+                    exit(0);
                 }
                 break;
             }
         }
         kill_and_wait(kill_fd, events);
         exit(0);
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn ready_heartbeat_and_disarm_ack_fail_promptly_when_socket_queue_is_full() {
+            let mut fds = [-1; 2];
+            assert_eq!(
+                unsafe {
+                    libc::socketpair(
+                        libc::AF_UNIX,
+                        libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                        0,
+                        fds.as_mut_ptr(),
+                    )
+                },
+                0
+            );
+            for _ in 0..100_000 {
+                if !send_ack(fds[0], b'H') {
+                    break;
+                }
+            }
+            let started = Instant::now();
+            assert!(!send_ack(fds[0], b'R'));
+            assert!(!send_ack(fds[0], b'H'));
+            assert!(!send_ack(fds[0], b'Q'));
+            assert!(started.elapsed() < Duration::from_millis(250));
+            unsafe {
+                libc::close(fds[0]);
+                libc::close(fds[1]);
+            }
+        }
+
+        #[test]
+        fn received_rights_are_closed_even_when_control_is_truncated() {
+            let mut sockets = [-1; 2];
+            let mut pipes = [-1; 2];
+            assert_eq!(
+                unsafe {
+                    libc::socketpair(
+                        libc::AF_UNIX,
+                        libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                        0,
+                        sockets.as_mut_ptr(),
+                    )
+                },
+                0
+            );
+            assert_eq!(
+                unsafe { libc::pipe2(pipes.as_mut_ptr(), libc::O_CLOEXEC) },
+                0
+            );
+            let enabled: c_int = 1;
+            assert_eq!(
+                unsafe {
+                    libc::setsockopt(
+                        sockets[1],
+                        libc::SOL_SOCKET,
+                        libc::SO_PASSCRED,
+                        (&enabled as *const c_int).cast(),
+                        size_of::<c_int>() as libc::socklen_t,
+                    )
+                },
+                0
+            );
+            let sent_fds = [pipes[0], pipes[1], pipes[0]];
+            let mut byte = b'H';
+            let mut iov = libc::iovec {
+                iov_base: (&mut byte as *mut u8).cast(),
+                iov_len: 1,
+            };
+            let mut outgoing = [0usize; 16];
+            let mut msg: libc::msghdr = unsafe { zeroed() };
+            msg.msg_iov = &mut iov;
+            msg.msg_iovlen = 1;
+            msg.msg_control = outgoing.as_mut_ptr().cast();
+            msg.msg_controllen =
+                unsafe { libc::CMSG_SPACE((3 * size_of::<c_int>()) as u32) } as usize;
+            let header = unsafe { libc::CMSG_FIRSTHDR(&msg) };
+            unsafe {
+                (*header).cmsg_level = libc::SOL_SOCKET;
+                (*header).cmsg_type = libc::SCM_RIGHTS;
+                (*header).cmsg_len = libc::CMSG_LEN((3 * size_of::<c_int>()) as u32) as usize;
+                ptr::copy_nonoverlapping(
+                    sent_fds.as_ptr(),
+                    libc::CMSG_DATA(header).cast::<c_int>(),
+                    3,
+                );
+            }
+            assert_eq!(unsafe { libc::sendmsg(sockets[0], &msg, 0) }, 1);
+            let mut incoming = [0usize; 16];
+            msg.msg_control = incoming.as_mut_ptr().cast();
+            // Credentials fit, but only two of three passed FDs fit.
+            msg.msg_controllen = unsafe { libc::CMSG_SPACE(size_of::<libc::ucred>() as u32) }
+                as usize
+                + unsafe { libc::CMSG_LEN((2 * size_of::<c_int>()) as u32) } as usize;
+            assert_eq!(
+                unsafe { libc::recvmsg(sockets[1], &mut msg, libc::MSG_CMSG_CLOEXEC) },
+                1
+            );
+            assert_ne!(msg.msg_flags & libc::MSG_CTRUNC, 0);
+            let header = unsafe { libc::CMSG_FIRSTHDR(&msg) };
+            assert!(!header.is_null());
+            assert_eq!(unsafe { (*header).cmsg_type }, libc::SCM_CREDENTIALS);
+            let rights = unsafe { libc::CMSG_NXTHDR(&msg, header) };
+            assert!(!rights.is_null());
+            assert_eq!(unsafe { (*rights).cmsg_type }, libc::SCM_RIGHTS);
+            let data = unsafe { libc::CMSG_DATA(rights).cast::<c_int>() };
+            let received = unsafe { [ptr::read_unaligned(data), ptr::read_unaligned(data.add(1))] };
+            assert!(close_received_rights(&msg));
+            for fd in received {
+                assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+                assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+            }
+            for fd in sockets.into_iter().chain(pipes) {
+                unsafe {
+                    libc::close(fd);
+                }
+            }
+        }
     }
 }
 

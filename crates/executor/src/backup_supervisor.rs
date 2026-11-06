@@ -446,6 +446,7 @@ impl BackupSupervisor {
             backups,
             Path::new("/sys/fs/cgroup"),
             OsStr::new("/proc/self/exe"),
+            false,
         )
     }
 
@@ -456,10 +457,23 @@ impl BackupSupervisor {
         root: &Path,
         executable: &OsStr,
     ) -> io::Result<Self> {
-        Self::start_inner(backups, root, executable)
+        Self::start_inner(backups, root, executable, false)
     }
 
-    fn start_inner(backups: Vec<File>, root: &Path, executable: &OsStr) -> io::Result<Self> {
+    #[cfg(all(test, feature = "diagnostic-backup-watchdog"))]
+    fn start_watchdog_at(backups: Vec<File>, root: &Path, executable: &OsStr) -> io::Result<Self> {
+        Self::start_inner(backups, root, executable, true)
+    }
+
+    fn start_inner(
+        backups: Vec<File>,
+        root: &Path,
+        executable: &OsStr,
+        diagnostic: bool,
+    ) -> io::Result<Self> {
+        if diagnostic && !cfg!(feature = "diagnostic-backup-watchdog") {
+            return Err(invalid("diagnostic watchdog unavailable"));
+        }
         if unsafe { libc::geteuid() } != 0 {
             return Err(invalid("observer requires root"));
         }
@@ -474,9 +488,11 @@ impl BackupSupervisor {
         })?;
         let raw = child_fd.as_raw_fd();
         let mut command = Command::new(executable);
+        command.arg("__lsm_backup_observer").arg(raw.to_string());
+        if diagnostic {
+            command.arg("--diagnostic-watchdog");
+        }
         command
-            .arg("__lsm_backup_observer")
-            .arg(raw.to_string())
             .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -674,15 +690,7 @@ impl Drop for BackupSupervisor {
 mod tests {
     use super::*;
 
-    // Red-phase test-only stub: the current observer has no watchdog mode.
-    fn start_watchdog_at(
-        backups: Vec<File>,
-        root: &Path,
-        executable: &OsStr,
-    ) -> io::Result<BackupSupervisor> {
-        BackupSupervisor::start_at(backups, root, executable)
-    }
-
+    #[cfg(feature = "diagnostic-backup-watchdog")]
     fn watchdog_fixture(suffix: &str) -> (BackupSupervisor, PathBuf) {
         use std::os::unix::fs::OpenOptionsExt;
         let root = PathBuf::from(
@@ -704,13 +712,18 @@ mod tests {
             .open(&backup)
             .unwrap();
         drop(writer);
-        let supervisor =
-            start_watchdog_at(vec![File::open(&backup).unwrap()], &root, &executable).unwrap();
+        let supervisor = BackupSupervisor::start_watchdog_at(
+            vec![File::open(&backup).unwrap()],
+            &root,
+            &executable,
+        )
+        .unwrap();
         (supervisor, backup)
     }
 
     #[test]
     #[ignore = "requires an explicitly delegated disposable Linux cgroup and observer executable"]
+    #[cfg(feature = "diagnostic-backup-watchdog")]
     fn watchdog_observer_acknowledges_heartbeat_without_releasing_lease() {
         let (supervisor, backup) = watchdog_fixture("heartbeat");
         let socket = supervisor.socket.as_ref().unwrap();
@@ -739,6 +752,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires an explicitly delegated disposable Linux cgroup and observer executable"]
+    #[cfg(feature = "diagnostic-backup-watchdog")]
     fn watchdog_observer_stops_when_manager_heartbeats_cease() {
         let (supervisor, backup) = watchdog_fixture("deadline");
         let mut item = libc::pollfd {
@@ -748,6 +762,33 @@ mod tests {
         };
         let result = unsafe { libc::poll(&mut item, 1, 5_000) };
         assert_eq!(result, 1, "observer did not stop after heartbeat deadline");
+        assert_ne!(item.revents & libc::POLLIN, 0);
+        assert!(supervisor.probe_observer_alive().is_err());
+        drop(supervisor);
+        std::fs::remove_file(backup).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly delegated disposable Linux cgroup and observer executable"]
+    #[cfg(feature = "diagnostic-backup-watchdog")]
+    fn watchdog_rejects_heartbeat_from_inherited_socket_in_another_process() {
+        let (supervisor, backup) = watchdog_fixture("foreign-heartbeat");
+        let socket = supervisor.socket.as_ref().unwrap().as_raw_fd();
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            let result = unsafe { libc::send(socket, b"H".as_ptr().cast(), 1, libc::MSG_NOSIGNAL) };
+            unsafe { libc::_exit(if result == 1 { 0 } else { 1 }) }
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+        let mut item = libc::pollfd {
+            fd: supervisor.observer_pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut item, 1, 1_000) }, 1);
         assert_ne!(item.revents & libc::POLLIN, 0);
         assert!(supervisor.probe_observer_alive().is_err());
         drop(supervisor);
