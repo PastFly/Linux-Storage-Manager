@@ -1812,6 +1812,60 @@ mod tests {
         assert_eq!(previous.phase, JournalPhase::PreconditionsVerified);
     }
 
+    #[test]
+    fn v2_can_attach_binding_only_with_preconditions_transition() {
+        let root = root("v2-attach-binding");
+        let store = DurableJournalStore::at(&root);
+        let mut initial = preconditions_wire(2);
+        initial["phase"] = json!("identity_revalidated");
+        initial["events"].as_array_mut().unwrap().pop();
+        let previous = decoded_wire(&initial).unwrap();
+        store.persist_new(&previous).unwrap();
+        let mut next = preconditions_wire(2);
+        next["recovery_binding"] = recovery_binding();
+        let next = decoded_wire(&next).unwrap();
+        store.persist_if_matches(&previous, &next).unwrap();
+        assert_eq!(store.load(&previous.journal_id).unwrap(), next);
+        assert_eq!(store.all().unwrap(), vec![next]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn journal_rejects_v1_binding_and_v2_binding_before_preconditions() {
+        let mut legacy = serde_json::to_value(journal()).unwrap();
+        legacy["recovery_binding"] = recovery_binding();
+        assert!(decoded_wire(&legacy).is_err());
+        let mut early = legacy;
+        early["schema_version"] = json!(2);
+        assert!(decoded_wire(&early).is_err());
+    }
+
+    #[test]
+    fn v2_approval_must_match_recovery_binding_session() {
+        let mut wire = preconditions_wire(2);
+        wire["recovery_binding"] = recovery_binding();
+        wire["recovery_binding"]["session_id"] = json!(digest('f'));
+        let mut previous = decoded_wire(&wire).unwrap();
+        let mut approval = ExactApprovalBinding {
+            schema_version: 1,
+            approval_id: String::new(),
+            plan_id: previous.plan_id.clone(),
+            evidence_bundle_id: digest('1'),
+            target_manifest_digest: previous.baseline_manifest_digest.clone(),
+            locked_session_id: digest('e'),
+            preconditions_journal_digest: crate::preconditions::journal_digest(&previous).unwrap(),
+        };
+        approval.approval_id = approval.expected_approval_id().unwrap();
+        let plan_id = previous.plan_id.clone();
+        assert!(previous
+            .apply(JournalTransition::ExactPlanApproved {
+                approved_plan_id: &plan_id,
+                approval: &approval
+            })
+            .is_err());
+        assert_eq!(previous.phase, JournalPhase::PreconditionsVerified);
+    }
+
     // This model is deliberately test-only. It does not modify the real v1
     // state machine, persist records, or establish crash safety.
     mod experimental_v2 {
