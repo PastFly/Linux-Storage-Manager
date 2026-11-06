@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_RECORD_BYTES: u64 = 64 * 1024;
+const MAX_WATCH_EVENTS: usize = 32;
+const MAX_WATCH_READ_ATTEMPTS: usize = 16;
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 // Experimental event checks can reject observed interference, but inotify
@@ -73,46 +75,7 @@ impl NamespaceWatch {
     }
 
     fn events(&mut self) -> Result<Vec<ObservedEvent>, StorageError> {
-        let mut events = Vec::new();
-        let mut bytes = [0_u8; 8192];
-        loop {
-            let length = match self.file.read(&mut bytes) {
-                Ok(0) => return Err(StorageError::Changed),
-                Ok(length) => length,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(events),
-                Err(error) => return Err(error.into()),
-            };
-            let header_size = std::mem::size_of::<libc::inotify_event>();
-            let mut offset = 0;
-            while offset < length {
-                if length - offset < header_size {
-                    return Err(StorageError::Changed);
-                }
-                let event = unsafe {
-                    std::ptr::read_unaligned(
-                        bytes.as_ptr().add(offset).cast::<libc::inotify_event>(),
-                    )
-                };
-                let end = offset
-                    .checked_add(header_size)
-                    .and_then(|value| value.checked_add(event.len as usize))
-                    .filter(|end| *end <= length)
-                    .ok_or(StorageError::Changed)?;
-                let name = &bytes[offset + header_size..end];
-                let name_len = name
-                    .iter()
-                    .position(|byte| *byte == 0)
-                    .unwrap_or(name.len());
-                events.push(ObservedEvent {
-                    wd: event.wd,
-                    mask: event.mask,
-                    cookie: event.cookie,
-                    name: name[..name_len].to_vec(),
-                });
-                offset = end;
-            }
-        }
+        collect_events(&mut self.file)
     }
 
     fn expect_empty(&mut self) -> Result<(), StorageError> {
@@ -157,6 +120,51 @@ impl NamespaceWatch {
     }
 }
 
+fn collect_events(reader: &mut impl Read) -> Result<Vec<ObservedEvent>, StorageError> {
+    let mut events = Vec::new();
+    let mut bytes = [0_u8; 8192];
+    for _ in 0..MAX_WATCH_READ_ATTEMPTS {
+        let length = match reader.read(&mut bytes) {
+            Ok(0) => return Err(StorageError::Changed),
+            Ok(length) => length,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(events),
+            Err(error) => return Err(error.into()),
+        };
+        let header_size = std::mem::size_of::<libc::inotify_event>();
+        let mut offset = 0;
+        while offset < length {
+            if length - offset < header_size {
+                return Err(StorageError::Changed);
+            }
+            let event = unsafe {
+                std::ptr::read_unaligned(bytes.as_ptr().add(offset).cast::<libc::inotify_event>())
+            };
+            let end = offset
+                .checked_add(header_size)
+                .and_then(|value| value.checked_add(event.len as usize))
+                .filter(|end| *end <= length)
+                .ok_or(StorageError::Changed)?;
+            let name = &bytes[offset + header_size..end];
+            let name_len = name
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(name.len());
+            if events.len() == MAX_WATCH_EVENTS {
+                return Err(StorageError::EventLimit);
+            }
+            events.push(ObservedEvent {
+                wd: event.wd,
+                mask: event.mask,
+                cookie: event.cookie,
+                name: name[..name_len].to_vec(),
+            });
+            offset = end;
+        }
+    }
+    Err(StorageError::EventLimit)
+}
+
 #[derive(Debug, thiserror::Error)]
 enum StorageError {
     #[error("recovery record validation failed: {0:?}")]
@@ -167,6 +175,8 @@ enum StorageError {
     Io(#[from] io::Error),
     #[error("recovery storage changed or was invalid")]
     Changed,
+    #[error("recovery storage event observation exceeded its limit")]
+    EventLimit,
     #[error("injected pre-publication failure")]
     Injected,
 }
@@ -414,6 +424,37 @@ mod tests {
         let moved = outer.join("ancestor-moved");
         fs::rename(&ancestor, &moved).unwrap();
         fs::rename(&moved, &ancestor).unwrap();
+    }
+
+    #[test]
+    fn excessive_observed_events_fail_closed() {
+        let root = temporary_directory();
+        let directory = JournalDir::open(&root).unwrap();
+        let mut watch = NamespaceWatch::new(&directory).unwrap();
+        for index in 0..=MAX_WATCH_EVENTS {
+            fs::write(root.join(format!("event-{index}")), b"data").unwrap();
+        }
+        let result = watch.events();
+        drop(watch);
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+        assert!(matches!(result, Err(StorageError::EventLimit)));
+    }
+
+    #[test]
+    fn repeated_interrupted_reads_fail_closed_after_bounded_attempts() {
+        struct InterruptedReader(usize);
+        impl Read for InterruptedReader {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                self.0 += 1;
+                Err(io::Error::from(io::ErrorKind::Interrupted))
+            }
+        }
+
+        let mut reader = InterruptedReader(0);
+        let result = collect_events(&mut reader);
+        assert!(matches!(result, Err(StorageError::EventLimit)));
+        assert_eq!(reader.0, MAX_WATCH_READ_ATTEMPTS);
     }
 
     #[test]
