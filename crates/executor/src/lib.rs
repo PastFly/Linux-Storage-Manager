@@ -281,8 +281,9 @@ pub use production_chained_verified_step::{
 };
 pub use production_consent::{
     verify_default_production_chained_mutation_consent, verify_default_production_mutation_consent,
-    ProductionMutationConsentDocument, ProductionMutationConsentError,
-    ProductionMutationConsentFileIdentity, ProductionMutationConsentReceipt,
+    verify_operator_production_mutation_consent, ProductionMutationConsentDocument,
+    ProductionMutationConsentError, ProductionMutationConsentFileIdentity,
+    ProductionMutationConsentReceipt, OPERATOR_MUTATION_CONSENT_DIRECTORY,
     PRODUCTION_MUTATION_CONSENT_COMPILED, PRODUCTION_MUTATION_CONSENT_PATH,
     PRODUCTION_MUTATION_CONSENT_PHRASE,
 };

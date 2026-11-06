@@ -1,6 +1,6 @@
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{Read, Take};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -77,6 +77,8 @@ impl ProductionMutationConsentReceipt {
 
 #[derive(Debug, Error)]
 pub enum ProductionMutationConsentError {
+    #[error("production consent storage verification failed: {0}")]
+    Storage(#[from] crate::JournalStoreError),
     #[error("production mutation consent feature is not compiled")]
     FeatureDisabled,
     #[error("production activation intent integrity check failed")]
@@ -127,9 +129,19 @@ fn validate_activation_intent(
 }
 
 pub(crate) fn operator_consent_path(
-    _intent: &ProductionMutationActivationIntent,
+    intent: &ProductionMutationActivationIntent,
 ) -> Result<PathBuf, ProductionMutationConsentError> {
-    Err(ProductionMutationConsentError::ActivationIntentInvalid)
+    validate_activation_intent(intent)?;
+    if intent.activation_id.len() != 64
+        || !intent
+            .activation_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ProductionMutationConsentError::ActivationIntentInvalid);
+    }
+    Ok(Path::new(OPERATOR_MUTATION_CONSENT_DIRECTORY)
+        .join(format!("{}.json", intent.activation_id)))
 }
 
 fn validate_chained_activation_intent(
@@ -305,16 +317,19 @@ fn validate_secure_parent(path: &Path) -> Result<(), ProductionMutationConsentEr
 ///
 /// Even after success, the receipt records execution_enabled=false. The next
 /// reviewed gate must consume both M1B35 activation and this consent receipt.
-fn read_default_production_mutation_consent_file(
+fn read_production_mutation_consent_file(
+    path: &Path,
 ) -> Result<(Vec<u8>, ProductionMutationConsentFileIdentity), ProductionMutationConsentError> {
-    let path = Path::new(PRODUCTION_MUTATION_CONSENT_PATH);
     validate_secure_parent(path)?;
-
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|source| io_error(path, source))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| ProductionMutationConsentError::UnsafeParent(path.to_path_buf()))?;
+    let name = path
+        .file_name()
+        .ok_or(ProductionMutationConsentError::UnsafeFile)?;
+    let directory = crate::journal_fd::JournalDir::open(parent)?;
+    let mut watch = directory.watch()?;
+    let mut file = directory.open_file(name)?;
     let metadata = file.metadata().map_err(|source| io_error(path, source))?;
     if !metadata.file_type().is_file()
         || metadata.uid() != 0
@@ -334,6 +349,26 @@ fn read_default_production_mutation_consent_file(
     if bytes.len() as u64 != metadata.len() || bytes.len() as u64 > MAX_CONSENT_BYTES {
         return Err(ProductionMutationConsentError::InvalidFileSize);
     }
+    let held = file.metadata().map_err(|source| io_error(path, source))?;
+    let live = directory.open_file(name)?;
+    let live = live.metadata().map_err(|source| io_error(path, source))?;
+    for current in [&held, &live] {
+        if metadata.dev() != current.dev()
+            || metadata.ino() != current.ino()
+            || metadata.mode() != current.mode()
+            || metadata.uid() != current.uid()
+            || metadata.nlink() != current.nlink()
+            || metadata.len() != current.len()
+            || metadata.mtime() != current.mtime()
+            || metadata.mtime_nsec() != current.mtime_nsec()
+            || metadata.ctime() != current.ctime()
+            || metadata.ctime_nsec() != current.ctime_nsec()
+        {
+            return Err(ProductionMutationConsentError::UnsafeFile);
+        }
+    }
+    directory.verify_namespace()?;
+    watch.require_unchanged()?;
 
     let identity = ProductionMutationConsentFileIdentity {
         device_id: metadata.dev(),
@@ -357,8 +392,24 @@ pub fn verify_default_production_mutation_consent(
         return Err(ProductionMutationConsentError::FeatureDisabled);
     }
     validate_activation_intent(intent)?;
-    let (bytes, identity) = read_default_production_mutation_consent_file()?;
+    let (bytes, identity) =
+        read_production_mutation_consent_file(Path::new(PRODUCTION_MUTATION_CONSENT_PATH))?;
     bind_consent_receipt(intent, PRODUCTION_MUTATION_CONSENT_PATH, &bytes, identity)
+}
+
+/// Verify the retained operator consent for this exact activation.
+pub fn verify_operator_production_mutation_consent(
+    intent: &ProductionMutationActivationIntent,
+) -> Result<ProductionMutationConsentReceipt, ProductionMutationConsentError> {
+    if !PRODUCTION_MUTATION_CONSENT_COMPILED {
+        return Err(ProductionMutationConsentError::FeatureDisabled);
+    }
+    let path = operator_consent_path(intent)?;
+    let (bytes, identity) = read_production_mutation_consent_file(&path)?;
+    let path = path
+        .to_str()
+        .ok_or(ProductionMutationConsentError::ActivationIntentInvalid)?;
+    bind_consent_receipt(intent, path, &bytes, identity)
 }
 
 /// Verify the same fixed root-owned runtime consent boundary for the M1B45
@@ -373,7 +424,8 @@ pub fn verify_default_production_chained_mutation_consent(
         return Err(ProductionMutationConsentError::FeatureDisabled);
     }
     validate_chained_activation_intent(intent)?;
-    let (bytes, identity) = read_default_production_mutation_consent_file()?;
+    let (bytes, identity) =
+        read_production_mutation_consent_file(Path::new(PRODUCTION_MUTATION_CONSENT_PATH))?;
     bind_chained_consent_receipt(intent, PRODUCTION_MUTATION_CONSENT_PATH, &bytes, identity)
 }
 
