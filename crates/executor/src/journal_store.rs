@@ -1721,7 +1721,9 @@ mod tests {
         let store = DurableJournalStore::at(&root);
         store.persist_new(&journal()).unwrap();
         let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
-        let writer = directory.create_file(std::ffi::OsStr::new(".staged-test")).unwrap();
+        let writer = directory
+            .create_file(std::ffi::OsStr::new(".staged-test"))
+            .unwrap();
         let inherited = writer.try_clone().unwrap();
         drop(writer);
         let mut watch = directory.watch().unwrap();
@@ -1736,7 +1738,9 @@ mod tests {
         let store = DurableJournalStore::at(&root);
         store.persist_new(&journal()).unwrap();
         let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
-        let writer = directory.create_file(std::ffi::OsStr::new(".staged-test")).unwrap();
+        let writer = directory
+            .create_file(std::ffi::OsStr::new(".staged-test"))
+            .unwrap();
         let mut inherited = writer.try_clone().unwrap();
         drop(writer);
         let mut watch = directory.watch().unwrap();
