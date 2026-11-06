@@ -14,6 +14,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  atomic-launch-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Test atomic cgroup placement before parent-death setup
+        run: |
+          cargo build --locked --release --manifest-path .github/diagnostics/Cargo.toml --bin lsm-gated-launch-proof --target-dir /tmp/lsm-atomic-proof
+          sudo env LSM_DISPOSABLE_CGROUP=1 python3 -I .github/diagnostics/test-atomic-pre-pdeath.py /tmp/lsm-atomic-proof/release/lsm-gated-launch-proof /sys/fs/cgroup
+
   journal-concurrency:
     name: Journal concurrency tests
     runs-on: ubuntu-24.04

@@ -638,6 +638,53 @@ mod tests {
 
     #[test]
     #[ignore = "requires an explicitly delegated disposable Linux cgroup and observer executable"]
+    fn observer_refuses_shared_writable_mapping_after_writer_fd_is_closed() {
+        let (root, executable) = disposable_observer();
+        let (manifest, receipt, trusted, lock, primary, recovery) =
+            fixture("collector-observer-mapping");
+        let (source, copy) = paths(&receipt, &primary, &recovery);
+        let pending = prepare_at(&manifest, &receipt, &trusted, &primary, &recovery).unwrap();
+        let writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&source)
+            .unwrap();
+        let length = writer.metadata().unwrap().len() as usize;
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                length,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                writer.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        drop(writer);
+
+        let descriptors = || vec![File::open(&source).unwrap(), File::open(&copy).unwrap()];
+        assert!(crate::backup_supervisor::BackupSupervisor::start_at(
+            descriptors(),
+            &root,
+            &executable
+        )
+        .is_err());
+        assert_eq!(unsafe { libc::munmap(mapping, length) }, 0);
+        let supervisor =
+            crate::backup_supervisor::BackupSupervisor::start_at(descriptors(), &root, &executable)
+                .expect("observer should accept the copies after writable mapping is gone");
+        supervisor.finish_empty().unwrap();
+        assert!(matches!(
+            pending.seal(),
+            Err(CollectorError::ObserverProofUnavailable)
+        ));
+        drop(receipt);
+        cleanup(&lock, &primary, &recovery);
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly delegated disposable Linux cgroup and observer executable"]
     fn observer_stops_after_lease_break_and_cannot_seal() {
         use std::os::unix::fs::OpenOptionsExt;
         let (root, executable) = disposable_observer();
