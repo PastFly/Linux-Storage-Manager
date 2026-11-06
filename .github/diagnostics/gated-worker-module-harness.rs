@@ -89,27 +89,42 @@ fn snapshot() -> io::Result<File> {
     }
     Ok(target)
 }
-fn stop_and_wait(worker: &mut gated::Worker) -> io::Result<()> {
-    if let Err(error) = worker.stop() {
-        // EOF after a rejected GO may have already stopped the child. Do not
-        // hide any syscall error; allow only explicitly reported ESRCH here.
-        if error.cgroup_kill.is_some()
-            || error
-                .worker_signal
-                .as_ref()
-                .and_then(io::Error::raw_os_error)
-                != Some(libc::ESRCH)
-        {
-            return Err(io::Error::other(format!("stop failed: {error:?}")));
+fn stop_wait_outcome(
+    stop: Result<(), gated::StopError>,
+    wait: io::Result<libc::c_int>,
+) -> io::Result<()> {
+    let wait = wait.and_then(|status| {
+        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+            Ok(())
+        } else {
+            Err(io::Error::other("unexpected child status"))
         }
-        eprintln!("observed pidfd_send_signal ESRCH; confirming death separately");
+    });
+    match (stop, wait) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(wait)) => Err(wait),
+        (Err(stop), Ok(()))
+            if stop.cgroup_kill.is_none()
+                && stop
+                    .worker_signal
+                    .as_ref()
+                    .and_then(io::Error::raw_os_error)
+                    == Some(libc::ESRCH) =>
+        {
+            Ok(())
+        }
+        (Err(stop), Ok(())) => Err(io::Error::other(format!("stop failed: {stop:?}"))),
+        (Err(stop), Err(wait)) => Err(io::Error::other(format!(
+            "stop failed: {stop:?}; wait failed: {wait}"
+        ))),
     }
-    let status = worker.wait_stopped()?;
-    if !(libc::WIFEXITED(status) || libc::WIFSIGNALED(status)) {
-        return Err(io::Error::other("unexpected child status"));
-    }
-    Ok(())
 }
+fn stop_and_wait(worker: &mut gated::Worker) -> io::Result<()> {
+    let stop = worker.stop();
+    let wait = worker.wait_stopped();
+    stop_wait_outcome(stop, wait)
+}
+
 fn run(group_path: &Path, mode: &str, marker: &Path) -> io::Result<()> {
     let group = File::open(group_path)?;
     let meta = group.metadata()?;
@@ -244,5 +259,26 @@ fn main() {
     ) {
         eprintln!("harness failed: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+    #[test]
+    fn stop_and_wait_failures_are_both_retained() {
+        let stop = gated::StopError {
+            worker_signal: Some(io::Error::other("signal-failed")),
+            cgroup_kill: Some(io::Error::other("group-failed")),
+        };
+        let error = stop_wait_outcome(Err(stop), Err(io::Error::other("wait-failed")))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("signal-failed")
+                && error.contains("group-failed")
+                && error.contains("wait-failed"),
+            "{error}"
+        );
     }
 }

@@ -186,27 +186,38 @@ pub fn launcher(group_path: &Path, manager: &OsStr, raw: &OsStr, marker: &Path) 
             "GO: {error}; cleanup: {cleanup:?}"
         )));
     }
-    // Retain sole-reaper and pidfd; manager channel loss triggers stop.
-    let mut item = libc::pollfd {
-        fd: guard.socket.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    loop {
-        let n = unsafe { libc::poll(&mut item, 1, 100) };
-        // Diagnostic fault injection: the disposable harness creates this
-        // sentinel only after GO and suspending the manager.
-        if std::env::var_os("LSM_TEST_POST_GO_POLL_FAULT").as_deref() == Some(OsStr::new("1"))
-            && marker.with_extension("fault").exists()
-        {
-            return Err(invalid("injected post-GO poll failure"));
+    // Every post-GO outcome reaches cleanup, including poll errors.
+    let run = (|| -> io::Result<()> {
+        let mut item = libc::pollfd {
+            fd: guard.socket.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            let n = unsafe { libc::poll(&mut item, 1, 100) };
+            if std::env::var_os("LSM_TEST_POST_GO_POLL_FAULT").as_deref() == Some(OsStr::new("1"))
+                && marker.with_extension("fault").exists()
+            {
+                return Err(invalid("injected post-GO poll failure"));
+            }
+            if n < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if n > 0 || !live(&guard.pidfd)? {
+                return Err(invalid("manager channel or pidfd lost"));
+            }
         }
-        if n != 0 || !live(&guard.pidfd)? {
-            break;
-        }
+    })();
+    let cleanup = super::stop_and_wait(&mut worker);
+    match (run, cleanup) {
+        (Err(run), Err(cleanup)) => Err(io::Error::other(format!(
+            "launcher: {run}; cleanup: {cleanup}"
+        ))),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
     }
-    super::stop_and_wait(&mut worker)
 }
+
 pub fn payload(marker: &Path) -> io::Result<()> {
     let mut pipe = [-1; 2];
     if unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -301,6 +312,26 @@ fn run_manager(guard: &supervisor::BackupSupervisor, backup: &Path) -> io::Resul
     if !group_has(&group, worker_pid)? {
         return Err(invalid("worker outside group"));
     }
+    guard.diagnostic_heartbeat()?;
+    if std::env::var_os("LSM_TEST_PAUSE_BEFORE_GO").as_deref() == Some(OsStr::new("1")) {
+        println!("GATE {observer_pid} {worker_pid} {}", path.display());
+        io::stdout().flush()?;
+        let mut poll = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut poll, 1, 1000) } != 1 || poll.revents != libc::POLLIN {
+            return Err(invalid("pre-GO barrier timed out"));
+        }
+        let mut byte = [0u8];
+        io::stdin().read_exact(&mut byte)?;
+        if byte != [b'C'] {
+            return Err(invalid("invalid barrier command"));
+        }
+    }
+    // This catches the explicit test barrier, but cannot eliminate a break
+    // after this point; it must never be interpreted as permission to mutate.
     guard.diagnostic_heartbeat()?;
     send_ack(&manager)?;
     let deadline = Instant::now() + Duration::from_secs(5);

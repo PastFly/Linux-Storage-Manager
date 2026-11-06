@@ -131,9 +131,14 @@ fn ready(fd: RawFd, timeout_ms: i32) -> io::Result<bool> {
         events: libc::POLLIN,
         revents: 0,
     };
+    let mut interruptions = 0;
     loop {
         let n = unsafe { libc::poll(&mut p, 1, timeout_ms) };
         if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            interruptions += 1;
+            if interruptions > 64 {
+                return Err(invalid("poll repeatedly interrupted"));
+            }
             continue;
         }
         if n < 0 {
@@ -607,11 +612,21 @@ impl Worker {
         }
         let mut status = 0;
         loop {
-            let n = unsafe { libc::waitpid(self.pid, &mut status, 0) };
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "worker reap timed out",
+                ));
+            }
+            let n = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) };
             if n == self.pid {
                 self.reaped = true;
                 self.restore_signal_mask()?;
                 return Ok(status);
+            }
+            if n == 0 {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
             }
             if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
                 continue;
