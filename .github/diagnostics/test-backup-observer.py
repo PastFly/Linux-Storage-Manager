@@ -38,7 +38,7 @@ def observer_gone(pid):
         return True
 
 
-def manager_main(executable, group, backup, marker, report_fd, prior_writer_fd, expect_refusal):
+def manager_main(executable, group, backup, marker, report_fd, prior_writer_fd, expect_refusal, malformed_quit):
     try:
         if prior_writer_fd is not None:
             os.close(prior_writer_fd)
@@ -74,6 +74,17 @@ def manager_main(executable, group, backup, marker, report_fd, prior_writer_fd, 
             os._exit(0)
         if reply != b'R':
             raise AssertionError('observer failed to return READY: ' + repr(reply))
+        if malformed_quit:
+            manager_sock.sendall(b'Qunexpected-trailing-data')
+            try:
+                reply = manager_sock.recv(1)
+            except ConnectionResetError:
+                reply = b''
+            if reply == b'Q':
+                raise AssertionError('observer accepted a truncated quit packet')
+            observer.wait(timeout=8)
+            os.write(report_fd, b'{"malformed_refused":true}\n')
+            os._exit(0)
         started_r, started_w = os.pipe()
         worker = os.fork()
         if worker == 0:
@@ -123,7 +134,7 @@ def run_case(executable, parent_group, name):
             if manager_pid == 0:
                 os.close(report_read)
                 manager_main(executable, group, backup, marker, report_write,
-                             prior_writer_fd, name == 'prior-writer')
+                             prior_writer_fd, name == 'prior-writer', name == 'malformed-quit')
                 os._exit(1)
             os.close(report_write)
             with os.fdopen(report_read, 'rb') as report:
@@ -137,6 +148,13 @@ def run_case(executable, parent_group, name):
                 assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0 and info['refused']
                 assert populated(group) == '0'
                 print('PASS: preexisting writer prevented READY')
+                return
+            if name == 'malformed-quit':
+                _, status = os.waitpid(manager_pid, 0)
+                manager_pid = None
+                assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0 and info['malformed_refused']
+                assert populated(group) == '0'
+                print('PASS: malformed quit packet rejected')
                 return
             assert populated(group) == '1'
             fd_dir = '/proc/' + str(info['observer']) + '/fd'
@@ -198,7 +216,10 @@ def main():
     executable, parent_group = map(os.path.abspath, sys.argv[1:])
     if not os.path.isfile(executable):
         raise AssertionError('observer executable missing')
-    for name in ('prior-writer', 'manager-death', 'lease-break'):
+    cases = ['prior-writer', 'manager-death', 'lease-break']
+    if os.environ.get('LSM_TEST_OBSERVER_CLI') == '1':
+        cases.append('malformed-quit')
+    for name in cases:
         run_case(executable, parent_group, name)
 
 
