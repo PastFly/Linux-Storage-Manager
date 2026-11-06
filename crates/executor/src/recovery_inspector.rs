@@ -64,8 +64,15 @@ pub(crate) struct BoundPins {
 
 /// Holds the actual system host lock while the inspection's pins exist.
 pub(crate) struct SystemInspection {
-    pub(crate) result: Inspection,
+    result: Inspection,
     _lock: HostStorageLock,
+}
+
+impl SystemInspection {
+    /// The result and its pinned FDs cannot outlive the owning host lock.
+    pub(crate) fn result(&self) -> &Inspection {
+        &self.result
+    }
 }
 
 fn valid_digest(value: &str) -> bool {

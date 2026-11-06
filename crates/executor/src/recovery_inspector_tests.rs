@@ -255,3 +255,35 @@ fn inspector_reopens_durable_journal_and_copies_after_sigkill() {
         fs::remove_dir_all(outer).unwrap();
     }
 }
+
+#[test]
+fn borrowed_inspection_holds_host_lock_until_owner_is_dropped() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "lsm-inspection-lock-{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).unwrap();
+    let path = root.join("lock");
+    let lock = crate::HostStorageLock::try_acquire_path(&path).unwrap();
+    let inspection = SystemInspection {
+        result: Inspection::UnboundPrewrite {
+            candidates: Vec::new(),
+            unrecognized: Vec::new(),
+        },
+        _lock: lock,
+    };
+    assert!(matches!(
+        inspection.result(),
+        Inspection::UnboundPrewrite { .. }
+    ));
+    assert!(matches!(
+        crate::HostStorageLock::try_acquire_path(&path),
+        Err(crate::HostLockError::Busy)
+    ));
+    drop(inspection);
+    drop(crate::HostStorageLock::try_acquire_path(&path).unwrap());
+    fs::remove_dir_all(root).unwrap();
+}
