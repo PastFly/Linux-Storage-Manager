@@ -4,6 +4,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
+use std::sync::Arc;
 
 use lsm_planner::JournalPhase;
 use serde::Serialize;
@@ -29,7 +30,7 @@ pub struct BackupArtifactReceipt {
     pub sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MetadataBackupReceipt {
     schema_version: u32,
     receipt_id: String,
@@ -41,7 +42,25 @@ pub struct MetadataBackupReceipt {
     journal_id: String,
     mutation_enabled: bool,
     artifacts: Vec<BackupArtifactReceipt>,
+    #[serde(skip)]
+    pinned_artifacts: Arc<Vec<File>>,
 }
+
+impl PartialEq for MetadataBackupReceipt {
+    fn eq(&self, other: &Self) -> bool {
+        self.schema_version == other.schema_version
+            && self.receipt_id == other.receipt_id
+            && self.manifest_id == other.manifest_id
+            && self.handoff_id == other.handoff_id
+            && self.plan_id == other.plan_id
+            && self.target_manifest_digest == other.target_manifest_digest
+            && self.session_id == other.session_id
+            && self.journal_id == other.journal_id
+            && self.mutation_enabled == other.mutation_enabled
+            && self.artifacts == other.artifacts
+    }
+}
+impl Eq for MetadataBackupReceipt {}
 
 impl MetadataBackupReceipt {
     pub fn receipt_id(&self) -> &str {
@@ -182,6 +201,26 @@ pub fn revalidate_metadata_backup_receipt(
     revalidate_receipt_at_root(manifest, receipt, None)
 }
 
+#[cfg(test)]
+struct BackupLeaseTestStub;
+
+#[cfg(test)]
+impl BackupLeaseTestStub {
+    fn validate(&self) -> Result<(), BackupCaptureError> {
+        Err(BackupCaptureError::UnsupportedCaptureCommand)
+    }
+}
+
+#[cfg(test)]
+fn pin_backup_at_test_root(
+    _manifest: &MetadataBackupManifest,
+    receipt: &MetadataBackupReceipt,
+    _root: &Path,
+) -> Result<BackupLeaseTestStub, BackupCaptureError> {
+    let _ = &receipt.pinned_artifacts;
+    Err(BackupCaptureError::UnsupportedCaptureCommand)
+}
+
 #[cfg(feature = "disposable-loop-harness")]
 pub fn capture_metadata_backups_at_disposable_root(
     session: &LockedExecutionSession<'_>,
@@ -304,6 +343,7 @@ fn capture_with_runner(
     ensure_secure_directory(artifact_root)?;
 
     let mut receipts = Vec::with_capacity(manifest.requirements().len());
+    let mut pins = Vec::with_capacity(manifest.requirements().len());
     for requirement in manifest.requirements() {
         validate_requirement(requirement)?;
         let file_name = Path::new(&requirement.artifact_path)
@@ -325,7 +365,8 @@ fn capture_with_runner(
             }
         }
 
-        let (size_bytes, sha256, device_id, inode) = verify_artifact(&actual_path)?;
+        let (size_bytes, sha256, device_id, inode, pinned) = verify_artifact(&actual_path)?;
+        pins.push(pinned);
         receipts.push(BackupArtifactReceipt {
             ordinal: requirement.ordinal,
             kind: requirement.kind,
@@ -363,6 +404,7 @@ fn capture_with_runner(
         journal_id: session.journal().journal_id.clone(),
         mutation_enabled: false,
         artifacts: receipts,
+        pinned_artifacts: Arc::new(pins),
     })
 }
 
@@ -493,7 +535,7 @@ fn revalidate_receipt_at_root(
         }
 
         match verify_artifact(&actual_path) {
-            Ok((size_bytes, sha256, device_id, inode)) => {
+            Ok((size_bytes, sha256, device_id, inode, _pinned)) => {
                 if device_id != artifact.device_id || inode != artifact.inode {
                     blockers.push(format!(
                         "receipt artifact {} inode identity changed",
@@ -688,7 +730,7 @@ fn create_artifact_file(path: &Path) -> Result<File, BackupCaptureError> {
         .map_err(|source| io_error(path, source))
 }
 
-fn verify_artifact(path: &Path) -> Result<(u64, String, u64, u64), BackupCaptureError> {
+fn verify_artifact(path: &Path) -> Result<(u64, String, u64, u64, File), BackupCaptureError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     if !crate::journal_store::trusted_journal_file(&metadata) {
         return Err(BackupCaptureError::UnsafeArtifact(path.to_path_buf()));
@@ -700,7 +742,7 @@ fn verify_artifact(path: &Path) -> Result<(u64, String, u64, u64), BackupCapture
         return Err(BackupCaptureError::ArtifactTooLarge);
     }
 
-    let file = OpenOptions::new()
+    let mut file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
         .open(path)
@@ -713,7 +755,8 @@ fn verify_artifact(path: &Path) -> Result<(u64, String, u64, u64), BackupCapture
         return Err(BackupCaptureError::UnsafeArtifact(path.to_path_buf()));
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.take(MAX_BACKUP_ARTIFACT_BYTES + 1)
+    (&mut file)
+        .take(MAX_BACKUP_ARTIFACT_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|source| io_error(path, source))?;
     if bytes.len() as u64 > MAX_BACKUP_ARTIFACT_BYTES {
@@ -727,6 +770,7 @@ fn verify_artifact(path: &Path) -> Result<(u64, String, u64, u64), BackupCapture
         format!("{:x}", Sha256::digest(&bytes)),
         opened.dev(),
         opened.ino(),
+        file,
     ))
 }
 
@@ -860,6 +904,42 @@ mod tests {
     }
 
     #[test]
+    fn backup_pin_refuses_a_preexisting_writable_descriptor() {
+        let (_handoff, manifest, receipt, lock, root) = captured_direct_fixture("open-writer");
+        let path = root.join(
+            Path::new(&receipt.artifacts()[0].artifact_path)
+                .file_name()
+                .unwrap(),
+        );
+        let pin = pin_backup_at_test_root(&manifest, &receipt, &root).unwrap();
+        pin.validate().unwrap();
+        drop(pin);
+        let writer = OpenOptions::new().write(true).open(&path).unwrap();
+        assert!(pin_backup_at_test_root(&manifest, &receipt, &root).is_err());
+        drop(writer);
+        drop(receipt);
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn backup_pin_detects_renamed_inode_even_when_bytes_are_unchanged() {
+        let (_handoff, manifest, receipt, lock, root) = captured_direct_fixture("pinned-rename");
+        let path = root.join(
+            Path::new(&receipt.artifacts()[0].artifact_path)
+                .file_name()
+                .unwrap(),
+        );
+        let pin = pin_backup_at_test_root(&manifest, &receipt, &root).unwrap();
+        fs::rename(&path, root.join("renamed")).unwrap();
+        assert!(pin.validate().is_err());
+        drop(pin);
+        drop(receipt);
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn revalidation_rejects_same_content_replacement_with_different_inode() {
         let (snapshot, capabilities) = direct_fixture();
         let handoff = direct_handoff(&snapshot, &capabilities);
@@ -968,7 +1048,7 @@ mod tests {
         fs::write(&path, b"verified-backup").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
 
-        let (size, digest, _, _) = verify_artifact(&path).unwrap();
+        let (size, digest, _, _, _) = verify_artifact(&path).unwrap();
 
         assert_eq!(size, 15);
         assert_eq!(digest.len(), 64);
