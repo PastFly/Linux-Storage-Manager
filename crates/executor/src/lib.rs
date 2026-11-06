@@ -3,6 +3,8 @@ mod backup_capture;
 mod backup_manifest;
 #[cfg(feature = "production-mutation-execution")]
 mod backup_observer;
+#[cfg(test)]
+mod backup_supervisor;
 mod disposable_argv;
 #[cfg(feature = "disposable-executor")]
 mod disposable_exec;
