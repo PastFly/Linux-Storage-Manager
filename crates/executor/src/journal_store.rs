@@ -1716,6 +1716,21 @@ mod tests {
     }
 
     #[test]
+    fn delayed_close_of_own_staging_writer_does_not_invalidate_inventory() {
+        let root = root("delayed-own-writer-close");
+        let store = DurableJournalStore::at(&root);
+        store.persist_new(&journal()).unwrap();
+        let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
+        let writer = directory.create_file(std::ffi::OsStr::new(".staged-test")).unwrap();
+        let inherited = writer.try_clone().unwrap();
+        drop(writer);
+        let mut watch = directory.watch().unwrap();
+        drop(inherited);
+        assert!(watch.require_unchanged().is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn runtime_inventory_detects_creation_in_already_scanned_directory() {
         let root = root("runtime-concurrent-create");
         fs::create_dir(&root).unwrap();

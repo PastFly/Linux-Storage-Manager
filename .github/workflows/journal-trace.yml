@@ -24,6 +24,9 @@ jobs:
         run: cargo test --locked -p lsm-executor --lib --no-run
       - name: Probe anonymous staging inode close events
         run: python3 tools/journal_close_probe.py
+      - name: Reproduce delayed close of the store's own writer
+        continue-on-error: true
+        run: cargo test --locked -p lsm-executor --lib delayed_close_of_own_staging_writer -- --nocapture
       - name: Compare sequential and parallel test processes
         run: |
           set +e
