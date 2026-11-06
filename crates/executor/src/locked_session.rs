@@ -1025,9 +1025,12 @@ mod tests {
             verified.journal_digest(),
             crate::preconditions::journal_digest(&before_approval).unwrap()
         );
-        for remove_record in [false, true] {
+        for remove_record in [true, false] {
             if remove_record {
                 std::fs::remove_file(record_root.join(format!("{}.json", record.record_id())))
+                    .unwrap();
+            } else {
+                crate::backup_recovery_storage::store(&record_root, &record, record.binding())
                     .unwrap();
             }
             assert!(crate::approve_exact_plan(
