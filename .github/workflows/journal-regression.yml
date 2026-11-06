@@ -47,6 +47,9 @@ jobs:
       - name: Test gated child launch on disposable cgroups
         run: |
           sudo python3 -I .github/diagnostics/test-gated-launch.py /tmp/lsm-observer-target/release/lsm-gated-launch-proof /sys/fs/cgroup
+      - name: Test gated worker module on disposable cgroups
+        run: |
+          sudo python3 -I .github/diagnostics/test-gated-worker-module.py /tmp/lsm-observer-target/release/lsm-gated-module-harness /sys/fs/cgroup
       - name: Test recovery evidence format
         run: cargo test --locked -p lsm-executor --lib backup_recovery_record::tests
       - name: Test recovery evidence storage
@@ -55,6 +58,8 @@ jobs:
           for attempt in 1 2 3; do
             cargo test --locked -p lsm-executor --lib backup_recovery_storage::tests -- --test-threads=16
           done
+      - name: Test recovery copy collector
+        run: cargo test --locked -p lsm-executor --lib backup_recovery_collector::tests
       - name: Test v2 precondition attachment
         run: cargo test --locked -p lsm-executor --lib journal_store::tests::v2_
       - name: Test experimental journal binding model

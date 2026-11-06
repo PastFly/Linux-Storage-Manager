@@ -14,5 +14,9 @@ path = "backup-observer.rs"
 name = "lsm-gated-launch-proof"
 path = "gated-launch-proof.rs"
 
+[[bin]]
+name = "lsm-gated-module-harness"
+path = "gated-worker-module-harness.rs"
+
 [dependencies]
 libc = "=0.2.189"

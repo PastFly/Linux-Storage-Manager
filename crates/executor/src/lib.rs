@@ -4,6 +4,8 @@ mod backup_manifest;
 #[cfg(feature = "production-mutation-execution")]
 mod backup_observer;
 #[cfg(test)]
+mod backup_recovery_collector;
+#[cfg(test)]
 mod backup_recovery_record;
 #[cfg(test)]
 mod backup_recovery_storage;
