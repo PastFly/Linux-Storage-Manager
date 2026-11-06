@@ -117,14 +117,14 @@ def run_case(manager, observer, root, case):
                 fds.append(os.pidfd_open(alternate_pid))
                 members = (group / 'cgroup.procs').read_text().split()
                 assert str(alternate_pid) in members and len(members) >= 2, 'alternate and worker were not both in cgroup'
+                poller = select.poll()
+                poller.register(fds[0], select.POLLIN)
+                assert not poller.poll(0), 'alternate process was not live at decision barrier'
                 assert not backup.with_suffix('.worker').exists(), 'payload ran before pre-GO barrier'
                 child.stdin.write(b'C')
                 child.stdin.flush()
                 child.wait(timeout=TIMEOUT)
                 wait_empty(group)
-                poller = select.poll()
-                poller.register(fds[0], select.POLLIN)
-                assert not poller.poll(0), 'alternate process did not remain alive'
                 assert not backup.with_suffix('.worker').exists(), 'spoofed worker pidfd allowed payload to run'
                 print('PASS:', case, flush=True)
                 return

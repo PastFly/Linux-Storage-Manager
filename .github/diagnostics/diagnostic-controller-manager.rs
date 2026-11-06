@@ -110,6 +110,58 @@ fn group_has(group: &File, pid: libc::pid_t) -> io::Result<bool> {
         .lines()
         .any(|line| line.parse::<libc::pid_t>() == Ok(pid)))
 }
+// Diagnostic admission check, not a proof against later cgroup migration.
+fn require_only_direct_child(
+    group: &File,
+    worker: &File,
+    worker_pid: libc::pid_t,
+    launcher: &File,
+    launcher_pid: libc::pid_t,
+) -> io::Result<()> {
+    fn singleton(group: &File, worker_pid: libc::pid_t) -> io::Result<()> {
+        let fd = unsafe {
+            libc::openat(
+                group.as_raw_fd(),
+                c"cgroup.procs".as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut text = String::new();
+        unsafe { File::from_raw_fd(fd) }
+            .take(65537)
+            .read_to_string(&mut text)?;
+        if text.len() > 65536
+            || text.lines().collect::<Vec<_>>() != [worker_pid.to_string().as_str()]
+        {
+            return Err(invalid("worker is not the sole group process"));
+        }
+        Ok(())
+    }
+    channel::require_live_sender(worker.as_raw_fd(), worker_pid)?;
+    channel::require_live_sender(launcher.as_raw_fd(), launcher_pid)?;
+    singleton(group, worker_pid)?;
+    let mut status = String::new();
+    File::open(format!("/proc/{worker_pid}/status"))?
+        .take(65537)
+        .read_to_string(&mut status)?;
+    if status.len() > 65536 {
+        return Err(invalid("oversized worker status"));
+    }
+    let mut parents = status.lines().filter_map(|line| line.strip_prefix("PPid:"));
+    let parent = parents
+        .next()
+        .and_then(|value| value.trim().parse::<libc::pid_t>().ok());
+    if parent != Some(launcher_pid) || parents.next().is_some() {
+        return Err(invalid("worker is not launcher's child"));
+    }
+    singleton(group, worker_pid)?;
+    channel::require_live_sender(worker.as_raw_fd(), worker_pid)?;
+    channel::require_live_sender(launcher.as_raw_fd(), launcher_pid)
+}
+
 fn pidfd_pid(fd: &File) -> io::Result<libc::pid_t> {
     let text = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", fd.as_raw_fd()))?;
     let mut values = text.lines().filter_map(|line| line.strip_prefix("Pid:"));
@@ -705,9 +757,6 @@ fn run_manager(
     )?;
     let worker_pid = pidfd_pid(&worker)?;
     channel::require_live_sender(worker.as_raw_fd(), worker_pid)?;
-    if !group_has(&group, worker_pid)? {
-        return Err(invalid("worker outside group"));
-    }
     if std::env::var_os("LSM_TEST_SPOOF_SAME_GROUP_PIDFD").as_deref() == Some(OsStr::new("1")) {
         println!("SPOOF-GATE {worker_pid} {}", path.display());
         io::stdout().flush()?;
@@ -725,6 +774,13 @@ fn run_manager(
             return Err(invalid("invalid spoof barrier command"));
         }
     }
+    require_only_direct_child(
+        &group,
+        &worker,
+        worker_pid,
+        launcher_fd,
+        child.id() as libc::pid_t,
+    )?;
     guard.diagnostic_heartbeat()?;
     if std::env::var_os("LSM_TEST_PAUSE_BEFORE_GO").as_deref() == Some(OsStr::new("1")) {
         println!(
