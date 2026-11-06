@@ -1684,6 +1684,32 @@ mod tests {
     }
 
     #[test]
+    fn journal_open_rejects_fifo_without_opening_it() {
+        let root = root("fifo-open");
+        let store = DurableJournalStore::at(&root);
+        store.persist_new(&journal()).unwrap();
+        let path = root.join("fifo");
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let watch = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        assert!(watch >= 0);
+        assert!(unsafe { libc::inotify_add_watch(watch, c_path.as_ptr(), libc::IN_OPEN) } >= 0);
+        let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
+        assert!(matches!(
+            directory.open_file(std::ffi::OsStr::new("fifo")),
+            Err(JournalStoreError::NotRegularFile(_))
+        ));
+        let mut event = [0_u8; 128];
+        let count = unsafe { libc::read(watch, event.as_mut_ptr().cast(), event.len()) };
+        assert_eq!(count, -1);
+        assert_eq!(io::Error::last_os_error().kind(), io::ErrorKind::WouldBlock);
+        unsafe {
+            libc::close(watch);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn delayed_close_of_own_staging_writer_does_not_invalidate_inventory() {
         use std::os::fd::AsRawFd;
         let root = root("delayed-own-writer-close");

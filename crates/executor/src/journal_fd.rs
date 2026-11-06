@@ -141,6 +141,16 @@ unsafe fn isolated_writer(
         error: 0,
         reserved: 0,
     };
+    // Bound the parent-to-writer handshake even if another fork retains the
+    // socket. A timeout is a failure, never permission to publish.
+    let mut ready = libc::pollfd {
+        fd: report_fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    if libc::poll(&mut ready, 1, 10_000) <= 0 || ready.revents & libc::POLLIN == 0 {
+        libc::_exit(77);
+    }
     let received = libc::recv(
         report_fd,
         (&mut request as *mut WriterReport).cast(),
@@ -292,12 +302,25 @@ impl JournalDir {
     }
 
     pub(crate) fn open_file(&self, name: &std::ffi::OsStr) -> Result<File, JournalStoreError> {
-        open_child(
-            self.file(),
-            name,
-            libc::O_RDONLY | libc::O_NONBLOCK,
-            &self.path.join(name),
-        )
+        let path = self.path.join(name);
+        let pinned = open_child(self.file(), name, libc::O_PATH, &path)?;
+        let initial = pinned.metadata().map_err(|source| failure(&path, source))?;
+        if !initial.is_file() {
+            return Err(JournalStoreError::NotRegularFile(path));
+        }
+        // Reopen the exact pinned inode, not the potentially replaced name.
+        let descriptor_path = format!("/proc/self/fd/{}", pinned.as_raw_fd());
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(descriptor_path)
+            .map_err(|source| failure(&path, source))?;
+        let reopened = file.metadata().map_err(|source| failure(&path, source))?;
+        if !reopened.is_file() || initial.dev() != reopened.dev() || initial.ino() != reopened.ino()
+        {
+            return Err(JournalStoreError::ChangedDuringInspection);
+        }
+        Ok(file)
     }
 
     pub(crate) fn write_staged_file(
@@ -542,9 +565,6 @@ impl JournalDir {
             } else {
                 io::Error::other("incomplete journal writer request")
             };
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-            }
             Some(error)
         } else {
             None
