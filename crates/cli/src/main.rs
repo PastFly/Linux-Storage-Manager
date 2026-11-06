@@ -216,6 +216,10 @@ impl From<CreatePartitionTableArg> for CreatePartitionTablePolicy {
 }
 
 fn main() -> ExitCode {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("__lsm_backup_observer"))
+    {
+        return ExitCode::FAILURE;
+    }
     match run() {
         Ok(code) => code,
         Err(error) => {

@@ -44,6 +44,10 @@ jobs:
         run: |
           cargo build --locked --release --manifest-path .github/diagnostics/Cargo.toml --target-dir /tmp/lsm-observer-target
           sudo python3 -I .github/diagnostics/test-backup-observer.py /tmp/lsm-observer-target/release/lsm-observer /sys/fs/cgroup
+      - name: Exercise observer in the actual CLI binary
+        run: |
+          cargo build --locked -p linux-storage-manager-cli --target-dir /tmp/lsm-cli-observer
+          sudo env LSM_TEST_OBSERVER_CLI=1 python3 -I .github/diagnostics/test-backup-observer.py /tmp/lsm-cli-observer/debug/storagemgr /sys/fs/cgroup
       - name: Check disposable runner cgroup and pidfd primitives
         run: |
           sudo python3 - <<'PY'

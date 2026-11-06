@@ -43,7 +43,11 @@ def manager_main(executable, group, backup, marker, report_fd, prior_writer_fd, 
         if prior_writer_fd is not None:
             os.close(prior_writer_fd)
         manager_sock, observer_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-        observer = subprocess.Popen([executable, str(observer_sock.fileno())],
+        observer_args = [executable]
+        if os.environ.get('LSM_TEST_OBSERVER_CLI') == '1':
+            observer_args.append('__lsm_backup_observer')
+        observer_args.append(str(observer_sock.fileno()))
+        observer = subprocess.Popen(observer_args,
                                     pass_fds=(observer_sock.fileno(),),
                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL)
