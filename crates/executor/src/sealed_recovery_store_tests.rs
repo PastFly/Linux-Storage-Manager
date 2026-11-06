@@ -101,6 +101,7 @@ fn publication_failures_preserve_staging_or_final_record() {
         PublicationStage::WrittenAndSynced,
         PublicationStage::SealedAndSynced,
         PublicationStage::Linked,
+        PublicationStage::LinkedInodeSynced,
         PublicationStage::DirectorySynced,
     ] {
         with_fixture(|session, manifest, receipt, copies| {
@@ -122,7 +123,9 @@ fn publication_failures_preserve_staging_or_final_record() {
             assert!(result.is_err());
             let name = if matches!(
                 stage,
-                PublicationStage::Linked | PublicationStage::DirectorySynced
+                PublicationStage::Linked
+                    | PublicationStage::LinkedInodeSynced
+                    | PublicationStage::DirectorySynced
             ) {
                 format!("{id}.json")
             } else {
@@ -132,7 +135,9 @@ fn publication_failures_preserve_staging_or_final_record() {
             assert!(path.is_file());
             let published = matches!(
                 stage,
-                PublicationStage::Linked | PublicationStage::DirectorySynced
+                PublicationStage::Linked
+                    | PublicationStage::LinkedInodeSynced
+                    | PublicationStage::DirectorySynced
             );
             assert_eq!(
                 fs::read_dir(&root).unwrap().count(),
@@ -150,6 +155,7 @@ fn publication_failures_preserve_staging_or_final_record() {
                 stage,
                 PublicationStage::SealedAndSynced
                     | PublicationStage::Linked
+                    | PublicationStage::LinkedInodeSynced
                     | PublicationStage::DirectorySynced
             ) {
                 assert!(crate::backup_verity::measure(&File::open(path).unwrap()).is_ok());
@@ -442,6 +448,7 @@ fn publication_preserves_orphans_after_sigkill() {
                             | ("written", PublicationStage::WrittenAndSynced)
                             | ("sealed", PublicationStage::SealedAndSynced)
                             | ("linked", PublicationStage::Linked)
+                            | ("inode-synced", PublicationStage::LinkedInodeSynced)
                             | ("synced", PublicationStage::DirectorySynced)
                     );
                     if matched {
@@ -457,7 +464,13 @@ fn publication_preserves_orphans_after_sigkill() {
         return;
     }
     for stage in [
-        "created", "reserved", "written", "sealed", "linked", "synced",
+        "created",
+        "reserved",
+        "written",
+        "sealed",
+        "linked",
+        "inode-synced",
+        "synced",
     ] {
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -490,7 +503,7 @@ fn publication_preserves_orphans_after_sigkill() {
         assert!(primary.starts_with(crate::BACKUP_DIRECTORY));
         assert_eq!(recovery.parent(), primary.parent());
         assert_eq!(record_root.parent(), primary.parent());
-        let published = matches!(stage, "linked" | "synced");
+        let published = matches!(stage, "linked" | "inode-synced" | "synced");
         let record_name = if !published {
             format!(".{id}.pending")
         } else {
@@ -509,7 +522,7 @@ fn publication_preserves_orphans_after_sigkill() {
                 (final_meta.dev(), final_meta.ino(), 2)
             );
         }
-        if matches!(stage, "sealed" | "linked" | "synced") {
+        if matches!(stage, "sealed" | "linked" | "inode-synced" | "synced") {
             let bytes = fs::read(&record_path).unwrap();
             let record = crate::backup_recovery_record::decode(&bytes, id).unwrap();
             assert_eq!(record.schema_version(), 3);

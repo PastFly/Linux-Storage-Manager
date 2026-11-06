@@ -79,6 +79,7 @@ pub(crate) enum PublicationStage {
     SealedAndSynced,
     BeforePublish,
     Linked,
+    LinkedInodeSynced,
     DirectorySynced,
 }
 
@@ -281,6 +282,9 @@ impl PublishedRecovery {
             return Err(io::Error::last_os_error().into());
         }
         hook(PublicationStage::Linked)?;
+        // The hard link changes inode metadata as well as the directory entry.
+        staged.sync_all()?;
+        hook(PublicationStage::LinkedInodeSynced)?;
         directory.sync()?;
         sync_directory_chain(&root)?;
         hook(PublicationStage::DirectorySynced)?;
