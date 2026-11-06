@@ -188,3 +188,117 @@ fn blocks_unbound_orphan_after_sigkill_and_lock_reacquisition() {
     fs::remove_dir(primary.parent().unwrap()).unwrap();
     fs::remove_dir_all(outer).unwrap();
 }
+
+fn with_proven_aborted(f: impl FnOnce(&LockedExecutionSession<'_>, &DurableJournalStore)) {
+    with_fixture(|session, manifest, receipt, copies| {
+        let sealed = SealedRecovery::seal(session, manifest, receipt, copies).unwrap();
+        let record_id = sealed.record().record_id().to_owned();
+        let primary = Path::new(manifest.artifact_directory());
+        let mut name = primary.file_name().unwrap().to_os_string();
+        name.push(".record");
+        let record_dir = primary.with_file_name(name);
+        fs::create_dir(&record_dir).unwrap();
+        drop(
+            PublishedRecovery::publish(session, sealed, File::open(&record_dir).unwrap()).unwrap(),
+        );
+        let store = fixture_store(session);
+        let mut verified = session.journal().clone();
+        let binding = lsm_planner::JournalRecoveryBinding {
+            record_id,
+            session_id: session.session_id().into(),
+            handoff_id: session.handoff().handoff_id().into(),
+        };
+        verified
+            .apply(
+                lsm_planner::JournalTransition::PreconditionsVerifiedWithRecovery {
+                    binding: &binding,
+                },
+            )
+            .unwrap();
+        store
+            .persist_if_matches(session.journal(), &verified)
+            .unwrap();
+        let mut aborted = verified.clone();
+        aborted
+            .apply(lsm_planner::JournalTransition::Abort {
+                reason: "fixture prewrite",
+            })
+            .unwrap();
+        store.persist_if_matches(&verified, &aborted).unwrap();
+        f(session, &store);
+        fs::remove_dir_all(record_dir).unwrap();
+    });
+}
+
+#[test]
+fn blocks_each_runtime_evidence_present_before_admission() {
+    if skip() {
+        return;
+    }
+    with_proven_aborted(|session, store| {
+        let parent = store.root().parent().unwrap();
+        for name in [
+            "create-runtime",
+            "create-mount-runtime",
+            "create-persistent-config",
+            "swap-runtime",
+        ] {
+            let dir = parent.join(name);
+            fs::create_dir(&dir).unwrap();
+            let evidence = dir.join("unclassified");
+            fs::write(&evidence, b"preserve").unwrap();
+            assert!(
+                admit_for_test(session, store).is_err(),
+                "{name} evidence must block admission"
+            );
+            assert_eq!(fs::read(&evidence).unwrap(), b"preserve");
+            fs::remove_file(evidence).unwrap();
+            fs::remove_dir(dir).unwrap();
+        }
+    });
+}
+
+#[test]
+fn invalidates_on_transient_or_new_runtime_evidence_after_admission() {
+    if skip() {
+        return;
+    }
+    with_proven_aborted(|session, store| {
+        let parent = store.root().parent().unwrap();
+        for existing in [true, false] {
+            let dir = parent.join("swap-runtime");
+            if existing {
+                fs::create_dir(&dir).unwrap();
+            }
+            let mut gate = admit_for_test(session, store).unwrap();
+            if !existing {
+                fs::create_dir(&dir).unwrap();
+            }
+            let evidence = dir.join("unclassified");
+            fs::write(&evidence, b"event").unwrap();
+            fs::remove_file(&evidence).unwrap();
+            assert!(
+                gate.revalidate().is_err(),
+                "runtime changes must invalidate admission"
+            );
+            drop(gate);
+            fs::remove_dir(dir).unwrap();
+        }
+    });
+}
+
+#[test]
+fn empty_fresh_install_is_admissible() {
+    if skip() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("lsm-empty-admission-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let store = DurableJournalStore::at(root.join("journal"));
+    store.prepare_directory().unwrap();
+    let lock = crate::HostStorageLock::try_acquire_path(&root.join("lock")).unwrap();
+    let gate =
+        admit_after_restart_for_test(lock, &store).expect("empty fresh state should be admissible");
+    drop(gate);
+    fs::remove_dir_all(root).unwrap();
+}
