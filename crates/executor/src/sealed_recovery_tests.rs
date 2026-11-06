@@ -2,6 +2,7 @@ use super::*;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -67,8 +68,8 @@ fn with_fixture(
     let handoff = crate::backup_capture::tests::direct_handoff(&snapshot, &capabilities);
     let outer = std::env::temp_dir().join(format!("lsm-{unique}"));
     fs::create_dir(&outer).unwrap();
-    let store = crate::DurableJournalStore::at(&outer.join("journal"));
-    let mut session = crate::LockedExecutionSession::begin_durable_at_paths(
+    let store = crate::DurableJournalStore::at(outer.join("journal"));
+    let mut session = crate::LockedExecutionSession::begin_durable_recovery_at_paths(
         &handoff,
         &outer.join("lock"),
         &store,
@@ -96,6 +97,7 @@ fn with_fixture(
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .open(&recovery)
             .unwrap();
         output.write_all(&fs::read(path).unwrap()).unwrap();
@@ -118,10 +120,91 @@ fn with_fixture(
 
 #[test]
 fn sealed_recovery_accepts_real_pinned_copies_on_disposable_ext4() {
-    if !disposable_mount() {
+    if !disposable_mount() || std::env::var_os("LSM_TEST_SEALED_UNSUPPORTED").is_some() {
         return;
     }
     with_fixture(|session, manifest, receipt, copies| {
-        assert!(SealedRecovery::seal(session, manifest, receipt, copies).is_ok());
+        let sealed = SealedRecovery::seal(session, manifest, receipt, copies).unwrap();
+        assert_eq!(sealed.record().schema_version(), 3);
+        assert_eq!(sealed.record().binding().receipt_id, receipt.receipt_id());
+        assert_eq!(
+            sealed.record().binding().journal_id,
+            session.journal().journal_id
+        );
+        let artifact = &sealed.record().artifacts()[0];
+        assert_eq!(artifact.primary_path, receipt.artifacts()[0].artifact_path);
+        assert!(artifact.verity.is_some());
+        for path in [&artifact.primary_path, &artifact.recovery_path] {
+            assert!(OpenOptions::new().write(true).open(path).is_err());
+        }
+    });
+}
+
+#[test]
+fn sealed_recovery_rejects_retained_primary_and_recovery_writers() {
+    if !disposable_mount() || std::env::var_os("LSM_TEST_SEALED_UNSUPPORTED").is_some() {
+        return;
+    }
+    for recovery_writer in [false, true] {
+        with_fixture(|session, manifest, receipt, copies| {
+            let primary = PathBuf::from(&receipt.artifacts()[0].artifact_path);
+            let mut recovery_name = primary.file_name().unwrap().to_os_string();
+            recovery_name.push(".recovery");
+            let root = Path::new(manifest.artifact_directory());
+            let recovery_root = root.with_file_name(format!(
+                "{}.recovery",
+                root.file_name().unwrap().to_str().unwrap()
+            ));
+            let recovery = recovery_root.join(recovery_name);
+            let writer = OpenOptions::new()
+                .write(true)
+                .open(if recovery_writer { &recovery } else { &primary })
+                .unwrap();
+            let result = SealedRecovery::seal(session, manifest, receipt, copies);
+            assert!(
+                matches!(result, Err(SealError::Io(ref error)) if error.raw_os_error() == Some(libc::ETXTBSY))
+            );
+            if recovery_writer {
+                // Failure on the second copy can leave the first one sealed.
+                assert!(OpenOptions::new().write(true).open(&primary).is_err());
+            }
+            drop(writer);
+        });
+    }
+}
+
+#[test]
+fn sealed_recovery_rejects_transient_name_replacement_and_wrong_dirfd() {
+    if !disposable_mount() || std::env::var_os("LSM_TEST_SEALED_UNSUPPORTED").is_some() {
+        return;
+    }
+    with_fixture(|session, manifest, receipt, copies| {
+        let path = PathBuf::from(&receipt.artifacts()[0].artifact_path);
+        let moved = path.with_extension("fixture-moved");
+        let result = SealedRecovery::seal_inner(session, manifest, receipt, copies, || {
+            fs::rename(&path, &moved).unwrap();
+            fs::rename(&moved, &path).unwrap();
+        });
+        assert!(result.is_err());
+    });
+    with_fixture(|session, manifest, receipt, mut copies| {
+        copies.primary_dir = File::open("/tmp").unwrap();
+        assert!(matches!(
+            SealedRecovery::seal(session, manifest, receipt, copies),
+            Err(SealError::InvalidEvidence)
+        ));
+    });
+}
+
+#[test]
+fn sealed_recovery_fails_closed_on_unsupported_filesystem() {
+    if !disposable_mount() || std::env::var("LSM_TEST_SEALED_UNSUPPORTED").as_deref() != Ok("1") {
+        return;
+    }
+    with_fixture(|session, manifest, receipt, copies| {
+        assert!(matches!(
+            SealedRecovery::seal(session, manifest, receipt, copies),
+            Err(SealError::Io(_))
+        ));
     });
 }
