@@ -1,4 +1,4 @@
-//! Test-only fs-verity experiment; not a production recovery proof.
+//! Opt-in fs-verity helper; not a production recovery proof.
 //!
 //! The digest is an fs-verity measurement, not a traditional file SHA-256.
 //! These helpers neither sync/publish files nor authenticate paths or content.
@@ -101,5 +101,6 @@ pub(crate) fn measure(file: &File) -> io::Result<[u8; SHA256_SIZE]> {
     checked_digest(result)
 }
 
+#[cfg(test)]
 #[path = "backup_verity_tests.rs"]
 mod tests;

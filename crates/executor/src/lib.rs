@@ -5,7 +5,7 @@ mod backup_manifest;
 mod backup_observer;
 #[cfg(test)]
 mod backup_recovery_collector;
-#[cfg(test)]
+#[cfg(any(test, feature = "experimental-sealed-recovery"))]
 mod backup_recovery_record;
 #[cfg(all(test, target_os = "linux"))]
 mod backup_recovery_reopen;
@@ -13,8 +13,10 @@ mod backup_recovery_reopen;
 mod backup_recovery_storage;
 #[cfg(test)]
 mod backup_supervisor;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(target_os = "linux", any(test, feature = "experimental-sealed-recovery")))]
 mod backup_verity;
+#[cfg(all(target_os = "linux", any(test, feature = "experimental-sealed-recovery")))]
+mod sealed_recovery;
 mod disposable_argv;
 #[cfg(feature = "disposable-executor")]
 mod disposable_exec;

@@ -66,17 +66,17 @@ impl PartialEq for MetadataBackupReceipt {
 impl Eq for MetadataBackupReceipt {}
 
 impl MetadataBackupReceipt {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "experimental-sealed-recovery"))]
     pub(crate) fn recovery_schema_version(&self) -> u32 {
         self.schema_version
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "experimental-sealed-recovery"))]
     pub(crate) fn recovery_session_id(&self) -> &str {
         &self.session_id
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "experimental-sealed-recovery"))]
     pub(crate) fn recovery_journal_id(&self) -> &str {
         &self.journal_id
     }
@@ -1569,7 +1569,7 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    fn direct_fixture() -> (lsm_core::HostSnapshot, lsm_core::HostCapabilities) {
+    pub(crate) fn direct_fixture() -> (lsm_core::HostSnapshot, lsm_core::HostCapabilities) {
         use lsm_core::{FilesystemPreflightEvidence, FilesystemProbeState};
         use serde_json::json;
 
@@ -1647,7 +1647,7 @@ pub(crate) mod tests {
         (snapshot, capabilities)
     }
 
-    fn direct_handoff(
+    pub(crate) fn direct_handoff(
         snapshot: &lsm_core::HostSnapshot,
         capabilities: &lsm_core::HostCapabilities,
     ) -> lsm_planner::FrozenExecutionHandoff {
@@ -1666,6 +1666,19 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(plan.status(), PlanStatus::Preview);
         build_frozen_execution_handoff(snapshot, capabilities, &plan).unwrap()
+    }
+
+    pub(crate) fn capture_fake_at_manifest_path(
+        session: &LockedExecutionSession<'_>,
+        manifest: &MetadataBackupManifest,
+    ) -> MetadataBackupReceipt {
+        capture_with_runner(
+            session,
+            manifest,
+            None,
+            &FakeRunner::new(b"label: gpt\ndevice: /dev/sda\n"),
+        )
+        .unwrap()
     }
 
     fn temp_path(name: &str) -> PathBuf {
