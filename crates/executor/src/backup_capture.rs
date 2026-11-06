@@ -1038,8 +1038,90 @@ mod tests {
         pin.validate().unwrap();
         drop(pin);
         let writer = OpenOptions::new().write(true).open(&path).unwrap();
+        use std::os::unix::fs::FileExt;
+        assert_eq!(writer.write_at(b"changed", 0).unwrap(), 7);
         assert!(pin_backup_at_test_root(&manifest, &receipt, &root).is_err());
         drop(writer);
+        drop(receipt);
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deleting_primary_backup_keeps_a_durable_independent_recovery_copy() {
+        let (_handoff, manifest, receipt, lock, root) = captured_direct_fixture("backup-deletion");
+        let name = Path::new(&receipt.artifacts()[0].artifact_path)
+            .file_name()
+            .unwrap();
+        let path = root.join(name);
+        let expected = fs::read(&path).unwrap();
+        let pin = pin_backup_at_test_root(&manifest, &receipt, &root).unwrap();
+        let recovery = root.join(format!("{}.recovery", name.to_string_lossy()));
+        assert_eq!(fs::read(&recovery).unwrap(), expected);
+        assert_ne!(
+            fs::metadata(&path).unwrap().ino(),
+            fs::metadata(&recovery).unwrap().ino()
+        );
+        fs::remove_file(&path).unwrap();
+        assert!(pin.validate().is_err());
+        drop(pin);
+        drop(receipt);
+        assert_eq!(fs::read(recovery).unwrap(), expected);
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn backup_survives_a_process_crash_while_leased() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::Stdio;
+        const CHILD: &str = "LSM_BACKUP_LEASE_CRASH_CHILD";
+        if let Some(path) = std::env::var_os(CHILD) {
+            let file = File::open(path).unwrap();
+            assert_eq!(
+                unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLEASE, libc::F_RDLCK) },
+                0
+            );
+            println!("BACKUP_LEASE_HELD");
+            std::io::stdout().flush().unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
+        let (_handoff, manifest, receipt, lock, root) = captured_direct_fixture("lease-crash");
+        let path = root.join(
+            Path::new(&receipt.artifacts()[0].artifact_path)
+                .file_name()
+                .unwrap(),
+        );
+        let before = fs::read(&path).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("backup_capture::tests::backup_survives_a_process_crash_while_leased")
+            .arg("--nocapture")
+            .env(CHILD, &path)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert_ne!(
+                stdout.read_line(&mut line).unwrap(),
+                0,
+                "child exited before taking lease"
+            );
+            if line.contains("BACKUP_LEASE_HELD") {
+                break;
+            }
+        }
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let pin = pin_backup_at_test_root(&manifest, &receipt, &root).unwrap();
+        pin.validate().unwrap();
+        drop(pin);
         drop(receipt);
         let _ = fs::remove_dir_all(lock.parent().unwrap());
         let _ = fs::remove_dir_all(root);
