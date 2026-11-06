@@ -944,6 +944,7 @@ impl JournalDir {
             file,
             path: self.path.clone(),
             watched_nodes,
+            invalidated: false,
             #[cfg(test)]
             diagnostic_paths,
         })
@@ -960,6 +961,7 @@ pub(crate) struct DirectoryWatch {
     file: File,
     path: PathBuf,
     watched_nodes: Vec<WatchedNode>,
+    invalidated: bool,
     #[cfg(test)]
     diagnostic_paths: Vec<(libc::c_int, PathBuf)>,
 }
@@ -969,7 +971,11 @@ fn irrelevant_sibling_attrib(
     raw_name: &[u8],
     watched_nodes: &[WatchedNode],
 ) -> bool {
-    if event.mask & !libc::IN_ISDIR != libc::IN_ATTRIB || event.cookie != 0 {
+    if event.mask & !libc::IN_ISDIR != libc::IN_ATTRIB
+        || event.cookie != 0
+        || event.len as usize != raw_name.len()
+        || raw_name.len() % std::mem::size_of::<libc::inotify_event>() != 0
+    {
         return false;
     }
     let Some(next_name) = watched_nodes
@@ -985,6 +991,7 @@ fn irrelevant_sibling_attrib(
     };
     let name = &raw_name[..end];
     if name.is_empty()
+        || name.len() > 255
         || name == b"."
         || name == b".."
         || name.contains(&b'/')
@@ -1006,6 +1013,17 @@ fn retry_interrupted(consecutive: &mut usize) -> bool {
 
 impl DirectoryWatch {
     pub(crate) fn require_unchanged(&mut self) -> Result<(), JournalStoreError> {
+        if self.invalidated {
+            return Err(JournalStoreError::ChangedDuringInspection);
+        }
+        let result = self.check_unchanged();
+        if result.is_err() {
+            self.invalidated = true;
+        }
+        result
+    }
+
+    fn check_unchanged(&mut self) -> Result<(), JournalStoreError> {
         const MAX_EVENTS: usize = 1024;
         let mut bytes = [0_u8; 4096];
         let mut processed = 0usize;
@@ -1096,32 +1114,37 @@ mod namespace_watch_tests {
             wd,
             mask,
             cookie,
-            len: 4,
+            len: 16,
+        };
+        let pad = |name: &[u8]| {
+            let mut result = [0u8; 16];
+            result[..name.len()].copy_from_slice(name);
+            result
         };
         let attr = libc::IN_ATTRIB | libc::IN_ISDIR;
         assert!(irrelevant_sibling_attrib(
             &event(7, attr, 0),
-            &[0xfe, b'x', 0, 0],
+            &pad(&[0xfe, b'x', 0, 0]),
             &nodes
         ));
         assert!(!irrelevant_sibling_attrib(
             &event(7, attr, 0),
-            &[0xff, b'x', 0, 0],
+            &pad(&[0xff, b'x', 0, 0]),
             &nodes
         ));
         assert!(!irrelevant_sibling_attrib(
             &event(7, attr, 0),
-            &[0, 0, 0, 0],
+            &pad(&[0, 0, 0, 0]),
             &nodes
         ));
         assert!(!irrelevant_sibling_attrib(
             &event(8, attr, 0),
-            b"x\0\0\0",
+            &pad(b"x\0\0\0"),
             &nodes
         ));
         assert!(!irrelevant_sibling_attrib(
             &event(9, attr, 0),
-            b"x\0\0\0",
+            &pad(b"x\0\0\0"),
             &nodes
         ));
         assert!(!irrelevant_sibling_attrib(
@@ -1131,37 +1154,37 @@ mod namespace_watch_tests {
         ));
         assert!(!irrelevant_sibling_attrib(
             &event(7, libc::IN_IGNORED, 0),
-            b"x\0\0\0",
+            &pad(b"x\0\0\0"),
             &nodes
         ));
         assert!(!irrelevant_sibling_attrib(
             &event(7, attr | libc::IN_MODIFY, 0),
-            b"x\0\0\0",
+            &pad(b"x\0\0\0"),
             &nodes
         ));
         assert!(!irrelevant_sibling_attrib(
             &event(7, attr, 1),
-            b"x\0\0\0",
+            &pad(b"x\0\0\0"),
             &nodes
         ));
         assert!(!irrelevant_sibling_attrib(
             &event(7, attr, 0),
-            b"abcd",
+            b"abcdefghijklmnop",
             &nodes
         ));
         assert!(!irrelevant_sibling_attrib(
             &event(7, attr, 0),
-            b"x\0z\0",
+            &pad(b"x\0z\0"),
             &nodes
         ));
         assert!(!irrelevant_sibling_attrib(
             &event(7, attr, 0),
-            b".\0\0\0",
+            &pad(b".\0\0\0"),
             &nodes
         ));
         assert!(!irrelevant_sibling_attrib(
             &event(7, attr, 0),
-            b"..\0\0",
+            &pad(b"..\0\0"),
             &nodes
         ));
     }
