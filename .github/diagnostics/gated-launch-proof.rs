@@ -22,6 +22,8 @@ mod linux {
     use std::time::{Duration, Instant};
 
     const CGROUP2_MAGIC: u64 = 0x6367_7270;
+    // Linux UAPI: libc 0.2.189's signed constant overflows for this flag.
+    const CLONE_INTO_CGROUP: u64 = 0x2_0000_0000;
     const MAX_BINARY: u64 = 64 * 1024 * 1024;
     const MFD_EXEC: libc::c_uint = 0x0010;
 
@@ -406,11 +408,24 @@ mod linux {
             argv: &argv,
             env: &env,
         };
-        let child = unsafe { libc::fork() };
-        if child == 0 {
+        let mut raw_child_pidfd: libc::c_int = -1;
+        let mut clone_args: libc::clone_args = unsafe { zeroed() };
+        clone_args.flags = libc::CLONE_PIDFD as u64 | CLONE_INTO_CGROUP;
+        clone_args.pidfd = (&mut raw_child_pidfd as *mut libc::c_int) as u64;
+        clone_args.exit_signal = libc::SIGCHLD as u64;
+        clone_args.cgroup = group.as_raw_fd() as u64;
+        // No fallback: the child must be born in the exact cgroup.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_clone3,
+                &clone_args as *const libc::clone_args,
+                std::mem::size_of::<libc::clone_args>(),
+            )
+        };
+        if result == 0 {
             unsafe { child_entry(&spec) }
         }
-        let fork_error = if child < 0 {
+        let clone_error = if result < 0 {
             Some(io::Error::last_os_error())
         } else {
             None
@@ -419,28 +434,24 @@ mod linux {
             unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &old_mask, ptr::null_mut()) };
         drop(go_read);
         drop(ready_write);
-        if let Some(e) = fork_error {
+        if let Some(e) = clone_error {
             return Err(e);
         }
+        let child = result as libc::pid_t;
+        if raw_child_pidfd < 0 {
+            // Kernel contract violation: do not report a normal pre-spawn
+            // failure while a child may exist. An external test controller
+            // remains responsible for waiting on the disposable group.
+            let one = b'1';
+            let _ = unsafe { libc::write(kill.as_raw_fd(), (&one as *const u8).cast(), 1) };
+            unsafe { libc::_exit(125) }
+        }
+        let child_pidfd = unsafe { File::from_raw_fd(raw_child_pidfd) };
         if restore_err != 0 {
-            unsafe {
-                libc::kill(child, libc::SIGKILL);
-            }
+            let _ = signal_pidfd(child_pidfd.as_raw_fd());
             let _ = wait_child(child);
             return Err(io::Error::from_raw_os_error(restore_err));
         }
-        // No automatic reaping and no other waiters: even a dead child retains
-        // its numeric PID until our explicit waitpid after placement is finished.
-        let child_pidfd = match pidfd(child) {
-            Ok(fd) => fd,
-            Err(e) => {
-                unsafe {
-                    libc::kill(child, libc::SIGKILL);
-                }
-                let _ = wait_child(child);
-                return Err(e);
-            }
-        };
         let run = (|| -> io::Result<()> {
             // The external manager must acquire a pidfd before early-stop testing.
             status_line("FORKED", child)?;
@@ -478,16 +489,6 @@ mod linux {
             }
             let procs = openat(&group, c"cgroup.procs", libc::O_RDWR)?;
             let pid_bytes = child.to_string();
-            let n = unsafe {
-                libc::write(
-                    procs.as_raw_fd(),
-                    pid_bytes.as_ptr().cast(),
-                    pid_bytes.len(),
-                )
-            };
-            if n != pid_bytes.len() as isize {
-                return Err(error("cgroup move failed"));
-            }
             if unsafe { libc::lseek(procs.as_raw_fd(), 0, libc::SEEK_SET) } < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -511,8 +512,7 @@ mod linux {
             wait_dead(child_pidfd.as_raw_fd())?;
             Err(error("test worker exited without external manager"))
         })();
-        // If child was already reaped, kill_group remains the cleanup authority;
-        // otherwise the pidfd kills even a child not yet moved into the cgroup.
+        // The exact pidfd and group remain cleanup authorities even before GO.
         stop_and_reap(child, child_pidfd.as_raw_fd(), &kill, &mut events)?;
         run
     }

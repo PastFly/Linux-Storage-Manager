@@ -15,6 +15,7 @@ struct TestGuard {
     inode: u64,
     calls: usize,
     reject_at: Option<usize>,
+    worker_pidfd: Option<File>,
 }
 impl gated::ExternalGuard for TestGuard {
     fn validate(&mut self, group: &File) -> io::Result<()> {
@@ -22,10 +23,25 @@ impl gated::ExternalGuard for TestGuard {
         if self.reject_at == Some(self.calls) {
             return Err(io::Error::other("injected guard failure"));
         }
+        if self.calls > 1 && self.worker_pidfd.is_none() {
+            return Err(io::Error::other(
+                "worker pidfd was not registered before READY",
+            ));
+        }
         let metadata = group.metadata()?;
         if (metadata.dev(), metadata.ino()) != (self.device, self.inode) {
             return Err(io::Error::other("wrong test group"));
         }
+        Ok(())
+    }
+
+    // This local duplicate checks callback ordering only. It is not a
+    // protected transfer to an independent manager.
+    fn register_worker(&mut self, worker_pidfd: &File) -> io::Result<()> {
+        if self.worker_pidfd.is_some() {
+            return Err(io::Error::other("worker pidfd registered twice"));
+        }
+        self.worker_pidfd = Some(worker_pidfd.try_clone()?);
         Ok(())
     }
 }
@@ -87,6 +103,7 @@ fn run(group_path: &Path, mode: &str, marker: &Path) -> io::Result<()> {
         device: meta.dev(),
         inode: meta.ino(),
         calls: 0,
+        worker_pidfd: None,
         reject_at: match mode {
             "before" => Some(1),
             "after-spawn" => Some(2),

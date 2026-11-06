@@ -91,7 +91,7 @@ def run_case(executable, parent, case):
         assert 'anon_inode:[pidfd]' in fd_targets
         assert not any(str(group) in target for target in fd_targets), fd_targets
         if case == 'before-pdeath':
-            assert not populated(group), 'pre-prctl child unexpectedly moved into cgroup'
+            assert populated(group), 'pre-prctl child not born into cgroup'
             launcher.kill()
             launcher.wait(timeout=TIMEOUT)
             # The child is still stopped before prctl. Continue the exact pidfd,

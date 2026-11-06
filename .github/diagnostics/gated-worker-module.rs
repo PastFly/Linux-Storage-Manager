@@ -19,6 +19,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 const CGROUP2_MAGIC: u64 = 0x6367_7270;
+// Linux UAPI: libc 0.2.189's signed constant overflows for this flag.
+const CLONE_INTO_CGROUP: u64 = 0x2_0000_0000;
 const WAIT_LIMIT: Duration = Duration::from_secs(10);
 
 /// The external controller must authenticate its guard, prove this cgroup is
@@ -28,6 +30,10 @@ const WAIT_LIMIT: Duration = Duration::from_secs(10);
 /// It is intentionally a caller contract, not a cryptographic proof.
 pub trait ExternalGuard {
     fn validate(&mut self, dedicated_group: &File) -> io::Result<()>;
+    /// Transfer the kernel-created pidfd to an independently monitoring
+    /// controller before READY or GO. A successful callback is not proof
+    /// that the controller or backup observer will remain alive.
+    fn register_worker(&mut self, worker_pidfd: &File) -> io::Result<()>;
 }
 
 /// Pre-created sealed ELF snapshot and prevalidated argument/environment bytes.
@@ -283,7 +289,7 @@ unsafe fn child(spec: &ChildSpec<'_>) -> ! {
     libc::_exit(126);
 }
 
-/// Prepare a stopped-before-GO child and place it in the guarded cgroup.
+/// Prepare a stopped-before-GO child born in the guarded cgroup.
 /// Every error after clone returns the Worker, including its exact pidfd.
 /// No success is reported on guard, close_range, placement or pidfd failures.
 // The error owns Worker without a new post-spawn allocation, retaining pidfd.
@@ -307,7 +313,7 @@ pub fn prepare<G: ExternalGuard>(
     pre!(require_cgroup(&group));
     let mut events = pre!(openat(&group, c"cgroup.events", libc::O_RDONLY));
     let kill = pre!(openat(&group, c"cgroup.kill", libc::O_WRONLY));
-    let procs = pre!(openat(&group, c"cgroup.procs", libc::O_RDWR));
+    let procs = pre!(openat(&group, c"cgroup.procs", libc::O_RDONLY));
     if pre!(group_populated(&mut events)) {
         return Err(StartFailure::BeforeSpawn(invalid("cgroup not empty")));
     }
@@ -368,9 +374,10 @@ pub fn prepare<G: ExternalGuard>(
     }
     let mut raw_pidfd: i32 = -1;
     let mut args: libc::clone_args = unsafe { zeroed() };
-    args.flags = libc::CLONE_PIDFD as u64;
+    args.flags = libc::CLONE_PIDFD as u64 | CLONE_INTO_CGROUP;
     args.pidfd = (&mut raw_pidfd as *mut i32) as u64;
     args.exit_signal = libc::SIGCHLD as u64;
+    args.cgroup = group.as_raw_fd() as u64;
     let result = unsafe {
         libc::syscall(
             libc::SYS_clone3,
@@ -399,6 +406,14 @@ pub fn prepare<G: ExternalGuard>(
     // Linux clone3(CLONE_PIDFD) guarantees a valid pidfd on successful return.
     // Keep all signals blocked until the child is reaped: no inherited handler
     // can install a SIGCHLD handler or wait on this child in this single thread.
+    if raw_pidfd < 0 {
+        // Kernel contract violation: do not return a misleading BeforeSpawn.
+        // Terminate this launcher after attempting group kill; its independent
+        // observer/controller must treat launcher death as recovery required.
+        let one = b'1';
+        let _ = unsafe { libc::write(kill.as_raw_fd(), (&one as *const u8).cast(), 1) };
+        unsafe { libc::_exit(125) }
+    }
     let worker_pidfd = unsafe { File::from_raw_fd(raw_pidfd) };
     let mut worker = Worker {
         pid: result as libc::pid_t,
@@ -424,6 +439,9 @@ pub fn prepare<G: ExternalGuard>(
             }
         };
     }
+    // The worker is already in the cgroup, even if this transfer fails or
+    // the launcher dies before the independently monitoring controller sees it.
+    post!(guard.register_worker(&worker.pidfd));
     drop(go_read);
     drop(ready_write);
     drop(child_exe);
@@ -448,18 +466,8 @@ pub fn prepare<G: ExternalGuard>(
     }
     post!(guard.validate(&worker.group));
     post!(require_sole_reaper());
-    // The child remains unreaped: its numeric PID cannot yet be reused.
+    // The child was atomically born in this cgroup and remains unreaped.
     let text = worker.pid.to_string();
-    let n = unsafe { libc::write(worker.procs.as_raw_fd(), text.as_ptr().cast(), text.len()) };
-    if n != text.len() as isize {
-        let cause = if n < 0 {
-            io::Error::last_os_error()
-        } else {
-            invalid("short cgroup.procs write")
-        };
-        worker.go.take();
-        return Err(StartFailure::AfterSpawn { cause, worker });
-    }
     if unsafe { libc::lseek(worker.procs.as_raw_fd(), 0, libc::SEEK_SET) } < 0 {
         let cause = io::Error::last_os_error();
         worker.go.take();
@@ -620,6 +628,9 @@ mod tests {
     struct RejectedGuard;
     impl ExternalGuard for RejectedGuard {
         fn validate(&mut self, _: &File) -> io::Result<()> {
+            Err(invalid("guard intentionally unready"))
+        }
+        fn register_worker(&mut self, _: &File) -> io::Result<()> {
             Err(invalid("guard intentionally unready"))
         }
     }
