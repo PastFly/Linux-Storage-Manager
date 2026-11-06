@@ -14,6 +14,65 @@ mod linux {
     const MAX_FDS: usize = MAX_LEASES + 2;
     const CONTROL_FD: c_int = 3;
     const CGROUP2_SUPER_MAGIC: u64 = 0x6367_7270;
+    // Linux UAPI values on x86_64 and aarch64, the prototype's supported targets.
+    const F_SETSIG: c_int = 10;
+    const F_SETOWN_EX: c_int = 15;
+    const F_GETOWN_EX: c_int = 16;
+    const F_OWNER_PID: c_int = 1;
+
+    #[repr(C)]
+    struct FOwnerEx {
+        kind: c_int,
+        pid: libc::pid_t,
+    }
+
+    fn signal_ready(fd: c_int) -> Option<bool> {
+        let mut item = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            let result = unsafe { libc::poll(&mut item, 1, 0) };
+            if result < 0 && interrupted() {
+                continue;
+            }
+            if result < 0 {
+                return None;
+            }
+            return Some(item.revents != 0);
+        }
+    }
+
+    fn take_read_lease(fd: c_int) -> bool {
+        let mut stat: libc::stat = unsafe { zeroed() };
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0
+            || flags & libc::O_ACCMODE != libc::O_RDONLY
+            || unsafe { libc::fstat(fd, &mut stat) } < 0
+            || stat.st_mode & libc::S_IFMT != libc::S_IFREG
+            || unsafe { libc::fcntl(fd, libc::F_GETLEASE) } != libc::F_UNLCK
+        {
+            return false;
+        }
+        let owner = FOwnerEx {
+            kind: F_OWNER_PID,
+            pid: unsafe { libc::getpid() },
+        };
+        // Lease setup may itself reset the signal owner: set before and after.
+        if unsafe { libc::fcntl(fd, F_SETSIG, 0) } < 0
+            || unsafe { libc::fcntl(fd, F_SETOWN_EX, &owner) } < 0
+            || unsafe { libc::fcntl(fd, libc::F_SETLEASE, libc::F_RDLCK) } < 0
+            || unsafe { libc::fcntl(fd, F_SETOWN_EX, &owner) } < 0
+        {
+            return false;
+        }
+        let mut actual = FOwnerEx { kind: -1, pid: -1 };
+        (unsafe { libc::fcntl(fd, F_GETOWN_EX, &mut actual) }) == 0
+            && actual.kind == owner.kind
+            && actual.pid == owner.pid
+            && unsafe { libc::fcntl(fd, libc::F_GETLEASE) } == libc::F_RDLCK
+    }
 
     fn exit(code: c_int) -> ! {
         // No destructors: in particular, never issue F_UNLCK for any shared lease.
@@ -109,6 +168,28 @@ mod linux {
             libc::close(0);
             libc::close(1);
             libc::close(2);
+        }
+
+        // Block before resetting an inherited SIG_IGN disposition. This process is
+        // single-threaded; SIGIO is synchronously consumed through signalfd.
+        let mut signals: libc::sigset_t = unsafe { zeroed() };
+        if unsafe { libc::sigemptyset(&mut signals) } != 0
+            || unsafe { libc::sigaddset(&mut signals, libc::SIGIO) } != 0
+            || unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &signals, ptr::null_mut()) } != 0
+        {
+            exit(3);
+        }
+        let mut action: libc::sigaction = unsafe { zeroed() };
+        action.sa_sigaction = libc::SIG_DFL;
+        if unsafe { libc::sigemptyset(&mut action.sa_mask) } != 0
+            || unsafe { libc::sigaction(libc::SIGIO, &action, ptr::null_mut()) } != 0
+        {
+            exit(3);
+        }
+        let signal_fd =
+            unsafe { libc::signalfd(-1, &signals, libc::SFD_CLOEXEC | libc::SFD_NONBLOCK) };
+        if signal_fd < 0 {
+            exit(3);
         }
 
         let mut peer: libc::ucred = unsafe { zeroed() };
@@ -210,12 +291,12 @@ mod linux {
             exit(4);
         }
         for &fd in &fds[2..count as usize + 2] {
-            if unsafe { libc::fcntl(fd, libc::F_GETLEASE) } != libc::F_RDLCK {
+            if !take_read_lease(fd) {
                 exit(4);
             }
         }
         let ack = || unsafe { libc::send(CONTROL_FD, b"R".as_ptr().cast(), 1, libc::MSG_NOSIGNAL) };
-        if manager_dead || ack() != 1 {
+        if manager_dead || signal_ready(signal_fd) != Some(false) || ack() != 1 {
             kill_and_wait(kill_fd, events);
             exit(5);
         }
@@ -230,6 +311,11 @@ mod linux {
                 events: libc::POLLIN,
                 revents: 0,
             },
+            libc::pollfd {
+                fd: signal_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
         loop {
             let result =
@@ -239,6 +325,7 @@ mod linux {
             }
             if result < 0
                 || poll_fds[0].revents != 0
+                || poll_fds[2].revents != 0
                 || poll_fds[1].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0
             {
                 break;
@@ -246,7 +333,14 @@ mod linux {
             if poll_fds[1].revents & libc::POLLIN != 0 {
                 let mut byte = 0u8;
                 let n = unsafe { libc::recv(CONTROL_FD, (&mut byte as *mut u8).cast(), 1, 0) };
-                if n == 1 && byte == b'Q' && populated(events) == Some(false) {
+                if n == 1
+                    && byte == b'Q'
+                    && populated(events) == Some(false)
+                    && signal_ready(signal_fd) == Some(false)
+                    && fds[2..count as usize + 2]
+                        .iter()
+                        .all(|&fd| unsafe { libc::fcntl(fd, libc::F_GETLEASE) } == libc::F_RDLCK)
+                {
                     let n = unsafe {
                         libc::send(CONTROL_FD, b"Q".as_ptr().cast(), 1, libc::MSG_NOSIGNAL)
                     };
