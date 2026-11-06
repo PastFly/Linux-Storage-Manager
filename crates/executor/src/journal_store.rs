@@ -711,6 +711,8 @@ impl DurableJournalStore {
         };
         if expected.schema_version != journal.schema_version
             || !recovery_binding_valid
+            || (expected.schema_version == 2
+                && expected.events.len().checked_add(1) != Some(journal.events.len()))
             || expected.journal_id != journal.journal_id
             || expected.plan_id != journal.plan_id
             || expected.target != journal.target
