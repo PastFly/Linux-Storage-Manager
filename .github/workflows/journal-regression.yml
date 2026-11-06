@@ -14,6 +14,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  sealed-production-path-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Test sealed copies on a disposable backup filesystem
+        run: |
+          cargo check --locked -p lsm-executor --lib --features experimental-sealed-recovery
+          backup_root=/var/lib/linux-storage-manager/backups
+          test ! -e /var/lib/linux-storage-manager
+          image="$RUNNER_TEMP/lsm-sealed-backup-test.img"
+          uuid="$(cat /proc/sys/kernel/random/uuid)"
+          truncate -s 128M "$image"
+          mkfs.ext4 -q -F -O verity -U "$uuid" "$image"
+          sudo mkdir -m 700 /var/lib/linux-storage-manager
+          sudo mkdir -m 700 "$backup_root"
+          sudo mount -o loop "$image" "$backup_root"
+          trap 'sudo umount "$backup_root"; sudo rmdir "$backup_root" /var/lib/linux-storage-manager' EXIT
+          sudo chmod 700 "$backup_root"
+          printf '%s\n' "$uuid" | sudo tee "$backup_root/.lsm-sealed-disposable" > /dev/null
+          sudo chmod 600 "$backup_root/.lsm-sealed-disposable"
+          sudo env PATH="$PATH" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" LSM_TEST_SEALED_DISPOSABLE=1 LSM_TEST_SEALED_UUID="$uuid" cargo test --locked -p lsm-executor --lib sealed_recovery::tests::sealed_recovery_accepts_real_pinned_copies_on_disposable_ext4 -- --exact --nocapture
+
   process-lifecycle-probe:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -24,12 +50,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88.0
       - name: Test guarded lifecycle on disposable cgroups
         run: |
-          cargo test --locked --manifest-path .github/diagnostics/Cargo.toml --bin lsm-process-lifecycle-runner non_cgroup_root_is_rejected_without_changes -- --test-threads=1
-          cargo build --locked --manifest-path .github/diagnostics/Cargo.toml --bin lsm-process-lifecycle-runner --target-dir /tmp/lsm-process-lifecycle
+          cargo test --locked --manifest-path .github/diagnostics/Cargo.toml --features diagnostic-process-lifecycle --bin lsm-process-lifecycle-runner non_cgroup_root_is_rejected_without_changes -- --test-threads=1
+          cargo build --locked --manifest-path .github/diagnostics/Cargo.toml --features diagnostic-process-lifecycle --bin lsm-process-lifecycle-runner --target-dir /tmp/lsm-process-lifecycle
           sudo mkdir /sys/fs/cgroup/lsm-process-lifecycle-test
           trap 'sudo rmdir /sys/fs/cgroup/lsm-process-lifecycle-test || true' EXIT
           status=0
-          for case in manager-before-go manager-after-go guard-after-go; do
+          for case in manager-before-clone manager-before-go guard-before-go manager-after-go guard-after-go; do
             sudo env LSM_TEST_DISPOSABLE_CGROUP=/sys/fs/cgroup/lsm-process-lifecycle-test python3 -I .github/diagnostics/test-process-lifecycle.py /tmp/lsm-process-lifecycle/debug/lsm-process-lifecycle-runner /sys/fs/cgroup/lsm-process-lifecycle-test "$case" || status=1
           done
           exit "$status"
