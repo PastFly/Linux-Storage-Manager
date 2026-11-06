@@ -7,7 +7,67 @@ use std::mem::{size_of, zeroed};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::time::{Duration, Instant};
 
+fn require_packet_socket(fd: RawFd) -> io::Result<()> {
+    for (option, expected) in [
+        (libc::SO_TYPE, libc::SOCK_SEQPACKET),
+        (libc::SO_DOMAIN, libc::AF_UNIX),
+    ] {
+        let mut actual: libc::c_int = 0;
+        let mut length = size_of::<libc::c_int>() as libc::socklen_t;
+        if unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                option,
+                (&mut actual as *mut libc::c_int).cast(),
+                &mut length,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if actual != expected || length as usize != size_of::<libc::c_int>() {
+            return Err(io::Error::other("unexpected socket type/domain"));
+        }
+    }
+    Ok(())
+}
+
+fn require_live_sender(pidfd: RawFd, sender: libc::pid_t) -> io::Result<()> {
+    if sender <= 0
+        || std::fs::read_link(format!("/proc/self/fd/{pidfd}"))?.as_os_str() != "anon_inode:[pidfd]"
+    {
+        return Err(io::Error::other("invalid sender pidfd"));
+    }
+    let data = std::fs::read_to_string(format!("/proc/self/fdinfo/{pidfd}"))?;
+    let mut matches = data.lines().filter_map(|line| line.strip_prefix("Pid:"));
+    let identity = matches
+        .next()
+        .and_then(|value| value.trim().parse::<libc::pid_t>().ok());
+    if identity != Some(sender) || matches.next().is_some() {
+        return Err(io::Error::other("sender pidfd identity mismatch"));
+    }
+    let mut item = libc::pollfd {
+        fd: pidfd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // A signal storm is a failure, not a reason to wait indefinitely.
+    for _ in 0..64 {
+        let n = unsafe { libc::poll(&mut item, 1, 0) };
+        if n == 0 && item.revents == 0 {
+            return Ok(());
+        }
+        if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(io::Error::other("sender pidfd is dead or unavailable"));
+    }
+    Err(io::Error::other("sender pidfd poll interrupted repeatedly"))
+}
+
 fn send_worker_pidfd(socket: RawFd, pidfd: RawFd) -> io::Result<()> {
+    require_packet_socket(socket)?;
     let mut byte = b'W';
     let mut iov = libc::iovec {
         iov_base: (&mut byte as *mut u8).cast(),
@@ -39,7 +99,13 @@ fn send_worker_pidfd(socket: RawFd, pidfd: RawFd) -> io::Result<()> {
 // This authenticates the *sender* and owns the received descriptor. It does
 // not yet authorize GO: the manager must independently bind that descriptor
 // to the worker and pinned cgroup before use.
-fn receive_worker_pidfd(socket: RawFd, sender: libc::pid_t) -> io::Result<File> {
+fn receive_worker_pidfd(
+    socket: RawFd,
+    sender_pidfd: RawFd,
+    sender: libc::pid_t,
+) -> io::Result<File> {
+    require_packet_socket(socket)?;
+    require_live_sender(sender_pidfd, sender)?;
     let mut enabled: libc::c_int = 0;
     let mut length = size_of::<libc::c_int>() as libc::socklen_t;
     if unsafe {
@@ -173,17 +239,9 @@ fn receive_worker_pidfd(socket: RawFd, sender: libc::pid_t) -> io::Result<File> 
         {
             return Err(io::Error::other("descriptor is not pidfd"));
         }
+        require_live_sender(sender_pidfd, sender)?;
         return Ok(fd);
     }
-}
-
-#[cfg(test)]
-fn receive_worker_pidfd_bound(
-    socket: RawFd,
-    _sender_pidfd: RawFd,
-    sender: libc::pid_t,
-) -> io::Result<File> {
-    receive_worker_pidfd(socket, sender)
 }
 
 #[cfg(test)]
@@ -254,7 +312,12 @@ mod tests {
         } else {
             unsafe { libc::getpid() }
         };
-        let received = receive_worker_pidfd(manager.as_raw_fd(), expected);
+        let pinned = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) as i32 };
+        assert!(pinned >= 0);
+        let received = receive_worker_pidfd(manager.as_raw_fd(), pinned, expected);
+        unsafe {
+            libc::close(pinned);
+        }
         let verification = received.as_ref().ok().and_then(|fd| {
             std::fs::read_to_string(format!("/proc/self/fdinfo/{}", fd.as_raw_fd())).ok()
         });
@@ -326,7 +389,7 @@ mod tests {
                 unsafe { libc::send(fds[1], b"extra".as_ptr().cast(), 5, 0) },
                 5
             );
-            receive_worker_pidfd(fds[0], unsafe { libc::getpid() })
+            receive_worker_pidfd(fds[0], own, unsafe { libc::getpid() })
         };
         for fd in fds.into_iter().chain([own]) {
             unsafe {
@@ -354,8 +417,7 @@ mod tests {
         let own = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) as i32 };
         assert!(own >= 0);
         send_worker_pidfd(launcher.as_raw_fd(), own).unwrap();
-        let result =
-            receive_worker_pidfd_bound(manager.as_raw_fd(), dead_fd, unsafe { libc::getpid() });
+        let result = receive_worker_pidfd(manager.as_raw_fd(), dead_fd, unsafe { libc::getpid() });
         unsafe {
             libc::close(dead_fd);
             libc::close(own);
