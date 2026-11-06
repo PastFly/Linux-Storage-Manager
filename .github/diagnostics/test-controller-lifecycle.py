@@ -81,6 +81,8 @@ def run_case(manager, observer, root, case):
                 environment['LSM_TEST_FAIL_WITH_STOPPED_LAUNCHER'] = '1'
             if case == 'launcher-pidfd-failure':
                 environment['LSM_TEST_LAUNCHER_PIDFD_FAIL'] = '1'
+            if case == 'launcher-stopped-after-go':
+                environment['LSM_TEST_PAUSE_AFTER_GO'] = '1'
             def attach_case():
                 # The diagnostic manager, observer and launcher inherit this
                 # disposable parent even if setup fails before reporting PIDs.
@@ -96,6 +98,8 @@ def run_case(manager, observer, root, case):
                                      preexec_fn=attach_case)
             if case == 'manager-auto-reap':
                 assert child.wait(timeout=3) != 0, 'manager accepted auto-reaping SIGCHLD'
+                assert b'unsafe SIGCHLD' in child.stderr.read(), 'SIGCHLD invariant was not explicitly rejected'
+                assert not any(entry.is_dir() for entry in case_root.iterdir()), 'manager created a subgroup before rejecting SIGCHLD'
                 print('PASS:', case, flush=True)
                 return
             parts = line(child.stdout).split()
@@ -121,12 +125,38 @@ def run_case(manager, observer, root, case):
                 assert not poller.poll(300), 'unprotected numeric PID fallback killed launcher'
                 print('PASS:', case, flush=True)
                 return
+            if case == 'launcher-stopped-after-go':
+                assert len(parts) == 6 and parts[0] == 'POSTGO', ('expected post-GO barrier', parts)
+                observer_pid, worker_pid, descendant_pid, launcher_pid = map(int, parts[1:5])
+                group = pathlib.Path(parts[5])
+                assert group.parent == case_root and group.name.startswith('lsm-backup-')
+                fds.extend(os.pidfd_open(pid) for pid in (observer_pid, worker_pid, descendant_pid, launcher_pid))
+                signal.pidfd_send_signal(fds[3], signal.SIGSTOP)
+                deadline = time.monotonic() + 1
+                while time.monotonic() < deadline:
+                    if '\nState:\tT' in (pathlib.Path('/proc') / str(launcher_pid) / 'status').read_text():
+                        break
+                    time.sleep(.01)
+                else:
+                    raise AssertionError('launcher did not stop at post-GO barrier')
+                child.stdin.write(b'C')
+                child.stdin.flush()
+                child.wait(timeout=5)
+                assert b'ACTIVE ' not in child.stdout.read(), 'manager reported ACTIVE after launcher stopped'
+                wait_dead(fds[3], 'post-GO stopped launcher')
+                wait_dead(fds[1], 'post-GO worker')
+                wait_dead(fds[2], 'post-GO setsid descendant')
+                wait_empty(group)
+                print('PASS:', case, flush=True)
+                return
             if case == 'launcher-failure-before-active':
                 assert len(parts) == 3 and parts[0] == 'LAUNCHER', ('expected launcher barrier', parts)
                 launcher_pid = int(parts[1])
                 group = pathlib.Path(parts[2])
                 assert group.is_absolute() and group.parent == case_root and group.name.startswith('lsm-backup-')
                 fds.append(os.pidfd_open(launcher_pid))
+                child.stdin.write(b'C')
+                child.stdin.flush()
                 child.wait(timeout=TIMEOUT)
                 wait_dead(fds[0], 'stopped launcher before ACTIVE')
                 wait_empty(case_root)
@@ -234,7 +264,7 @@ def main():
     root = pathlib.Path(sys.argv[3]).resolve(strict=True)
     assert root != pathlib.Path('/sys/fs/cgroup') and root.is_relative_to('/sys/fs/cgroup')
     assert os.environ.get('LSM_TEST_DISPOSABLE_CGROUP') == str(root), 'explicit disposable cgroup required'
-    cases = ('manager-death', 'observer-death', 'lease-break', 'observer-before-go', 'launcher-poll-failure', 'launcher-stopped', 'launcher-failure-before-active', 'manager-stopped', 'launcher-pidfd-failure', 'manager-auto-reap')
+    cases = ('manager-death', 'observer-death', 'lease-break', 'observer-before-go', 'launcher-poll-failure', 'launcher-stopped', 'launcher-failure-before-active', 'manager-stopped', 'launcher-pidfd-failure', 'manager-auto-reap', 'launcher-stopped-after-go')
     if len(sys.argv) == 5:
         assert sys.argv[4] in cases
         cases = (sys.argv[4],)

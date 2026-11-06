@@ -12,6 +12,53 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+// This diagnostic binary is single-threaded. Keep signals blocked until the
+// launcher is reaped so no inherited handler can act as a competing reaper.
+struct SingleReaper {
+    previous: libc::sigset_t,
+}
+impl SingleReaper {
+    fn check() -> io::Result<()> {
+        let status = std::fs::read_to_string("/proc/self/status")?;
+        let threads = status
+            .lines()
+            .find_map(|line| line.strip_prefix("Threads:")?.trim().parse::<u32>().ok());
+        if threads != Some(1) {
+            return Err(invalid("manager is not single-threaded"));
+        }
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        if unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut action) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if action.sa_sigaction != libc::SIG_DFL || action.sa_flags & libc::SA_NOCLDWAIT != 0 {
+            return Err(invalid("unsafe SIGCHLD disposition"));
+        }
+        Ok(())
+    }
+    fn enter() -> io::Result<Self> {
+        Self::check()?;
+        let mut all: libc::sigset_t = unsafe { std::mem::zeroed() };
+        let mut previous: libc::sigset_t = unsafe { std::mem::zeroed() };
+        if unsafe { libc::sigfillset(&mut all) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let error = unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &all, &mut previous) };
+        if error != 0 {
+            return Err(io::Error::from_raw_os_error(error));
+        }
+        let guard = Self { previous };
+        Self::check()?;
+        Ok(guard)
+    }
+}
+impl Drop for SingleReaper {
+    fn drop(&mut self) {
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_SETMASK, &self.previous, std::ptr::null_mut());
+        }
+    }
+}
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::other(message)
 }
@@ -193,7 +240,11 @@ pub fn launcher(group_path: &Path, manager: &OsStr, raw: &OsStr, marker: &Path) 
             events: libc::POLLIN,
             revents: 0,
         };
+        let mut deadline = Instant::now() + Duration::from_secs(2);
         loop {
+            if Instant::now() >= deadline {
+                return Err(invalid("manager heartbeat timed out"));
+            }
             let n = unsafe { libc::poll(&mut item, 1, 100) };
             if std::env::var_os("LSM_TEST_POST_GO_POLL_FAULT").as_deref() == Some(OsStr::new("1"))
                 && marker.with_extension("fault").exists()
@@ -214,6 +265,7 @@ pub fn launcher(group_path: &Path, manager: &OsStr, raw: &OsStr, marker: &Path) 
                 supervisor::diagnostic_receive_byte(&guard.socket, guard.manager, b'P')?;
                 send_byte(&guard.socket, b'p')?;
                 channel::require_live_sender(guard.pidfd.as_raw_fd(), guard.manager)?;
+                deadline = Instant::now() + Duration::from_secs(2);
             }
         }
     })();
@@ -297,7 +349,9 @@ fn stop_launcher(launcher: &mut ManagedLauncher) -> io::Result<()> {
             }
             Ok(())
         }
-        None => launcher.child.kill(),
+        // No stable authority exists if pidfd_open failed. Do not signal a
+        // numeric PID; report the incomplete cleanup to the external owner.
+        None => Err(invalid("launcher pidfd unavailable; cannot signal safely")),
     }
 }
 fn reap_launcher(launcher: &mut ManagedLauncher) -> io::Result<()> {
@@ -366,6 +420,7 @@ fn launcher_heartbeat(
     }
 }
 pub fn manager(root: &Path, observer: &OsStr, backup: &Path) -> io::Result<()> {
+    let _reaper = SingleReaper::enter()?;
     let guard =
         supervisor::BackupSupervisor::start_watchdog_at(vec![File::open(backup)?], root, observer)?;
     let mut launcher = None;
@@ -421,6 +476,7 @@ fn run_manager(
         });
     }
     guard.diagnostic_heartbeat()?;
+    SingleReaper::check()?;
     *slot = Some(ManagedLauncher {
         child: command.spawn()?,
         pidfd: None,
@@ -491,6 +547,19 @@ fn run_manager(
         }
         println!("LAUNCHER {} {}", child.id(), path.display());
         io::stdout().flush()?;
+        let mut item = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut item, 1, 1000) } != 1 || item.revents != libc::POLLIN {
+            return Err(invalid("launcher fault barrier timed out"));
+        }
+        let mut command = [0u8];
+        io::stdin().read_exact(&mut command)?;
+        if command != [b'C'] {
+            return Err(invalid("invalid launcher fault command"));
+        }
         return Err(invalid("injected failure with stopped launcher"));
     }
     let worker = channel::receive_worker_pidfd(
@@ -537,6 +606,7 @@ fn run_manager(
         if !live(launcher_fd)? || !live(&worker)? || !live(&observer_fd)? {
             return Err(invalid("process died before active"));
         }
+        launcher_heartbeat(&manager, launcher_fd, child.id() as libc::pid_t)?;
         if let Ok(text) = std::fs::read_to_string(&marker) {
             let values: Vec<_> = text
                 .split_whitespace()
@@ -550,6 +620,28 @@ fn run_manager(
         guard.diagnostic_heartbeat()?;
         std::thread::sleep(Duration::from_millis(100));
     };
+    if std::env::var_os("LSM_TEST_PAUSE_AFTER_GO").as_deref() == Some(OsStr::new("1")) {
+        println!(
+            "POSTGO {observer_pid} {worker_pid} {descendant} {} {}",
+            child.id(),
+            path.display()
+        );
+        io::stdout().flush()?;
+        let mut item = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut item, 1, 1000) } != 1 || item.revents != libc::POLLIN {
+            return Err(invalid("post-GO barrier timed out"));
+        }
+        let mut command = [0u8];
+        io::stdin().read_exact(&mut command)?;
+        if command != [b'C'] {
+            return Err(invalid("invalid post-GO barrier command"));
+        }
+    }
+    launcher_heartbeat(&manager, launcher_fd, child.id() as libc::pid_t)?;
     println!(
         "ACTIVE {observer_pid} {worker_pid} {descendant} {} {}",
         child.id(),
