@@ -764,6 +764,262 @@ mod tests {
         assert_eq!(persisted, *session.journal());
     }
 
+    fn recovery_fixture(
+        session: &LockedExecutionSession<'_>,
+        session_id: &str,
+        content_hash: &str,
+    ) -> crate::backup_recovery_record::BackupRecoveryRecord {
+        use crate::backup_recovery_record::{
+            BackupRecoveryRecord, RecoveryArtifact, RecoveryBinding, RecoveryIdentity,
+            RecoveryPayload, VerityPair,
+        };
+        let artifact = crate::BackupArtifactReceipt {
+            ordinal: 1,
+            kind: crate::MetadataBackupKind::PartitionTable,
+            artifact_path: "/var/lib/lsm/backups/primary".into(),
+            expected_identity: crate::BackupExpectedIdentity::PartitionTable {
+                disk: "/dev/vda".into(),
+                table_label: "gpt".into(),
+                table_id: Some("123".into()),
+            },
+            device_id: 123,
+            inode: 456,
+            size_bytes: 42,
+            sha256: content_hash.into(),
+        };
+        let mut binding = RecoveryBinding {
+            journal_id: session.journal().journal_id.clone(),
+            session_id: session_id.into(),
+            handoff_id: session.handoff().handoff_id().into(),
+            plan_id: session.handoff().plan().plan_id().into(),
+            target_manifest_digest: session.handoff().target_identity().manifest_digest.clone(),
+            manifest_id: "a".repeat(64),
+            receipt_id: String::new(),
+        };
+        binding.receipt_id = format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&(
+                    2_u32,
+                    &binding.manifest_id,
+                    &binding.handoff_id,
+                    &binding.plan_id,
+                    &binding.target_manifest_digest,
+                    &binding.session_id,
+                    &binding.journal_id,
+                    false,
+                    &[artifact],
+                ))
+                .unwrap()
+            )
+        );
+        BackupRecoveryRecord::new(RecoveryPayload {
+            schema_version: 3,
+            binding,
+            artifacts: vec![RecoveryArtifact {
+                ordinal: 1,
+                identity: RecoveryIdentity::PartitionTable {
+                    disk: "/dev/vda".into(),
+                    table_label: "gpt".into(),
+                    table_id: Some("123".into()),
+                },
+                primary_path: "/var/lib/lsm/backups/primary".into(),
+                recovery_path: "/var/lib/lsm/backups/recovery".into(),
+                size_bytes: 42,
+                sha256: content_hash.into(),
+                capture_device_id: Some(123),
+                capture_inode: Some(456),
+                verity: Some(VerityPair {
+                    primary_sha256: "3".repeat(64),
+                    recovery_sha256: "4".repeat(64),
+                }),
+            }],
+        })
+        .unwrap()
+    }
+
+    fn recovery_evidence(
+        session: &LockedExecutionSession<'_>,
+        snapshot: &HostSnapshot,
+        capabilities: &HostCapabilities,
+        record: &crate::backup_recovery_record::BackupRecoveryRecord,
+    ) -> crate::PreMutationEvidenceBundle {
+        let binding = record.binding();
+        let backup = crate::backup_capture::test_revalidation_for_ids(
+            session,
+            &binding.manifest_id,
+            &binding.receipt_id,
+        );
+        crate::build_pre_mutation_evidence(session, snapshot, capabilities, &backup).unwrap()
+    }
+
+    #[test]
+    fn recovery_preconditions_bind_durable_record_and_survive_reopen() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let lock = lock_path();
+        let root = journal_root("recovery-preconditions");
+        let record_root = journal_root("recovery-record");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_recovery_at_paths(&handoff, &lock, &store)
+                .unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let record = recovery_fixture(&session, session.session_id(), &"2".repeat(64));
+        let evidence = recovery_evidence(&session, &snapshot, &capabilities, &record);
+        crate::backup_recovery_storage::store(&record_root, &record, record.binding()).unwrap();
+        let proof = crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &record);
+        // A crash before the transition leaves the independently durable record unbound.
+        let before = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(before.phase, JournalPhase::IdentityRevalidated);
+        assert!(before.recovery_binding.is_none());
+        let verified = crate::preconditions::verify_preconditions_with_recovery(
+            &mut session,
+            &evidence,
+            &proof,
+        )
+        .unwrap();
+        assert_eq!(verified.bundle_id(), evidence.bundle_id());
+        let journal_id = session.journal().journal_id.clone();
+        let session_id = session.session_id().to_owned();
+        drop(session);
+        // Reopen after the transition: one complete event and binding, no approval yet.
+        let after = store.load(&journal_id).unwrap();
+        assert_eq!(after.phase, JournalPhase::PreconditionsVerified);
+        assert_eq!(after.events.len(), before.events.len() + 1);
+        let bound = after.recovery_binding.unwrap();
+        assert_eq!(bound.record_id, record.record_id());
+        assert_eq!(bound.session_id, session_id);
+        assert_eq!(bound.handoff_id, handoff.handoff_id());
+        assert!(after.approval.is_none());
+        assert_eq!(
+            crate::backup_recovery_storage::load(&record_root, &bound.record_id, record.binding())
+                .unwrap(),
+            record
+        );
+        let _ = std::fs::remove_dir_all(lock.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(record_root);
+    }
+
+    #[test]
+    fn recovery_preconditions_reject_other_receipt_and_session_without_writing_journal() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let lock = lock_path();
+        let root = journal_root("recovery-mismatch");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_recovery_at_paths(&handoff, &lock, &store)
+                .unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let good = recovery_fixture(&session, session.session_id(), &"2".repeat(64));
+        let evidence = recovery_evidence(&session, &snapshot, &capabilities, &good);
+        let before = store.load(&session.journal().journal_id).unwrap();
+        for bad in [
+            recovery_fixture(&session, session.session_id(), &"9".repeat(64)),
+            recovery_fixture(&session, &"f".repeat(64), &"2".repeat(64)),
+        ] {
+            let record_root = journal_root("recovery-mismatch-record");
+            crate::backup_recovery_storage::store(&record_root, &bad, bad.binding()).unwrap();
+            let proof = crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &bad);
+            assert!(crate::preconditions::verify_preconditions_with_recovery(
+                &mut session,
+                &evidence,
+                &proof
+            )
+            .is_err());
+            assert_eq!(store.load(&session.journal().journal_id).unwrap(), before);
+            assert_eq!(*session.journal(), before);
+            let _ = std::fs::remove_dir_all(record_root);
+        }
+        drop(session);
+        let _ = std::fs::remove_dir_all(lock.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_preconditions_survive_sigkill_before_and_after_transition() {
+        use std::os::unix::process::ExitStatusExt;
+        const STAGE: &str = "LSM_RECOVERY_JOURNAL_CRASH_STAGE";
+        const LOCK: &str = "LSM_RECOVERY_JOURNAL_CRASH_LOCK";
+        const ROOT: &str = "LSM_RECOVERY_JOURNAL_CRASH_ROOT";
+        const RECORD_ROOT: &str = "LSM_RECOVERY_JOURNAL_CRASH_RECORD_ROOT";
+
+        if let Ok(stage) = std::env::var(STAGE) {
+            let (snapshot, capabilities) = fixture();
+            let handoff = handoff(&snapshot, &capabilities);
+            let lock = PathBuf::from(std::env::var_os(LOCK).unwrap());
+            let root = PathBuf::from(std::env::var_os(ROOT).unwrap());
+            let record_root = PathBuf::from(std::env::var_os(RECORD_ROOT).unwrap());
+            let store = DurableJournalStore::at(&root);
+            let mut session =
+                LockedExecutionSession::begin_durable_recovery_at_paths(&handoff, &lock, &store)
+                    .unwrap();
+            session.revalidate(&snapshot, &capabilities).unwrap();
+            let record = recovery_fixture(&session, session.session_id(), &"2".repeat(64));
+            let evidence = recovery_evidence(&session, &snapshot, &capabilities, &record);
+            crate::backup_recovery_storage::store(&record_root, &record, record.binding()).unwrap();
+            if stage == "after" {
+                let proof =
+                    crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &record);
+                crate::preconditions::verify_preconditions_with_recovery(
+                    &mut session,
+                    &evidence,
+                    &proof,
+                )
+                .unwrap();
+            } else {
+                assert_eq!(stage, "before");
+            }
+            unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
+            panic!("SIGKILL did not terminate child");
+        }
+
+        for stage in ["before", "after"] {
+            let lock = lock_path();
+            let root = journal_root("recovery-crash-journal");
+            let record_root = journal_root("recovery-crash-record");
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "locked_session::tests::recovery_preconditions_survive_sigkill_before_and_after_transition", "--nocapture"])
+                .env(STAGE, stage).env(LOCK, &lock).env(ROOT, &root).env(RECORD_ROOT, &record_root)
+                .output().unwrap();
+            assert_eq!(
+                result.status.signal(),
+                Some(libc::SIGKILL),
+                "child output: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let journals = DurableJournalStore::at(&root).all().unwrap();
+            assert_eq!(journals.len(), 1);
+            let journal = &journals[0];
+            assert_eq!(
+                journal.phase,
+                if stage == "before" {
+                    JournalPhase::IdentityRevalidated
+                } else {
+                    JournalPhase::PreconditionsVerified
+                }
+            );
+            assert_eq!(journal.recovery_binding.is_some(), stage == "after");
+            assert!(journal.approval.is_none());
+            let record_files = std::fs::read_dir(&record_root)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(record_files.len(), 1);
+            if let Some(binding) = &journal.recovery_binding {
+                assert_eq!(
+                    record_files[0].file_name(),
+                    std::ffi::OsString::from(format!("{}.json", binding.record_id))
+                );
+            }
+            let _ = std::fs::remove_dir_all(lock.parent().unwrap());
+            let _ = std::fs::remove_dir_all(root);
+            let _ = std::fs::remove_dir_all(record_root);
+        }
+    }
+
     #[test]
     fn recovery_attempt_starts_with_durable_v2_and_cannot_skip_binding() {
         let (snapshot, capabilities) = fixture();

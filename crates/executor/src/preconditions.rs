@@ -207,6 +207,34 @@ fn is_lower_hex_digest(value: &str) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) struct ExperimentalDurableRecovery {
+    root: std::path::PathBuf,
+    record: crate::backup_recovery_record::BackupRecoveryRecord,
+}
+
+#[cfg(test)]
+impl ExperimentalDurableRecovery {
+    pub(crate) fn load(
+        root: &std::path::Path,
+        record: &crate::backup_recovery_record::BackupRecoveryRecord,
+    ) -> Self {
+        Self {
+            root: root.to_owned(),
+            record: record.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn verify_preconditions_with_recovery(
+    _session: &mut LockedExecutionSession<'_>,
+    _evidence: &PreMutationEvidenceBundle,
+    _recovery: &ExperimentalDurableRecovery,
+) -> Result<PreconditionsVerification, PreconditionsVerificationError> {
+    Err(PreconditionsVerificationError::BackupBindingInvalid)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

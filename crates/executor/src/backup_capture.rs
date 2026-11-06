@@ -1053,6 +1053,25 @@ pub(crate) fn test_backup_receipt_revalidation(
 }
 
 #[cfg(test)]
+pub(crate) fn test_revalidation_for_ids(
+    session: &LockedExecutionSession<'_>,
+    manifest_id: &str,
+    receipt_id: &str,
+) -> BackupReceiptRevalidation {
+    let mut result = test_backup_receipt_revalidation(
+        session,
+        session.handoff().handoff_id(),
+        session.handoff().plan().plan_id(),
+        &session.handoff().target_identity().manifest_digest,
+        true,
+        Vec::new(),
+    );
+    result.manifest_id = manifest_id.to_owned();
+    result.receipt_id = receipt_id.to_owned();
+    result
+}
+
+#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

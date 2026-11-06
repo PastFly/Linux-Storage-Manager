@@ -166,7 +166,7 @@ fn collect_events(reader: &mut impl Read) -> Result<Vec<ObservedEvent>, StorageE
 }
 
 #[derive(Debug, thiserror::Error)]
-enum StorageError {
+pub(crate) enum StorageError {
     #[error("recovery record validation failed: {0:?}")]
     Record(RecordError),
     #[error("journal directory failed: {0}")]
@@ -234,7 +234,7 @@ fn read_pinned(
     Ok((record, file, held))
 }
 
-fn load(
+pub(crate) fn load(
     root: &Path,
     expected_id: &str,
     trusted: &RecoveryBinding,
@@ -263,7 +263,7 @@ fn load(
     Ok(record)
 }
 
-fn store(
+pub(crate) fn store(
     root: &Path,
     record: &BackupRecoveryRecord,
     trusted: &RecoveryBinding,
