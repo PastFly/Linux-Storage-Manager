@@ -3,7 +3,7 @@
 
 Usage: sudo python3 test-controller-lifecycle.py MANAGER OBSERVER /sys/fs/cgroup/DISPOSABLE
 MANAGER diagnostic mode must report one line:
-  ACTIVE OBSERVER_PID WORKER_PID SETSID_DESCENDANT_PID CGROUP_PATH
+  ACTIVE OBSERVER_PID WORKER_PID SETSID_DESCENDANT_PID LAUNCHER_PID CGROUP_PATH
 only after authenticated pidfd registration and GO. The supplied parent must be
 an empty, isolated delegated test cgroup. No block devices are touched.
 """
@@ -77,16 +77,37 @@ def run_case(manager, observer, root, case):
                 environment['LSM_TEST_PAUSE_BEFORE_GO'] = '1'
             if case == 'launcher-poll-failure':
                 environment['LSM_TEST_POST_GO_POLL_FAULT'] = '1'
+            if case == 'launcher-failure-before-active':
+                environment['LSM_TEST_FAIL_WITH_STOPPED_LAUNCHER'] = '1'
+            def attach_case():
+                # The diagnostic manager, observer and launcher inherit this
+                # disposable parent even if setup fails before reporting PIDs.
+                fd = os.open(case_root / 'cgroup.procs', os.O_WRONLY | os.O_CLOEXEC)
+                os.write(fd, str(os.getpid()).encode('ascii'))
+                os.close(fd)
+
             child = subprocess.Popen([manager, '--diagnostic-manager', str(case_root), observer, str(backup)],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, bufsize=0, env=environment)
+                                     stderr=subprocess.PIPE, bufsize=0, env=environment,
+                                     preexec_fn=attach_case)
             parts = line(child.stdout).split()
-            if case == 'observer-before-go':
-                assert len(parts) == 4 and parts[0] == 'GATE', ('expected pre-GO barrier', parts)
-                observer_pid, worker_pid = map(int, parts[1:3])
-                group = pathlib.Path(parts[3])
+            if case == 'launcher-failure-before-active':
+                assert len(parts) == 3 and parts[0] == 'LAUNCHER', ('expected launcher barrier', parts)
+                launcher_pid = int(parts[1])
+                group = pathlib.Path(parts[2])
                 assert group.is_absolute() and group.parent == case_root and group.name.startswith('lsm-backup-')
-                fds.extend((os.pidfd_open(observer_pid), os.pidfd_open(worker_pid)))
+                fds.append(os.pidfd_open(launcher_pid))
+                child.wait(timeout=TIMEOUT)
+                wait_dead(fds[0], 'stopped launcher before ACTIVE')
+                wait_empty(case_root)
+                print('PASS:', case, flush=True)
+                return
+            if case == 'observer-before-go':
+                assert len(parts) == 5 and parts[0] == 'GATE', ('expected pre-GO barrier', parts)
+                observer_pid, worker_pid, launcher_pid = map(int, parts[1:4])
+                group = pathlib.Path(parts[4])
+                assert group.is_absolute() and group.parent == case_root and group.name.startswith('lsm-backup-')
+                fds.extend((os.pidfd_open(observer_pid), os.pidfd_open(worker_pid), os.pidfd_open(launcher_pid)))
                 assert not empty(group), 'pre-GO worker not in cgroup'
                 assert not backup.with_suffix('.worker').exists(), 'payload ran before GO'
                 signal.pidfd_send_signal(fds[0], signal.SIGKILL)
@@ -98,18 +119,21 @@ def run_case(manager, observer, root, case):
                 assert not backup.with_suffix('.worker').exists(), 'payload ran after observer death'
                 print('PASS:', case, flush=True)
                 return
-            assert len(parts) == 5 and parts[0] == 'ACTIVE', ('unexpected controller status', parts)
-            observer_pid, worker_pid, descendant_pid = map(int, parts[1:4])
-            group = pathlib.Path(parts[4])
+            assert len(parts) == 6 and parts[0] == 'ACTIVE', ('unexpected controller status', parts)
+            observer_pid, worker_pid, descendant_pid, launcher_pid = map(int, parts[1:5])
+            group = pathlib.Path(parts[5])
             assert group.is_absolute() and group.parent == case_root and group.name.startswith('lsm-backup-'), 'unexpected cgroup'
-            for pid in (observer_pid, worker_pid, descendant_pid):
+            for pid in (observer_pid, worker_pid, descendant_pid, launcher_pid):
                 assert pid > 1
                 fds.append(os.pidfd_open(pid))
             assert not empty(group), 'no live worker in controller cgroup'
             assert os.getsid(descendant_pid) == descendant_pid, 'descendant did not create a session'
             members = set((group / 'cgroup.procs').read_text().split())
             assert {str(worker_pid), str(descendant_pid)} <= members, 'worker or descendant outside group'
-            if case == 'launcher-poll-failure':
+            if case == 'launcher-stopped':
+                signal.pidfd_send_signal(fds[3], signal.SIGSTOP)
+                wait_dead(fds[3], 'stopped launcher')
+            elif case == 'launcher-poll-failure':
                 # Stop manager to distinguish launcher cleanup from the
                 # manager's reaction; finish before observer's 2 s deadline.
                 os.kill(child.pid, signal.SIGSTOP)
@@ -147,6 +171,14 @@ def run_case(manager, observer, root, case):
             if child is not None and child.poll() is None:
                 child.kill()
                 child.wait(timeout=TIMEOUT)
+            # The launcher lives outside the worker cgroup. Kill the exact
+            # pidfd even when the controller failed before ACTIVE.
+            launcher_index = 0 if case == 'launcher-failure-before-active' else (2 if case == 'observer-before-go' else 3)
+            if len(fds) > launcher_index:
+                try:
+                    signal.pidfd_send_signal(fds[launcher_index], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             # The known case parent is killed even if no group path was
             # reported. Never delete entries outside this unique namespace.
             if not empty(case_root):
@@ -168,7 +200,7 @@ def main():
     root = pathlib.Path(sys.argv[3]).resolve(strict=True)
     assert root != pathlib.Path('/sys/fs/cgroup') and root.is_relative_to('/sys/fs/cgroup')
     assert os.environ.get('LSM_TEST_DISPOSABLE_CGROUP') == str(root), 'explicit disposable cgroup required'
-    cases = ('manager-death', 'observer-death', 'lease-break', 'observer-before-go', 'launcher-poll-failure')
+    cases = ('manager-death', 'observer-death', 'lease-break', 'observer-before-go', 'launcher-poll-failure', 'launcher-stopped', 'launcher-failure-before-active')
     if len(sys.argv) == 5:
         assert sys.argv[4] in cases
         cases = (sys.argv[4],)

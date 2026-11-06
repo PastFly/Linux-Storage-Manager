@@ -302,6 +302,50 @@ fn run_manager(guard: &supervisor::BackupSupervisor, backup: &Path) -> io::Resul
     let mut child = command.spawn()?;
     let launcher_fd = pidfd(child.id() as libc::pid_t)?;
     drop(launcher);
+    // Diagnostic red case: the launcher is outside the worker cgroup and
+    // must still be killed/reaped after a failure before registration.
+    if std::env::var_os("LSM_TEST_FAIL_WITH_STOPPED_LAUNCHER").as_deref() == Some(OsStr::new("1")) {
+        if unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                launcher_fd.as_raw_fd(),
+                libc::SIGSTOP,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            if unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    child.id() as libc::id_t,
+                    &mut info,
+                    libc::WSTOPPED | libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            } != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if unsafe { info.si_pid() } != 0 {
+                if info.si_code != libc::CLD_STOPPED {
+                    return Err(invalid("launcher exited before stop"));
+                }
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(invalid("launcher stop timed out"));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        println!("LAUNCHER {} {}", child.id(), path.display());
+        io::stdout().flush()?;
+        return Err(invalid("injected failure with stopped launcher"));
+    }
     let worker = channel::receive_worker_pidfd(
         manager.as_raw_fd(),
         launcher_fd.as_raw_fd(),
@@ -314,7 +358,11 @@ fn run_manager(guard: &supervisor::BackupSupervisor, backup: &Path) -> io::Resul
     }
     guard.diagnostic_heartbeat()?;
     if std::env::var_os("LSM_TEST_PAUSE_BEFORE_GO").as_deref() == Some(OsStr::new("1")) {
-        println!("GATE {observer_pid} {worker_pid} {}", path.display());
+        println!(
+            "GATE {observer_pid} {worker_pid} {} {}",
+            child.id(),
+            path.display()
+        );
         io::stdout().flush()?;
         let mut poll = libc::pollfd {
             fd: libc::STDIN_FILENO,
@@ -356,7 +404,8 @@ fn run_manager(guard: &supervisor::BackupSupervisor, backup: &Path) -> io::Resul
         std::thread::sleep(Duration::from_millis(100));
     };
     println!(
-        "ACTIVE {observer_pid} {worker_pid} {descendant} {}",
+        "ACTIVE {observer_pid} {worker_pid} {descendant} {} {}",
+        child.id(),
         path.display()
     );
     io::stdout().flush()?;
