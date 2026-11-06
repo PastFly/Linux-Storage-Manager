@@ -38,7 +38,7 @@ def observer_gone(pid):
         return True
 
 
-def manager_main(executable, group, backup, marker, report_fd, prior_writer_fd, expect_refusal, malformed_quit):
+def manager_main(executable, group, backup, second_backup, marker, report_fd, prior_writer_fd, expect_refusal, malformed_quit):
     try:
         if prior_writer_fd is not None:
             os.close(prior_writer_fd)
@@ -55,10 +55,14 @@ def manager_main(executable, group, backup, marker, report_fd, prior_writer_fd, 
         pidfd = os.pidfd_open(os.getpid())
         group_fd = os.open(group, os.O_RDONLY | os.O_DIRECTORY)
         source_fd = os.open(backup, os.O_RDONLY)
-        fds = array.array('i', [pidfd, group_fd, source_fd])
-        manager_sock.sendmsg([struct.pack('=I', 1)], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, fds)])
+        sources = [source_fd]
+        if second_backup is not None:
+            sources.append(os.open(second_backup, os.O_RDONLY))
+        fds = array.array('i', [pidfd, group_fd, *sources])
+        manager_sock.sendmsg([struct.pack('=I', len(sources))], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, fds)])
         # Observer must own the last leased open-file description; workers never inherit it.
-        os.close(source_fd)
+        for fd in sources:
+            os.close(fd)
         manager_sock.settimeout(8)
         try:
             reply = manager_sock.recv(1)
@@ -126,15 +130,21 @@ def run_case(executable, parent_group, name):
         with open(backup, 'wb') as f:
             f.write(b'disposable backup')
         os.chmod(backup, 0o600)
-        if name == 'prior-writer':
-            prior_writer_fd = os.open(backup, os.O_WRONLY)
+        second_backup = None
+        if name == 'partial-lease':
+            second_backup = os.path.join(tmp, 'second-backup')
+            with open(second_backup, 'wb') as f:
+                f.write(b'second disposable backup')
+            os.chmod(second_backup, 0o600)
+        if name in ('prior-writer', 'partial-lease'):
+            prior_writer_fd = os.open(second_backup or backup, os.O_WRONLY)
         report_read, report_write = os.pipe()
         try:
             manager_pid = os.fork()
             if manager_pid == 0:
                 os.close(report_read)
-                manager_main(executable, group, backup, marker, report_write,
-                             prior_writer_fd, name == 'prior-writer', name == 'malformed-quit')
+                manager_main(executable, group, backup, second_backup, marker, report_write,
+                             prior_writer_fd, name in ('prior-writer', 'partial-lease'), name == 'malformed-quit')
                 os._exit(1)
             os.close(report_write)
             with os.fdopen(report_read, 'rb') as report:
@@ -142,12 +152,17 @@ def run_case(executable, parent_group, name):
             if line.startswith('ERROR') or not line:
                 raise AssertionError('manager failed: ' + line)
             info = json.loads(line)
-            if name == 'prior-writer':
+            if name in ('prior-writer', 'partial-lease'):
                 _, status = os.waitpid(manager_pid, 0)
                 manager_pid = None
                 assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0 and info['refused']
                 assert populated(group) == '0'
-                print('PASS: preexisting writer prevented READY')
+                if name == 'partial-lease':
+                    writable = os.open(backup, os.O_WRONLY | os.O_NONBLOCK)
+                    os.close(writable)
+                    print('PASS: failed second lease released first lease')
+                else:
+                    print('PASS: preexisting writer prevented READY')
                 return
             if name == 'malformed-quit':
                 _, status = os.waitpid(manager_pid, 0)
@@ -218,7 +233,7 @@ def main():
         raise AssertionError('observer executable missing')
     cases = ['prior-writer', 'manager-death', 'lease-break']
     if os.environ.get('LSM_TEST_OBSERVER_CLI') == '1':
-        cases.append('malformed-quit')
+        cases.extend(('malformed-quit', 'partial-lease'))
     for name in cases:
         run_case(executable, parent_group, name)
 
