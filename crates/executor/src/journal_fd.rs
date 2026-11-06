@@ -5,6 +5,7 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::journal_store::{trusted_journal_directory, JournalStoreError};
 
@@ -54,8 +55,42 @@ struct WriterControls {
     injected_error: i32,
     fail_fork: bool,
     fail_send: bool,
+    fail_shutdown: bool,
     ready_fd: libc::c_int,
     release_fd: libc::c_int,
+}
+
+struct SharedCancellation(*mut AtomicU32);
+
+impl SharedCancellation {
+    fn new() -> io::Result<Self> {
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                std::mem::size_of::<AtomicU32>(),
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        let ptr = ptr.cast::<AtomicU32>();
+        unsafe {
+            ptr.write(AtomicU32::new(0));
+        }
+        Ok(Self(ptr))
+    }
+}
+
+impl Drop for SharedCancellation {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.0.cast(), std::mem::size_of::<AtomicU32>());
+        }
+    }
 }
 
 // Resolve without opening an attacker-supplied device or following a symlink.
@@ -131,6 +166,7 @@ unsafe fn isolated_writer(
     bytes: &[u8],
     report_fd: libc::c_int,
     parent_pid: libc::pid_t,
+    cancelled: *const AtomicU32,
     controls: WriterControls,
 ) -> ! {
     if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 || libc::getppid() != parent_pid {
@@ -142,13 +178,43 @@ unsafe fn isolated_writer(
         error: 0,
         reserved: 0,
     };
-    let received = libc::recv(
-        report_fd,
-        (&mut request as *mut WriterReport).cast(),
-        std::mem::size_of::<WriterReport>(),
-        0,
-    );
-    if received != std::mem::size_of::<WriterReport>() as isize || request.error != 0 {
+    let received = loop {
+        if (*cancelled).load(Ordering::Acquire) != 0 {
+            libc::_exit(77);
+        }
+        let mut ready = libc::pollfd {
+            fd: report_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let result = libc::poll(&mut ready, 1, 1000);
+        if result == 0 {
+            continue;
+        }
+        if result < 0 {
+            if *libc::__errno_location() == libc::EINTR {
+                continue;
+            }
+            libc::_exit(78);
+        }
+        if ready.revents & libc::POLLIN == 0 {
+            libc::_exit(79);
+        }
+        let received = libc::recv(
+            report_fd,
+            (&mut request as *mut WriterReport).cast(),
+            std::mem::size_of::<WriterReport>(),
+            libc::MSG_DONTWAIT,
+        );
+        if received < 0 && *libc::__errno_location() == libc::EAGAIN {
+            continue;
+        }
+        break received;
+    };
+    if (*cancelled).load(Ordering::Acquire) != 0
+        || received != std::mem::size_of::<WriterReport>() as isize
+        || request.error != 0
+    {
         libc::_exit(76);
     }
     let mut report = WriterReport {
@@ -327,6 +393,7 @@ impl JournalDir {
                 injected_error: 0,
                 fail_fork: false,
                 fail_send: false,
+                fail_shutdown: false,
                 ready_fd: -1,
                 release_fd: -1,
             },
@@ -347,6 +414,7 @@ impl JournalDir {
                 injected_error: 0,
                 fail_fork: false,
                 fail_send: false,
+                fail_shutdown: false,
                 ready_fd: -1,
                 release_fd: -1,
             },
@@ -368,6 +436,7 @@ impl JournalDir {
                 injected_error,
                 fail_fork: false,
                 fail_send: false,
+                fail_shutdown: false,
                 ready_fd: -1,
                 release_fd: -1,
             },
@@ -390,6 +459,7 @@ impl JournalDir {
                 injected_error: 0,
                 fail_fork: false,
                 fail_send: false,
+                fail_shutdown: false,
                 ready_fd,
                 release_fd,
             },
@@ -410,6 +480,7 @@ impl JournalDir {
                 injected_error: 0,
                 fail_fork: true,
                 fail_send: false,
+                fail_shutdown: false,
                 ready_fd: -1,
                 release_fd: -1,
             },
@@ -421,6 +492,7 @@ impl JournalDir {
         &self,
         name: &std::ffi::OsStr,
         bytes: &[u8],
+        fail_shutdown: bool,
     ) -> Result<File, JournalStoreError> {
         self.write_staged_file_inner(
             name,
@@ -430,6 +502,7 @@ impl JournalDir {
                 injected_error: 0,
                 fail_fork: false,
                 fail_send: true,
+                fail_shutdown,
                 ready_fd: -1,
                 release_fd: -1,
             },
@@ -460,6 +533,7 @@ impl JournalDir {
                 ),
             ));
         }
+        let cancellation = SharedCancellation::new().map_err(|source| failure(&path, source))?;
         let mut sockets = [-1; 2];
         if unsafe {
             libc::socketpair(
@@ -501,6 +575,7 @@ impl JournalDir {
                     bytes,
                     sockets[1],
                     parent_pid,
+                    cancellation.0,
                     controls,
                 );
             }
@@ -599,10 +674,15 @@ impl JournalDir {
             } else {
                 io::Error::other("incomplete journal writer request")
             };
-            // shutdown changes the socket endpoint itself, including copies
-            // inherited by unrelated forks, so the child wakes with EOF.
+            // Cancellation remains visible even if shutdown is denied and
+            // another process inherited a duplicate of this socket endpoint.
             unsafe {
-                libc::shutdown(result_socket.as_raw_fd(), libc::SHUT_WR);
+                (*cancellation.0).store(1, Ordering::Release);
+            }
+            if !controls.fail_shutdown {
+                unsafe {
+                    libc::shutdown(result_socket.as_raw_fd(), libc::SHUT_WR);
+                }
             }
             Some(error)
         } else {
