@@ -1,6 +1,8 @@
 mod approval;
 mod backup_capture;
 mod backup_manifest;
+#[cfg(all(test, target_os = "linux"))]
+mod backup_verity;
 #[cfg(feature = "production-mutation-execution")]
 mod backup_observer;
 #[cfg(test)]
