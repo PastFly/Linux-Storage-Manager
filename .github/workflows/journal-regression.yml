@@ -31,3 +31,49 @@ jobs:
             echo "Parallel attempt ${attempt}"
             cargo test --locked -p lsm-executor --lib -- --test-threads=16
           done
+
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check disposable runner cgroup and pidfd primitives
+        run: |
+          sudo python3 - <<'PY'
+          import os
+          import signal
+          import subprocess
+          import time
+          from pathlib import Path
+          root = Path('/sys/fs/cgroup')
+          print('kernel', os.uname().release, flush=True)
+          print('cgroup_v2', (root / 'cgroup.controllers').exists(), 'writable', os.access(root, os.W_OK), flush=True)
+          print('pidfd_open', hasattr(os, 'pidfd_open'), flush=True)
+          group = root / ('lsm-probe-' + str(os.getpid()))
+          try:
+              group.mkdir()
+          except OSError as error:
+              print('CGROUP_CREATE_FAILED', repr(error), flush=True)
+              raise
+          process = None
+          try:
+              print('cgroup.kill', (group / 'cgroup.kill').exists(), flush=True)
+              process = subprocess.Popen(['/bin/sleep', '30'])
+              (group / 'cgroup.procs').write_text(str(process.pid))
+              (group / 'cgroup.kill').write_text('1')
+              result = process.wait(timeout=10)
+              print('CGROUP_KILL_EXIT', result, flush=True)
+              if result != -signal.SIGKILL:
+                  raise RuntimeError('cgroup.kill did not kill the disposable process')
+          finally:
+              if process is not None and process.poll() is None:
+                  process.kill()
+                  process.wait()
+              for _ in range(100):
+                  try:
+                      group.rmdir()
+                      break
+                  except OSError:
+                      time.sleep(.05)
+              else:
+                  raise RuntimeError('disposable cgroup did not become empty')
+          PY
