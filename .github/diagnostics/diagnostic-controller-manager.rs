@@ -9,7 +9,7 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn invalid(message: &'static str) -> io::Error {
@@ -101,11 +101,11 @@ fn socket_pair() -> io::Result<(File, File)> {
     }
     Ok((a, b))
 }
-fn send_ack(socket: &File) -> io::Result<()> {
+fn send_byte(socket: &File, byte: u8) -> io::Result<()> {
     if unsafe {
         libc::send(
             socket.as_raw_fd(),
-            b"A".as_ptr().cast(),
+            (&byte as *const u8).cast(),
             1,
             libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
         )
@@ -203,8 +203,17 @@ pub fn launcher(group_path: &Path, manager: &OsStr, raw: &OsStr, marker: &Path) 
             if n < 0 {
                 return Err(io::Error::last_os_error());
             }
-            if n > 0 || !live(&guard.pidfd)? {
-                return Err(invalid("manager channel or pidfd lost"));
+            if !live(&guard.pidfd)? {
+                return Err(invalid("manager pidfd lost"));
+            }
+            if n > 0 {
+                if item.revents != libc::POLLIN {
+                    return Err(invalid("manager channel lost"));
+                }
+                channel::require_live_sender(guard.pidfd.as_raw_fd(), guard.manager)?;
+                supervisor::diagnostic_receive_byte(&guard.socket, guard.manager, b'P')?;
+                send_byte(&guard.socket, b'p')?;
+                channel::require_live_sender(guard.pidfd.as_raw_fd(), guard.manager)?;
             }
         }
     })();
@@ -260,20 +269,133 @@ pub fn payload(marker: &Path) -> io::Result<()> {
         }
     }
 }
+struct ManagedLauncher {
+    child: Child,
+    pidfd: Option<File>,
+}
+
+fn stop_launcher(launcher: &mut ManagedLauncher) -> io::Result<()> {
+    if launcher.child.try_wait()?.is_some() {
+        return Ok(());
+    }
+    match launcher.pidfd.as_ref() {
+        Some(fd) => {
+            let n = unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    fd.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            };
+            if n != 0 {
+                let e = io::Error::last_os_error();
+                if e.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(e);
+                }
+            }
+            Ok(())
+        }
+        None => launcher.child.kill(),
+    }
+}
+fn reap_launcher(launcher: &mut ManagedLauncher) -> io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if launcher.child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "launcher reap timed out",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+fn launcher_heartbeat(
+    socket: &File,
+    launcher_fd: &File,
+    launcher_pid: libc::pid_t,
+) -> io::Result<()> {
+    channel::require_live_sender(launcher_fd.as_raw_fd(), launcher_pid)?;
+    send_byte(socket, b'P')?;
+    let deadline = Instant::now() + Duration::from_millis(500);
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "launcher heartbeat timed out",
+            ));
+        }
+        let mut poll = [
+            libc::pollfd {
+                fd: socket.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: launcher_fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let millis = deadline
+            .saturating_duration_since(now)
+            .as_millis()
+            .clamp(1, i32::MAX as u128) as i32;
+        let n = unsafe { libc::poll(poll.as_mut_ptr(), poll.len() as libc::nfds_t, millis) };
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        if n == 0 {
+            continue;
+        }
+        if poll[1].revents != 0 || poll[0].revents != libc::POLLIN {
+            return Err(invalid("launcher heartbeat connection failed"));
+        }
+        supervisor::diagnostic_receive_byte(socket, launcher_pid, b'p')?;
+        return channel::require_live_sender(launcher_fd.as_raw_fd(), launcher_pid);
+    }
+}
 pub fn manager(root: &Path, observer: &OsStr, backup: &Path) -> io::Result<()> {
     let guard =
         supervisor::BackupSupervisor::start_watchdog_at(vec![File::open(backup)?], root, observer)?;
-    let result = run_manager(&guard, backup);
-    let cleanup = guard.diagnostic_kill_and_wait();
-    match (result, cleanup) {
-        (Err(run), Err(cleanup)) => Err(io::Error::other(format!(
-            "manager: {run}; cleanup: {cleanup}"
-        ))),
-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-        (Ok(()), Ok(())) => Ok(()),
+    let mut launcher = None;
+    let run = run_manager(&guard, backup, &mut launcher);
+    // Kill launcher first, then the worker group, then reap; try every step.
+    let signal = launcher.as_mut().map(stop_launcher).unwrap_or(Ok(()));
+    let group = guard.diagnostic_kill_and_wait();
+    let reap = launcher.as_mut().map(reap_launcher).unwrap_or(Ok(()));
+    let mut errors = Vec::new();
+    for (label, result) in [
+        ("manager", run),
+        ("launcher signal", signal),
+        ("group", group),
+        ("launcher reap", reap),
+    ] {
+        if let Err(e) = result {
+            errors.push(format!("{label}: {e}"));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(io::Error::other(errors.join("; ")))
     }
 }
-fn run_manager(guard: &supervisor::BackupSupervisor, backup: &Path) -> io::Result<()> {
+fn run_manager(
+    guard: &supervisor::BackupSupervisor,
+    backup: &Path,
+    slot: &mut Option<ManagedLauncher>,
+) -> io::Result<()> {
     let (group, path) = guard.diagnostic_group()?;
     let (observer_fd, observer_pid) = guard.diagnostic_observer()?;
     let (manager, launcher) = socket_pair()?;
@@ -299,8 +421,14 @@ fn run_manager(guard: &supervisor::BackupSupervisor, backup: &Path) -> io::Resul
         });
     }
     guard.diagnostic_heartbeat()?;
-    let mut child = command.spawn()?;
-    let launcher_fd = pidfd(child.id() as libc::pid_t)?;
+    *slot = Some(ManagedLauncher {
+        child: command.spawn()?,
+        pidfd: None,
+    });
+    let managed = slot.as_mut().unwrap();
+    managed.pidfd = Some(pidfd(managed.child.id() as libc::pid_t)?);
+    let child = &mut managed.child;
+    let launcher_fd = managed.pidfd.as_ref().unwrap();
     drop(launcher);
     // Diagnostic red case: the launcher is outside the worker cgroup and
     // must still be killed/reaped after a failure before registration.
@@ -381,13 +509,13 @@ fn run_manager(guard: &supervisor::BackupSupervisor, backup: &Path) -> io::Resul
     // This catches the explicit test barrier, but cannot eliminate a break
     // after this point; it must never be interpreted as permission to mutate.
     guard.diagnostic_heartbeat()?;
-    send_ack(&manager)?;
+    send_byte(&manager, b'A')?;
     let deadline = Instant::now() + Duration::from_secs(5);
     let descendant = loop {
         if Instant::now() >= deadline {
             return Err(invalid("worker did not become active"));
         }
-        if !live(&launcher_fd)? || !live(&worker)? || !live(&observer_fd)? {
+        if !live(launcher_fd)? || !live(&worker)? || !live(&observer_fd)? {
             return Err(invalid("process died before active"));
         }
         if let Ok(text) = std::fs::read_to_string(&marker) {
@@ -410,10 +538,11 @@ fn run_manager(guard: &supervisor::BackupSupervisor, backup: &Path) -> io::Resul
     );
     io::stdout().flush()?;
     loop {
-        if !live(&launcher_fd)? || !live(&worker)? || !live(&observer_fd)? {
+        if !live(launcher_fd)? || !live(&worker)? || !live(&observer_fd)? {
             break;
         }
         guard.diagnostic_heartbeat()?;
+        launcher_heartbeat(&manager, launcher_fd, child.id() as libc::pid_t)?;
         std::thread::sleep(Duration::from_millis(100));
     }
     let _ = child.try_wait();
