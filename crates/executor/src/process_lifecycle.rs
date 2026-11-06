@@ -143,10 +143,13 @@ struct GroupIdentity {
     name: CString,
     device: libc::dev_t,
     inode: libc::ino_t,
+    worker_device: libc::dev_t,
+    worker_inode: libc::ino_t,
 }
 struct Group {
     identity: Option<GroupIdentity>,
     directory: File,
+    worker: File,
     events: File,
     kill: File,
     path: PathBuf,
@@ -182,12 +185,17 @@ impl Group {
         {
             return Err(invalid("cgroup identity changed"));
         }
+        if unsafe { libc::mkdirat(directory.as_raw_fd(), c"worker".as_ptr(), 0o700) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let worker = openat(&directory, c"worker", libc::O_RDONLY | libc::O_DIRECTORY)?;
+        let worker_stat = metadata(worker.as_raw_fd())?;
         let events = openat(&directory, c"cgroup.events", libc::O_RDONLY)?;
         let kill = openat(&directory, c"cgroup.kill", libc::O_WRONLY)?;
         if populated(&events)? {
             return Err(invalid("new cgroup populated"));
         }
-        let path = root.join(OsStr::from_bytes(name.as_bytes()));
+        let path = root.join(OsStr::from_bytes(name.as_bytes())).join("worker");
         let group = Self {
             identity: Some(GroupIdentity {
                 root: root.to_path_buf(),
@@ -195,8 +203,11 @@ impl Group {
                 name,
                 device: stat.st_dev,
                 inode: stat.st_ino,
+                worker_device: worker_stat.st_dev,
+                worker_inode: worker_stat.st_ino,
             }),
             directory,
+            worker,
             events,
             kill,
             path,
@@ -212,6 +223,24 @@ impl Group {
         let original_parent = metadata(identity.parent.as_raw_fd())?;
         let live_parent = metadata(reopened.as_raw_fd())?;
         let held = metadata(self.directory.as_raw_fd())?;
+        let held_worker = metadata(self.worker.as_raw_fd())?;
+        let mut linked_worker: libc::stat = unsafe { zeroed() };
+        if unsafe {
+            libc::fstatat(
+                self.directory.as_raw_fd(),
+                c"worker".as_ptr(),
+                &mut linked_worker,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } != 0
+            || (held_worker.st_dev, held_worker.st_ino)
+                != (identity.worker_device, identity.worker_inode)
+            || (linked_worker.st_dev, linked_worker.st_ino)
+                != (identity.worker_device, identity.worker_inode)
+            || linked_worker.st_mode & libc::S_IFMT != libc::S_IFDIR
+        {
+            return Err(invalid("worker cgroup namespace changed"));
+        }
         let mut linked: libc::stat = unsafe { zeroed() };
         if unsafe {
             libc::fstatat(
@@ -631,9 +660,11 @@ fn inherited_group(
     {
         return Err(invalid("inherited group is not cgroup v2"));
     }
+    let worker = openat(&dir, c"worker", libc::O_RDONLY | libc::O_DIRECTORY)?;
+    let worker_stat = metadata(worker.as_raw_fd())?;
     let events = openat(&dir, c"cgroup.events", libc::O_RDONLY)?;
     let kill = openat(&dir, c"cgroup.kill", libc::O_WRONLY)?;
-    let path = root.join(OsStr::from_bytes(name.as_bytes()));
+    let path = root.join(OsStr::from_bytes(name.as_bytes())).join("worker");
     let group = Group {
         identity: Some(GroupIdentity {
             root,
@@ -641,8 +672,11 @@ fn inherited_group(
             name,
             device,
             inode,
+            worker_device: worker_stat.st_dev,
+            worker_inode: worker_stat.st_ino,
         }),
         directory: dir,
+        worker,
         events,
         kill,
         path,
@@ -682,6 +716,50 @@ fn guard(args: &[OsString]) -> io::Result<()> {
     channel::require_live_sender(manager_fd.as_raw_fd(), manager)?;
     group.verify()?;
     send(&socket, b'R')?;
+    // Once R is sent the manager may atomically create the launcher inside
+    // this scope. Every subsequent error must kill/wait the whole scope.
+    let registration = (|| -> io::Result<File> {
+        readable(&socket, &manager_fd, Duration::from_secs(2))?;
+        let launcher =
+            channel::receive_worker_pidfd(socket.as_raw_fd(), manager_fd.as_raw_fd(), manager)?;
+        let pid = worker_pid(&launcher)?;
+        channel::require_live_sender(launcher.as_raw_fd(), pid)?;
+        let mut members = String::new();
+        openat(&group.directory, c"cgroup.procs", libc::O_RDONLY)?
+            .take(65537)
+            .read_to_string(&mut members)?;
+        if members.len() > 65536
+            || members.lines().collect::<Vec<_>>() != [pid.to_string().as_str()]
+        {
+            return Err(invalid("launcher not sole scope member"));
+        }
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status"))?;
+        let mut parents = status.lines().filter_map(|line| line.strip_prefix("PPid:"));
+        if parents
+            .next()
+            .and_then(|v| v.trim().parse::<libc::pid_t>().ok())
+            != Some(manager)
+            || parents.next().is_some()
+        {
+            return Err(invalid("launcher parent mismatch"));
+        }
+        channel::require_live_sender(launcher.as_raw_fd(), pid)?;
+        group.verify()?;
+        send(&socket, b'L')?;
+        Ok(launcher)
+    })();
+    let launcher = match registration {
+        Ok(launcher) => launcher,
+        Err(error) => {
+            if group.stop().is_err() {
+                let _ = send(&socket, b'E');
+                while group.stop().is_err() {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+            return Err(error);
+        }
+    };
     let mut deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let now = Instant::now();
@@ -696,6 +774,11 @@ fn guard(args: &[OsString]) -> io::Result<()> {
             },
             libc::pollfd {
                 fd: socket.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: launcher.as_raw_fd(),
                 events: libc::POLLIN,
                 revents: 0,
             },
@@ -715,6 +798,7 @@ fn guard(args: &[OsString]) -> io::Result<()> {
             continue;
         }
         if p[0].revents != 0
+            || p[2].revents != 0
             || p[1].revents != libc::POLLIN
             || receive(&socket, manager, b'H').is_err()
             || channel::require_live_sender(manager_fd.as_raw_fd(), manager).is_err()
@@ -816,6 +900,9 @@ fn launcher(args: &[OsString]) -> io::Result<()> {
     let group = fds.next().unwrap();
     let socket = fds.next().unwrap();
     channel::require_live_sender(manager_fd.as_raw_fd(), manager)?;
+    readable(&socket, &manager_fd, Duration::from_secs(2))?;
+    receive(&socket, manager, b'S')?;
+    channel::require_live_sender(manager_fd.as_raw_fd(), manager)?;
     let st = metadata(group.as_raw_fd())?;
     let mut guard = LauncherGuard {
         manager,
@@ -915,6 +1002,168 @@ struct ManagedChild {
     child: Child,
     pidfd: Option<File>,
 }
+struct AtomicLauncher {
+    pid: libc::pid_t,
+    pidfd: File,
+    reaped: bool,
+}
+struct LauncherSpec<'a> {
+    keep: &'a [RawFd],
+    inherited: &'a [RawFd],
+    executable: RawFd,
+    argv: &'a [*const libc::c_char],
+    env: &'a [*const libc::c_char],
+}
+// The post-clone path performs only stack operations and async-signal-safe
+// kernel calls. The caller is single-threaded and has blocked signals.
+unsafe fn launcher_child(spec: &LauncherSpec<'_>) -> ! {
+    let mut first = 3u32;
+    for &raw in spec.keep {
+        let end = raw as u32;
+        if first < end && libc::syscall(libc::SYS_close_range, first, end - 1, 0u32) != 0 {
+            libc::_exit(120);
+        }
+        first = end + 1;
+    }
+    if libc::syscall(libc::SYS_close_range, first, u32::MAX, 0u32) != 0 {
+        libc::_exit(120);
+    }
+    libc::close(0);
+    libc::close(1);
+    libc::close(2);
+    for &fd in spec.inherited {
+        if libc::fcntl(fd, libc::F_SETFD, 0) != 0 {
+            libc::_exit(121);
+        }
+    }
+    libc::syscall(
+        libc::SYS_execveat,
+        spec.executable,
+        c"".as_ptr(),
+        spec.argv.as_ptr(),
+        spec.env.as_ptr(),
+        libc::AT_EMPTY_PATH,
+    );
+    libc::_exit(122)
+}
+fn spawn_atomic_launcher(
+    scope: &File,
+    args: &[OsString],
+    inherited: &[RawFd],
+) -> io::Result<AtomicLauncher> {
+    let executable = snapshot()?;
+    let mut values = vec![
+        CString::new("lsm-lifecycle-test").unwrap(),
+        CString::new("--launcher").unwrap(),
+    ];
+    for arg in args {
+        values.push(
+            CString::new(arg.as_bytes()).map_err(|_| invalid("launcher argument contains NUL"))?,
+        );
+    }
+    let mut argv: Vec<_> = values.iter().map(|value| value.as_ptr()).collect();
+    argv.push(ptr::null());
+    let mut env_values = Vec::new();
+    if std::env::var_os("LSM_TEST_LIFECYCLE_STOP_BEFORE_CLONE").as_deref() == Some(OsStr::new("1"))
+    {
+        env_values.push(CString::new("LSM_TEST_LIFECYCLE_STOP_BEFORE_CLONE=1").unwrap());
+    }
+    let mut env: Vec<_> = env_values.iter().map(|value| value.as_ptr()).collect();
+    env.push(ptr::null());
+    let mut keep = inherited.to_vec();
+    keep.push(executable.as_raw_fd());
+    keep.sort_unstable();
+    if keep.iter().any(|&fd| fd < 3) || keep.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(invalid("invalid launcher inherited FDs"));
+    }
+    let spec = LauncherSpec {
+        keep: &keep,
+        inherited,
+        executable: executable.as_raw_fd(),
+        argv: &argv,
+        env: &env,
+    };
+    let mut raw: libc::c_int = -1;
+    let mut clone: libc::clone_args = unsafe { zeroed() };
+    clone.flags = libc::CLONE_PIDFD as u64 | 0x2_0000_0000;
+    clone.pidfd = (&mut raw as *mut libc::c_int) as u64;
+    clone.exit_signal = libc::SIGCHLD as u64;
+    clone.cgroup = scope.as_raw_fd() as u64;
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_clone3,
+            &clone as *const libc::clone_args,
+            size_of::<libc::clone_args>(),
+        )
+    };
+    if result == 0 {
+        unsafe { launcher_child(&spec) }
+    }
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // No fallback: a contract violation leaves the scope for guard cleanup.
+    if raw < 0 {
+        return Err(invalid("atomic launcher pidfd unavailable"));
+    }
+    Ok(AtomicLauncher {
+        pid: result as libc::pid_t,
+        pidfd: unsafe { File::from_raw_fd(raw) },
+        reaped: false,
+    })
+}
+fn signal_launcher(slot: &mut Option<AtomicLauncher>) -> io::Result<()> {
+    let Some(item) = slot.as_mut() else {
+        return Ok(());
+    };
+    let n = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            item.pidfd.as_raw_fd(),
+            libc::SIGKILL,
+            ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if n == 0 {
+        Ok(())
+    } else {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            Err(e)
+        }
+    }
+}
+fn reap_launcher(slot: &mut Option<AtomicLauncher>) -> io::Result<()> {
+    let Some(item) = slot.as_mut() else {
+        return Ok(());
+    };
+    if item.reaped {
+        return Ok(());
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut status = 0;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(invalid("launcher reap timed out"));
+        }
+        let n = unsafe { libc::waitpid(item.pid, &mut status, libc::WNOHANG) };
+        if n == item.pid {
+            item.reaped = true;
+            return Ok(());
+        }
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 fn spawn_tracked(
     slot: &mut Option<ManagedChild>,
     mode: &str,
@@ -977,7 +1226,7 @@ fn reap_child(slot: &mut Option<ManagedChild>) -> io::Result<()> {
 }
 fn group_members(group: &Group) -> io::Result<Vec<libc::pid_t>> {
     let mut text = String::new();
-    openat(&group.directory, c"cgroup.procs", libc::O_RDONLY)?
+    openat(&group.worker, c"cgroup.procs", libc::O_RDONLY)?
         .take(65537)
         .read_to_string(&mut text)?;
     if text.len() > 65536 {
@@ -1090,7 +1339,7 @@ fn manager_inner(
     marker: &Path,
     test_socket: &File,
     guard_slot: &mut Option<ManagedChild>,
-    launcher_slot: &mut Option<ManagedChild>,
+    launcher_slot: &mut Option<AtomicLauncher>,
 ) -> io::Result<()> {
     group.verify()?;
     let own = unsafe { libc::getpid() };
@@ -1132,32 +1381,174 @@ fn manager_inner(
     send(&guard_socket, b'I')?;
     readable(&guard_socket, guard_fd, Duration::from_secs(2))?;
     receive(&guard_socket, guard_pid, b'R')?;
-    heartbeat(&guard_socket, guard_fd, guard_pid)?;
+    if std::env::var_os("LSM_TEST_LIFECYCLE_STOP_MANAGER_AFTER_GUARD").as_deref()
+        == Some(OsStr::new("1"))
+    {
+        send_fds(
+            test_socket,
+            b'B',
+            &[own_fd.as_raw_fd(), guard_fd.as_raw_fd()],
+        )?;
+        println!("MANAGER-GATE {guard_pid} {}", group.path.display());
+        io::stdout().flush()?;
+        let mut item = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut item, 1, 10000) } != 1 || item.revents != libc::POLLIN {
+            return Err(invalid("manager test barrier ended"));
+        }
+        let mut command = [0u8];
+        io::stdin().read_exact(&mut command)?;
+        if command != [b'C'] {
+            return Err(invalid("invalid manager test barrier"));
+        }
+    }
     let (manager_socket, launcher_socket) = packet_pair()?;
     let args = [
         number(own),
         number(own_fd.as_raw_fd()),
-        number(group.directory.as_raw_fd()),
+        number(group.worker.as_raw_fd()),
         number(launcher_socket.as_raw_fd()),
         marker.as_os_str().to_os_string(),
     ];
-    spawn_tracked(
-        launcher_slot,
-        "--launcher",
+    // The launcher itself is atomically born inside the monitored parent;
+    // a crash before registration therefore cannot leave it outside kill scope.
+    *launcher_slot = Some(spawn_atomic_launcher(
+        &group.directory,
         &args,
         &[
             own_fd.as_raw_fd(),
-            group.directory.as_raw_fd(),
+            group.worker.as_raw_fd(),
             launcher_socket.as_raw_fd(),
         ],
-    )?;
+    )?);
     drop(launcher_socket);
     let launcher = launcher_slot.as_ref().unwrap();
-    let launcher_fd = launcher
-        .pidfd
-        .as_ref()
-        .ok_or_else(|| invalid("launcher pidfd unavailable"))?;
-    let launcher_pid = launcher.child.id() as libc::pid_t;
+    let launcher_fd = &launcher.pidfd;
+    let launcher_pid = launcher.pid;
+    if std::env::var_os("LSM_TEST_LIFECYCLE_STOP_MANAGER_AFTER_GUARD").as_deref()
+        == Some(OsStr::new("1"))
+    {
+        if unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                launcher_fd.as_raw_fd(),
+                libc::SIGSTOP,
+                ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let mut info: libc::siginfo_t = unsafe { zeroed() };
+            if unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    launcher_pid as libc::id_t,
+                    &mut info,
+                    libc::WSTOPPED | libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            } != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if unsafe { info.si_pid() } != 0 {
+                if info.si_code != libc::CLD_STOPPED {
+                    return Err(invalid("post-timeout launcher exited"));
+                }
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(invalid("post-timeout launcher stop timed out"));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        send_fds(test_socket, b'C', &[launcher_fd.as_raw_fd()])?;
+        println!("CLONED {launcher_pid} {}", group.path.display());
+        io::stdout().flush()?;
+        let mut item = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let _ = unsafe { libc::poll(&mut item, 1, 5000) };
+        return Err(invalid("post-timeout clone observed"));
+    }
+    if std::env::var_os("LSM_TEST_LIFECYCLE_STOP_BEFORE_REGISTRATION").as_deref()
+        == Some(OsStr::new("1"))
+    {
+        if unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                launcher_fd.as_raw_fd(),
+                libc::SIGSTOP,
+                ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let mut info: libc::siginfo_t = unsafe { zeroed() };
+            if unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    launcher_pid as libc::id_t,
+                    &mut info,
+                    libc::WSTOPPED | libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            } != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if unsafe { info.si_pid() } != 0 {
+                if info.si_code != libc::CLD_STOPPED {
+                    return Err(invalid("launcher exited before registration barrier"));
+                }
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(invalid("registration barrier timed out"));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        send_fds(
+            test_socket,
+            b'U',
+            &[
+                own_fd.as_raw_fd(),
+                guard_fd.as_raw_fd(),
+                launcher_fd.as_raw_fd(),
+            ],
+        )?;
+        println!(
+            "REGISTER-GATE {guard_pid} {launcher_pid} {}",
+            group.path.display()
+        );
+        io::stdout().flush()?;
+        // No GO: the disposable test terminates the manager at this barrier.
+        let mut item = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut item, 1, 1000) } != 1 {
+            return Err(invalid("registration test barrier ended"));
+        }
+        return Err(invalid("unexpected registration barrier input"));
+    }
+    channel::send_worker_pidfd(guard_socket.as_raw_fd(), launcher_fd.as_raw_fd())?;
+    readable(&guard_socket, guard_fd, Duration::from_secs(2))?;
+    receive(&guard_socket, guard_pid, b'L')?;
+    channel::require_live_sender(guard_fd.as_raw_fd(), guard_pid)?;
+    send(&manager_socket, b'S')?;
     if std::env::var_os("LSM_TEST_LIFECYCLE_STOP_BEFORE_CLONE").as_deref() == Some(OsStr::new("1"))
     {
         let deadline = Instant::now() + Duration::from_secs(1);
@@ -1304,9 +1695,9 @@ pub(crate) fn run_disposable_manager(root: &Path) -> io::Result<()> {
     let mut guard = None;
     let mut launcher = None;
     let run = manager_inner(&group, &marker, &test_socket, &mut guard, &mut launcher);
-    let signal_launcher = signal_child(&mut launcher);
+    let signal_launcher = signal_launcher(&mut launcher);
     let stop_group = group.stop();
-    let reap_launcher = reap_child(&mut launcher);
+    let reap_launcher = reap_launcher(&mut launcher);
     let signal_guard = if stop_group.is_ok() {
         signal_child(&mut guard)
     } else {

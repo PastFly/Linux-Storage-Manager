@@ -64,7 +64,7 @@ def receive_fds(control, expected_pid, expected_tag, count):
             else:
                 unexpected = True
         assert not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)
-        assert data == expected_tag and rights_messages == 1 and len(received) == count
+        assert data == expected_tag and rights_messages == (1 if count else 0) and len(received) == count
         assert not unexpected and len(credentials) == 1
         assert credentials[0][0] == expected_pid and credentials[0][1] == 0
         for fd in received:
@@ -141,17 +141,86 @@ def run_case(executable, parent, case):
         environment['LSM_TEST_LIFECYCLE_TEST_FD'] = str(peer.fileno())
         if case == 'manager-before-clone':
             environment['LSM_TEST_LIFECYCLE_STOP_BEFORE_CLONE'] = '1'
+        if case == 'manager-before-registration':
+            environment['LSM_TEST_LIFECYCLE_STOP_BEFORE_REGISTRATION'] = '1'
+        if case == 'manager-stopped-before-launcher':
+            environment['LSM_TEST_LIFECYCLE_STOP_MANAGER_AFTER_GUARD'] = '1'
         child = subprocess.Popen([executable, '--manager', str(root)], stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
                                  pass_fds=(peer.fileno(),), preexec_fn=attach_case, env=environment)
         peer.close()
         peer = None
         parts = read_line(child.stdout).split()
+        if case == 'manager-stopped-before-launcher':
+            assert len(parts) == 3 and parts[0] == 'MANAGER-GATE', ('unexpected manager barrier', parts)
+            guard_pid = int(parts[1])
+            group = pathlib.Path(parts[2])
+            assert group.name == 'worker' and group.parent.parent == root and group.parent.name.startswith('lsm-lifecycle-')
+            fds.extend(receive_fds(control, child.pid, b'B', 2))
+            assert [pidfd_pid(fd) for fd in fds] == [child.pid, guard_pid]
+            assert empty(group.parent), 'scope unexpectedly populated before launcher'
+            signal.pidfd_send_signal(fds[0], signal.SIGSTOP)
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                if '\nState:\tT' in (pathlib.Path('/proc') / str(child.pid) / 'status').read_text():
+                    break
+                time.sleep(.005)
+            else:
+                raise AssertionError('manager did not stop at barrier')
+            if not poll_dead(fds[1], 3500):
+                # A guard that keeps holding the scope is also fail-closed.
+                signal.pidfd_send_signal(fds[0], signal.SIGKILL)
+                child.wait(timeout=TIMEOUT)
+                wait_dead(fds[1], 'retained guard after manager death')
+                wait_empty(group.parent)
+                print('PASS:', case, flush=True)
+                return
+            if not poll_dead(fds[0], 0):
+                signal.pidfd_send_signal(fds[0], signal.SIGCONT)
+                child.stdin.write(b'C')
+                child.stdin.flush()
+                # EOF/empty scope is inconclusive: a launcher may have
+                # cloned and exited before the test observed its pidfd.
+                created = read_line(child.stdout).split()
+                if created == ['NO-CLONE']:
+                    # Defined protocol: this authenticated packet is sent only
+                    # before clone, and the creator immediately exits.
+                    receive_fds(control, child.pid, b'N', 0)
+                    child.wait(timeout=TIMEOUT)
+                    wait_empty(group.parent)
+                    print('PASS:', case, flush=True)
+                    return
+                assert len(created) == 3 and created[0] == 'CLONED', ('unexpected post-timeout state', created)
+                launcher_pid = int(created[1])
+                assert pathlib.Path(created[2]) == group
+                fds.extend(receive_fds(control, child.pid, b'C', 1))
+                assert pidfd_pid(fds[2]) == launcher_pid
+                assert str(launcher_pid) in (group.parent / 'cgroup.procs').read_text().split(), 'launcher not inside scope'
+                raise AssertionError('guard exited while creator was alive; resumed manager cloned launcher')
+            child.wait(timeout=TIMEOUT)
+            wait_empty(group.parent)
+            print('PASS:', case, flush=True)
+            return
+        if case == 'manager-before-registration':
+            assert len(parts) == 4 and parts[0] == 'REGISTER-GATE', ('unexpected registration barrier', parts)
+            guard_pid, launcher_pid = map(int, parts[1:3])
+            group = pathlib.Path(parts[3])
+            assert group.name == 'worker' and group.parent.parent == root and group.parent.name.startswith('lsm-lifecycle-')
+            fds.extend(receive_fds(control, child.pid, b'U', 3))
+            assert [pidfd_pid(fd) for fd in fds] == [child.pid, guard_pid, launcher_pid]
+            assert str(launcher_pid) in (group.parent / 'cgroup.procs').read_text().split(), 'launcher outside guarded scope'
+            assert empty(group), 'worker cgroup was populated before registration'
+            signal.pidfd_send_signal(fds[0], signal.SIGKILL)
+            child.wait(timeout=TIMEOUT)
+            wait_dead(fds[2], 'launcher before registration after manager death')
+            wait_empty(group.parent)
+            print('PASS:', case, flush=True)
+            return
         if case == 'manager-before-clone':
             assert len(parts) == 4 and parts[0] == 'CLONE-GATE', ('unexpected clone barrier', parts)
             guard_pid, launcher_pid = map(int, parts[1:3])
             group = pathlib.Path(parts[3])
-            assert group.parent == root and group.name.startswith('lsm-lifecycle-')
+            assert group.name == 'worker' and group.parent.parent == root and group.parent.name.startswith('lsm-lifecycle-')
             fds.extend(receive_fds(control, child.pid, b'T', 3))
             assert [pidfd_pid(fd) for fd in fds] == [child.pid, guard_pid, launcher_pid]
             assert empty(group), 'worker cgroup was populated before clone'
@@ -171,7 +240,7 @@ def run_case(executable, parent, case):
         assert len(parts) == 4 and parts[0] == 'PREPARED', ('unexpected prepare state', parts)
         guard_pid, worker_pid = map(int, parts[1:3])
         group = pathlib.Path(parts[3])
-        assert group.parent == root and group.name.startswith('lsm-lifecycle-')
+        assert group.name == 'worker' and group.parent.parent == root and group.parent.name.startswith('lsm-lifecycle-')
         fds.extend(receive_fds(control, child.pid, b'P', 3))
         assert [pidfd_pid(fd) for fd in fds] == [child.pid, guard_pid, worker_pid]
         assert str(worker_pid) in (group / 'cgroup.procs').read_text().split()
@@ -214,7 +283,11 @@ def run_case(executable, parent, case):
                 child.wait(timeout=TIMEOUT)
             for item in root.iterdir():
                 if item.is_dir():
-                    assert item.name.startswith('lsm-lifecycle-'), 'unexpected subgroup'
+                    assert item.name.startswith('lsm-lifecycle-'), 'unexpected scope'
+                    for nested in item.iterdir():
+                        if nested.is_dir():
+                            assert nested.name == 'worker', 'unexpected worker subgroup'
+                            nested.rmdir()
                     item.rmdir()
             root.rmdir()
         finally:
@@ -250,7 +323,7 @@ def main():
     parent = pathlib.Path(sys.argv[2]).resolve(strict=True)
     assert parent != pathlib.Path('/sys/fs/cgroup') and parent.is_relative_to('/sys/fs/cgroup')
     assert os.environ.get('LSM_TEST_DISPOSABLE_CGROUP') == str(parent)
-    assert sys.argv[3] in ('manager-before-clone', 'manager-before-go', 'guard-before-go', 'manager-after-go', 'guard-after-go')
+    assert sys.argv[3] in ('manager-stopped-before-launcher', 'manager-before-registration', 'manager-before-clone', 'manager-before-go', 'guard-before-go', 'manager-after-go', 'guard-after-go')
     run_case(executable, parent, sys.argv[3])
 
 
