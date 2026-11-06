@@ -925,7 +925,8 @@ mod tests {
             let store = DurableJournalStore::at(root.join("journal"));
             let result = LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store);
             assert!(
-                matches!(result, Err(LockedSessionError::UnclassifiedRuntimeJournal(ref actual)) if actual == &evidence)
+                matches!(&result, Err(LockedSessionError::UnclassifiedRuntimeJournal(actual)) if actual == &evidence),
+                "runtime directory {name}, unexpected result: {result:?}"
             );
             assert_eq!(std::fs::read(&evidence).unwrap(), b"retained evidence");
             let _ = std::fs::remove_dir_all(path.parent().unwrap());

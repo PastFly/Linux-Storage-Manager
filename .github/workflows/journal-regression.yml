@@ -31,3 +31,24 @@ jobs:
             echo "Parallel attempt ${attempt}"
             cargo test --locked -p lsm-executor --lib -- --test-threads=16
           done
+
+  runtime-evidence-trace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Repeat parallel suite with inotify diagnostics
+        shell: bash
+        run: |
+          set -uo pipefail
+          for attempt in $(seq 1 80); do
+            echo "attempt=$attempt"
+            if ! LSM_WATCH_TRACE=1 cargo test --locked -p lsm-executor --features production-swap-replacement-runtime-tool-lease --lib -- --test-threads=16 > "$RUNNER_TEMP/runtime-trace.log" 2>&1; then
+              rg 'other_runtime_journal_evidence|unexpected result|LSM_WATCH_TRACE|panicked|FAILED' "$RUNNER_TEMP/runtime-trace.log" || true
+              tail -30 "$RUNNER_TEMP/runtime-trace.log"
+              exit 1
+            fi
+          done

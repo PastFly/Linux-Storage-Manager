@@ -905,7 +905,25 @@ impl DirectoryWatch {
         loop {
             match self.file.read(&mut bytes) {
                 Ok(0) => return Err(JournalStoreError::ChangedDuringInspection),
-                Ok(_) => return Err(JournalStoreError::ChangedDuringInspection),
+                Ok(count) => {
+                    let _ = count;
+                    #[cfg(test)]
+                    if std::env::var_os("LSM_WATCH_TRACE").is_some()
+                        && count >= std::mem::size_of::<libc::inotify_event>()
+                    {
+                        let event = unsafe {
+                            std::ptr::read_unaligned(bytes.as_ptr().cast::<libc::inotify_event>())
+                        };
+                        eprintln!(
+                            "LSM_WATCH_TRACE pid={} tid={:?} path={:?} mask={:#x}",
+                            std::process::id(),
+                            std::thread::current().id(),
+                            self.path,
+                            event.mask
+                        );
+                    }
+                    return Err(JournalStoreError::ChangedDuringInspection);
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(error) => return Err(failure(&self.path, error)),
