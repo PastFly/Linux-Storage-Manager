@@ -57,7 +57,7 @@ jobs:
           shopt -s nullglob
           trap 'sudo rmdir /sys/fs/cgroup/lsm-disposable-lifecycle-test/lsm-backup-* /sys/fs/cgroup/lsm-disposable-lifecycle-test || true' EXIT
           status=0
-          for case in manager-death observer-death lease-break observer-before-go launcher-poll-failure launcher-stopped launcher-failure-before-active manager-stopped manager-auto-reap launcher-pidfd-failure; do
+          for case in manager-death observer-death lease-break observer-before-go launcher-poll-failure launcher-stopped launcher-failure-before-active manager-stopped manager-auto-reap launcher-pidfd-failure launcher-stopped-after-go; do
             sudo env LSM_TEST_DISPOSABLE_CGROUP=/sys/fs/cgroup/lsm-disposable-lifecycle-test python3 -I .github/diagnostics/test-controller-lifecycle.py /tmp/lsm-controller-test/release/lsm-gated-module-harness /tmp/lsm-watchdog-cli/debug/storagemgr /sys/fs/cgroup/lsm-disposable-lifecycle-test "$case" || status=1
           done
           exit "$status"
