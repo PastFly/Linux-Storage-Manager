@@ -12,6 +12,7 @@ use std::path::{Component, Path};
 
 const DOMAIN_V1: &[u8] = b"linux-storage-manager:backup-recovery-record:v1\0";
 const DOMAIN_V2: &[u8] = b"linux-storage-manager:backup-recovery-record:v2\0";
+const DOMAIN_V3: &[u8] = b"linux-storage-manager:backup-recovery-record:v3\0";
 const MAX_RECORD_BYTES: usize = 64 * 1024;
 const MAX_ARTIFACTS: usize = 16;
 const MAX_ARTIFACT_BYTES: u64 = 16 * 1024 * 1024;
@@ -58,6 +59,17 @@ pub(crate) struct RecoveryArtifact {
     pub capture_device_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_inode: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verity: Option<VerityPair>,
+}
+
+/// SHA-256 fs-verity measurements, distinct from the ordinary content hash.
+/// Presence alone does not prove that the files were sealed or remain present.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct VerityPair {
+    pub primary_sha256: String,
+    pub recovery_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,7 +124,7 @@ fn valid_path(value: &str) -> bool {
 
 fn validate_payload(payload: &RecoveryPayload) -> Result<(), RecordError> {
     let binding = &payload.binding;
-    if !matches!(payload.schema_version, 1 | 2)
+    if !matches!(payload.schema_version, 1..=3)
         || ![
             &binding.journal_id,
             &binding.session_id,
@@ -155,15 +167,31 @@ fn validate_payload(payload: &RecoveryPayload) -> Result<(), RecordError> {
             || artifact.size_bytes > MAX_ARTIFACT_BYTES
             || !valid_digest(&artifact.sha256)
             || match payload.schema_version {
-                1 => artifact.capture_device_id.is_some() || artifact.capture_inode.is_some(),
-                2 => artifact.capture_device_id.is_none() || artifact.capture_inode.is_none(),
+                1 => {
+                    artifact.capture_device_id.is_some()
+                        || artifact.capture_inode.is_some()
+                        || artifact.verity.is_some()
+                }
+                2 => {
+                    artifact.capture_device_id.is_none()
+                        || artifact.capture_inode.is_none()
+                        || artifact.verity.is_some()
+                }
+                3 => {
+                    artifact.capture_device_id.is_none()
+                        || artifact.capture_inode.is_none()
+                        || !artifact.verity.as_ref().is_some_and(|pair| {
+                            valid_digest(&pair.primary_sha256)
+                                && valid_digest(&pair.recovery_sha256)
+                        })
+                }
                 _ => true,
             }
         {
             return Err(RecordError::Invalid);
         }
     }
-    if payload.schema_version == 2 {
+    if matches!(payload.schema_version, 2 | 3) {
         let mut artifacts = Vec::with_capacity(payload.artifacts.len());
         for artifact in &payload.artifacts {
             let (kind, expected_identity) = match &artifact.identity {
@@ -237,6 +265,7 @@ fn record_id(payload: &RecoveryPayload) -> Result<String, RecordError> {
     hash.update(match payload.schema_version {
         1 => DOMAIN_V1,
         2 => DOMAIN_V2,
+        3 => DOMAIN_V3,
         _ => return Err(RecordError::Invalid),
     });
     hash.update(bytes);
@@ -447,6 +476,7 @@ pub(crate) fn from_experimental_verified_metadata(
             sha256: receipt_artifact.sha256.clone(),
             capture_device_id: Some(receipt_artifact.device_id),
             capture_inode: Some(receipt_artifact.inode),
+            verity: None,
         });
     }
     BackupRecoveryRecord::new(RecoveryPayload {
@@ -587,6 +617,7 @@ mod tests {
             sha256: "3".repeat(64),
             capture_device_id: Some(123),
             capture_inode: Some(789),
+            verity: None,
         });
         let original = BackupRecoveryRecord::new(payload.clone()).unwrap();
         let bytes = original.encode().unwrap();
@@ -887,6 +918,39 @@ mod tests {
     fn independently_computed_valid_record_is_accepted() {
         let result = decode(FIXTURE.as_bytes(), RECORD_ID);
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn v3_requires_and_binds_both_verity_measurements() {
+        let mut payload = v2_fixture().payload;
+        payload.schema_version = 3;
+        assert!(BackupRecoveryRecord::new(payload.clone()).is_err());
+        payload.artifacts[0].verity = Some(VerityPair {
+            primary_sha256: "4".repeat(64),
+            recovery_sha256: "5".repeat(64),
+        });
+        let record = BackupRecoveryRecord::new(payload.clone()).unwrap();
+        let trusted = payload.binding.clone();
+        let bytes = record.encode().unwrap();
+        assert!(decode_with_trusted_context(&bytes, record.record_id(), &trusted).is_ok());
+        for primary in [true, false] {
+            let mut changed = payload.clone();
+            let verity = changed.artifacts[0].verity.as_mut().unwrap();
+            if primary {
+                verity.primary_sha256 = "6".repeat(64);
+            } else {
+                verity.recovery_sha256 = "6".repeat(64);
+            }
+            let changed = BackupRecoveryRecord::new(changed).unwrap();
+            assert!(decode_with_trusted_context(
+                &changed.encode().unwrap(),
+                record.record_id(),
+                &trusted
+            )
+            .is_err());
+        }
+        payload.artifacts[0].verity.as_mut().unwrap().primary_sha256 = "A".repeat(64);
+        assert!(BackupRecoveryRecord::new(payload).is_err());
     }
 
     #[test]

@@ -394,6 +394,7 @@ mod tests {
                 sha256: "2".repeat(64),
                 capture_device_id: Some(123),
                 capture_inode: Some(456),
+                verity: None,
             }],
         })
         .unwrap();
