@@ -178,6 +178,15 @@ fn receive_worker_pidfd(socket: RawFd, sender: libc::pid_t) -> io::Result<File> 
 }
 
 #[cfg(test)]
+fn receive_worker_pidfd_bound(
+    socket: RawFd,
+    _sender_pidfd: RawFd,
+    sender: libc::pid_t,
+) -> io::Result<File> {
+    receive_worker_pidfd(socket, sender)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::os::fd::AsRawFd;
@@ -277,6 +286,81 @@ mod tests {
                 "message from unexpected process was accepted"
             );
         }
+    }
+
+    #[test]
+    fn rejects_stream_socket_even_if_message_starts_with_valid_pidfd_packet() {
+        let mut fds = [-1; 2];
+        assert_eq!(
+            unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+                    0,
+                    fds.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        let on: libc::c_int = 1;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    fds[0],
+                    libc::SOL_SOCKET,
+                    libc::SO_PASSCRED,
+                    (&on as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&on) as libc::socklen_t,
+                )
+            },
+            0
+        );
+        let own = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) as i32 };
+        assert!(own >= 0);
+        // Stream sockets do not preserve this message boundary.
+        let sent = send_worker_pidfd(fds[1], own);
+        let result = if let Err(error) = sent {
+            Err(error)
+        } else {
+            assert_eq!(
+                unsafe { libc::send(fds[1], b"extra".as_ptr().cast(), 5, 0) },
+                5
+            );
+            receive_worker_pidfd(fds[0], unsafe { libc::getpid() })
+        };
+        for fd in fds.into_iter().chain([own]) {
+            unsafe {
+                libc::close(fd);
+            }
+        }
+        assert!(
+            result.is_err(),
+            "stream accepted as an authenticated packet channel"
+        );
+    }
+
+    #[test]
+    fn rejects_dead_pinned_sender_even_if_numeric_credentials_match() {
+        let (manager, launcher) = pair();
+        let dead = unsafe { libc::fork() };
+        assert!(dead >= 0);
+        if dead == 0 {
+            unsafe { libc::_exit(0) }
+        }
+        let dead_fd = unsafe { libc::syscall(libc::SYS_pidfd_open, dead, 0) as i32 };
+        assert!(dead_fd >= 0);
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(dead, &mut status, 0) }, dead);
+        let own = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) as i32 };
+        assert!(own >= 0);
+        send_worker_pidfd(launcher.as_raw_fd(), own).unwrap();
+        let result =
+            receive_worker_pidfd_bound(manager.as_raw_fd(), dead_fd, unsafe { libc::getpid() });
+        unsafe {
+            libc::close(dead_fd);
+            libc::close(own);
+        }
+        assert!(result.is_err(), "dead sender pidfd was ignored");
     }
 
     #[test]
