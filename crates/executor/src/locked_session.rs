@@ -993,7 +993,7 @@ mod tests {
     }
 
     #[test]
-    fn recovery_preconditions_bind_record_before_exact_approval() {
+    fn recovery_preconditions_never_authorize_approval_even_if_record_disappears() {
         let (snapshot, capabilities) = fixture();
         let handoff = handoff(&snapshot, &capabilities);
         let lock = lock_path();
@@ -1025,17 +1025,64 @@ mod tests {
             verified.journal_digest(),
             crate::preconditions::journal_digest(&before_approval).unwrap()
         );
-        crate::approve_exact_plan(
-            &mut session,
-            &verified,
-            handoff.plan().plan_id(),
-            evidence.bundle_id(),
-            &handoff.target_identity().manifest_digest,
-        )
-        .unwrap();
-        let approved = store.load(&before_approval.journal_id).unwrap();
-        assert!(approved.approval.is_some());
-        assert_eq!(approved.recovery_binding, before_approval.recovery_binding);
+        for remove_record in [false, true] {
+            if remove_record {
+                std::fs::remove_file(record_root.join(format!("{}.json", record.record_id())))
+                    .unwrap();
+            }
+            assert!(crate::approve_exact_plan(
+                &mut session,
+                &verified,
+                handoff.plan().plan_id(),
+                evidence.bundle_id(),
+                &handoff.target_identity().manifest_digest,
+            )
+            .is_err());
+            assert_eq!(
+                store.load(&before_approval.journal_id).unwrap(),
+                before_approval
+            );
+            assert_eq!(*session.journal(), before_approval);
+        }
+        drop(session);
+        let _ = std::fs::remove_dir_all(lock.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(record_root);
+    }
+
+    #[test]
+    fn recovery_preconditions_reject_removal_after_load_before_cas() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let lock = lock_path();
+        let root = journal_root("recovery-after-load");
+        let record_root = journal_root("recovery-after-load-record");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_recovery_at_paths(&handoff, &lock, &store)
+                .unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let record = recovery_fixture(&session, session.session_id(), &"2".repeat(64));
+        let evidence = recovery_evidence(&session, &snapshot, &capabilities, &record);
+        std::fs::create_dir_all(&record_root).unwrap();
+        crate::backup_recovery_storage::store(&record_root, &record, record.binding()).unwrap();
+        let proof =
+            crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &record).unwrap();
+        let before = store.load(&session.journal().journal_id).unwrap();
+        assert!(
+            crate::preconditions::verify_preconditions_with_recovery_hook(
+                &mut session,
+                &evidence,
+                &proof,
+                || {
+                    std::fs::remove_file(record_root.join(format!("{}.json", record.record_id())))
+                        .unwrap();
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(store.load(&before.journal_id).unwrap(), before);
+        assert_eq!(*session.journal(), before);
         drop(session);
         let _ = std::fs::remove_dir_all(lock.parent().unwrap());
         let _ = std::fs::remove_dir_all(root);

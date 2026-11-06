@@ -254,6 +254,16 @@ pub(crate) fn verify_preconditions_with_recovery(
     evidence: &PreMutationEvidenceBundle,
     recovery: &ExperimentalDurableRecovery,
 ) -> Result<PreconditionsVerification, PreconditionsVerificationError> {
+    verify_preconditions_with_recovery_hook(session, evidence, recovery, || {})
+}
+
+#[cfg(test)]
+pub(crate) fn verify_preconditions_with_recovery_hook(
+    session: &mut LockedExecutionSession<'_>,
+    evidence: &PreMutationEvidenceBundle,
+    recovery: &ExperimentalDurableRecovery,
+    after_load: impl FnOnce(),
+) -> Result<PreconditionsVerification, PreconditionsVerificationError> {
     validate_preconditions(session, evidence)?;
     let record = crate::backup_recovery_storage::load(
         &recovery.root,
@@ -261,6 +271,7 @@ pub(crate) fn verify_preconditions_with_recovery(
         recovery.record.binding(),
     )
     .map_err(|_| PreconditionsVerificationError::BackupBindingInvalid)?;
+    after_load();
     let binding = record.binding();
     if record.schema_version() != 3
         || record != recovery.record
