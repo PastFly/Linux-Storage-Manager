@@ -5,7 +5,8 @@
 //! this module does not yet have; `seal` deliberately always fails closed.
 #![allow(dead_code)]
 use crate::backup_recovery_record::{
-    validate_capture_binding, BackupRecoveryRecord, RecoveryBinding,
+    experimental_bind_verity, from_experimental_verified_metadata, validate_capture_binding,
+    BackupRecoveryRecord, ExperimentalCopyPair, ExperimentalCopyView, RecoveryBinding,
 };
 use crate::journal_fd::{DirectoryWatch, JournalDir};
 use crate::journal_store::{trusted_journal_file, JournalStoreError};
@@ -191,11 +192,129 @@ impl PendingCopies {
     /// Test-only sealed-copy experiment. It cannot authorize mutation.
     fn experimental_seal_verity(
         self,
-        _manifest: &MetadataBackupManifest,
-        _receipt: &MetadataBackupReceipt,
-        _trusted: &RecoveryBinding,
+        manifest: &MetadataBackupManifest,
+        receipt: &MetadataBackupReceipt,
+        trusted: &RecoveryBinding,
     ) -> Result<ExperimentalVerityCopies, CollectorError> {
-        Err(CollectorError::ObserverProofUnavailable)
+        self.experimental_seal_verity_with_hook(manifest, receipt, trusted, || {})
+    }
+
+    fn experimental_seal_verity_with_hook(
+        mut self,
+        manifest: &MetadataBackupManifest,
+        receipt: &MetadataBackupReceipt,
+        trusted: &RecoveryBinding,
+        after_seal: impl FnOnce(),
+    ) -> Result<ExperimentalVerityCopies, CollectorError> {
+        validate_capture_binding(manifest, receipt, trusted)
+            .map_err(|_| CollectorError::InvalidEvidence)?;
+        if self.pairs.len() != receipt.artifacts().len() || self.pairs.is_empty() {
+            return Err(CollectorError::InvalidEvidence);
+        }
+        self.primary_dir.verify_namespace()?;
+        self.recovery_dir.verify_namespace()?;
+        self.primary_watch.require_unchanged()?;
+        self.recovery_watch.require_unchanged()?;
+        // Never discard or filter watch events around the irreversible ioctl.
+        // If a filesystem reports our own operation, reject conservatively.
+        for (pair, artifact) in self.pairs.iter().zip(receipt.artifacts()) {
+            let expected = Path::new(&artifact.artifact_path)
+                .file_name()
+                .ok_or(CollectorError::InvalidEvidence)?;
+            let mut expected_recovery = expected.to_os_string();
+            expected_recovery.push(".recovery");
+            if pair.primary_name != expected
+                || pair.recovery_name != expected_recovery
+                || pair.size_bytes != artifact.size_bytes
+                || pair.sha256 != artifact.sha256
+                || (pair.primary_metadata.dev(), pair.primary_metadata.ino())
+                    != (artifact.device_id, artifact.inode)
+            {
+                return Err(CollectorError::InvalidEvidence);
+            }
+            crate::backup_verity::enable(&pair.primary)?;
+            crate::backup_verity::enable(&pair.recovery)?;
+        }
+        for pair in &self.pairs {
+            pair.primary.sync_all()?;
+            pair.recovery.sync_all()?;
+        }
+        self.primary_dir.sync()?;
+        self.recovery_dir.sync()?;
+        after_seal();
+
+        let root = Path::new(manifest.artifact_directory());
+        let mut recovery_root_name = root
+            .file_name()
+            .ok_or(CollectorError::InvalidEvidence)?
+            .to_os_string();
+        recovery_root_name.push(".recovery");
+        let logical_recovery_root = root.with_file_name(recovery_root_name);
+        let mut copy_views = Vec::with_capacity(self.pairs.len());
+        let mut measurements = Vec::with_capacity(self.pairs.len());
+        for (pair, artifact) in self.pairs.iter().zip(receipt.artifacts()) {
+            let (_, primary, _) = read_checked(
+                &self.primary_dir,
+                &pair.primary_name,
+                artifact.size_bytes,
+                &artifact.sha256,
+                Some((pair.primary_metadata.dev(), pair.primary_metadata.ino())),
+            )?;
+            let (_, recovery, _) = read_checked(
+                &self.recovery_dir,
+                &pair.recovery_name,
+                artifact.size_bytes,
+                &artifact.sha256,
+                Some((pair.recovery_metadata.dev(), pair.recovery_metadata.ino())),
+            )?;
+            if !same_file(&primary, &pair.primary.metadata()?)
+                || !same_file(&recovery, &pair.recovery.metadata()?)
+                || (primary.dev(), primary.ino()) == (recovery.dev(), recovery.ino())
+            {
+                return Err(CollectorError::Changed);
+            }
+            let primary_verity = crate::backup_verity::measure(&pair.primary)?;
+            let recovery_verity = crate::backup_verity::measure(&pair.recovery)?;
+            let recovery_path = logical_recovery_root.join(&pair.recovery_name);
+            let recovery_path = recovery_path
+                .to_str()
+                .ok_or(CollectorError::InvalidEvidence)?
+                .to_owned();
+            copy_views.push(ExperimentalCopyPair {
+                ordinal: artifact.ordinal,
+                primary: ExperimentalCopyView {
+                    path: artifact.artifact_path.clone(),
+                    size_bytes: artifact.size_bytes,
+                    sha256: artifact.sha256.clone(),
+                    device_id: primary.dev(),
+                    inode: primary.ino(),
+                },
+                recovery: ExperimentalCopyView {
+                    path: recovery_path,
+                    size_bytes: artifact.size_bytes,
+                    sha256: artifact.sha256.clone(),
+                    device_id: recovery.dev(),
+                    inode: recovery.ino(),
+                },
+            });
+            measurements.push((primary_verity, recovery_verity));
+        }
+        self.primary_dir.verify_namespace()?;
+        self.recovery_dir.verify_namespace()?;
+        self.primary_watch.require_unchanged()?;
+        self.recovery_watch.require_unchanged()?;
+        let v2 = from_experimental_verified_metadata(manifest, receipt, trusted, &copy_views)
+            .map_err(|_| CollectorError::InvalidEvidence)?;
+        let record = experimental_bind_verity(&v2, &measurements)
+            .map_err(|_| CollectorError::InvalidEvidence)?;
+        self.primary_dir.verify_namespace()?;
+        self.recovery_dir.verify_namespace()?;
+        self.primary_watch.require_unchanged()?;
+        self.recovery_watch.require_unchanged()?;
+        Ok(ExperimentalVerityCopies {
+            _pending: self,
+            record,
+        })
     }
 
     /// Starts a real observer, then rechecks the pinned copies and namespace.
@@ -647,13 +766,68 @@ mod tests {
                 .write(true)
                 .open(if recovery_writer { &copy } else { &source })
                 .unwrap();
-            assert!(pending
-                .experimental_seal_verity(&manifest, &receipt, &trusted)
-                .is_err());
+            let result = pending.experimental_seal_verity(&manifest, &receipt, &trusted);
+            assert!(
+                matches!(result, Err(CollectorError::Io(ref error)) if error.raw_os_error() == Some(libc::ETXTBSY))
+            );
+            if recovery_writer {
+                // The first ioctl already succeeded; never claim rollback.
+                assert!(crate::backup_verity::measure(&File::open(&source).unwrap()).is_ok());
+            }
             drop(writer);
             drop(receipt);
             cleanup(&lock, &primary, &recovery);
         }
+    }
+
+    #[test]
+    #[ignore = "requires explicitly designated disposable ext4 fs-verity filesystem"]
+    fn verity_experiment_rejects_transient_namespace_change_after_seal() {
+        require_disposable_verity_root();
+        let (manifest, receipt, trusted, lock, primary, recovery) = fixture("verity-rename");
+        let (source, _) = paths(&receipt, &primary, &recovery);
+        let pending = prepare_at(&manifest, &receipt, &trusted, &primary, &recovery).unwrap();
+        let moved = primary.join("temporarily-moved");
+        let hook_ran = std::cell::Cell::new(false);
+        let result =
+            pending.experimental_seal_verity_with_hook(&manifest, &receipt, &trusted, || {
+                hook_ran.set(true);
+                std::fs::rename(&source, &moved).unwrap();
+                std::fs::rename(&moved, &source).unwrap();
+            });
+        assert!(hook_ran.get());
+        assert!(
+            result.is_err(),
+            "restored namespace must not erase the change"
+        );
+        drop(receipt);
+        cleanup(&lock, &primary, &recovery);
+    }
+
+    #[test]
+    #[ignore = "requires explicitly designated disposable ext4 fs-verity filesystem"]
+    fn verity_experiment_rejects_in_place_change_before_seal() {
+        require_disposable_verity_root();
+        let (manifest, receipt, trusted, lock, primary, recovery) = fixture("verity-modified");
+        let (source, _) = paths(&receipt, &primary, &recovery);
+        let pending = prepare_at(&manifest, &receipt, &trusted, &primary, &recovery).unwrap();
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&source)
+            .unwrap();
+        assert_eq!(writer.write_at(b"X", 0).unwrap(), 1);
+        drop(writer);
+        assert!(pending
+            .experimental_seal_verity(&manifest, &receipt, &trusted)
+            .is_err());
+        assert_eq!(
+            crate::backup_verity::measure(&File::open(&source).unwrap())
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENODATA)
+        );
+        drop(receipt);
+        cleanup(&lock, &primary, &recovery);
     }
 
     fn disposable_observer() -> (std::path::PathBuf, OsString) {
