@@ -181,7 +181,15 @@ def run_case(executable, parent, case):
                 child.stdin.flush()
                 # EOF/empty scope is inconclusive: a launcher may have
                 # cloned and exited before the test observed its pidfd.
-                created = read_line(child.stdout).split()
+                try:
+                    created = read_line(child.stdout).split()
+                except AssertionError as error:
+                    try:
+                        child.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        raise AssertionError('post-timeout creator stalled before clone state') from error
+                    diagnostic = child.stderr.read().decode('utf-8', errors='replace')
+                    raise AssertionError('post-timeout creator exited before clone state: ' + diagnostic) from error
                 if created == ['NO-CLONE']:
                     # Defined protocol: this authenticated packet is sent only
                     # before clone, and the creator immediately exits.
