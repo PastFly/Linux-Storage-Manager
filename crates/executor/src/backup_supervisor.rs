@@ -674,6 +674,86 @@ impl Drop for BackupSupervisor {
 mod tests {
     use super::*;
 
+    // Red-phase test-only stub: the current observer has no watchdog mode.
+    fn start_watchdog_at(
+        backups: Vec<File>,
+        root: &Path,
+        executable: &OsStr,
+    ) -> io::Result<BackupSupervisor> {
+        BackupSupervisor::start_at(backups, root, executable)
+    }
+
+    fn watchdog_fixture(suffix: &str) -> (BackupSupervisor, PathBuf) {
+        use std::os::unix::fs::OpenOptionsExt;
+        let root = PathBuf::from(
+            std::env::var_os("LSM_TEST_DISPOSABLE_CGROUP").expect("disposable cgroup required"),
+        );
+        let executable =
+            std::env::var_os("LSM_TEST_OBSERVER_EXE").expect("observer executable required");
+        assert!(root.starts_with("/sys/fs/cgroup") && root != Path::new("/sys/fs/cgroup"));
+        assert!(root
+            .components()
+            .all(|part| matches!(part, Component::RootDir | Component::Normal(_))));
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        let backup =
+            std::env::temp_dir().join(format!("lsm-watchdog-{suffix}-{}", std::process::id()));
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&backup)
+            .unwrap();
+        drop(writer);
+        let supervisor =
+            start_watchdog_at(vec![File::open(&backup).unwrap()], &root, &executable).unwrap();
+        (supervisor, backup)
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly delegated disposable Linux cgroup and observer executable"]
+    fn watchdog_observer_acknowledges_heartbeat_without_releasing_lease() {
+        let (supervisor, backup) = watchdog_fixture("heartbeat");
+        let socket = supervisor.socket.as_ref().unwrap();
+        assert_eq!(
+            unsafe {
+                libc::send(
+                    socket.as_raw_fd(),
+                    b"H".as_ptr().cast(),
+                    1,
+                    libc::MSG_NOSIGNAL,
+                )
+            },
+            1
+        );
+        wait_readable(socket, &supervisor.observer_pidfd).unwrap();
+        receive_byte(
+            socket,
+            supervisor.child.as_ref().unwrap().id() as libc::pid_t,
+            b'H',
+        )
+        .unwrap();
+        supervisor.probe_observer_alive().unwrap();
+        supervisor.finish_empty().unwrap();
+        std::fs::remove_file(backup).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly delegated disposable Linux cgroup and observer executable"]
+    fn watchdog_observer_stops_when_manager_heartbeats_cease() {
+        let (supervisor, backup) = watchdog_fixture("deadline");
+        let mut item = libc::pollfd {
+            fd: supervisor.observer_pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(&mut item, 1, 5_000) };
+        assert_eq!(result, 1, "observer did not stop after heartbeat deadline");
+        assert_ne!(item.revents & libc::POLLIN, 0);
+        assert!(supervisor.probe_observer_alive().is_err());
+        drop(supervisor);
+        std::fs::remove_file(backup).unwrap();
+    }
+
     #[test]
     fn supervisor_rejects_non_cgroup_filesystem_before_mutating_it() {
         let directory = File::open(std::env::temp_dir()).unwrap();

@@ -14,6 +14,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  watchdog-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Test disposable observer heartbeat
+        run: |
+          cargo build --locked -p linux-storage-manager-cli --target-dir /tmp/lsm-watchdog-cli
+          cargo test --locked -p lsm-executor --lib backup_supervisor::tests::watchdog_observer_ --no-run
+          sudo mkdir /sys/fs/cgroup/lsm-disposable-watchdog-test
+          shopt -s nullglob
+          trap 'sudo rmdir /sys/fs/cgroup/lsm-disposable-watchdog-test/lsm-backup-* /sys/fs/cgroup/lsm-disposable-watchdog-test || true' EXIT
+          sudo env PATH="$PATH" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" LSM_TEST_DISPOSABLE_CGROUP=/sys/fs/cgroup/lsm-disposable-watchdog-test LSM_TEST_OBSERVER_EXE=/tmp/lsm-watchdog-cli/debug/storagemgr cargo test --locked -p lsm-executor --lib backup_supervisor::tests::watchdog_observer_ -- --ignored --test-threads=1
+
   atomic-launch-probe:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
