@@ -149,7 +149,7 @@ def run_case(executable, parent_group, name):
         backup = os.path.join(tmp, 'backup')
         with open(backup, 'wb') as f:
             f.write(b'disposable backup')
-        os.chmod(backup, 0o600)
+        os.chmod(backup, 0o4600 if name == 'unsafe-mode' else 0o600)
         second_backup = None
         if name == 'partial-lease':
             second_backup = os.path.join(tmp, 'second-backup')
@@ -164,7 +164,7 @@ def run_case(executable, parent_group, name):
             if manager_pid == 0:
                 os.close(report_read)
                 manager_main(executable, group, backup, second_backup, marker, report_write,
-                             prior_writer_fd, name in ('prior-writer', 'partial-lease'), name == 'malformed-quit',
+                             prior_writer_fd, name in ('prior-writer', 'partial-lease', 'unsafe-mode'), name == 'malformed-quit',
                              name == 'retained-duplicate')
                 os._exit(1)
             os.close(report_write)
@@ -173,7 +173,7 @@ def run_case(executable, parent_group, name):
             if line.startswith('ERROR') or not line:
                 raise AssertionError('manager failed: ' + line)
             info = json.loads(line)
-            if name in ('prior-writer', 'partial-lease'):
+            if name in ('prior-writer', 'partial-lease', 'unsafe-mode'):
                 _, status = os.waitpid(manager_pid, 0)
                 manager_pid = None
                 assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0 and info['refused']
@@ -260,7 +260,7 @@ def main():
         raise AssertionError('observer executable missing')
     cases = ['prior-writer', 'manager-death', 'lease-break']
     if os.environ.get('LSM_TEST_OBSERVER_CLI') == '1':
-        cases.extend(('malformed-quit', 'partial-lease', 'retained-duplicate'))
+        cases.extend(('malformed-quit', 'partial-lease', 'retained-duplicate', 'unsafe-mode'))
     for name in cases:
         run_case(executable, parent_group, name)
 
