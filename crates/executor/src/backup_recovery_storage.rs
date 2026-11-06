@@ -5,15 +5,157 @@ use crate::backup_recovery_record::{
 };
 use crate::journal_fd::JournalDir;
 use crate::journal_store::{trusted_journal_file, JournalStoreError};
-use std::ffi::OsStr;
+use std::ffi::{CString, OsStr};
 use std::fs::{File, Metadata};
 use std::io::{self, Read};
+use std::os::fd::FromRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_RECORD_BYTES: u64 = 64 * 1024;
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+// Experimental event checks can reject observed interference, but inotify
+// coalescing does not establish which process produced an event. This is not
+// sufficient evidence for production recovery or protection from privileged
+// writers.
+struct NamespaceWatch {
+    file: File,
+    leaf: libc::c_int,
+}
+
+struct ObservedEvent {
+    wd: libc::c_int,
+    mask: u32,
+    cookie: u32,
+    name: Vec<u8>,
+}
+
+impl NamespaceWatch {
+    fn new(directory: &JournalDir) -> Result<Self, StorageError> {
+        let raw = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
+        if raw < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let file = unsafe { File::from_raw_fd(raw) };
+        let nodes = directory.test_namespace_fds();
+        let mut descriptors = Vec::new();
+        for (index, fd) in nodes.iter().enumerate() {
+            let path =
+                CString::new(format!("/proc/self/fd/{fd}")).map_err(|_| StorageError::Changed)?;
+            let mask = if index + 1 == nodes.len() {
+                libc::IN_CREATE
+                    | libc::IN_DELETE
+                    | libc::IN_MOVED_FROM
+                    | libc::IN_MOVED_TO
+                    | libc::IN_MODIFY
+                    | libc::IN_ATTRIB
+                    | libc::IN_CLOSE_WRITE
+                    | libc::IN_DELETE_SELF
+                    | libc::IN_MOVE_SELF
+                    | libc::IN_UNMOUNT
+            } else {
+                libc::IN_ATTRIB | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF | libc::IN_UNMOUNT
+            };
+            use std::os::fd::AsRawFd;
+            let wd = unsafe { libc::inotify_add_watch(file.as_raw_fd(), path.as_ptr(), mask) };
+            if wd < 0 {
+                return Err(io::Error::last_os_error().into());
+            }
+            if descriptors.contains(&wd) {
+                return Err(StorageError::Changed);
+            }
+            descriptors.push(wd);
+        }
+        let leaf = *descriptors.last().ok_or(StorageError::Changed)?;
+        Ok(Self { file, leaf })
+    }
+
+    fn events(&mut self) -> Result<Vec<ObservedEvent>, StorageError> {
+        let mut events = Vec::new();
+        let mut bytes = [0_u8; 8192];
+        loop {
+            let length = match self.file.read(&mut bytes) {
+                Ok(0) => return Err(StorageError::Changed),
+                Ok(length) => length,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(events),
+                Err(error) => return Err(error.into()),
+            };
+            let header_size = std::mem::size_of::<libc::inotify_event>();
+            let mut offset = 0;
+            while offset < length {
+                if length - offset < header_size {
+                    return Err(StorageError::Changed);
+                }
+                let event = unsafe {
+                    std::ptr::read_unaligned(
+                        bytes.as_ptr().add(offset).cast::<libc::inotify_event>(),
+                    )
+                };
+                let end = offset
+                    .checked_add(header_size)
+                    .and_then(|value| value.checked_add(event.len as usize))
+                    .filter(|end| *end <= length)
+                    .ok_or(StorageError::Changed)?;
+                let name = &bytes[offset + header_size..end];
+                let name_len = name
+                    .iter()
+                    .position(|byte| *byte == 0)
+                    .unwrap_or(name.len());
+                events.push(ObservedEvent {
+                    wd: event.wd,
+                    mask: event.mask,
+                    cookie: event.cookie,
+                    name: name[..name_len].to_vec(),
+                });
+                offset = end;
+            }
+        }
+    }
+
+    fn expect_empty(&mut self) -> Result<(), StorageError> {
+        if self.events()?.is_empty() {
+            Ok(())
+        } else {
+            Err(StorageError::Changed)
+        }
+    }
+
+    fn expect_staging(&mut self, staging: &str) -> Result<(), StorageError> {
+        let events = self.events()?;
+        let masks = [libc::IN_CREATE, libc::IN_MODIFY, libc::IN_CLOSE_WRITE];
+        if events.len() != masks.len()
+            || events.iter().zip(masks).any(|(event, mask)| {
+                event.wd != self.leaf
+                    || event.mask != mask
+                    || event.cookie != 0
+                    || event.name.as_slice() != staging.as_bytes()
+            })
+        {
+            return Err(StorageError::Changed);
+        }
+        Ok(())
+    }
+
+    fn expect_publication(&mut self, staging: &str, final_name: &str) -> Result<(), StorageError> {
+        let events = self.events()?;
+        if events.len() != 2
+            || events[0].wd != self.leaf
+            || events[1].wd != self.leaf
+            || events[0].mask != libc::IN_MOVED_FROM
+            || events[1].mask != libc::IN_MOVED_TO
+            || events[0].cookie == 0
+            || events[0].cookie != events[1].cookie
+            || events[0].name.as_slice() != staging.as_bytes()
+            || events[1].name.as_slice() != final_name.as_bytes()
+        {
+            return Err(StorageError::Changed);
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 enum StorageError {
@@ -93,11 +235,18 @@ fn load(
     let directory = JournalDir::open(root)?;
     let mut watch = directory.watch_namespace()?;
     let name = format!("{expected_id}.json");
+    let initial_names = directory.names()?;
+    if initial_names.len() != 1 || initial_names[0].as_os_str() != OsStr::new(&name) {
+        return Err(StorageError::Changed);
+    }
     let (record, pinned, metadata) =
         read_pinned(&directory, OsStr::new(&name), expected_id, trusted)?;
     directory.verify_namespace()?;
     let live = directory.open_file(OsStr::new(&name))?.metadata()?;
-    if !same_version(&metadata, &pinned.metadata()?) || !same_version(&metadata, &live) {
+    if !same_version(&metadata, &pinned.metadata()?)
+        || !same_version(&metadata, &live)
+        || initial_names != directory.names()?
+    {
         return Err(StorageError::Changed);
     }
     watch.require_unchanged()?;
@@ -145,18 +294,29 @@ fn store_with_hooks(
         return Err(StorageError::Changed);
     }
     let directory = JournalDir::open(root)?;
+    let mut watch = NamespaceWatch::new(&directory)?;
+    directory.verify_namespace()?;
+    watch.expect_empty()?;
     let staging = format!(
         ".{id}.tmp-{}-{}",
         std::process::id(),
         STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
     let final_name = format!("{id}.json");
+    if directory
+        .names()?
+        .iter()
+        .any(|name| name.as_os_str() != OsStr::new(&final_name))
+    {
+        return Err(StorageError::Changed);
+    }
+    watch.expect_empty()?;
     hook(HookPoint::BeforeStaging, &staging)?;
     let created = directory.write_staged_file(OsStr::new(&staging), &bytes)?;
     let created_metadata = created.metadata()?;
     directory.sync()?;
     hook(HookPoint::AfterStagingBeforeWatch, &staging)?;
-    let mut watch = directory.watch()?;
+    watch.expect_staging(&staging)?;
     let (staged_record, staged, staged_metadata) =
         read_pinned(&directory, OsStr::new(&staging), id, trusted)?;
     if staged_record != *record || !same_version(&created_metadata, &staged_metadata) {
@@ -164,15 +324,16 @@ fn store_with_hooks(
     }
     before_publication()?;
     directory.verify_namespace()?;
-    watch.require_unchanged()?;
+    watch.expect_empty()?;
     if !same_version(&staged_metadata, &staged.metadata()?) {
         return Err(StorageError::Changed);
     }
     hook(HookPoint::AfterPrePublicationCheck, &staging)?;
+    watch.expect_empty()?;
     directory.publish_new(OsStr::new(&staging), OsStr::new(&final_name))?;
     directory.sync()?;
     hook(HookPoint::AfterPublicationBeforeWatch, &staging)?;
-    let mut published_watch = directory.watch_namespace()?;
+    watch.expect_publication(&staging, &final_name)?;
     let (published, pinned, published_metadata) =
         read_pinned(&directory, OsStr::new(&final_name), id, trusted)?;
     if published != *record
@@ -183,7 +344,7 @@ fn store_with_hooks(
         return Err(StorageError::Changed);
     }
     directory.verify_namespace()?;
-    published_watch.require_unchanged()?;
+    watch.expect_empty()?;
     Ok(())
 }
 
@@ -317,6 +478,31 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_create_write_and_close_are_not_accepted_as_own_staging_events() {
+        let root = temporary_directory();
+        let (record, trusted) = fixture();
+        let reached = Cell::new(false);
+        let result = store_with_hooks(
+            &root,
+            &record,
+            &trusted,
+            || Ok(()),
+            |point, _| {
+                if point == HookPoint::AfterStagingBeforeWatch {
+                    reached.set(true);
+                    let foreign = root.join("foreign");
+                    fs::write(&foreign, b"foreign write").unwrap();
+                    fs::remove_file(foreign).unwrap();
+                }
+                Ok(())
+            },
+        );
+        fs::remove_dir_all(root).unwrap();
+        assert!(reached.get(), "the intended gap was not reached");
+        assert!(result.is_err(), "foreign create/write/close was accepted");
+    }
+
+    #[test]
     fn transient_staging_replacement_after_watch_check_is_rejected() {
         let root = temporary_directory();
         let (record, trusted) = fixture();
@@ -382,6 +568,27 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
         assert_eq!(evidence, b"unknown staging evidence");
         assert!(result.is_err(), "load accepted unresolved staging evidence");
+    }
+
+    #[test]
+    fn store_rejects_and_preserves_preexisting_orphan_staging() {
+        let root = temporary_directory();
+        let (record, trusted) = fixture();
+        let orphan = root.join(format!(".{}.tmp-999-1", record.record_id()));
+        fs::write(&orphan, b"unknown staging evidence").unwrap();
+        let result = store(&root, &record, &trusted);
+        let evidence = fs::read(&orphan).unwrap();
+        let final_exists = root.join(format!("{}.json", record.record_id())).exists();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(evidence, b"unknown staging evidence");
+        assert!(
+            !final_exists,
+            "store published despite unresolved staging evidence"
+        );
+        assert!(
+            result.is_err(),
+            "store accepted unresolved staging evidence"
+        );
     }
 
     #[test]

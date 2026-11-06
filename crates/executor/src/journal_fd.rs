@@ -358,6 +358,11 @@ impl JournalDir {
         self.nodes.last().expect("root directory")
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_namespace_fds(&self) -> Vec<libc::c_int> {
+        self.nodes.iter().map(AsRawFd::as_raw_fd).collect()
+    }
+
     pub(crate) fn open_file(&self, name: &std::ffi::OsStr) -> Result<File, JournalStoreError> {
         let path = self.path.join(name);
         let pinned = open_child(self.file(), name, libc::O_PATH, &path)?;
