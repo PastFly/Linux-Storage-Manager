@@ -310,6 +310,10 @@ fn run() -> HarnessResult<()> {
     drop(session);
 
     let backup_root = args.backup_root.canonicalize()?;
+    let recovery_root = backup_root.join(format!("{journal_id}.recovery"));
+    if recovery_root.exists() {
+        remove_owned_directory(&recovery_root, &backup_root)?;
+    }
     remove_owned_directory(&backup_root.join(&journal_id), &backup_root)?;
     remove_owned_directory(&args.backup_root, &owned_root)?;
     remove_owned_directory(&args.journal_root, &owned_root)?;

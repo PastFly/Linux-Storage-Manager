@@ -190,6 +190,7 @@ pub(crate) fn execute_descriptor_stage_with_stdout_limit(
         }
     };
 
+    let parent_pid = unsafe { libc::getpid() };
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         close_fd(stdout_pipe[0]);
@@ -204,6 +205,11 @@ pub(crate) fn execute_descriptor_stage_with_stdout_limit(
     }
 
     if pid == 0 {
+        if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0
+            || unsafe { libc::getppid() } != parent_pid
+        {
+            unsafe { libc::_exit(125) };
+        }
         close_fd(stdout_pipe[0]);
         close_fd(stderr_pipe[0]);
 
@@ -443,6 +449,61 @@ mod tests {
         File::open(format!("/usr/bin/{name}"))
             .or_else(|_| File::open(format!("/bin/{name}")))
             .unwrap()
+    }
+
+    #[test]
+    fn descriptor_child_stops_when_its_manager_crashes() {
+        use std::process::Command;
+        use std::time::{Duration, Instant};
+        const CHILD: &str = "LSM_DESCRIPTOR_PARENT_DEATH_TEST";
+        if let Some(root) = std::env::var_os(CHILD) {
+            let root = std::path::PathBuf::from(root);
+            let shell = benign_elf("sh");
+            let args = vec![
+                "sfdisk".to_owned(),
+                "-c".to_owned(),
+                "( sleep 2; printf continued > \"$2\" ) & printf started > \"$1\"; wait".to_owned(),
+                "test".to_owned(),
+                root.join("started").to_string_lossy().into_owned(),
+                root.join("continued").to_string_lossy().into_owned(),
+            ];
+            let _ = execute_descriptor_stage(
+                &shell,
+                PrivilegedProgram::Sfdisk,
+                &args,
+                "/usr/bin:/bin",
+                "C",
+                None,
+            );
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "lsm-descriptor-parent-death-{}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+        let mut manager = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("privileged_exec::tests::descriptor_child_stops_when_its_manager_crashes")
+            .env(CHILD, &root)
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !root.join("started").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            root.join("started").exists(),
+            "descriptor child never started"
+        );
+        manager.kill().unwrap();
+        manager.wait().unwrap();
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(
+            !root.join("continued").exists(),
+            "descriptor child survived manager crash"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

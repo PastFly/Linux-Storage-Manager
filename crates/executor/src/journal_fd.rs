@@ -867,14 +867,23 @@ impl JournalDir {
     }
 
     pub(crate) fn watch(&self) -> Result<DirectoryWatch, JournalStoreError> {
+        self.watch_with_ancestors(false)
+    }
+
+    pub(crate) fn watch_namespace(&self) -> Result<DirectoryWatch, JournalStoreError> {
+        self.watch_with_ancestors(true)
+    }
+
+    fn watch_with_ancestors(
+        &self,
+        include_ancestors: bool,
+    ) -> Result<DirectoryWatch, JournalStoreError> {
         let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
         if fd < 0 {
             return Err(failure(&self.path, io::Error::last_os_error()));
         }
         let file = unsafe { File::from_raw_fd(fd) };
-        let path =
-            CString::new(format!("/proc/self/fd/{}", self.file().as_raw_fd())).expect("numeric fd");
-        let mask = libc::IN_CREATE
+        let leaf_mask = libc::IN_CREATE
             | libc::IN_DELETE
             | libc::IN_MOVED_FROM
             | libc::IN_MOVED_TO
@@ -884,8 +893,21 @@ impl JournalDir {
             | libc::IN_DELETE_SELF
             | libc::IN_MOVE_SELF
             | libc::IN_UNMOUNT;
-        if unsafe { libc::inotify_add_watch(file.as_raw_fd(), path.as_ptr(), mask) } < 0 {
-            return Err(failure(&self.path, io::Error::last_os_error()));
+        let last = self.nodes.len() - 1;
+        for (index, node) in self.nodes.iter().enumerate() {
+            if index != last && !include_ancestors {
+                continue;
+            }
+            let path =
+                CString::new(format!("/proc/self/fd/{}", node.as_raw_fd())).expect("numeric fd");
+            let mask = if index == last {
+                leaf_mask
+            } else {
+                libc::IN_ATTRIB | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF | libc::IN_UNMOUNT
+            };
+            if unsafe { libc::inotify_add_watch(file.as_raw_fd(), path.as_ptr(), mask) } < 0 {
+                return Err(failure(&self.path, io::Error::last_os_error()));
+            }
         }
         Ok(DirectoryWatch {
             file,

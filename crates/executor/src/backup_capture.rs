@@ -230,6 +230,8 @@ pub struct PinnedMetadataBackups<'a> {
     root_override: Option<PathBuf>,
     directory: crate::journal_fd::JournalDir,
     watch: RefCell<crate::journal_fd::DirectoryWatch>,
+    recovery_directory: crate::journal_fd::JournalDir,
+    recovery_watch: RefCell<crate::journal_fd::DirectoryWatch>,
     leases: Vec<ArtifactReadLease>,
     recovery: Vec<RecoveryBackup>,
     invalidated: Cell<bool>,
@@ -299,9 +301,20 @@ impl PinnedMetadataBackups<'_> {
             }
         }
         self.directory.verify_namespace()?;
+        self.recovery_directory.verify_namespace()?;
         self.watch.borrow_mut().require_unchanged()?;
+        self.recovery_watch.borrow_mut().require_unchanged()?;
         Ok(())
     }
+}
+
+fn recovery_directory_for(root: &Path) -> Result<PathBuf, BackupCaptureError> {
+    let mut name = root
+        .file_name()
+        .ok_or_else(|| BackupCaptureError::UnsafeDirectory(root.to_path_buf()))?
+        .to_os_string();
+    name.push(".recovery");
+    Ok(root.with_file_name(name))
 }
 
 fn pin_backups_at_root<'a>(
@@ -309,10 +322,16 @@ fn pin_backups_at_root<'a>(
     receipt: &'a MetadataBackupReceipt,
     root_override: Option<&Path>,
 ) -> Result<PinnedMetadataBackups<'a>, BackupCaptureError> {
+    pin_backups_at_root_with_hook(manifest, receipt, root_override, || {})
+}
+
+fn pin_backups_at_root_with_hook<'a>(
+    manifest: &'a MetadataBackupManifest,
+    receipt: &'a MetadataBackupReceipt,
+    root_override: Option<&Path>,
+    after_watch: impl FnOnce(),
+) -> Result<PinnedMetadataBackups<'a>, BackupCaptureError> {
     if receipt.pinned_artifacts.len() != receipt.artifacts.len() || receipt.artifacts.is_empty() {
-        return Err(BackupCaptureError::LeaseMismatch);
-    }
-    if !revalidate_receipt_at_root(manifest, receipt, root_override)?.matches() {
         return Err(BackupCaptureError::LeaseMismatch);
     }
     let root = match root_override {
@@ -323,6 +342,15 @@ fn pin_backups_at_root<'a>(
         None => PathBuf::from(manifest.artifact_directory()),
     };
     let directory = crate::journal_fd::JournalDir::open(&root)?;
+    let watch = RefCell::new(directory.watch_namespace()?);
+    directory.verify_namespace()?;
+    after_watch();
+    if !revalidate_receipt_at_root(manifest, receipt, root_override)?.matches() {
+        return Err(BackupCaptureError::LeaseMismatch);
+    }
+    let recovery_root = recovery_directory_for(&root)?;
+    ensure_secure_directory(&recovery_root)?;
+    let recovery_directory = crate::journal_fd::JournalDir::open(&recovery_root)?;
     let mut leases = Vec::with_capacity(receipt.artifacts.len());
     for (file, artifact) in receipt.pinned_artifacts.iter().zip(&receipt.artifacts) {
         let metadata = file.metadata().map_err(|error| io_error(&root, error))?;
@@ -342,7 +370,7 @@ fn pin_backups_at_root<'a>(
         }
         leases.push(ArtifactReadLease(pinned));
     }
-    let mut recovery = Vec::with_capacity(receipt.artifacts.len());
+    let mut recovery_names = Vec::with_capacity(receipt.artifacts.len());
     for (original, artifact) in leases.iter().zip(&receipt.artifacts) {
         if artifact.size_bytes == 0 || artifact.size_bytes > MAX_BACKUP_ARTIFACT_BYTES {
             return Err(BackupCaptureError::LeaseMismatch);
@@ -360,16 +388,26 @@ fn pin_backups_at_root<'a>(
             .ok_or(BackupCaptureError::LeaseMismatch)?
             .to_os_string();
         name.push(".recovery");
-        let path = root.join(&name);
-        let file = match directory.open_file(&name) {
-            Ok(file) => file,
+        match recovery_directory.open_file(&name) {
+            Ok(_file) => {}
             Err(crate::JournalStoreError::Io { source, .. })
                 if source.kind() == io::ErrorKind::NotFound =>
             {
-                directory.write_staged_file(&name, &bytes)?
+                let _pin = recovery_directory.write_staged_file(&name, &bytes)?;
             }
             Err(error) => return Err(error.into()),
-        };
+        }
+        recovery_names.push(name);
+    }
+    recovery_directory.sync()?;
+    directory.verify_namespace()?;
+    recovery_directory.verify_namespace()?;
+    // Treat newly created copies as untrusted until this watch is installed.
+    let recovery_watch = RefCell::new(recovery_directory.watch_namespace()?);
+    let mut recovery = Vec::with_capacity(receipt.artifacts.len());
+    for (name, artifact) in recovery_names.iter().zip(&receipt.artifacts) {
+        let path = recovery_root.join(name);
+        let file = recovery_directory.open_file(name)?;
         let metadata = file.metadata().map_err(|error| io_error(&path, error))?;
         if !crate::journal_store::trusted_journal_file(&metadata)
             || (metadata.dev() == artifact.device_id && metadata.ino() == artifact.inode)
@@ -386,15 +424,14 @@ fn pin_backups_at_root<'a>(
             inode: metadata.ino(),
         });
     }
-    directory.sync()?;
-    directory.verify_namespace()?;
-    let watch = RefCell::new(directory.watch()?);
     let pin = PinnedMetadataBackups {
         manifest,
         receipt,
         root_override: root_override.map(Path::to_path_buf),
         directory,
         watch,
+        recovery_directory,
+        recovery_watch,
         leases,
         recovery,
         invalidated: Cell::new(false),
@@ -1118,6 +1155,40 @@ mod tests {
         drop(writer);
         drop(receipt);
         let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(recovery_directory_for(&root).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn backup_pin_refuses_a_preexisting_writable_mapping() {
+        let (_handoff, manifest, receipt, lock, root) = captured_direct_fixture("writable-map");
+        let path = root.join(
+            Path::new(&receipt.artifacts()[0].artifact_path)
+                .file_name()
+                .unwrap(),
+        );
+        let writer = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let size = writer.metadata().unwrap().len() as usize;
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                writer.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        drop(writer);
+        assert!(pin_backup_at_test_root(&manifest, &receipt, &root).is_err());
+        assert_eq!(unsafe { libc::munmap(mapping, size) }, 0);
+        drop(receipt);
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1130,7 +1201,8 @@ mod tests {
         let path = root.join(name);
         let expected = fs::read(&path).unwrap();
         let pin = pin_backup_at_test_root(&manifest, &receipt, &root).unwrap();
-        let recovery = root.join(format!("{}.recovery", name.to_string_lossy()));
+        let recovery_root = recovery_directory_for(&root).unwrap();
+        let recovery = recovery_root.join(format!("{}.recovery", name.to_string_lossy()));
         assert_eq!(fs::read(&recovery).unwrap(), expected);
         assert_ne!(
             fs::metadata(&path).unwrap().ino(),
@@ -1141,6 +1213,7 @@ mod tests {
         drop(pin);
         drop(receipt);
         assert_eq!(fs::read(recovery).unwrap(), expected);
+        let _ = fs::remove_dir_all(recovery_root);
         let _ = fs::remove_dir_all(lock.parent().unwrap());
         let _ = fs::remove_dir_all(root);
     }
@@ -1198,7 +1271,81 @@ mod tests {
         drop(pin);
         drop(receipt);
         let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(recovery_directory_for(&root).unwrap());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_copy_survives_unlink_then_process_crash() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::Stdio;
+        const CHILD: &str = "LSM_BACKUP_UNLINK_CRASH_CHILD";
+        if let Some(path) = std::env::var_os(CHILD) {
+            let root = PathBuf::from(path);
+            let (snapshot, capabilities) = direct_fixture();
+            let handoff = direct_handoff(&snapshot, &capabilities);
+            let manifest = crate::build_metadata_backup_manifest(&handoff).unwrap();
+            let lock = root.join("lock/storage.lock");
+            let backup_root = root.join("backup");
+            let mut session =
+                crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+            session.revalidate(&snapshot, &capabilities).unwrap();
+            let receipt = capture_with_runner(
+                &session,
+                &manifest,
+                Some(&backup_root),
+                &FakeRunner::new(b"durable backup"),
+            )
+            .unwrap();
+            let _pin = pin_backup_at_test_root(&manifest, &receipt, &backup_root).unwrap();
+            println!("PIN_READY");
+            std::io::stdout().flush().unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
+        let root = temp_path("unlink-crash");
+        fs::create_dir(&root).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("backup_capture::tests::recovery_copy_survives_unlink_then_process_crash")
+            .arg("--nocapture")
+            .env(CHILD, &root)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut output = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert_ne!(
+                output.read_line(&mut line).unwrap(),
+                0,
+                "child exited before pinning"
+            );
+            if line.contains("PIN_READY") {
+                break;
+            }
+        }
+        let backup_root = root.join("backup");
+        let primary = fs::read_dir(&backup_root)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let recovery_root = recovery_directory_for(&backup_root).unwrap();
+        let recovery = fs::read_dir(&recovery_root)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        fs::remove_file(primary).unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(fs::read(recovery).unwrap(), b"durable backup");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1221,7 +1368,37 @@ mod tests {
         drop(pin);
         drop(receipt);
         let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let _ = fs::remove_dir_all(recovery_directory_for(&root).unwrap());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn backup_pin_detects_transient_parent_directory_replacement() {
+        let (snapshot, capabilities) = direct_fixture();
+        let handoff = direct_handoff(&snapshot, &capabilities);
+        let manifest = crate::build_metadata_backup_manifest(&handoff).unwrap();
+        let root = temp_path("ancestor-rename");
+        fs::create_dir(&root).unwrap();
+        let lock = root.join("lock/storage.lock");
+        let backup_root = root.join("parent/backups");
+        let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let receipt = capture_with_runner(
+            &session,
+            &manifest,
+            Some(&backup_root),
+            &FakeRunner::new(b"backup"),
+        )
+        .unwrap();
+        let result = pin_backups_at_root_with_hook(&manifest, &receipt, Some(&backup_root), || {
+            fs::rename(root.join("parent"), root.join("moved")).unwrap();
+            fs::rename(root.join("moved"), root.join("parent")).unwrap();
+        });
+        assert!(result.is_err());
+        drop(result);
+        drop(receipt);
+        drop(session);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

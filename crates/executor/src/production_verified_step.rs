@@ -193,12 +193,26 @@ pub fn execute_verify_and_persist_production_step(
         }
     };
 
+    if let Err(error) = backups.validate_for_session(session) {
+        enter_recovery(
+            session,
+            "metadata backup changed during post-mutation verification",
+        )?;
+        return Err(ProductionDescriptorExecutionError::Backup(error).into());
+    }
     let durable_disposition = persist_privileged_durable_transition(
         session,
         chain.request,
         &process_receipt,
         Some(&verification_receipt),
     )?;
+    if let Err(error) = backups.validate_for_session(session) {
+        enter_recovery(
+            session,
+            "metadata backup changed at the durable verification boundary",
+        )?;
+        return Err(ProductionDescriptorExecutionError::Backup(error).into());
+    }
 
     let fresh_identity_digest = fresh_identity.manifest_digest.clone();
     Ok(ProductionVerifiedMutationStep {
