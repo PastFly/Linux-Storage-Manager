@@ -301,21 +301,25 @@ fn publication_rejects_record_filesystem_without_verity() {
     }
     assert_ne!(
         fs::read_link("/proc/self/ns/mnt").unwrap(),
-        fs::read_link("/proc/1/ns/mnt").unwrap(),
-        "the disposable mount must be in a separate mount namespace"
+        fs::read_link(format!("/proc/{}/ns/mnt", unsafe { libc::getppid() })).unwrap(),
+        "the disposable mount must be in a namespace separate from its parent"
     );
     let mountinfo = fs::read_to_string("/proc/self/mountinfo").unwrap();
-    let root_mount = mountinfo
+    let target_mount = mountinfo
         .lines()
         .find(|line| {
-            line.split_once(" - ")
-                .is_some_and(|(before, _)| before.split_whitespace().nth(4) == Some("/"))
+            line.split_once(" - ").is_some_and(|(before, _)| {
+                before.split_whitespace().nth(4) == Some(crate::BACKUP_DIRECTORY)
+            })
         })
         .unwrap();
-    let before = root_mount.split_once(" - ").unwrap().0;
+    let before = target_mount.split_once(" - ").unwrap().0;
     assert!(!before
         .split_whitespace()
-        .any(|field| field.starts_with("shared:")));
+        .any(|field| field.starts_with("shared:")
+            || field.starts_with("master:")
+            || field.starts_with("propagate_from:")
+            || field == "unbindable"));
 
     struct TmpfsMount {
         target: CString,
@@ -379,6 +383,25 @@ fn publication_rejects_record_filesystem_without_verity() {
         mount.unmount();
         fs::remove_dir(root).unwrap();
     });
+}
+
+#[test]
+fn publication_tmpfs_child_flag_cannot_bypass_namespace_check() {
+    if skip_supported() {
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "sealed_recovery_store::tests::publication_rejects_record_filesystem_without_verity",
+            "--nocapture",
+        ])
+        .env("LSM_TEST_SEALED_RECORD_TMPFS", "1")
+        .env("LSM_TEST_SEALED_RECORD_TMPFS_CHILD", "1")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("namespace separate from its parent"));
 }
 
 #[test]
