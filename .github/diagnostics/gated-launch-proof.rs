@@ -645,6 +645,111 @@ mod linux {
         use super::*;
         use std::io::Write;
 
+        // Red-phase helpers mirror the currently unbounded/lossy branches.
+        fn bounded_ready(reader: &mut File, _pidfd: RawFd, _timeout: Duration) -> io::Result<()> {
+            let mut byte = [0];
+            reader.read_exact(&mut byte)
+        }
+        fn bounded_stopped(pid: libc::pid_t, _pidfd: RawFd, _timeout: Duration) -> io::Result<()> {
+            let mut status = 0;
+            if unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) } == pid
+                && libc::WIFSTOPPED(status)
+            {
+                Ok(())
+            } else {
+                Err(error("child did not stop"))
+            }
+        }
+        fn combine_results(run: io::Result<()>, cleanup: io::Result<()>) -> io::Result<()> {
+            cleanup?;
+            run
+        }
+
+        #[test]
+        fn ready_wait_times_out_with_open_silent_pipe() {
+            let mut child = std::process::Command::new("/bin/sleep")
+                .arg("2")
+                .spawn()
+                .unwrap();
+            let child_fd = pidfd(child.id() as libc::pid_t).unwrap();
+            let (mut reader, writer) = pipe().unwrap();
+            let closer = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(600));
+                drop(writer);
+            });
+            let started = Instant::now();
+            let result = bounded_ready(
+                &mut reader,
+                child_fd.as_raw_fd(),
+                Duration::from_millis(100),
+            );
+            let elapsed = started.elapsed();
+            child.kill().unwrap();
+            child.wait().unwrap();
+            closer.join().unwrap();
+            assert!(result.is_err());
+            assert!(
+                elapsed < Duration::from_millis(400),
+                "READY blocked for {elapsed:?}"
+            );
+        }
+
+        #[test]
+        fn stopped_wait_times_out_and_does_not_reap_a_live_child() {
+            let mut child = std::process::Command::new("/bin/sleep")
+                .arg("1")
+                .spawn()
+                .unwrap();
+            let child_fd = pidfd(child.id() as libc::pid_t).unwrap();
+            let started = Instant::now();
+            let result = bounded_stopped(
+                child.id() as libc::pid_t,
+                child_fd.as_raw_fd(),
+                Duration::from_millis(100),
+            );
+            let elapsed = started.elapsed();
+            match child.try_wait() {
+                Ok(None) => {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                }
+                Ok(Some(_)) => {}
+                Err(error) if error.raw_os_error() == Some(libc::ECHILD) => {}
+                Err(error) => panic!("unexpected child state: {error}"),
+            }
+            assert!(result.is_err());
+            assert!(
+                elapsed < Duration::from_millis(400),
+                "WUNTRACED blocked for {elapsed:?}"
+            );
+        }
+
+        #[test]
+        fn stopped_wait_does_not_reap_early_exited_child() {
+            let mut child = std::process::Command::new("/bin/true").spawn().unwrap();
+            let child_fd = pidfd(child.id() as libc::pid_t).unwrap();
+            assert!(bounded_stopped(
+                child.id() as libc::pid_t,
+                child_fd.as_raw_fd(),
+                Duration::from_secs(2)
+            )
+            .is_err());
+            assert!(
+                child.wait().is_ok(),
+                "early exit must remain available to the sole reaper"
+            );
+        }
+
+        #[test]
+        fn run_and_cleanup_failures_are_both_reported() {
+            let result = combine_results(Err(error("run-failure")), Err(error("cleanup-failure")));
+            let message = result.unwrap_err().to_string();
+            assert!(
+                message.contains("run-failure") && message.contains("cleanup-failure"),
+                "{message}"
+            );
+        }
+
         #[test]
         fn both_stop_failures_are_reported_without_blocking_on_live_child() {
             let mut child = std::process::Command::new("/bin/sleep")
