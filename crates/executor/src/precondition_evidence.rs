@@ -171,6 +171,8 @@ fn build_pre_mutation_evidence_inner(
     if backup_revalidation.handoff_id() != handoff.handoff_id()
         || backup_revalidation.plan_id() != handoff.plan().plan_id()
         || backup_revalidation.target_manifest_digest() != handoff.target_identity().manifest_digest
+        || backup_revalidation.session_id() != session.session_id()
+        || backup_revalidation.journal_id() != session.journal().journal_id.as_str()
     {
         return Err(PreMutationEvidenceError::BackupBindingMismatch);
     }
@@ -614,6 +616,7 @@ mod tests {
         let locked = session.revalidate(&snapshot, &capabilities).unwrap();
         assert_eq!(locked.status, crate::LockedRevalidationStatus::Revalidated);
         let backup = crate::backup_capture::test_backup_receipt_revalidation(
+            &session,
             handoff.handoff_id(),
             handoff.plan().plan_id(),
             &handoff.target_identity().manifest_digest,
@@ -633,6 +636,33 @@ mod tests {
     }
 
     #[test]
+    fn backup_receipt_from_previous_session_cannot_authorize_a_new_attempt() {
+        let (snapshot, capabilities) = fixture("clean");
+        let handoff = handoff(&snapshot, &capabilities);
+        let lock = test_path("stale-backup-session").join("storage.lock");
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+        let mut first = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        first.revalidate(&snapshot, &capabilities).unwrap();
+        let backup = crate::backup_capture::test_backup_receipt_revalidation(
+            &first,
+            handoff.handoff_id(),
+            handoff.plan().plan_id(),
+            &handoff.target_identity().manifest_digest,
+            true,
+            Vec::new(),
+        );
+        drop(first);
+        let mut second = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
+        second.revalidate(&snapshot, &capabilities).unwrap();
+        assert!(matches!(
+            build_pre_mutation_evidence(&second, &snapshot, &capabilities, &backup),
+            Err(PreMutationEvidenceError::BackupBindingMismatch)
+        ));
+        drop(second);
+        let _ = fs::remove_dir_all(lock.parent().unwrap());
+    }
+
+    #[test]
     fn failed_backup_evidence_blocks_bundle() {
         let (snapshot, capabilities) = fixture("clean");
         let handoff = handoff(&snapshot, &capabilities);
@@ -641,6 +671,7 @@ mod tests {
         let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
         session.revalidate(&snapshot, &capabilities).unwrap();
         let backup = crate::backup_capture::test_backup_receipt_revalidation(
+            &session,
             handoff.handoff_id(),
             handoff.plan().plan_id(),
             &handoff.target_identity().manifest_digest,
@@ -669,6 +700,7 @@ mod tests {
         let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
         session.revalidate(&snapshot, &capabilities).unwrap();
         let backup = crate::backup_capture::test_backup_receipt_revalidation(
+            &session,
             handoff.handoff_id(),
             handoff.plan().plan_id(),
             &handoff.target_identity().manifest_digest,
@@ -700,6 +732,7 @@ mod tests {
         let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
         session.revalidate(&snapshot, &capabilities).unwrap();
         let backup = crate::backup_capture::test_backup_receipt_revalidation(
+            &session,
             handoff.handoff_id(),
             handoff.plan().plan_id(),
             &handoff.target_identity().manifest_digest,
@@ -782,6 +815,7 @@ mod tests {
         let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
         session.revalidate(&snapshot, &capabilities).unwrap();
         let backup = crate::backup_capture::test_backup_receipt_revalidation(
+            &session,
             handoff.handoff_id(),
             handoff.plan().plan_id(),
             &handoff.target_identity().manifest_digest,
@@ -819,6 +853,7 @@ mod tests {
         let mut session = crate::LockedExecutionSession::begin_at_path(&handoff, &lock).unwrap();
         session.revalidate(&snapshot, &capabilities).unwrap();
         let backup = crate::backup_capture::test_backup_receipt_revalidation(
+            &session,
             handoff.handoff_id(),
             handoff.plan().plan_id(),
             &handoff.target_identity().manifest_digest,

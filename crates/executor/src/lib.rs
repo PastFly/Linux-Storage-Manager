@@ -13,6 +13,7 @@ mod disposable_swap;
 mod disposable_verify;
 mod execution_intent;
 mod filesystem_health;
+mod journal_fd;
 mod journal_store;
 mod locked_session;
 mod native_operation;
@@ -31,6 +32,8 @@ mod privileged_result;
 mod privileged_spawn;
 mod privileged_start;
 mod privileged_tools;
+mod reconciliation;
+pub use reconciliation::{reconcile_abandoned_prewrite, ReconciliationError};
 mod privileged_verify;
 mod production_activation;
 mod production_chained_descriptor_exec;
@@ -121,8 +124,9 @@ pub use backup_capture::{
     revalidate_metadata_backup_receipt_at_disposable_root,
 };
 pub use backup_manifest::{
-    build_metadata_backup_manifest, BackupCommandSpec, BackupExpectedIdentity, BackupManifestError,
-    MetadataBackupKind, MetadataBackupManifest, MetadataBackupRequirement, BACKUP_DIRECTORY,
+    build_metadata_backup_manifest, build_metadata_backup_manifest_for_session, BackupCommandSpec,
+    BackupExpectedIdentity, BackupManifestError, MetadataBackupKind, MetadataBackupManifest,
+    MetadataBackupRequirement, BACKUP_DIRECTORY,
 };
 pub use disposable_argv::{
     compile_disposable_lvm_growth_commands, DisposableArgvError, DisposableCommandPlan,
@@ -164,7 +168,10 @@ pub use execution_intent::{
 #[cfg(feature = "disposable-loop-harness")]
 pub use filesystem_health::execute_explicit_filesystem_health_check;
 pub use filesystem_health::{ExplicitFilesystemHealthError, ExplicitFilesystemHealthReceipt};
-pub use journal_store::{DurableJournalStore, JournalStoreError};
+pub use journal_store::{
+    DurableJournalStore, JournalFileIdentity, JournalInspection, JournalStoreError,
+    UnclassifiedJournalEvidence,
+};
 pub use locked_session::{
     LockedExecutionSession, LockedRevalidation, LockedRevalidationStatus, LockedSessionError,
 };

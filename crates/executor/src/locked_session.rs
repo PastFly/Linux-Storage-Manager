@@ -145,10 +145,14 @@ impl<'a> LockedExecutionSession<'a> {
                 .fresh_digest
                 .as_deref()
                 .unwrap_or(self.handoff.target_identity().manifest_digest.as_str());
-            self.journal.apply(JournalTransition::IdentityRevalidated {
+            let mut next = self.journal.clone();
+            next.apply(JournalTransition::IdentityRevalidated {
                 fresh_manifest_digest: fresh_digest,
             })?;
-            self.persist_journal_if_configured()?;
+            if let Some(store) = self.journal_store {
+                store.persist_if_matches(&self.journal, &next)?;
+            }
+            self.journal = next;
             LockedRevalidationStatus::Revalidated
         } else {
             LockedRevalidationStatus::Blocked
@@ -172,29 +176,54 @@ impl<'a> LockedExecutionSession<'a> {
         // Old journal records do not contain a complete resource identity. While
         // holding the host-wide lock, conservatively block all writes if any
         // previous operation may have crossed a mutation boundary.
-        if let Some(store) = journal_store {
+        let history = if let Some(store) = journal_store {
             store.prepare_directory()?;
             if let Some(path) = store.unclassified_runtime_evidence()?.into_iter().next() {
                 return Err(LockedSessionError::UnclassifiedRuntimeJournal(path));
             }
-            if let Some(previous) = store
-                .unfinished()?
-                .into_iter()
-                .find(|journal| journal.mutation_may_have_started)
-            {
+            let history = store.all()?;
+            if let Some(previous) = history.iter().find(|journal| {
+                journal.mutation_may_have_started
+                    && (journal.phase != JournalPhase::Completed
+                        || journal.plan_id == handoff.plan().plan_id())
+            }) {
                 return Err(LockedSessionError::UnfinishedMutation {
-                    journal_id: previous.journal_id,
-                    target: previous.target,
+                    journal_id: previous.journal_id.clone(),
+                    target: previous.target.clone(),
                     phase: previous.phase,
                 });
             }
-        }
+            Some(history)
+        } else {
+            None
+        };
 
         let mut journal = OperationJournal::new(handoff.guard());
+        if let Some(history) = &history {
+            journal.journal_id = next_attempt_id(history, &journal)?;
+        }
         journal.apply(JournalTransition::HostLockAcquired)?;
         debug_assert_eq!(journal.phase, JournalPhase::HostLockHeld);
         if let Some(store) = journal_store {
+            if history.as_ref() != Some(&store.all()?) {
+                return Err(JournalStoreError::ChangedDuringInspection.into());
+            }
+            if let Some(path) = store.unclassified_runtime_evidence()?.into_iter().next() {
+                return Err(LockedSessionError::UnclassifiedRuntimeJournal(path));
+            }
             store.persist_new(&journal)?;
+            // A concurrently created record must not be overlooked between the
+            // last inventory and publication. Leave our new record as evidence
+            // if the post-publication inventory differs from the expected set.
+            let mut expected = history.clone().unwrap_or_default();
+            expected.push(journal.clone());
+            expected.sort_by(|a, b| a.journal_id.cmp(&b.journal_id));
+            if store.all()? != expected {
+                return Err(JournalStoreError::ChangedDuringInspection.into());
+            }
+            if let Some(path) = store.unclassified_runtime_evidence()?.into_iter().next() {
+                return Err(LockedSessionError::UnclassifiedRuntimeJournal(path));
+            }
         }
 
         let session_id = build_session_id(handoff, lock.path());
@@ -209,20 +238,31 @@ impl<'a> LockedExecutionSession<'a> {
         })
     }
 
-    fn persist_journal_if_configured(&self) -> Result<(), LockedSessionError> {
-        if let Some(store) = self.journal_store {
-            store.persist(&self.journal)?;
-        }
-        Ok(())
-    }
-
     pub(crate) fn require_current_durable_journal(&self) -> Result<(), LockedSessionError> {
         let store = self
             .journal_store
             .ok_or(LockedSessionError::DurableJournalRequired)?;
-        let persisted = store.load(&self.journal.journal_id)?;
-        if persisted != self.journal {
+        let all = store.all()?;
+        let persisted = all
+            .iter()
+            .find(|journal| journal.journal_id == self.journal.journal_id);
+        if persisted != Some(&self.journal) {
             return Err(LockedSessionError::DurableJournalMismatch);
+        }
+        if let Some(previous) = all.iter().find(|journal| {
+            journal.journal_id != self.journal.journal_id
+                && journal.mutation_may_have_started
+                && (journal.phase != JournalPhase::Completed
+                    || journal.plan_id == self.journal.plan_id)
+        }) {
+            return Err(LockedSessionError::UnfinishedMutation {
+                journal_id: previous.journal_id.clone(),
+                target: previous.target.clone(),
+                phase: previous.phase,
+            });
+        }
+        if let Some(path) = store.unclassified_runtime_evidence()?.into_iter().next() {
+            return Err(LockedSessionError::UnclassifiedRuntimeJournal(path));
         }
         Ok(())
     }
@@ -235,7 +275,7 @@ impl<'a> LockedExecutionSession<'a> {
 
         let mut next = self.journal.clone();
         next.apply(JournalTransition::PreconditionsVerified)?;
-        store.persist(&next)?;
+        store.persist_if_matches(&self.journal, &next)?;
         self.journal = next;
         Ok(())
     }
@@ -255,7 +295,7 @@ impl<'a> LockedExecutionSession<'a> {
             approved_plan_id,
             approval,
         })?;
-        store.persist(&next)?;
+        store.persist_if_matches(&self.journal, &next)?;
         self.journal = next;
         Ok(())
     }
@@ -271,7 +311,7 @@ impl<'a> LockedExecutionSession<'a> {
 
         let mut next = self.journal.clone();
         next.apply(JournalTransition::ExecutionStarted { binding })?;
-        store.persist(&next)?;
+        store.persist_if_matches(&self.journal, &next)?;
         self.journal = next;
         Ok(())
     }
@@ -284,7 +324,7 @@ impl<'a> LockedExecutionSession<'a> {
 
         let mut next = self.journal.clone();
         next.apply(JournalTransition::VerificationStarted)?;
-        store.persist(&next)?;
+        store.persist_if_matches(&self.journal, &next)?;
         self.journal = next;
         Ok(())
     }
@@ -306,7 +346,7 @@ impl<'a> LockedExecutionSession<'a> {
             next_step_id,
             fresh_identity_digest,
         })?;
-        store.persist(&next)?;
+        store.persist_if_matches(&self.journal, &next)?;
         self.journal = next;
         Ok(())
     }
@@ -326,7 +366,7 @@ impl<'a> LockedExecutionSession<'a> {
             completed_step_id,
             fresh_identity_digest,
         })?;
-        store.persist(&next)?;
+        store.persist_if_matches(&self.journal, &next)?;
         self.journal = next;
         Ok(())
     }
@@ -339,7 +379,7 @@ impl<'a> LockedExecutionSession<'a> {
 
         let mut next = self.journal.clone();
         next.apply(JournalTransition::Completed)?;
-        store.persist(&next)?;
+        store.persist_if_matches(&self.journal, &next)?;
         self.journal = next;
         Ok(())
     }
@@ -352,7 +392,7 @@ impl<'a> LockedExecutionSession<'a> {
 
         let mut next = self.journal.clone();
         next.apply(JournalTransition::Interrupted { reason })?;
-        store.persist(&next)?;
+        store.persist_if_matches(&self.journal, &next)?;
         self.journal = next;
         Ok(())
     }
@@ -367,7 +407,7 @@ impl<'a> LockedExecutionSession<'a> {
     }
 
     #[cfg(test)]
-    fn begin_durable_at_paths(
+    pub(crate) fn begin_durable_at_paths(
         handoff: &'a FrozenExecutionHandoff,
         lock_path: &Path,
         journal_store: &'a DurableJournalStore,
@@ -379,6 +419,58 @@ impl<'a> LockedExecutionSession<'a> {
             Some(journal_store),
         )
     }
+}
+
+fn next_attempt_id(
+    history: &[OperationJournal],
+    proposed: &OperationJournal,
+) -> Result<String, JournalStoreError> {
+    // Called only while the host lock is held. Preserve every prior attempt and
+    // permit a new ID only when the matching previous attempt was safely aborted.
+    let mut related = history
+        .iter()
+        .filter(|journal| {
+            journal.plan_id == proposed.plan_id
+                && journal.target == proposed.target
+                && journal.baseline_manifest_digest == proposed.baseline_manifest_digest
+        })
+        .map(|journal| journal.journal_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    for attempt in 0_u64..1024 {
+        let candidate = if attempt == 0 {
+            proposed.journal_id.clone()
+        } else {
+            let mut hash = Sha256::new();
+            hash.update(b"linux-storage-manager:journal-attempt:v1\0");
+            hash.update(proposed.journal_id.as_bytes());
+            hash.update(attempt.to_le_bytes());
+            format!("{:x}", hash.finalize())
+        };
+        match history
+            .iter()
+            .find(|journal| journal.journal_id == candidate)
+        {
+            None if related.is_empty() => return Ok(candidate),
+            None => {
+                return Err(JournalStoreError::InvalidRecord(
+                    "journal attempt history has a gap or unrecognized entry".to_owned(),
+                ))
+            }
+            Some(previous)
+                if previous.phase == JournalPhase::Aborted
+                    && !previous.mutation_may_have_started
+                    && previous.plan_id == proposed.plan_id
+                    && previous.target == proposed.target
+                    && previous.baseline_manifest_digest == proposed.baseline_manifest_digest =>
+            {
+                related.remove(&candidate);
+            }
+            Some(_) => return Err(JournalStoreError::AlreadyExists(candidate)),
+        }
+    }
+    Err(JournalStoreError::InvalidRecord(
+        "too many retained attempts for this plan".to_owned(),
+    ))
 }
 
 fn build_session_id(handoff: &FrozenExecutionHandoff, lock_path: &Path) -> String {
@@ -432,10 +524,12 @@ mod tests {
 
     fn journal_root(name: &str) -> PathBuf {
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "linux-storage-manager-session-journal-test-{}-{unique}-{name}",
-            std::process::id()
-        ))
+        std::env::temp_dir()
+            .join(format!(
+                "linux-storage-manager-session-journal-test-{}-{unique}-{name}",
+                std::process::id()
+            ))
+            .join("journal")
     }
 
     fn fixture() -> (HostSnapshot, HostCapabilities) {
@@ -530,6 +624,7 @@ mod tests {
         backup_blockers: Vec<String>,
     ) -> crate::PreMutationEvidenceBundle {
         let backup = crate::backup_capture::test_backup_receipt_revalidation(
+            session,
             handoff.handoff_id(),
             handoff.plan().plan_id(),
             &handoff.target_identity().manifest_digest,
@@ -736,7 +831,7 @@ mod tests {
         let handoff = build_frozen_execution_handoff(&snapshot, &capabilities, &plan).unwrap();
         let path = lock_path();
         let root = journal_root("untrusted-health-tool");
-        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
         let marker = root.join("executed");
         let tool = root.join("e2fsck");
         std::fs::write(
@@ -896,6 +991,104 @@ mod tests {
             persisted_before
         );
 
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn new_unclassified_journal_after_session_start_blocks_further_progress() {
+        use std::os::unix::fs::PermissionsExt;
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("new-foreign-evidence-after-start");
+        let store = DurableJournalStore::at(&root);
+        let session =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let foreign = root.join(format!("{}.json", "d".repeat(64)));
+        std::fs::write(&foreign, b"unclassified evidence").unwrap();
+        std::fs::set_permissions(&foreign, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(session.require_current_durable_journal().is_err());
+        assert_eq!(std::fs::read(&foreign).unwrap(), b"unclassified evidence");
+        assert!(!session.journal().mutation_may_have_started);
+        drop(session);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reconciled_prewrite_plan_gets_a_new_attempt_without_overwriting_history() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("reconciled-new-attempt");
+        let store = DurableJournalStore::at(&root);
+        let mut first =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        first.revalidate(&snapshot, &capabilities).unwrap();
+        let first_backup = crate::build_metadata_backup_manifest_for_session(&first).unwrap();
+        let mut abandoned = first.journal().clone();
+        drop(first);
+        abandoned
+            .apply(JournalTransition::Abort {
+                reason: "confirmed abandoned before mutation",
+            })
+            .unwrap();
+        store.test_overwrite(&abandoned).unwrap();
+        let mut second =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        assert_ne!(second.journal().journal_id, abandoned.journal_id);
+        assert_eq!(store.load(&abandoned.journal_id).unwrap(), abandoned);
+        assert!(!second.journal().mutation_may_have_started);
+        second.revalidate(&snapshot, &capabilities).unwrap();
+        let second_backup = crate::build_metadata_backup_manifest_for_session(&second).unwrap();
+        assert_ne!(
+            first_backup.artifact_directory(),
+            second_backup.artifact_directory()
+        );
+        drop(second);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_earlier_attempt_blocks_new_session() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let path = lock_path();
+        let root = journal_root("missing-earlier-attempt");
+        let store = DurableJournalStore::at(&root);
+        let first =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let mut first_journal = first.journal().clone();
+        drop(first);
+        first_journal
+            .apply(JournalTransition::Abort {
+                reason: "confirmed abandoned",
+            })
+            .unwrap();
+        store.test_overwrite(&first_journal).unwrap();
+        let second =
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store).unwrap();
+        let mut second_journal = second.journal().clone();
+        drop(second);
+        second_journal
+            .apply(JournalTransition::Abort {
+                reason: "confirmed abandoned",
+            })
+            .unwrap();
+        store.test_overwrite(&second_journal).unwrap();
+        std::fs::remove_file(root.join(format!("{}.json", first_journal.journal_id))).unwrap();
+        assert!(matches!(
+            LockedExecutionSession::begin_durable_at_paths(&handoff, &path, &store),
+            Err(LockedSessionError::DurableJournal(
+                JournalStoreError::InvalidRecord(_)
+            ))
+        ));
+        assert_eq!(
+            store.load(&second_journal.journal_id).unwrap(),
+            second_journal
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1641,13 +1834,16 @@ mod tests {
         )
         .unwrap();
         let approved = session.journal().clone();
-        store.persist(&preconditions).unwrap();
+        store.test_overwrite(&preconditions).unwrap();
 
         let result = crate::freeze_execution_intent(&session, &approval);
 
         assert!(matches!(
             result,
             Err(crate::ExecutionIntentError::DurableJournalMismatch)
+                | Err(crate::ExecutionIntentError::Session(
+                    LockedSessionError::DurableJournal(JournalStoreError::InvalidRecord(_))
+                ))
         ));
         assert_eq!(session.journal(), &approved);
         assert_eq!(store.load(&approved.journal_id).unwrap(), preconditions);
@@ -1989,7 +2185,7 @@ mod tests {
         let stale = session.journal().clone();
         let (evidence, verified) =
             verified_preconditions(&mut session, &handoff, &snapshot, &capabilities);
-        store.persist(&stale).unwrap();
+        store.test_overwrite(&stale).unwrap();
 
         let result = crate::approve_exact_plan(
             &mut session,
@@ -2003,6 +2199,7 @@ mod tests {
             result,
             Err(crate::ExactPlanApprovalError::Session(
                 LockedSessionError::DurableJournalMismatch
+                    | LockedSessionError::DurableJournal(JournalStoreError::InvalidRecord(_))
             ))
         ));
         assert_eq!(session.journal().phase, JournalPhase::PreconditionsVerified);
@@ -2554,7 +2751,7 @@ mod tests {
         stale
             .apply(lsm_planner::JournalTransition::HostLockAcquired)
             .unwrap();
-        store.persist(&stale).unwrap();
+        store.test_overwrite(&stale).unwrap();
 
         let result = crate::verify_preconditions(&mut session, &evidence);
 
@@ -2562,6 +2759,7 @@ mod tests {
             result,
             Err(crate::PreconditionsVerificationError::Session(
                 LockedSessionError::DurableJournalMismatch
+                    | LockedSessionError::DurableJournal(JournalStoreError::InvalidRecord(_))
             ))
         ));
         assert_eq!(session.journal().phase, JournalPhase::IdentityRevalidated);

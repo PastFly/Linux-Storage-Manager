@@ -6,7 +6,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use lsm_executor::{
-    approve_exact_plan, build_metadata_backup_manifest, build_pre_mutation_evidence,
+    approve_exact_plan, build_pre_mutation_evidence,
     build_pre_mutation_evidence_with_filesystem_health, capture_disposable_loop_ownership,
     capture_metadata_backups_at_disposable_root, compile_native_manifest,
     execute_explicit_filesystem_health_check, execute_verify_and_persist_production_chained_step,
@@ -164,7 +164,7 @@ fn run() -> HarnessResult<()> {
         )));
     }
 
-    let backup_manifest = build_metadata_backup_manifest(&handoff)?;
+    let backup_manifest = lsm_executor::build_metadata_backup_manifest_for_session(&session)?;
     let backup_receipt =
         capture_metadata_backups_at_disposable_root(&session, &backup_manifest, &args.backup_root)?;
     let backup_revalidation = revalidate_metadata_backup_receipt_at_disposable_root(
@@ -306,6 +306,8 @@ fn run() -> HarnessResult<()> {
 
     drop(session);
 
+    let backup_root = args.backup_root.canonicalize()?;
+    remove_owned_directory(&backup_root.join(&journal_id), &backup_root)?;
     remove_owned_directory(&args.backup_root, &owned_root)?;
     remove_owned_directory(&args.journal_root, &owned_root)?;
 

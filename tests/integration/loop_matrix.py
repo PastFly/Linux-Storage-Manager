@@ -780,14 +780,31 @@ def check_preview(plan: Any, expected_status: str) -> None:
                 raise SafetyError("inconsistent partition preview size arithmetic")
 
 
-def remove_owned_evidence_directory(resources: Resources, path: Path) -> None:
+def remove_owned_evidence_directory(resources: Resources, path: Path,
+                                    allow_attempt_directories: bool = False) -> None:
     if path.parent.resolve(strict=True) != resources.root or path.is_symlink() or not path.is_dir():
         raise SafetyError(f"refusing cleanup of unowned evidence directory: {path}")
+    files: list[Path] = []
+    attempts: list[Path] = []
     for entry in path.iterdir():
         info = entry.lstat()
-        if entry.is_symlink() or not stat.S_ISREG(info.st_mode):
+        if entry.is_symlink():
             raise SafetyError(f"unexpected non-file in evidence directory: {entry}")
+        if stat.S_ISREG(info.st_mode):
+            files.append(entry)
+        elif allow_attempt_directories and stat.S_ISDIR(info.st_mode) and re.fullmatch(r"[0-9a-f]{64}", entry.name):
+            for artifact in entry.iterdir():
+                artifact_info = artifact.lstat()
+                if artifact.is_symlink() or not stat.S_ISREG(artifact_info.st_mode):
+                    raise SafetyError(f"unexpected artifact in attempt directory: {artifact}")
+                files.append(artifact)
+            attempts.append(entry)
+        else:
+            raise SafetyError(f"unexpected non-file in evidence directory: {entry}")
+    for entry in files:
         entry.unlink()
+    for attempt in attempts:
+        attempt.rmdir()
     path.rmdir()
 
 
@@ -869,7 +886,7 @@ def exercise_disposable_pre_spawn_failure(resources: Resources, binary: Runner, 
     if journals[0].read_bytes() != journal_bytes:
         raise SafetyError("blocked replay changed the retained recovery journal")
 
-    remove_owned_evidence_directory(resources, backup_root)
+    remove_owned_evidence_directory(resources, backup_root, allow_attempt_directories=True)
     remove_owned_evidence_directory(resources, journal_root)
     resources.uncertain = False
     print("DISPOSABLE_RECOVERY_REQUIRED_OK=pre-spawn-failure-no-storage-change", flush=True)
@@ -1047,7 +1064,7 @@ def exercise_partition_post_write_recovery(
     if (target / "readonly-sentinel").read_bytes() != sentinel:
         raise SafetyError("post-write reconciliation changed filesystem sentinel")
 
-    remove_owned_evidence_directory(resources, backup_root)
+    remove_owned_evidence_directory(resources, backup_root, allow_attempt_directories=True)
     remove_owned_evidence_directory(resources, journal_root)
     resources.uncertain = False
     print(
@@ -1354,7 +1371,7 @@ def exercise_pv_post_write_recovery(
     if journals[0].read_bytes() != journal_bytes:
         raise SafetyError("blocked PV post-write replay changed retained recovery evidence")
 
-    remove_owned_evidence_directory(resources, backup_root)
+    remove_owned_evidence_directory(resources, backup_root, allow_attempt_directories=True)
     remove_owned_evidence_directory(resources, journal_root)
     resources.uncertain = False
     print("PV_RECOVERY_REQUIRED_OK=post-pvresize-pre-lvextend", flush=True)
@@ -1588,7 +1605,7 @@ def exercise_lv_post_write_recovery(
     if journals[0].read_bytes() != journal_bytes:
         raise SafetyError("blocked LV post-write replay changed retained recovery evidence")
 
-    remove_owned_evidence_directory(resources, backup_root)
+    remove_owned_evidence_directory(resources, backup_root, allow_attempt_directories=True)
     remove_owned_evidence_directory(resources, journal_root)
     resources.uncertain = False
     print("LV_RECOVERY_REQUIRED_OK=post-lvextend-pre-filesystem-grow", flush=True)
@@ -1719,7 +1736,7 @@ def exercise_filesystem_post_write_recovery(
     if journals[0].read_bytes() != journal_bytes:
         raise SafetyError("blocked filesystem post-write replay changed retained recovery evidence")
 
-    remove_owned_evidence_directory(resources, backup_root)
+    remove_owned_evidence_directory(resources, backup_root, allow_attempt_directories=True)
     remove_owned_evidence_directory(resources, journal_root)
     resources.uncertain = False
     print(

@@ -85,6 +85,47 @@ class RunnerDiagnosticsTests(unittest.TestCase):
         self.assertIn("diagnostic stderr", message)
 
 
+class EvidenceCleanupTests(unittest.TestCase):
+    def test_attempt_backup_directory_is_removed_only_when_explicitly_allowed(self):
+        with tempfile.TemporaryDirectory(prefix="lsm-evidence-unit-") as root:
+            root = Path(root).resolve()
+            backup = root / "backup"
+            attempt = backup / ("a" * 64)
+            attempt.mkdir(parents=True)
+            (attempt / "metadata").write_bytes(b"test backup")
+            resources = M.Resources(root, FakeRunner())
+            with self.assertRaises(M.SafetyError):
+                M.remove_owned_evidence_directory(resources, backup)
+            self.assertTrue((attempt / "metadata").exists())
+            M.remove_owned_evidence_directory(resources, backup, allow_attempt_directories=True)
+            self.assertFalse(backup.exists())
+
+    def test_attempt_cleanup_rejects_symlinks_and_unexpected_directories(self):
+        with tempfile.TemporaryDirectory(prefix="lsm-evidence-unit-") as root:
+            root = Path(root).resolve()
+            backup = root / "backup"
+            backup.mkdir()
+            outsider = root / "outside"
+            outsider.mkdir()
+            (outsider / "keep").write_bytes(b"preserve")
+            (backup / ("b" * 64)).symlink_to(outsider, target_is_directory=True)
+            resources = M.Resources(root, FakeRunner())
+            with self.assertRaises(M.SafetyError):
+                M.remove_owned_evidence_directory(resources, backup, allow_attempt_directories=True)
+            self.assertTrue((outsider / "keep").exists())
+
+    def test_attempt_cleanup_rejects_unexpected_directory_name(self):
+        with tempfile.TemporaryDirectory(prefix="lsm-evidence-unit-") as root:
+            root = Path(root).resolve()
+            backup = root / "backup"
+            unexpected = backup / "not-an-attempt"
+            unexpected.mkdir(parents=True)
+            resources = M.Resources(root, FakeRunner())
+            with self.assertRaises(M.SafetyError):
+                M.remove_owned_evidence_directory(resources, backup, allow_attempt_directories=True)
+            self.assertTrue(unexpected.exists())
+
+
 class CleanupTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="lsm-unit-")
