@@ -83,6 +83,10 @@ def run_case(manager, observer, root, case):
                 environment['LSM_TEST_LAUNCHER_PIDFD_FAIL'] = '1'
             if case == 'launcher-stopped-after-go':
                 environment['LSM_TEST_PAUSE_AFTER_GO'] = '1'
+            if case == 'launcher-no-numeric-manager-pidfd':
+                environment['LSM_TEST_DENY_MANAGER_PIDFD_OPEN'] = '1'
+            if case == 'manager-death-before-launcher-pin':
+                environment['LSM_TEST_STOP_BEFORE_MANAGER_PIDFD'] = '1'
             def attach_case():
                 # The diagnostic manager, observer and launcher inherit this
                 # disposable parent even if setup fails before reporting PIDs.
@@ -103,6 +107,20 @@ def run_case(manager, observer, root, case):
                 print('PASS:', case, flush=True)
                 return
             parts = line(child.stdout).split()
+            if case == 'manager-death-before-launcher-pin':
+                assert len(parts) == 3 and parts[0] == 'PIN-BARRIER', ('expected manager pin barrier', parts)
+                launcher_pid = int(parts[1])
+                group = pathlib.Path(parts[2])
+                assert group.parent == case_root and group.name.startswith('lsm-backup-')
+                fds.append(os.pidfd_open(launcher_pid))
+                child.kill()
+                child.wait(timeout=TIMEOUT)
+                signal.pidfd_send_signal(fds[0], signal.SIGCONT)
+                wait_dead(fds[0], 'launcher after manager died before pin')
+                wait_empty(group)
+                assert not backup.with_suffix('.worker').exists(), 'payload ran after manager death'
+                print('PASS:', case, flush=True)
+                return
             if case == 'launcher-pidfd-failure':
                 assert len(parts) == 3 and parts[0] == 'UNPINNED', ('expected pidfd fault barrier', parts)
                 launcher_pid = int(parts[1])
@@ -210,6 +228,9 @@ def run_case(manager, observer, root, case):
                 os.kill(child.pid, signal.SIGSTOP)
                 # Manager pidfd stays live; launcher must detect missed pings.
                 wait_dead(fds[3], 'launcher after manager stopped')
+            elif case == 'launcher-no-numeric-manager-pidfd':
+                child.kill()
+                child.wait(timeout=TIMEOUT)
             elif case == 'manager-death':
                 child.kill()
                 child.wait(timeout=TIMEOUT)
@@ -237,7 +258,7 @@ def run_case(manager, observer, root, case):
                 child.wait(timeout=TIMEOUT)
             # The launcher lives outside the worker cgroup. Kill the exact
             # pidfd even when the controller failed before ACTIVE.
-            launcher_index = 0 if case in ('launcher-failure-before-active', 'launcher-pidfd-failure') else (2 if case == 'observer-before-go' else 3)
+            launcher_index = 0 if case in ('launcher-failure-before-active', 'launcher-pidfd-failure', 'manager-death-before-launcher-pin') else (2 if case == 'observer-before-go' else 3)
             if len(fds) > launcher_index:
                 try:
                     signal.pidfd_send_signal(fds[launcher_index], signal.SIGKILL)
@@ -264,7 +285,7 @@ def main():
     root = pathlib.Path(sys.argv[3]).resolve(strict=True)
     assert root != pathlib.Path('/sys/fs/cgroup') and root.is_relative_to('/sys/fs/cgroup')
     assert os.environ.get('LSM_TEST_DISPOSABLE_CGROUP') == str(root), 'explicit disposable cgroup required'
-    cases = ('manager-death', 'observer-death', 'lease-break', 'observer-before-go', 'launcher-poll-failure', 'launcher-stopped', 'launcher-failure-before-active', 'manager-stopped', 'launcher-pidfd-failure', 'manager-auto-reap', 'launcher-stopped-after-go')
+    cases = ('manager-death', 'observer-death', 'lease-break', 'observer-before-go', 'launcher-poll-failure', 'launcher-stopped', 'launcher-failure-before-active', 'manager-stopped', 'launcher-pidfd-failure', 'manager-auto-reap', 'launcher-stopped-after-go', 'launcher-no-numeric-manager-pidfd', 'manager-death-before-launcher-pin')
     if len(sys.argv) == 5:
         assert sys.argv[4] in cases
         cases = (sys.argv[4],)

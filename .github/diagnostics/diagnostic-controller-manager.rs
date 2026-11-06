@@ -197,6 +197,15 @@ pub fn launcher(group_path: &Path, manager: &OsStr, raw: &OsStr, marker: &Path) 
         .filter(|&s| s >= 3)
         .ok_or_else(|| invalid("invalid channel"))?;
     let socket = unsafe { File::from_raw_fd(raw) };
+    // Disposable barriers identify attempts to reopen manager by numeric PID.
+    if std::env::var_os("LSM_TEST_STOP_BEFORE_MANAGER_PIDFD").as_deref() == Some(OsStr::new("1"))
+        && unsafe { libc::raise(libc::SIGSTOP) } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if std::env::var_os("LSM_TEST_DENY_MANAGER_PIDFD_OPEN").as_deref() == Some(OsStr::new("1")) {
+        return Err(invalid("numeric manager pidfd_open refused by test"));
+    }
     let manager_fd = pidfd(manager)?;
     let group = File::open(group_path)?;
     let m = group.metadata()?;
@@ -505,6 +514,35 @@ fn run_manager(
     let child = &mut managed.child;
     let launcher_fd = managed.pidfd.as_ref().unwrap();
     drop(launcher);
+    if std::env::var_os("LSM_TEST_STOP_BEFORE_MANAGER_PIDFD").as_deref() == Some(OsStr::new("1")) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            if unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    child.id() as libc::id_t,
+                    &mut info,
+                    libc::WSTOPPED | libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            } != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if unsafe { info.si_pid() } != 0 {
+                if info.si_code != libc::CLD_STOPPED {
+                    return Err(invalid("launcher exited before pidfd barrier"));
+                }
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(invalid("launcher pidfd barrier timed out"));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        println!("PIN-BARRIER {} {}", child.id(), path.display());
+        io::stdout().flush()?;
+    }
     // Diagnostic red case: the launcher is outside the worker cgroup and
     // must still be killed/reaped after a failure before registration.
     if std::env::var_os("LSM_TEST_FAIL_WITH_STOPPED_LAUNCHER").as_deref() == Some(OsStr::new("1")) {
