@@ -1,0 +1,33 @@
+name: Journal regression
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  journal-concurrency:
+    name: Journal concurrency tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Test sequential execution
+        run: cargo test --locked -p lsm-executor --lib -- --test-threads=1
+      - name: Test repeated parallel execution
+        run: |
+          for attempt in 1 2 3; do
+            echo "Parallel attempt ${attempt}"
+            cargo test --locked -p lsm-executor --lib -- --test-threads=16
+          done
