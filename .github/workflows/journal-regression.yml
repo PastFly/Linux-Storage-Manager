@@ -52,6 +52,8 @@ jobs:
           sudo python3 -I .github/diagnostics/test-gated-worker-module.py /tmp/lsm-observer-target/release/lsm-gated-module-harness /sys/fs/cgroup
       - name: Test recovery evidence format
         run: cargo test --locked -p lsm-executor --lib backup_recovery_record::tests
+      - name: Test journal recovery binding
+        run: cargo test --locked -p lsm-executor --lib journal_store::tests::journal_v2
       - name: Test recovery evidence storage
         run: |
           cargo test --locked -p lsm-executor --lib backup_recovery_storage::tests -- --test-threads=1
@@ -60,8 +62,6 @@ jobs:
           done
       - name: Test recovery copy collector
         run: cargo test --locked -p lsm-executor --lib backup_recovery_collector::tests
-      - name: Test journal recovery binding
-        run: cargo test --locked -p lsm-executor --lib journal_store::tests::journal_v2
       - name: Test v2 precondition attachment
         run: cargo test --locked -p lsm-executor --lib journal_store::tests::v2_
       - name: Test experimental journal binding model
