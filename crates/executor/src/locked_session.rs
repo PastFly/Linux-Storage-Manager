@@ -952,9 +952,17 @@ mod tests {
             crate::backup_recovery_storage::store(&record_root, &bad, bad.binding()).unwrap();
             let proof = crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &bad)
                 .unwrap();
+            let case_evidence = if bad.binding().session_id != session.session_id() {
+                let evidence = recovery_evidence(&session, &snapshot, &capabilities, &bad);
+                assert_eq!(evidence.backup_receipt_id(), bad.binding().receipt_id);
+                evidence
+            } else {
+                assert_ne!(evidence.backup_receipt_id(), bad.binding().receipt_id);
+                evidence.clone()
+            };
             assert!(crate::preconditions::verify_preconditions_with_recovery(
                 &mut session,
-                &evidence,
+                &case_evidence,
                 &proof
             )
             .is_err());
