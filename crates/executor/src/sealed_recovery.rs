@@ -60,11 +60,11 @@ pub(crate) struct SealedRecovery {
     _recovery_watch: DirectoryWatch,
 }
 
-fn same_inode(left: &Metadata, right: &Metadata) -> bool {
+pub(crate) fn same_inode(left: &Metadata, right: &Metadata) -> bool {
     (left.dev(), left.ino()) == (right.dev(), right.ino())
 }
 
-fn same_file_version(left: &Metadata, right: &Metadata) -> bool {
+pub(crate) fn same_file_version(left: &Metadata, right: &Metadata) -> bool {
     same_inode(left, right)
         && left.mode() == right.mode()
         && left.uid() == right.uid()
@@ -76,7 +76,7 @@ fn same_file_version(left: &Metadata, right: &Metadata) -> bool {
         && left.ctime_nsec() == right.ctime_nsec()
 }
 
-fn require_directory(candidate: &File, directory: &JournalDir) -> Result<(), SealError> {
+pub(crate) fn require_directory(candidate: &File, directory: &JournalDir) -> Result<(), SealError> {
     let flags = unsafe { libc::fcntl(candidate.as_raw_fd(), libc::F_GETFL) };
     if flags < 0 {
         return Err(io::Error::last_os_error().into());
@@ -91,7 +91,7 @@ fn require_directory(candidate: &File, directory: &JournalDir) -> Result<(), Sea
     Ok(())
 }
 
-fn bounded_names(directory: &JournalDir) -> Result<Vec<OsString>, SealError> {
+pub(crate) fn bounded_names(directory: &JournalDir) -> Result<Vec<OsString>, SealError> {
     let raw = unsafe {
         libc::openat(
             directory.file().as_raw_fd(),
@@ -183,7 +183,7 @@ fn bounded_names(directory: &JournalDir) -> Result<Vec<OsString>, SealError> {
 // JournalDir's inotify registration uses /proc/self/fd. Check that lookup is
 // actually procfs and resolves our pinned directories before using it. A
 // privileged actor changing mount namespaces remains outside the trust model.
-fn require_procfs(targets: &[&File]) -> Result<(), SealError> {
+pub(crate) fn require_procfs(targets: &[&File]) -> Result<(), SealError> {
     let proc_fd = File::open("/proc/self/fd")?;
     let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstatfs(proc_fd.as_raw_fd(), &mut stat) } != 0 {
@@ -214,7 +214,7 @@ fn require_procfs(targets: &[&File]) -> Result<(), SealError> {
     Ok(())
 }
 
-fn live_metadata(directory: &JournalDir, name: &OsStr) -> Result<Metadata, SealError> {
+pub(crate) fn live_metadata(directory: &JournalDir, name: &OsStr) -> Result<Metadata, SealError> {
     let name = CString::new(name.as_bytes()).map_err(|_| SealError::InvalidEvidence)?;
     let raw = unsafe {
         libc::openat(
@@ -496,6 +496,113 @@ impl SealedRecovery {
 
     pub(crate) fn record(&self) -> &BackupRecoveryRecord {
         &self.record
+    }
+
+    /// Revalidates the live pins and all bytes. This is a point-in-time
+    /// observation, not an atomic guarantee against privileged namespace edits.
+    pub(crate) fn revalidate(
+        &mut self,
+        session: &LockedExecutionSession<'_>,
+    ) -> Result<(), SealError> {
+        session.require_current_durable_journal()?;
+        let binding = self.record.binding();
+        if self.record.schema_version() != 3
+            || session.journal().schema_version != 2
+            || session.journal().phase != lsm_planner::JournalPhase::IdentityRevalidated
+            || binding.journal_id != session.journal().journal_id
+            || binding.session_id != session.session_id()
+            || binding.handoff_id != session.handoff().handoff_id()
+            || binding.plan_id != session.journal().plan_id
+            || binding.target_manifest_digest != session.journal().baseline_manifest_digest
+            || self.record.artifacts().len() != self._copies.pairs.len()
+        {
+            return Err(SealError::InvalidEvidence);
+        }
+        self._primary_dir.verify_namespace()?;
+        self._recovery_dir.verify_namespace()?;
+        require_procfs(&[self._primary_dir.file(), self._recovery_dir.file()])?;
+        self._primary_watch.require_unchanged()?;
+        self._recovery_watch.require_unchanged()?;
+        let primary_path = Path::new(crate::BACKUP_DIRECTORY)
+            .join(&binding.handoff_id)
+            .join(&binding.journal_id);
+        let mut recovery_name = primary_path
+            .file_name()
+            .ok_or(SealError::InvalidEvidence)?
+            .to_os_string();
+        recovery_name.push(".recovery");
+        let recovery_path = primary_path.with_file_name(recovery_name);
+        let mut primary_names = Vec::with_capacity(self.record.artifacts().len());
+        let mut recovery_names = Vec::with_capacity(self.record.artifacts().len());
+        for ((primary, recovery), artifact) in
+            self._copies.pairs.iter().zip(self.record.artifacts())
+        {
+            let primary_artifact = Path::new(&artifact.primary_path);
+            let recovery_artifact = Path::new(&artifact.recovery_path);
+            if primary_artifact.parent() != Some(primary_path.as_path())
+                || recovery_artifact.parent() != Some(recovery_path.as_path())
+            {
+                return Err(SealError::InvalidEvidence);
+            }
+            let primary_name = primary_artifact
+                .file_name()
+                .ok_or(SealError::InvalidEvidence)?;
+            let recovery_name = recovery_artifact
+                .file_name()
+                .ok_or(SealError::InvalidEvidence)?;
+            let pm = check_file(
+                primary,
+                &self._primary_dir,
+                primary_name,
+                artifact.size_bytes,
+                &artifact.sha256,
+            )?;
+            let rm = check_file(
+                recovery,
+                &self._recovery_dir,
+                recovery_name,
+                artifact.size_bytes,
+                &artifact.sha256,
+            )?;
+            if Some(pm.dev()) != artifact.capture_device_id
+                || Some(pm.ino()) != artifact.capture_inode
+                || same_inode(&pm, &rm)
+            {
+                return Err(SealError::Changed);
+            }
+            let expected = artifact.verity.as_ref().ok_or(SealError::InvalidEvidence)?;
+            let format_digest = |digest: [u8; 32]| {
+                digest
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            };
+            if format_digest(crate::backup_verity::measure(primary)?) != expected.primary_sha256
+                || format_digest(crate::backup_verity::measure(recovery)?)
+                    != expected.recovery_sha256
+            {
+                return Err(SealError::Changed);
+            }
+            primary_names.push(primary_name.to_os_string());
+            recovery_names.push(recovery_name.to_os_string());
+        }
+        primary_names.sort();
+        recovery_names.sort();
+        if bounded_names(&self._primary_dir)? != primary_names
+            || bounded_names(&self._recovery_dir)? != recovery_names
+        {
+            return Err(SealError::Changed);
+        }
+        self._primary_dir.verify_namespace()?;
+        self._recovery_dir.verify_namespace()?;
+        self._primary_watch.require_unchanged()?;
+        self._recovery_watch.require_unchanged()?;
+        Ok(())
+    }
+
+    pub(crate) fn contains_directory(&self, metadata: &Metadata) -> Result<bool, SealError> {
+        Ok(same_inode(metadata, &self._primary_dir.file().metadata()?)
+            || same_inode(metadata, &self._recovery_dir.file().metadata()?))
     }
 }
 
