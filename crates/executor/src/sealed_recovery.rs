@@ -4,6 +4,9 @@
 //! It does not establish capture provenance, durable record publication, a
 //! separate failure domain, or continuous namespace protection. In particular,
 //! another privileged process can remove or replace paths after validation.
+//! A failed partial seal is not retryable on the same inode: preserve the
+//! files and durably abort the prewrite attempt before starting a new attempt.
+//! This module does not yet perform that durable abort itself.
 #![allow(dead_code)]
 
 use crate::backup_recovery_record::{
@@ -14,14 +17,16 @@ use crate::journal_fd::{DirectoryWatch, JournalDir};
 use crate::{LockedExecutionSession, MetadataBackupManifest, MetadataBackupReceipt};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::ffi::{OsStr, OsString};
+use std::ffi::{CString, OsStr, OsString};
 use std::fs::{File, Metadata};
 use std::io;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::Path;
 
 const MAX_ARTIFACT_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_ARTIFACTS: usize = 16;
 
 /// Caller-supplied handles are only candidates; the constructor checks each
 /// against the exact, independently opened attempt path and receipt.
@@ -86,6 +91,144 @@ fn require_directory(candidate: &File, directory: &JournalDir) -> Result<(), Sea
     Ok(())
 }
 
+fn bounded_names(directory: &JournalDir) -> Result<Vec<OsString>, SealError> {
+    let raw = unsafe {
+        libc::openat(
+            directory.file().as_raw_fd(),
+            c".".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if raw < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    let fresh = unsafe { File::from_raw_fd(raw) };
+    if !same_inode(&fresh.metadata()?, &directory.file().metadata()?) {
+        return Err(SealError::Changed);
+    }
+    // Read from this fresh open-file description directly; never trust a
+    // /proc mount for enumeration or share a directory offset with the caller.
+    let mut names = Vec::with_capacity(MAX_ARTIFACTS);
+    let mut buffer = [0_u8; 8192];
+    let mut interrupted = 0_usize;
+    let mut reads = 0_usize;
+    loop {
+        let count = unsafe {
+            libc::syscall(
+                libc::SYS_getdents64,
+                fresh.as_raw_fd(),
+                buffer.as_mut_ptr(),
+                buffer.len(),
+            )
+        };
+        if count < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted && interrupted < 64 {
+                interrupted += 1;
+                continue;
+            }
+            return Err(error.into());
+        }
+        interrupted = 0;
+        reads += 1;
+        if reads > MAX_ARTIFACTS + 4 {
+            return Err(SealError::Changed);
+        }
+        if count == 0 {
+            break;
+        }
+        let length = usize::try_from(count).map_err(|_| SealError::Changed)?;
+        if length > buffer.len() {
+            return Err(SealError::Changed);
+        }
+        let mut offset = 0_usize;
+        while offset < length {
+            // linux_dirent64: ino u64, off i64, reclen u16, type u8, name.
+            if length - offset < 20 {
+                return Err(SealError::Changed);
+            }
+            let inode = u64::from_ne_bytes(buffer[offset..offset + 8].try_into().unwrap());
+            let reclen = usize::from(u16::from_ne_bytes(
+                buffer[offset + 16..offset + 18].try_into().unwrap(),
+            ));
+            let end = offset
+                .checked_add(reclen)
+                .filter(|end| *end <= length)
+                .ok_or(SealError::Changed)?;
+            if inode == 0 || reclen < 20 || reclen % 8 != 0 {
+                return Err(SealError::Changed);
+            }
+            let raw_name = &buffer[offset + 19..end];
+            let nul = raw_name
+                .iter()
+                .position(|byte| *byte == 0)
+                .ok_or(SealError::Changed)?;
+            let name = &raw_name[..nul];
+            if name.is_empty() || name.len() > 255 || name.contains(&b'/') {
+                return Err(SealError::Changed);
+            }
+            if name != b"." && name != b".." {
+                if names.len() == MAX_ARTIFACTS {
+                    return Err(SealError::Changed);
+                }
+                names.push(OsString::from_vec(name.to_vec()));
+            }
+            offset = end;
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+// JournalDir's inotify registration uses /proc/self/fd. Check that lookup is
+// actually procfs and resolves our pinned directories before using it. A
+// privileged actor changing mount namespaces remains outside the trust model.
+fn require_procfs(targets: &[&File]) -> Result<(), SealError> {
+    let proc_fd = File::open("/proc/self/fd")?;
+    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstatfs(proc_fd.as_raw_fd(), &mut stat) } != 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    const PROC_SUPER_MAGIC: libc::c_long = 0x9fa0;
+    if stat.f_type as libc::c_long != PROC_SUPER_MAGIC {
+        return Err(SealError::InvalidEvidence);
+    }
+    for target in targets {
+        let name =
+            CString::new(target.as_raw_fd().to_string()).map_err(|_| SealError::InvalidEvidence)?;
+        let raw = unsafe {
+            libc::openat(
+                proc_fd.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_PATH | libc::O_CLOEXEC,
+            )
+        };
+        if raw < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let reopened = unsafe { File::from_raw_fd(raw) };
+        if !same_inode(&target.metadata()?, &reopened.metadata()?) {
+            return Err(SealError::Changed);
+        }
+    }
+    Ok(())
+}
+
+fn live_metadata(directory: &JournalDir, name: &OsStr) -> Result<Metadata, SealError> {
+    let name = CString::new(name.as_bytes()).map_err(|_| SealError::InvalidEvidence)?;
+    let raw = unsafe {
+        libc::openat(
+            directory.file().as_raw_fd(),
+            name.as_ptr(),
+            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if raw < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(unsafe { File::from_raw_fd(raw) }.metadata()?)
+}
+
 fn check_file(
     file: &File,
     directory: &JournalDir,
@@ -101,7 +244,7 @@ fn check_file(
     {
         return Err(SealError::InvalidEvidence);
     }
-    let live = directory.open_file(name)?.metadata()?;
+    let live = live_metadata(directory, name)?;
     if !same_file_version(&before, &live) {
         return Err(SealError::Changed);
     }
@@ -122,7 +265,7 @@ fn check_file(
         return Err(SealError::InvalidEvidence);
     }
     let held = file.metadata()?;
-    let live = directory.open_file(name)?.metadata()?;
+    let live = live_metadata(directory, name)?;
     if !same_file_version(&before, &held) || !same_file_version(&held, &live) {
         return Err(SealError::Changed);
     }
@@ -186,6 +329,7 @@ impl SealedRecovery {
         let recovery_path = primary_path.with_file_name(recovery_name);
         let primary_dir = JournalDir::open(&primary_path)?;
         let recovery_dir = JournalDir::open(&recovery_path)?;
+        require_procfs(&[primary_dir.file(), recovery_dir.file()])?;
         let mut primary_watch = primary_dir.watch_namespace()?;
         let mut recovery_watch = recovery_dir.watch_namespace()?;
         primary_dir.verify_namespace()?;
@@ -237,7 +381,9 @@ impl SealedRecovery {
         let mut sorted_recovery = recovery_names.clone();
         sorted_primary.sort();
         sorted_recovery.sort();
-        if primary_dir.names()? != sorted_primary || recovery_dir.names()? != sorted_recovery {
+        if bounded_names(&primary_dir)? != sorted_primary
+            || bounded_names(&recovery_dir)? != sorted_recovery
+        {
             return Err(SealError::Changed);
         }
         primary_watch.require_unchanged()?;
@@ -330,6 +476,12 @@ impl SealedRecovery {
         session.require_current_durable_journal()?;
         primary_dir.verify_namespace()?;
         recovery_dir.verify_namespace()?;
+        require_procfs(&[primary_dir.file(), recovery_dir.file()])?;
+        if bounded_names(&primary_dir)? != sorted_primary
+            || bounded_names(&recovery_dir)? != sorted_recovery
+        {
+            return Err(SealError::Changed);
+        }
         primary_watch.require_unchanged()?;
         recovery_watch.require_unchanged()?;
         Ok(Self {

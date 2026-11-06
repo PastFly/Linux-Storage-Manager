@@ -133,8 +133,21 @@ fn sealed_recovery_accepts_real_pinned_copies_on_disposable_ext4() {
         );
         let artifact = &sealed.record().artifacts()[0];
         assert_eq!(artifact.primary_path, receipt.artifacts()[0].artifact_path);
-        assert!(artifact.verity.is_some());
-        for path in [&artifact.primary_path, &artifact.recovery_path] {
+        let verity = artifact.verity.as_ref().unwrap();
+        let primary_path = artifact.primary_path.clone();
+        let recovery_path = artifact.recovery_path.clone();
+        let expected = [
+            verity.primary_sha256.clone(),
+            verity.recovery_sha256.clone(),
+        ];
+        drop(sealed);
+        for (path, expected_digest) in [primary_path, recovery_path].iter().zip(expected) {
+            let actual = crate::backup_verity::measure(&File::open(path).unwrap()).unwrap();
+            let actual_hex = actual
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(actual_hex, expected_digest);
             assert!(OpenOptions::new().write(true).open(path).is_err());
         }
     });
@@ -169,6 +182,23 @@ fn sealed_recovery_rejects_retained_primary_and_recovery_writers() {
                 assert!(OpenOptions::new().write(true).open(&primary).is_err());
             }
             drop(writer);
+            if recovery_writer {
+                let retry = PinnedCopies {
+                    primary_dir: File::open(root).unwrap(),
+                    recovery_dir: File::open(&recovery_root).unwrap(),
+                    pairs: vec![(
+                        File::open(&primary).unwrap(),
+                        File::open(&recovery).unwrap(),
+                    )],
+                };
+                assert!(
+                    matches!(SealedRecovery::seal(session, manifest, receipt, retry), Err(SealError::Io(ref error)) if error.raw_os_error() == Some(libc::EEXIST))
+                );
+                assert_eq!(
+                    session.journal().phase,
+                    lsm_planner::JournalPhase::IdentityRevalidated
+                );
+            }
         });
     }
 }
@@ -193,6 +223,70 @@ fn sealed_recovery_rejects_transient_name_replacement_and_wrong_dirfd() {
             SealedRecovery::seal(session, manifest, receipt, copies),
             Err(SealError::InvalidEvidence)
         ));
+    });
+}
+
+#[test]
+fn sealed_recovery_rejects_changed_bytes_and_wrong_filefd() {
+    if !disposable_mount() || std::env::var_os("LSM_TEST_SEALED_UNSUPPORTED").is_some() {
+        return;
+    }
+    for corrupt_recovery in [false, true] {
+        with_fixture(|session, manifest, receipt, copies| {
+            let primary = PathBuf::from(&receipt.artifacts()[0].artifact_path);
+            let mut recovery_name = primary.file_name().unwrap().to_os_string();
+            recovery_name.push(".recovery");
+            let root = Path::new(manifest.artifact_directory());
+            let recovery_root = root.with_file_name(format!(
+                "{}.recovery",
+                root.file_name().unwrap().to_str().unwrap()
+            ));
+            let recovery = recovery_root.join(recovery_name);
+            let mut writer = OpenOptions::new()
+                .write(true)
+                .open(if corrupt_recovery {
+                    &recovery
+                } else {
+                    &primary
+                })
+                .unwrap();
+            writer.write_all(b"X").unwrap();
+            writer.sync_all().unwrap();
+            drop(writer);
+            assert!(matches!(
+                SealedRecovery::seal(session, manifest, receipt, copies),
+                Err(SealError::InvalidEvidence)
+            ));
+        });
+    }
+    with_fixture(|session, manifest, receipt, mut copies| {
+        copies.pairs[0].0 = copies.pairs[0].1.try_clone().unwrap();
+        assert!(matches!(
+            SealedRecovery::seal(session, manifest, receipt, copies),
+            Err(SealError::InvalidEvidence)
+        ));
+    });
+}
+
+#[test]
+fn sealed_recovery_rejects_excess_directory_entries_before_sealing() {
+    if !disposable_mount() || std::env::var_os("LSM_TEST_SEALED_UNSUPPORTED").is_some() {
+        return;
+    }
+    with_fixture(|session, manifest, receipt, copies| {
+        for index in 0..16 {
+            fs::write(
+                Path::new(manifest.artifact_directory()).join(format!("extra-{index}")),
+                b"x",
+            )
+            .unwrap();
+        }
+        let primary = File::open(&receipt.artifacts()[0].artifact_path).unwrap();
+        assert!(matches!(
+            SealedRecovery::seal(session, manifest, receipt, copies),
+            Err(SealError::Changed)
+        ));
+        assert!(crate::backup_verity::measure(&primary).is_err());
     });
 }
 
