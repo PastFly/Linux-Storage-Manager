@@ -45,6 +45,7 @@ jobs:
           sudo chmod 600 "$backup_root/.lsm-sealed-disposable"
           sudo env PATH="$PATH" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" LSM_TEST_SEALED_DISPOSABLE=1 LSM_TEST_SEALED_UUID="$uuid" cargo test --locked -p lsm-executor --lib sealed_recovery::tests:: -- --test-threads=1 --nocapture
           sudo env -u LSM_TEST_SEALED_RECORD_TMPFS_CHILD PATH="$PATH" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" LSM_TEST_SEALED_DISPOSABLE=1 LSM_TEST_SEALED_RECORD_TMPFS=1 LSM_TEST_SEALED_UUID="$uuid" cargo test --locked -p lsm-executor --lib sealed_recovery_store::tests:: -- --test-threads=1 --nocapture
+          sudo env PATH="$PATH" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" LSM_TEST_SEALED_DISPOSABLE=1 LSM_TEST_SEALED_UUID="$uuid" cargo test --locked -p lsm-executor --lib recovery_inspector::tests:: -- --test-threads=1 --nocapture
 
   sealed-unsupported-probe:
     runs-on: ubuntu-24.04
