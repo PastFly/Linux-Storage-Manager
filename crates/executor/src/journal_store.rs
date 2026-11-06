@@ -613,6 +613,13 @@ impl DurableJournalStore {
 
     pub fn persist_new(&self, journal: &OperationJournal) -> Result<PathBuf, JournalStoreError> {
         validate_journal(journal)?;
+        if journal.schema_version == 2
+            && (journal.phase != JournalPhase::HostLockHeld || journal.events.len() != 1)
+        {
+            return Err(JournalStoreError::InvalidRecord(
+                "new v2 journal must begin at the host-lock boundary".to_owned(),
+            ));
+        }
         ensure_secure_directory(&self.root, true)?;
         let directory = crate::journal_fd::JournalDir::open(&self.root)?;
         let mut bytes = serde_json::to_vec(journal)?;
@@ -1756,6 +1763,26 @@ mod tests {
         decode_journal(&serde_json::to_vec(value).unwrap(), &digest('a'))
     }
 
+    fn persist_v2_fixture_through(store: &DurableJournalStore, target: &OperationJournal) {
+        let mut initial = preconditions_wire(2);
+        initial["phase"] = json!("host_lock_held");
+        initial["events"].as_array_mut().unwrap().truncate(1);
+        let first = decoded_wire(&initial).unwrap();
+        store.persist_new(&first).unwrap();
+        initial["phase"] = json!("identity_revalidated");
+        initial["events"] = json!([
+            {"sequence":1,"from":"planned","to":"host_lock_held","code":"host-lock-acquired","detail":"lock held"},
+            {"sequence":2,"from":"host_lock_held","to":"identity_revalidated","code":"identity-revalidated","detail":"identity matched"}
+        ]);
+        let identity = decoded_wire(&initial).unwrap();
+        store.persist_if_matches(&first, &identity).unwrap();
+        if target.phase == JournalPhase::PreconditionsVerified {
+            store.persist_if_matches(&identity, target).unwrap();
+        } else {
+            assert_eq!(&identity, target);
+        }
+    }
+
     fn append_valid_approval(mut previous: OperationJournal) -> OperationJournal {
         let mut approval = ExactApprovalBinding {
             schema_version: 1,
@@ -1841,7 +1868,7 @@ mod tests {
         let mut wire = preconditions_wire(2);
         wire["recovery_binding"] = recovery_binding();
         let previous = decoded_wire(&wire).unwrap();
-        store.persist_new(&previous).unwrap();
+        persist_v2_fixture_through(&store, &previous);
 
         let mut removed = wire.clone();
         removed.as_object_mut().unwrap().remove("recovery_binding");
@@ -1890,7 +1917,7 @@ mod tests {
         initial["phase"] = json!("identity_revalidated");
         initial["events"].as_array_mut().unwrap().pop();
         let previous = decoded_wire(&initial).unwrap();
-        store.persist_new(&previous).unwrap();
+        persist_v2_fixture_through(&store, &previous);
         let mut next = preconditions_wire(2);
         next["recovery_binding"] = recovery_binding();
         let next = decoded_wire(&next).unwrap();
@@ -1907,7 +1934,7 @@ mod tests {
         let mut wire = preconditions_wire(2);
         wire["recovery_binding"] = recovery_binding();
         let previous = decoded_wire(&wire).unwrap();
-        store.persist_new(&previous).unwrap();
+        persist_v2_fixture_through(&store, &previous);
 
         // Construct a structurally valid approval and execution in memory,
         // without persisting the intervening Approved state.
