@@ -1,6 +1,6 @@
 # Support matrix
 
-Status values: `Discovery`, `Preview`, `Planned`, `Later`, `Not supported`.
+Status values: `Discovery`, `Preview`, `Operator apply`, `Harness only`, `Planned`, `Later`, `Not supported`.
 
 | Technology / workflow | Current branch | First write release |
 | --- | --- | --- |
@@ -13,11 +13,11 @@ Status values: `Discovery`, `Preview`, `Planned`, `Later`, `Not supported`.
 | Blank disks | Discovery + exact GPT/DOS Create preview with 1 MiB alignment | Planned guarded GPT/DOS initialization |
 | Verified raw disk tail | Discovery + Create opportunity preview | Planned partition creation |
 | Internal partition-table gaps | Discovery | Planned after range/slot validation |
-| LVM PV / VG / LV | Discovery + existing-VG-free grow preview | Planned chained PV/VG/LV grow |
+| LVM PV / VG / LV | Operator apply for single-PV VG existing-free → LV → ext4/XFS | Chained partition/PV/LV is harness-only |
 | LVM multi-PV | Discovery | Later guarded grow |
 | LVM thin/cache/RAID/snapshots | Discovery facts where available | Later |
-| ext4 | Discovery + direct/LVM grow preview | Planned grow |
-| XFS | Discovery + direct/LVM grow preview | Planned online grow |
+| ext4 | Operator apply for supported existing-VG-free LV profile; direct partition grow preview | Guarded direct partition grow planned |
+| XFS | Operator apply for supported existing-VG-free LV profile when mounted | Other routes planned |
 | Btrfs | Discovery | Later |
 | LUKS / dm-crypt | Discovery topology | Later |
 | mdraid | Discovery topology | Later |
@@ -33,7 +33,7 @@ Status values: `Discovery`, `Preview`, `Planned`, `Later`, `Not supported`.
 | Automatic multi-layer route selection | Partial advisory | Planned disk -> partition -> PV -> VG -> LV -> filesystem |
 | Filesystem health/features gate | ext4/XFS decision policy + explicit read-only check plan | Required before executor |
 | Exclusive operation lock | Host-exclusive lock + interruption journal model | Required before executor |
-| Metadata backup/recovery verification | Planned | Required before executor |
+| Metadata backup/recovery verification | Captured and revalidated for operator LV profile; durable identity pinning remains in progress | Required throughout execution and recovery |
 | Shrink/move partition starts | Not supported | Not supported in first write release |
 
 The matrix describes storage capabilities rather than a fixed distro whitelist. Linux

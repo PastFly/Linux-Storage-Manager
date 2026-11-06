@@ -1,75 +1,67 @@
 # Linux Storage Manager — current engineering handoff
 
-Updated: **2026-10-26**. Repository: `PastFly/Linux-Storage-Manager`, default branch
-`master`. Read live GitHub refs and checks before continuing; historical SHAs in
-older milestone documents are not the current baseline.
+Updated: **2026-11-06**. Repository: `PastFly/Linux-Storage-Manager`; verify live
+`master`, PR heads and CI before continuing. `AGENTS.md` governs development.
+The owner authorizes autonomous feature branches, PRs and squash merges after the
+exact candidate has passed CI. Do not test on `srv-phpIPAM`.
 
-`AGENTS.md` governs engineering. The owner has explicitly authorized autonomous
-development, feature-branch PRs and merges in this project, and asks that completed
-PRs be closed. Preserve that authorization across sessions. Require successful
-checks for the exact candidate head before merging.
+## Operator support
 
-## Current work
+`storagemgr apply extend TARGET --by SIZE` and `--max` support the narrow
+existing-free-extents → LV → ext4/XFS profile for a single-PV VG. `--max` is
+limited to existing VG free extents. XFS must be mounted; the planner and health
+checks decide whether the exact ext4 state is admissible. An interactive terminal,
+root privileges and the exact evidence-bound confirmation are required.
 
-- M1B Extend and swap paths have guarded execution and disposable-loop acceptance.
-- M2A blank-disk Create has GPT/DOS × ext4/XFS coverage through mount, fstab
-  persistence, restart verification and exact cleanup.
-- M2B1–M2B5 freeze and authorize existing-GPT-tail intent without storage writes.
-- PR #175 adds M2B6 fresh runtime preflight, including target-scoped kernel/GPT
-  reconciliation. Regression coverage rejects changed, missing, extra or ambiguous
-  partitions and preserves the fixed 512-byte lsblk START units on 4Kn media.
-- The Wave 1 evidence runner uses those existing executable profiles to produce a
-  three-repetition VM acceptance report. Read `docs/PREPROD_TEST_PLAN.md` and the
-  2026-10-26 specification/plan under `docs/superpowers/` for its contract.
+The executor uses trusted discovery and pinned tools, a host lock, durable
+journals, metadata backup, fresh identity checks and verified mutation boundaries.
+CI exercises the actual operator CLI on disposable Ubuntu loop devices for ext4
+`--by` and mounted XFS `--max`, including cancellation, noninteractive refusal,
+backup tampering before confirmation, a sibling LV and sentinel preservation.
+The Wave 1 matrix runs three times; distribution userland smoke tests do not prove
+equivalent kernel/VM mutation coverage.
 
-## Honest readiness boundary
+The TUI and `plan` commands remain read-only. Direct partition → filesystem,
+partition → PV → LV → filesystem, swap migration and Create are **not** operator
+`apply` profiles. Some have separate disposable harnesses; harness acceptance is
+not operator CLI support. Shrinking or moving partition starts is not supported.
 
-Normal CLI/TUI builds remain read-only and have no general `apply` entry point.
-The native harnesses are separate, explicitly opted-in disposable-VM tests.
-Existing-GPT-tail writes/formats and advanced storage layouts are still pending.
+## Current safety work
 
-Do not delay Wave 1 testing for completion of M2B. Wave 2 adds GPT-tail Create only
-after its own backup, slot selection, pinned launch, durable write/format sequence
-and destructive sentinel-preservation acceptance exist.
+PR #183 fixed delayed journal `IN_CLOSE_WRITE` from inherited writable descriptors.
+PR #184 added the first operator `apply extend`. PR #185 added device/inode to
+backup receipt schema v2 and rejects a different inode at revalidation. PR #185
+does **not** pin the file across checks, detect transient changes or prevent writes
+through an already-open descriptor; inode reuse also remains possible without a
+held descriptor. Do not describe that partial check as complete backup protection.
 
-## Verification and evidence
+The next safety boundary must retain durable independent backup copies, bind and
+monitor their exact identities through the mutation and verification lifecycle,
+reject existing writers, stop or enter recovery on violations, and preserve a
+fail-closed durable state after crashes. Other privileged root processes can remove
+or change local backups, alter kernel settings or kill the manager/observer; no
+userspace lease can guarantee durability against arbitrary root or device failure.
+Test those boundaries only on disposable Linux/VMs and state the supported threat
+model and limits.
 
-1. `bash tools/validate.sh --source-only` runs rootless harness and runner tests.
-2. `bash tools/validate.sh` additionally runs Rust 1.88.0 formatting, clippy, tests
-   and build. Feature-specific tests remain in `.github/workflows/ci.yml`.
-3. `python3 -I tools/preprod.py build` creates the source-bound native binaries.
-4. `check` inspects prerequisites; `run` requires exact source, root/Linux and
-   `--allow-disposable-vm-tests`. It runs all profiles three times, stops on failure
-   and retains the report/logs. It performs no independent storage cleanup.
-5. CI uploads `wave1-ubuntu24-x86_64-<run>-<attempt>` evidence even after a failed
-   test. Read `report.json` and `SUMMARY.txt`; workflow success alone is not a
-   substitute for a report from a different distribution or a real extra disk.
+## Next executable work
 
-## Next useful work
+1. Complete and review backup protection before enabling additional write profiles.
+2. Add actual operator execution for adjacent-tail GPT and simple DOS primary
+   partition → ext4, without moving partition starts. Verify the entire partition
+   table and neighboring geometry before mutation, and verify kernel geometry as
+   well as the authoritative table before filesystem continuation.
+3. Add operator partition → PV → LV → filesystem using the existing guarded
+   execution and recovery mechanisms.
+4. Complete the Debian DOS tail-swap scenario. Space behind an extended partition
+   is not adjacent to an earlier primary partition: the existing restricted route
+   migrates active swap to a verified swapfile before removing the sole logical
+   swap and its now-empty extended container. Hibernation, persistent boot resume,
+   memory pressure, fstab, geometry and offline requirements must be proven;
+   current mounted loop fixtures are not evidence for reboot or a real root mount.
+5. Continue Create after the above priorities with its own execution and recovery
+   gates. Update the support/scenario matrices only for verified operator behavior.
 
-- Collect complete Wave 1 reports from Debian 12, Rocky Linux 9 and an aarch64 VM.
-- Exercise operator-facing read-only target selection on a disposable VM with a
-  dedicated additional virtual disk; keep this evidence separate from loop tests.
-- Continue M2B runtime backup/slot/launch/journal/write/format as a coherent feature,
-  with preservation of existing partition geometry and sentinel data proved E2E.
-- Connect accepted execution paths to a deliberate operator-facing apply workflow
-  only with the existing consent, recovery and fresh-state safeguards intact.
-
-`docs/M1B_HANDOFF.md` is historical implementation detail. Do not restart at its
-older M1B checkpoint or repeat already merged milestones.
-
-## Operator-facing frozen Extend handoff
-
-`storagemgr plan extend TARGET --max --freeze-handoff [--json]` freezes the current
-read-only preview into a target-identity- and capabilities-bound M1B handoff. It
-prints a stable handoff identifier plus status and blockers. The JSON includes
-`mutation_enabled: false` and `owner_acceptance_required: true`; a status of
-`future_executor_gates_required` is **not** authorization to write to storage.
-Blocked previews and all non-executable frozen handoffs return exit code 2;\na zero exit is reserved for a successful preview, not execution authorization. No JSON
-handoff should be passed to shell tools or treated as an executable command.
-
-The operator `apply` path remains absent. Implementing it requires a real host
-exclusive lock, fresh-state revalidation, pinned trusted tools, exact consent,
-durable backup/journal, guarded mutation with verification after every irreversible
-boundary and fail-closed recovery. Keep it out of portable read-only builds until
-these gates are end-to-end connected and tested on disposable devices.
+`storagemgr plan extend TARGET --max --freeze-handoff` remains a non-executable
+handoff and returns a non-success status even when well formed. Historical
+milestone handoffs describe older states; they are not the live baseline.

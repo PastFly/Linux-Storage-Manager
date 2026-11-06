@@ -11,8 +11,9 @@ The TUI and planning commands are read-only. The CLI also supports a guarded
 `storagemgr apply extend` for the narrow LV → ext4/XFS profile described below.
 Other mutation workflows remain unavailable through the operator CLI.
 
-Implemented mutation paths are tested through separately enabled harnesses on
-disposable loop devices. They include fresh identity checks, explicit operation
+The operator LV-to-filesystem path is tested through the actual CLI on disposable
+loop devices. Additional mutation profiles are tested through separate harnesses.
+These paths include fresh identity checks, explicit operation
 consent, pinned tools, durable journals, metadata backups, post-write verification
 and recovery boundaries. A passing harness is evidence for its exact scenario,
 not authorization to run on a production disk.

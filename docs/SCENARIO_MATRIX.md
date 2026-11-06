@@ -7,7 +7,8 @@ closed when a route cannot be proven.
 
 Status vocabulary:
 
-- **Preview now** — M1A can discover/model the case without storage mutation.
+- **Preview now** — discovery/planning can model the case without storage mutation.
+- **Operator apply** — available through the guarded operator CLI for the stated narrow profile.
 - **Planned write** — intended for the first guarded executor/provisioning releases.
 - **Later adapter** — requires a dedicated topology/filesystem adapter before mutation.
 - **Never automatic** — must not be guessed or silently performed.
@@ -19,7 +20,7 @@ Status vocabulary:
 1. Select the target filesystem/mount/device/LV.
 2. Select `+size` or `maximum safe`.
 3. Review the automatically generated route and resulting size.
-4. In a future executor, confirm the exact fresh plan.
+4. Confirm the exact fresh plan when the selected operator profile is supported.
 
 The user should not need to know whether the correct route is filesystem-only,
 LV + filesystem, PV + VG/LV + filesystem, partition + PV + VG/LV + filesystem,
@@ -42,7 +43,7 @@ Advanced details remain inspectable but are not mandatory for routine use.
 | Kernel sees larger disk and target partition has adjacent raw tail | Preview now | Partition end -> filesystem or partition -> PV -> VG -> LV -> filesystem |
 | Partition/backing device is already larger than LVM PV | Preview now | `pvresize` -> VG -> LV -> filesystem |
 | Whole-disk PV is on an enlarged disk | Preview now | `pvresize` -> VG -> LV -> filesystem |
-| Existing VG already has free extents | Preview now | LV -> filesystem |
+| Existing single-PV VG already has free extents, supported LV and ext4/mounted XFS | Operator apply | LV -> filesystem with exact confirmation and verified boundaries |
 | No underlying physical capacity exists | Preview now | Report zero safe growth; never fabricate capacity |
 | Storage device identity changed since preview | Planned write | Reject stale plan and rediscover before mutation |
 
@@ -65,7 +66,7 @@ Advanced details remain inspectable but are not mandatory for routine use.
 
 | Scenario | Current | Target behavior |
 | --- | --- | --- |
-| Normal active public linear LV, single-PV VG, existing VG free | Preview now | Extend LV and filesystem |
+| Normal active public linear LV, single-PV VG, existing VG free | Operator apply for supported ext4/XFS state | Extend LV and filesystem |
 | Single PV on growable partition | Preview now advisory | Grow partition -> `pvresize` -> LV -> filesystem |
 | PV backing device already larger than PV | Preview now advisory | `pvresize` -> LV -> filesystem |
 | Whole-disk PV | Preview now advisory when backing slack exists | Same route without partition-table write |
