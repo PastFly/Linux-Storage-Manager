@@ -646,6 +646,21 @@ mod tests {
     }
 
     #[test]
+    fn persists_verity_measurements_under_the_exact_recovery_anchor() {
+        let root = temporary_directory();
+        let (v2, trusted) = fixture();
+        let record = crate::backup_recovery_record::experimental_bind_verity(
+            &v2,
+            &[([0x11; 32], [0x22; 32])],
+        )
+        .unwrap();
+        store(&root, &record, &trusted).unwrap();
+        assert_eq!(load(&root, record.record_id(), &trusted).unwrap(), record);
+        assert!(load(&root, v2.record_id(), &trusted).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn existing_record_is_never_replaced() {
         let root = temporary_directory();
         let (record, trusted) = fixture();
