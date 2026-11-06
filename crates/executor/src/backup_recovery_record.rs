@@ -516,6 +516,31 @@ impl BackupRecoveryRecord {
     }
 }
 
+/// Metadata conversion only: callers must independently establish that each
+/// measurement came from the corresponding durable, protected file. This
+/// deliberately cannot by itself authorize production mutation or recovery.
+pub(crate) fn experimental_bind_verity(
+    record: &BackupRecoveryRecord,
+    measurements: &[([u8; 32], [u8; 32])],
+) -> Result<BackupRecoveryRecord, RecordError> {
+    if record.payload.schema_version != 2
+        || record.payload.artifacts.len() != measurements.len()
+        || record_id(&record.payload)? != record.record_id
+    {
+        return Err(RecordError::BindingMismatch);
+    }
+    let mut payload = record.payload.clone();
+    payload.schema_version = 3;
+    for (artifact, (primary, recovery)) in payload.artifacts.iter_mut().zip(measurements) {
+        let hex = |bytes: &[u8; 32]| bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        artifact.verity = Some(VerityPair {
+            primary_sha256: hex(primary),
+            recovery_sha256: hex(recovery),
+        });
+    }
+    BackupRecoveryRecord::new(payload)
+}
+
 pub(crate) fn decode(bytes: &[u8], expected_id: &str) -> Result<BackupRecoveryRecord, RecordError> {
     if bytes.len() > MAX_RECORD_BYTES {
         return Err(RecordError::TooLarge);
@@ -957,6 +982,20 @@ mod tests {
         }
         payload.artifacts[0].verity.as_mut().unwrap().primary_sha256 = "A".repeat(64);
         assert!(BackupRecoveryRecord::new(payload).is_err());
+    }
+
+    #[test]
+    fn v3_experimental_adapter_requires_one_pair_per_artifact() {
+        let v2 = v2_fixture();
+        assert!(experimental_bind_verity(&v2, &[]).is_err());
+        let pairs = vec![([0x11; 32], [0x22; 32])];
+        let v3 = experimental_bind_verity(&v2, &pairs).unwrap();
+        assert_eq!(v3.payload.schema_version, 3);
+        let measurements = v3.payload.artifacts[0].verity.as_ref().unwrap();
+        assert_eq!(measurements.primary_sha256, "11".repeat(32));
+        assert_eq!(measurements.recovery_sha256, "22".repeat(32));
+        assert_ne!(v2.record_id(), v3.record_id());
+        assert!(experimental_bind_verity(&v3, &pairs).is_err());
     }
 
     #[test]
