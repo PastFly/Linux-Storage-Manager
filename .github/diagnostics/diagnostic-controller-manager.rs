@@ -426,6 +426,25 @@ fn run_manager(
         pidfd: None,
     });
     let managed = slot.as_mut().unwrap();
+    // Disposable fault injection: pause before simulated pidfd_open failure.
+    if std::env::var_os("LSM_TEST_LAUNCHER_PIDFD_FAIL").as_deref() == Some(OsStr::new("1")) {
+        println!("UNPINNED {} {}", managed.child.id(), path.display());
+        io::stdout().flush()?;
+        let mut item = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut item, 1, 1000) } != 1 || item.revents != libc::POLLIN {
+            return Err(invalid("pidfd fault barrier timed out"));
+        }
+        let mut command = [0u8];
+        io::stdin().read_exact(&mut command)?;
+        if command != [b'C'] {
+            return Err(invalid("invalid pidfd fault command"));
+        }
+        return Err(invalid("injected launcher pidfd_open failure"));
+    }
     managed.pidfd = Some(pidfd(managed.child.id() as libc::pid_t)?);
     let child = &mut managed.child;
     let launcher_fd = managed.pidfd.as_ref().unwrap();

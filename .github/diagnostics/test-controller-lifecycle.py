@@ -79,18 +79,48 @@ def run_case(manager, observer, root, case):
                 environment['LSM_TEST_POST_GO_POLL_FAULT'] = '1'
             if case == 'launcher-failure-before-active':
                 environment['LSM_TEST_FAIL_WITH_STOPPED_LAUNCHER'] = '1'
+            if case == 'launcher-pidfd-failure':
+                environment['LSM_TEST_LAUNCHER_PIDFD_FAIL'] = '1'
             def attach_case():
                 # The diagnostic manager, observer and launcher inherit this
                 # disposable parent even if setup fails before reporting PIDs.
                 fd = os.open(case_root / 'cgroup.procs', os.O_WRONLY | os.O_CLOEXEC)
                 os.write(fd, str(os.getpid()).encode('ascii'))
                 os.close(fd)
+                if case == 'manager-auto-reap':
+                    signal.signal(signal.SIGCHLD, signal.SIG_IGN)
 
             child = subprocess.Popen([manager, '--diagnostic-manager', str(case_root), observer, str(backup)],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, bufsize=0, env=environment,
                                      preexec_fn=attach_case)
+            if case == 'manager-auto-reap':
+                assert child.wait(timeout=3) != 0, 'manager accepted auto-reaping SIGCHLD'
+                print('PASS:', case, flush=True)
+                return
             parts = line(child.stdout).split()
+            if case == 'launcher-pidfd-failure':
+                assert len(parts) == 3 and parts[0] == 'UNPINNED', ('expected pidfd fault barrier', parts)
+                launcher_pid = int(parts[1])
+                group = pathlib.Path(parts[2])
+                assert group.parent == case_root and group.name.startswith('lsm-backup-')
+                fds.append(os.pidfd_open(launcher_pid))
+                signal.pidfd_send_signal(fds[0], signal.SIGSTOP)
+                deadline = time.monotonic() + 1
+                while time.monotonic() < deadline:
+                    if '\nState:\tT' in (pathlib.Path('/proc') / str(launcher_pid) / 'status').read_text():
+                        break
+                    time.sleep(.01)
+                else:
+                    raise AssertionError('launcher did not stop for injected pidfd failure')
+                child.stdin.write(b'C')
+                child.stdin.flush()
+                assert child.wait(timeout=5) != 0, 'pidfd failure was reported as success'
+                poller = select.poll()
+                poller.register(fds[0], select.POLLIN)
+                assert not poller.poll(300), 'unprotected numeric PID fallback killed launcher'
+                print('PASS:', case, flush=True)
+                return
             if case == 'launcher-failure-before-active':
                 assert len(parts) == 3 and parts[0] == 'LAUNCHER', ('expected launcher barrier', parts)
                 launcher_pid = int(parts[1])
@@ -146,6 +176,10 @@ def run_case(manager, observer, root, case):
                 assert poller.poll(100), 'launcher did not stop setsid descendant'
                 assert empty(group), 'launcher cleanup did not empty the group'
                 os.kill(child.pid, signal.SIGCONT)
+            elif case == 'manager-stopped':
+                os.kill(child.pid, signal.SIGSTOP)
+                # Manager pidfd stays live; launcher must detect missed pings.
+                wait_dead(fds[3], 'launcher after manager stopped')
             elif case == 'manager-death':
                 child.kill()
                 child.wait(timeout=TIMEOUT)
@@ -173,7 +207,7 @@ def run_case(manager, observer, root, case):
                 child.wait(timeout=TIMEOUT)
             # The launcher lives outside the worker cgroup. Kill the exact
             # pidfd even when the controller failed before ACTIVE.
-            launcher_index = 0 if case == 'launcher-failure-before-active' else (2 if case == 'observer-before-go' else 3)
+            launcher_index = 0 if case in ('launcher-failure-before-active', 'launcher-pidfd-failure') else (2 if case == 'observer-before-go' else 3)
             if len(fds) > launcher_index:
                 try:
                     signal.pidfd_send_signal(fds[launcher_index], signal.SIGKILL)
@@ -200,7 +234,7 @@ def main():
     root = pathlib.Path(sys.argv[3]).resolve(strict=True)
     assert root != pathlib.Path('/sys/fs/cgroup') and root.is_relative_to('/sys/fs/cgroup')
     assert os.environ.get('LSM_TEST_DISPOSABLE_CGROUP') == str(root), 'explicit disposable cgroup required'
-    cases = ('manager-death', 'observer-death', 'lease-break', 'observer-before-go', 'launcher-poll-failure', 'launcher-stopped', 'launcher-failure-before-active')
+    cases = ('manager-death', 'observer-death', 'lease-break', 'observer-before-go', 'launcher-poll-failure', 'launcher-stopped', 'launcher-failure-before-active', 'manager-stopped', 'launcher-pidfd-failure', 'manager-auto-reap')
     if len(sys.argv) == 5:
         assert sys.argv[4] in cases
         cases = (sys.argv[4],)
