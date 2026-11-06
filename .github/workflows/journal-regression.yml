@@ -57,6 +57,29 @@ jobs:
           process = None
           try:
               print('cgroup.kill', (group / 'cgroup.kill').exists(), flush=True)
+              import ctypes
+              class CloneArgs(ctypes.Structure):
+                  _fields_ = [(name, ctypes.c_uint64) for name in (
+                      'flags', 'pidfd', 'child_tid', 'parent_tid', 'exit_signal',
+                      'stack', 'stack_size', 'tls', 'set_tid', 'set_tid_size', 'cgroup')]
+              group_fd = os.open(group, os.O_PATH | os.O_CLOEXEC)
+              child_pidfd = ctypes.c_int(-1)
+              args = CloneArgs()
+              args.flags = 0x200000000 | 0x1000
+              args.pidfd = ctypes.addressof(child_pidfd)
+              args.exit_signal = signal.SIGCHLD
+              args.cgroup = group_fd
+              libc = ctypes.CDLL(None, use_errno=True)
+              result = libc.syscall(435, ctypes.byref(args), ctypes.sizeof(args))
+              if result == 0:
+                  os._exit(0)
+              if result < 0:
+                  err = ctypes.get_errno()
+                  raise OSError(err, os.strerror(err))
+              os.waitpid(result, 0)
+              os.close(child_pidfd.value)
+              os.close(group_fd)
+              print('CLONE_INTO_CGROUP_OK', flush=True)
               process = subprocess.Popen(['/bin/sleep', '30'])
               (group / 'cgroup.procs').write_text(str(process.pid))
               (group / 'cgroup.kill').write_text('1')
