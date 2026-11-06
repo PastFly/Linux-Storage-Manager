@@ -12,6 +12,8 @@ use crate::{ProductionChainedMutationActivationIntent, ProductionMutationActivat
 pub const PRODUCTION_MUTATION_CONSENT_PATH: &str =
     "/etc/linux-storage-manager/production-mutation-consent.json";
 pub const PRODUCTION_MUTATION_CONSENT_PHRASE: &str = "I UNDERSTAND THIS WILL MODIFY STORAGE";
+pub const OPERATOR_MUTATION_CONSENT_DIRECTORY: &str =
+    "/var/lib/linux-storage-manager/operator-consents";
 pub const PRODUCTION_MUTATION_CONSENT_COMPILED: bool =
     cfg!(feature = "production-mutation-consent");
 const MAX_CONSENT_BYTES: u64 = 4096;
@@ -122,6 +124,12 @@ fn validate_activation_intent(
         return Err(ProductionMutationConsentError::ActivationAlreadyEnabled);
     }
     Ok(())
+}
+
+pub(crate) fn operator_consent_path(
+    _intent: &ProductionMutationActivationIntent,
+) -> Result<PathBuf, ProductionMutationConsentError> {
+    Err(ProductionMutationConsentError::ActivationIntentInvalid)
 }
 
 fn validate_chained_activation_intent(
@@ -459,6 +467,22 @@ mod tests {
         assert!(receipt.integrity_matches().unwrap());
         assert!(receipt.consent_verified);
         assert!(!receipt.execution_enabled);
+    }
+
+    #[test]
+    fn operator_consent_path_is_bound_to_one_valid_activation() {
+        let mut activation = intent();
+        let path = operator_consent_path(&activation).unwrap();
+        assert_eq!(
+            path.parent(),
+            Some(Path::new(OPERATOR_MUTATION_CONSENT_DIRECTORY))
+        );
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            format!("{}.json", activation.activation_id)
+        );
+        activation.activation_id = "../unsafe".into();
+        assert!(operator_consent_path(&activation).is_err());
     }
 
     #[test]
