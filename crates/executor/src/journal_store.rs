@@ -1812,6 +1812,232 @@ mod tests {
         assert_eq!(previous.phase, JournalPhase::PreconditionsVerified);
     }
 
+    // This model is deliberately test-only. It does not modify the real v1
+    // state machine, persist records, or establish crash safety.
+    mod experimental_v2 {
+        use super::*;
+        use lsm_planner::ExecutionStartBinding;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Binding {
+            record_id: String,
+            session_id: String,
+            handoff_id: String,
+        }
+
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct State {
+            schema_version: u32,
+            journal_id: String,
+            plan_id: String,
+            target: String,
+            baseline_manifest_digest: String,
+            phase: JournalPhase,
+            mutation_may_have_started: bool,
+            approval: Option<ExactApprovalBinding>,
+            execution: Option<ExecutionStartBinding>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            verified_boundary: Option<serde_json::Value>,
+            events: Vec<JournalEvent>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            recovery_binding: Option<Binding>,
+        }
+
+        fn parse(wire: &serde_json::Value) -> Result<State, ()> {
+            let state: State = serde_json::from_value(wire.clone()).map_err(|_| ())?;
+            validate(&state)?;
+            Ok(state)
+        }
+
+        fn digest_state(state: &State) -> String {
+            format!("{:x}", Sha256::digest(serde_json::to_vec(state).unwrap()))
+        }
+
+        fn validate(state: &State) -> Result<(), ()> {
+            let Some(binding) = &state.recovery_binding else {
+                return Err(());
+            };
+            if state.schema_version != 2
+                || state.mutation_may_have_started
+                || state.execution.is_some()
+                || state.verified_boundary.is_some()
+                || ![
+                    &state.journal_id,
+                    &state.plan_id,
+                    &state.baseline_manifest_digest,
+                    &binding.record_id,
+                    &binding.session_id,
+                    &binding.handoff_id,
+                ]
+                .iter()
+                .all(|value| validate_hex_digest(value, "test").is_ok())
+                || state.target.is_empty()
+            {
+                return Err(());
+            }
+            let required = [
+                (JournalPhase::Planned, JournalPhase::HostLockHeld),
+                (
+                    JournalPhase::HostLockHeld,
+                    JournalPhase::IdentityRevalidated,
+                ),
+                (
+                    JournalPhase::IdentityRevalidated,
+                    JournalPhase::PreconditionsVerified,
+                ),
+            ];
+            if state.events.len() < required.len()
+                || !state
+                    .events
+                    .iter()
+                    .zip(required)
+                    .enumerate()
+                    .all(|(i, (event, (from, to)))| {
+                        event.sequence == i as u64 + 1
+                            && event.from == from
+                            && event.to == to
+                            && !event.code.is_empty()
+                    })
+            {
+                return Err(());
+            }
+            match state.phase {
+                JournalPhase::PreconditionsVerified
+                    if state.events.len() == 3 && state.approval.is_none() =>
+                {
+                    Ok(())
+                }
+                JournalPhase::Approved if state.events.len() == 4 => {
+                    let approval = state.approval.as_ref().ok_or(())?;
+                    let last = state.events.last().ok_or(())?;
+                    let mut prior = state.clone();
+                    prior.phase = JournalPhase::PreconditionsVerified;
+                    prior.approval = None;
+                    prior.events.pop();
+                    if last.sequence != 4
+                        || last.from != JournalPhase::PreconditionsVerified
+                        || last.to != JournalPhase::Approved
+                        || approval.plan_id != state.plan_id
+                        || approval.target_manifest_digest != state.baseline_manifest_digest
+                        || approval.locked_session_id != binding.session_id
+                        || approval.preconditions_journal_digest != digest_state(&prior)
+                        || !approval.integrity_matches().map_err(|_| ())?
+                    {
+                        return Err(());
+                    }
+                    Ok(())
+                }
+                _ => Err(()),
+            }
+        }
+
+        fn approve(mut state: State) -> Result<State, ()> {
+            validate(&state)?;
+            if state.phase != JournalPhase::PreconditionsVerified {
+                return Err(());
+            }
+            let binding = state.recovery_binding.as_ref().ok_or(())?;
+            let mut approval = ExactApprovalBinding {
+                schema_version: 1,
+                approval_id: String::new(),
+                plan_id: state.plan_id.clone(),
+                evidence_bundle_id: digest('1'),
+                target_manifest_digest: state.baseline_manifest_digest.clone(),
+                locked_session_id: binding.session_id.clone(),
+                preconditions_journal_digest: digest_state(&state),
+            };
+            approval.approval_id = approval.expected_approval_id().map_err(|_| ())?;
+            state.approval = Some(approval);
+            state.phase = JournalPhase::Approved;
+            state.events.push(JournalEvent {
+                sequence: 4,
+                from: JournalPhase::PreconditionsVerified,
+                to: JournalPhase::Approved,
+                code: "exact-plan-approved".into(),
+                detail: "experimental model".into(),
+            });
+            validate(&state)?;
+            Ok(state)
+        }
+
+        fn accept_update(previous: &State, next: &State) -> Result<(), ()> {
+            validate(previous)?;
+            validate(next)?;
+            if previous.schema_version != next.schema_version
+                || previous.journal_id != next.journal_id
+                || previous.plan_id != next.plan_id
+                || previous.target != next.target
+                || previous.baseline_manifest_digest != next.baseline_manifest_digest
+                || previous.recovery_binding != next.recovery_binding
+                || previous.phase != JournalPhase::PreconditionsVerified
+                || next.phase != JournalPhase::Approved
+                || next.events.len() != previous.events.len() + 1
+                || !next.events.starts_with(&previous.events)
+            {
+                return Err(());
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn experimental_v2_requires_binding_before_approval() {
+            let mut wire = preconditions_wire(2);
+            assert!(parse(&wire).is_err());
+            wire["recovery_binding"] = recovery_binding();
+            let before = parse(&wire).unwrap();
+            let approved = approve(before.clone()).unwrap();
+            assert_eq!(approved.phase, JournalPhase::Approved);
+            assert_eq!(approved.recovery_binding, before.recovery_binding);
+            assert_eq!(
+                approved
+                    .approval
+                    .as_ref()
+                    .unwrap()
+                    .preconditions_journal_digest,
+                digest_state(&before)
+            );
+            assert!(accept_update(&before, &approved).is_ok());
+        }
+
+        #[test]
+        fn experimental_v2_rejects_binding_replacement_removal_and_downgrade() {
+            let mut wire = preconditions_wire(2);
+            wire["recovery_binding"] = recovery_binding();
+            let before = parse(&wire).unwrap();
+            let mut removed = wire.clone();
+            removed.as_object_mut().unwrap().remove("recovery_binding");
+            assert!(parse(&removed).is_err());
+            for (field, replacement) in
+                [("record_id", '2'), ("session_id", '3'), ("handoff_id", '4')]
+            {
+                let mut replaced = wire.clone();
+                replaced["recovery_binding"][field] = json!(digest(replacement));
+                let approved_replacement = approve(parse(&replaced).unwrap()).unwrap();
+                assert!(accept_update(&before, &approved_replacement).is_err());
+            }
+            let approved = approve(before.clone()).unwrap();
+            let mut tampered = serde_json::to_value(approved).unwrap();
+            tampered["recovery_binding"]["record_id"] = json!(digest('5'));
+            assert!(parse(&tampered).is_err());
+            assert!(parse(&legacy_approved_wire()).is_err());
+        }
+
+        #[test]
+        fn experimental_policy_rejects_legacy_v1_for_new_approval() {
+            let wire = preconditions_wire(1);
+            let previous = decoded_wire(&wire).unwrap();
+            assert_eq!(previous.phase, JournalPhase::PreconditionsVerified);
+            assert!(parse(&wire).is_err());
+            assert_eq!(
+                decoded_wire(&legacy_approved_wire()).unwrap().phase,
+                JournalPhase::Approved
+            );
+        }
+    }
+
     #[test]
     fn pinned_load_rejects_file_replaced_after_open() {
         let root = root("load-replaced-after-open");
