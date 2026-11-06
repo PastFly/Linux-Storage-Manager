@@ -23,6 +23,8 @@ pub struct BackupArtifactReceipt {
     pub kind: MetadataBackupKind,
     pub artifact_path: String,
     pub expected_identity: BackupExpectedIdentity,
+    pub device_id: u64,
+    pub inode: u64,
     pub size_bytes: u64,
     pub sha256: String,
 }
@@ -323,12 +325,14 @@ fn capture_with_runner(
             }
         }
 
-        let (size_bytes, sha256) = verify_artifact(&actual_path)?;
+        let (size_bytes, sha256, device_id, inode) = verify_artifact(&actual_path)?;
         receipts.push(BackupArtifactReceipt {
             ordinal: requirement.ordinal,
             kind: requirement.kind,
             artifact_path: requirement.artifact_path.clone(),
             expected_identity: requirement.expected_identity.clone(),
+            device_id,
+            inode,
             size_bytes,
             sha256,
         });
@@ -489,7 +493,13 @@ fn revalidate_receipt_at_root(
         }
 
         match verify_artifact(&actual_path) {
-            Ok((size_bytes, sha256)) => {
+            Ok((size_bytes, sha256, device_id, inode)) => {
+                if device_id != artifact.device_id || inode != artifact.inode {
+                    blockers.push(format!(
+                        "receipt artifact {} inode identity changed",
+                        artifact.ordinal
+                    ));
+                }
                 if size_bytes != artifact.size_bytes {
                     blockers.push(format!(
                         "receipt artifact {} size changed: expected {}, found {}",
@@ -678,7 +688,7 @@ fn create_artifact_file(path: &Path) -> Result<File, BackupCaptureError> {
         .map_err(|source| io_error(path, source))
 }
 
-fn verify_artifact(path: &Path) -> Result<(u64, String), BackupCaptureError> {
+fn verify_artifact(path: &Path) -> Result<(u64, String, u64, u64), BackupCaptureError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     if !crate::journal_store::trusted_journal_file(&metadata) {
         return Err(BackupCaptureError::UnsafeArtifact(path.to_path_buf()));
@@ -712,7 +722,12 @@ fn verify_artifact(path: &Path) -> Result<(u64, String), BackupCaptureError> {
     if bytes.is_empty() {
         return Err(BackupCaptureError::EmptyArtifact);
     }
-    Ok((bytes.len() as u64, format!("{:x}", Sha256::digest(&bytes))))
+    Ok((
+        bytes.len() as u64,
+        format!("{:x}", Sha256::digest(&bytes)),
+        opened.dev(),
+        opened.ino(),
+    ))
 }
 
 fn fingerprint(value: &impl Serialize) -> Result<String, serde_json::Error> {
@@ -953,7 +968,7 @@ mod tests {
         fs::write(&path, b"verified-backup").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
 
-        let (size, digest) = verify_artifact(&path).unwrap();
+        let (size, digest, _, _) = verify_artifact(&path).unwrap();
 
         assert_eq!(size, 15);
         assert_eq!(digest.len(), 64);
