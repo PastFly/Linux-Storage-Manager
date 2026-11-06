@@ -33,6 +33,7 @@ jobs:
           trap 'sudo umount "$mountpoint"' EXIT
           cargo test --locked -p lsm-executor --lib backup_verity::tests -- --test-threads=1
           sudo env PATH="$PATH" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" LSM_TEST_DISPOSABLE_VERITY=1 LSM_TEST_DISPOSABLE_VERITY_DIR="$mountpoint" cargo test --locked -p lsm-executor --lib backup_verity::tests -- --ignored --test-threads=1
+          sudo env PATH="$PATH" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" TMPDIR="$mountpoint" LSM_TEST_DISPOSABLE_VERITY=1 LSM_TEST_DISPOSABLE_VERITY_DIR="$mountpoint" cargo test --locked -p lsm-executor --lib backup_recovery_collector::tests::verity_experiment_seals_both_copies_and_records_their_measurements -- --ignored --exact --test-threads=1
 
   watchdog-probe:
     runs-on: ubuntu-24.04
