@@ -22,6 +22,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends strace
       - name: Build tests
         run: cargo test --locked -p lsm-executor --lib --no-run
+      - name: Probe anonymous staging inode close events
+        run: python3 tools/journal_close_probe.py
       - name: Compare sequential and parallel test processes
         run: |
           set +e
