@@ -308,12 +308,11 @@ fn manifest_fingerprint(manifest: &crate::MetadataBackupManifest) -> Result<Stri
 
 /// Experimental adapter. A future verified filesystem collector must replace
 /// `copies` and bind it durably before this format can authorize anything.
-pub(crate) fn from_experimental_verified_metadata(
+pub(crate) fn validate_capture_binding(
     manifest: &crate::MetadataBackupManifest,
     receipt: &crate::MetadataBackupReceipt,
     trusted: &RecoveryBinding,
-    copies: &[ExperimentalCopyPair],
-) -> Result<BackupRecoveryRecord, RecordError> {
+) -> Result<(), RecordError> {
     if manifest.schema_version() != 1
         || manifest.mutation_enabled()
         || !manifest.owner_acceptance_required()
@@ -332,7 +331,8 @@ pub(crate) fn from_experimental_verified_metadata(
         || receipt.recovery_session_id() != trusted.session_id
         || receipt.recovery_journal_id() != trusted.journal_id
         || manifest.requirements().len() != receipt.artifacts().len()
-        || receipt.artifacts().len() != copies.len()
+        || receipt.artifacts().is_empty()
+        || receipt.artifacts().len() > MAX_ARTIFACTS
         || !verify_receipt_artifacts(trusted, receipt.artifacts(), receipt.receipt_id())
     {
         return Err(RecordError::BindingMismatch);
@@ -344,6 +344,65 @@ pub(crate) fn from_experimental_verified_metadata(
     if root != legacy_root && root != attempt_root {
         return Err(RecordError::BindingMismatch);
     }
+    if !valid_path(manifest.artifact_directory()) {
+        return Err(RecordError::Invalid);
+    }
+    let mut paths = BTreeSet::new();
+    for (index, (requirement, artifact)) in manifest
+        .requirements()
+        .iter()
+        .zip(receipt.artifacts())
+        .enumerate()
+    {
+        let identity_valid = match (&artifact.kind, &artifact.expected_identity) {
+            (
+                crate::MetadataBackupKind::PartitionTable,
+                crate::BackupExpectedIdentity::PartitionTable {
+                    disk,
+                    table_label,
+                    table_id,
+                },
+            ) => {
+                valid_path(disk)
+                    && valid_atom(table_label)
+                    && table_id.as_deref().is_none_or(valid_atom)
+            }
+            (
+                crate::MetadataBackupKind::LvmVolumeGroup,
+                crate::BackupExpectedIdentity::LvmVolumeGroup { vg_name, vg_uuid },
+            ) => valid_atom(vg_name) && valid_atom(vg_uuid),
+            _ => false,
+        };
+        if requirement.ordinal as usize != index + 1
+            || requirement.ordinal != artifact.ordinal
+            || requirement.kind != artifact.kind
+            || requirement.artifact_path != artifact.artifact_path
+            || requirement.expected_identity != artifact.expected_identity
+            || !identity_valid
+            || !valid_path(&artifact.artifact_path)
+            || Path::new(&artifact.artifact_path).parent() != Some(root)
+            || !paths.insert(&artifact.artifact_path)
+            || artifact.size_bytes == 0
+            || artifact.size_bytes > MAX_ARTIFACT_BYTES
+            || !valid_digest(&artifact.sha256)
+        {
+            return Err(RecordError::BindingMismatch);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn from_experimental_verified_metadata(
+    manifest: &crate::MetadataBackupManifest,
+    receipt: &crate::MetadataBackupReceipt,
+    trusted: &RecoveryBinding,
+    copies: &[ExperimentalCopyPair],
+) -> Result<BackupRecoveryRecord, RecordError> {
+    validate_capture_binding(manifest, receipt, trusted)?;
+    if receipt.artifacts().len() != copies.len() {
+        return Err(RecordError::BindingMismatch);
+    }
+    let root = Path::new(manifest.artifact_directory());
     let mut recovery_dir_name = root.file_name().ok_or(RecordError::Invalid)?.to_os_string();
     recovery_dir_name.push(".recovery");
     let recovery_root = root.with_file_name(recovery_dir_name);
