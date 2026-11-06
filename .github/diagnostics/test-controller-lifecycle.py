@@ -73,7 +73,7 @@ def run_case(manager, observer, root, case):
         os.close(fd)
         try:
             environment = os.environ.copy()
-            if case == 'observer-before-go':
+            if case in ('observer-before-go', 'observer-stopped-before-go'):
                 environment['LSM_TEST_PAUSE_BEFORE_GO'] = '1'
             if case == 'launcher-poll-failure':
                 environment['LSM_TEST_POST_GO_POLL_FAULT'] = '1'
@@ -87,6 +87,8 @@ def run_case(manager, observer, root, case):
                 environment['LSM_TEST_DENY_MANAGER_PIDFD_OPEN'] = '1'
             if case == 'manager-death-before-launcher-pin':
                 environment['LSM_TEST_STOP_BEFORE_MANAGER_PIDFD'] = '1'
+            if case == 'spoof-worker-same-cgroup':
+                environment['LSM_TEST_SPOOF_SAME_GROUP_PIDFD'] = '1'
             def attach_case():
                 # The diagnostic manager, observer and launcher inherit this
                 # disposable parent even if setup fails before reporting PIDs.
@@ -107,6 +109,25 @@ def run_case(manager, observer, root, case):
                 print('PASS:', case, flush=True)
                 return
             parts = line(child.stdout).split()
+            if case == 'spoof-worker-same-cgroup':
+                assert len(parts) == 3 and parts[0] == 'SPOOF-GATE', ('expected spoof pre-GO barrier', parts)
+                alternate_pid = int(parts[1])
+                group = pathlib.Path(parts[2])
+                assert group.parent == case_root and group.name.startswith('lsm-backup-')
+                fds.append(os.pidfd_open(alternate_pid))
+                members = (group / 'cgroup.procs').read_text().split()
+                assert str(alternate_pid) in members and len(members) >= 2, 'alternate and worker were not both in cgroup'
+                assert not backup.with_suffix('.worker').exists(), 'payload ran before pre-GO barrier'
+                child.stdin.write(b'C')
+                child.stdin.flush()
+                child.wait(timeout=TIMEOUT)
+                wait_empty(group)
+                poller = select.poll()
+                poller.register(fds[0], select.POLLIN)
+                assert not poller.poll(0), 'alternate process did not remain alive'
+                assert not backup.with_suffix('.worker').exists(), 'spoofed worker pidfd allowed payload to run'
+                print('PASS:', case, flush=True)
+                return
             if case == 'manager-death-before-launcher-pin':
                 assert len(parts) == 3 and parts[0] == 'PIN-BARRIER', ('expected manager pin barrier', parts)
                 launcher_pid = int(parts[1])
@@ -180,7 +201,7 @@ def run_case(manager, observer, root, case):
                 wait_empty(case_root)
                 print('PASS:', case, flush=True)
                 return
-            if case == 'observer-before-go':
+            if case in ('observer-before-go', 'observer-stopped-before-go'):
                 assert len(parts) == 5 and parts[0] == 'GATE', ('expected pre-GO barrier', parts)
                 observer_pid, worker_pid, launcher_pid = map(int, parts[1:4])
                 group = pathlib.Path(parts[4])
@@ -188,8 +209,18 @@ def run_case(manager, observer, root, case):
                 fds.extend((os.pidfd_open(observer_pid), os.pidfd_open(worker_pid), os.pidfd_open(launcher_pid)))
                 assert not empty(group), 'pre-GO worker not in cgroup'
                 assert not backup.with_suffix('.worker').exists(), 'payload ran before GO'
-                signal.pidfd_send_signal(fds[0], signal.SIGKILL)
-                wait_dead(fds[0], 'observer')
+                if case == 'observer-stopped-before-go':
+                    signal.pidfd_send_signal(fds[0], signal.SIGSTOP)
+                    deadline = time.monotonic() + 1
+                    while time.monotonic() < deadline:
+                        if '\nState:\tT' in (pathlib.Path('/proc') / str(observer_pid) / 'status').read_text():
+                            break
+                        time.sleep(.01)
+                    else:
+                        raise AssertionError('observer did not stop before GO')
+                else:
+                    signal.pidfd_send_signal(fds[0], signal.SIGKILL)
+                    wait_dead(fds[0], 'observer')
                 child.stdin.write(b'C')
                 child.stdin.flush()
                 wait_dead(fds[1], 'pre-GO worker')
@@ -231,9 +262,20 @@ def run_case(manager, observer, root, case):
             elif case == 'launcher-no-numeric-manager-pidfd':
                 child.kill()
                 child.wait(timeout=TIMEOUT)
+            elif case == 'normal-flow':
+                marker = backup.with_suffix('.worker').read_text().split()
+                assert marker == [str(worker_pid), str(descendant_pid)], 'normal worker marker mismatch'
+                for process_fd in fds[1:]:
+                    poller = select.poll()
+                    poller.register(process_fd, select.POLLIN)
+                    assert not poller.poll(0), 'normal process unexpectedly exited'
+                child.kill()
+                child.wait(timeout=TIMEOUT)
             elif case == 'manager-death':
                 child.kill()
                 child.wait(timeout=TIMEOUT)
+            elif case == 'observer-stopped':
+                signal.pidfd_send_signal(fds[0], signal.SIGSTOP)
             elif case == 'observer-death':
                 signal.pidfd_send_signal(fds[0], signal.SIGKILL)
             elif case == 'lease-break':
@@ -258,7 +300,7 @@ def run_case(manager, observer, root, case):
                 child.wait(timeout=TIMEOUT)
             # The launcher lives outside the worker cgroup. Kill the exact
             # pidfd even when the controller failed before ACTIVE.
-            launcher_index = 0 if case in ('launcher-failure-before-active', 'launcher-pidfd-failure', 'manager-death-before-launcher-pin') else (2 if case == 'observer-before-go' else 3)
+            launcher_index = 0 if case in ('launcher-failure-before-active', 'launcher-pidfd-failure', 'manager-death-before-launcher-pin') else (2 if case in ('observer-before-go', 'observer-stopped-before-go') else 3)
             if len(fds) > launcher_index:
                 try:
                     signal.pidfd_send_signal(fds[launcher_index], signal.SIGKILL)
@@ -285,7 +327,7 @@ def main():
     root = pathlib.Path(sys.argv[3]).resolve(strict=True)
     assert root != pathlib.Path('/sys/fs/cgroup') and root.is_relative_to('/sys/fs/cgroup')
     assert os.environ.get('LSM_TEST_DISPOSABLE_CGROUP') == str(root), 'explicit disposable cgroup required'
-    cases = ('manager-death', 'observer-death', 'lease-break', 'observer-before-go', 'launcher-poll-failure', 'launcher-stopped', 'launcher-failure-before-active', 'manager-stopped', 'launcher-pidfd-failure', 'manager-auto-reap', 'launcher-stopped-after-go', 'launcher-no-numeric-manager-pidfd', 'manager-death-before-launcher-pin')
+    cases = ('manager-death', 'observer-death', 'lease-break', 'observer-before-go', 'launcher-poll-failure', 'launcher-stopped', 'launcher-failure-before-active', 'manager-stopped', 'launcher-pidfd-failure', 'manager-auto-reap', 'launcher-stopped-after-go', 'launcher-no-numeric-manager-pidfd', 'manager-death-before-launcher-pin', 'observer-stopped', 'observer-stopped-before-go', 'spoof-worker-same-cgroup', 'normal-flow')
     if len(sys.argv) == 5:
         assert sys.argv[4] in cases
         cases = (sys.argv[4],)

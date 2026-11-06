@@ -174,6 +174,7 @@ struct ManagerGuard {
     socket: File,
     dev: u64,
     ino: u64,
+    group: File,
 }
 impl gated::ExternalGuard for ManagerGuard {
     fn validate(&mut self, group: &File) -> io::Result<()> {
@@ -186,10 +187,78 @@ impl gated::ExternalGuard for ManagerGuard {
     }
     fn register_worker(&mut self, worker: &File) -> io::Result<()> {
         channel::require_live_sender(self.pidfd.as_raw_fd(), self.manager)?;
-        channel::send_worker_pidfd(self.socket.as_raw_fd(), worker.as_raw_fd())?;
+        let mut alternate_pid = None;
+        if std::env::var_os("LSM_TEST_SPOOF_SAME_GROUP_PIDFD").as_deref() == Some(OsStr::new("1")) {
+            // The launcher is single-threaded and signals are blocked here.
+            // This alternate real child is atomically born in the same cgroup;
+            // its post-clone path performs only async-signal-safe syscalls.
+            let mut raw: libc::c_int = -1;
+            let mut args: libc::clone_args = unsafe { std::mem::zeroed() };
+            args.flags = libc::CLONE_PIDFD as u64 | 0x2_0000_0000;
+            args.pidfd = (&mut raw as *mut libc::c_int) as u64;
+            args.exit_signal = libc::SIGCHLD as u64;
+            args.cgroup = self.group.as_raw_fd() as u64;
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_clone3,
+                    &args as *const libc::clone_args,
+                    std::mem::size_of::<libc::clone_args>(),
+                )
+            };
+            if result == 0 {
+                unsafe {
+                    if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) != 0 {
+                        libc::_exit(125);
+                    }
+                    loop {
+                        libc::pause();
+                    }
+                }
+            }
+            if result < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if raw < 0 {
+                return Err(invalid("spoof child pidfd unavailable"));
+            }
+            let alternate = unsafe { File::from_raw_fd(raw) };
+            alternate_pid = Some(result as libc::pid_t);
+            channel::send_worker_pidfd(self.socket.as_raw_fd(), alternate.as_raw_fd())?;
+        } else {
+            channel::send_worker_pidfd(self.socket.as_raw_fd(), worker.as_raw_fd())?;
+        }
         supervisor::diagnostic_wait_peer(&self.socket, &self.pidfd)?;
         supervisor::diagnostic_receive_byte(&self.socket, self.manager, b'A')?;
-        channel::require_live_sender(self.pidfd.as_raw_fd(), self.manager)
+        channel::require_live_sender(self.pidfd.as_raw_fd(), self.manager)?;
+        if let Some(pid) = alternate_pid {
+            // After acceptance, move only the alternate to the disposable
+            // case parent. This preserves a live impostor while allowing the
+            // launcher to check that the real worker is alone before GO.
+            let parent = unsafe {
+                libc::openat(
+                    self.group.as_raw_fd(),
+                    c"..".as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if parent < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let parent = unsafe { File::from_raw_fd(parent) };
+            let target = unsafe {
+                libc::openat(
+                    parent.as_raw_fd(),
+                    c"cgroup.procs".as_ptr(),
+                    libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if target < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut target = unsafe { File::from_raw_fd(target) };
+            target.write_all(pid.to_string().as_bytes())?;
+        }
+        Ok(())
     }
 }
 pub fn launcher(
@@ -235,6 +304,7 @@ pub fn launcher(
         socket,
         dev: m.dev(),
         ino: m.ino(),
+        group: group.try_clone()?,
     };
     let command = gated::PinnedCommand {
         executable: super::snapshot()?,
@@ -637,6 +707,23 @@ fn run_manager(
     channel::require_live_sender(worker.as_raw_fd(), worker_pid)?;
     if !group_has(&group, worker_pid)? {
         return Err(invalid("worker outside group"));
+    }
+    if std::env::var_os("LSM_TEST_SPOOF_SAME_GROUP_PIDFD").as_deref() == Some(OsStr::new("1")) {
+        println!("SPOOF-GATE {worker_pid} {}", path.display());
+        io::stdout().flush()?;
+        let mut item = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut item, 1, 1000) } != 1 || item.revents != libc::POLLIN {
+            return Err(invalid("spoof barrier timed out"));
+        }
+        let mut command = [0u8];
+        io::stdin().read_exact(&mut command)?;
+        if command != [b'C'] {
+            return Err(invalid("invalid spoof barrier command"));
+        }
     }
     guard.diagnostic_heartbeat()?;
     if std::env::var_os("LSM_TEST_PAUSE_BEFORE_GO").as_deref() == Some(OsStr::new("1")) {
