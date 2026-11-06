@@ -164,16 +164,22 @@ impl From<JournalStoreError> for CollectorError {
 }
 
 struct PinnedPair {
-    _primary: File,
-    _recovery: File,
+    primary: File,
+    recovery: File,
+    primary_name: OsString,
+    recovery_name: OsString,
+    primary_metadata: Metadata,
+    recovery_metadata: Metadata,
+    size_bytes: u64,
+    sha256: String,
 }
 
 pub(crate) struct PendingCopies {
-    _primary_dir: JournalDir,
-    _recovery_dir: JournalDir,
-    _primary_watch: DirectoryWatch,
-    _recovery_watch: DirectoryWatch,
-    _pairs: Vec<PinnedPair>,
+    primary_dir: JournalDir,
+    recovery_dir: JournalDir,
+    primary_watch: DirectoryWatch,
+    recovery_watch: DirectoryWatch,
+    pairs: Vec<PinnedPair>,
 }
 
 impl PendingCopies {
@@ -182,24 +188,88 @@ impl PendingCopies {
         Err(CollectorError::ObserverProofUnavailable)
     }
 
-    // Red-phase stub: never reports a successful observer.
+    /// Starts a real observer, then rechecks the pinned copies and namespace.
+    /// Returning is not proof against a pending or subsequent lease break.
+    #[cfg(test)]
     fn observe_at(
         self,
-        _root: &Path,
-        _executable: &OsStr,
+        root: &Path,
+        executable: &OsStr,
     ) -> Result<ObservedPending, CollectorError> {
-        Err(CollectorError::ObserverProofUnavailable)
+        self.observe_at_with_hook(root, executable, || {})
+    }
+
+    #[cfg(test)]
+    fn observe_at_with_hook(
+        mut self,
+        root: &Path,
+        executable: &OsStr,
+        after_ready: impl FnOnce(),
+    ) -> Result<ObservedPending, CollectorError> {
+        let mut descriptors = Vec::with_capacity(self.pairs.len() * 2);
+        for pair in &self.pairs {
+            descriptors.push(pair.primary.try_clone()?);
+            descriptors.push(pair.recovery.try_clone()?);
+        }
+        let supervisor =
+            crate::backup_supervisor::BackupSupervisor::start_at(descriptors, root, executable)?;
+        after_ready();
+        supervisor.probe_observer_alive()?;
+        self.primary_dir.verify_namespace()?;
+        self.recovery_dir.verify_namespace()?;
+        self.primary_watch.require_unchanged()?;
+        self.recovery_watch.require_unchanged()?;
+        for pair in &self.pairs {
+            let (_, primary, _) = read_checked(
+                &self.primary_dir,
+                &pair.primary_name,
+                pair.size_bytes,
+                &pair.sha256,
+                Some((pair.primary_metadata.dev(), pair.primary_metadata.ino())),
+            )?;
+            let (_, recovery, _) = read_checked(
+                &self.recovery_dir,
+                &pair.recovery_name,
+                pair.size_bytes,
+                &pair.sha256,
+                Some((pair.recovery_metadata.dev(), pair.recovery_metadata.ino())),
+            )?;
+            if !same_file(&pair.primary_metadata, &primary)
+                || !same_file(&pair.primary_metadata, &pair.primary.metadata()?)
+                || !same_file(&pair.recovery_metadata, &recovery)
+                || !same_file(&pair.recovery_metadata, &pair.recovery.metadata()?)
+                || (primary.dev(), primary.ino()) == (recovery.dev(), recovery.ino())
+            {
+                return Err(CollectorError::Changed);
+            }
+        }
+        self.primary_dir.verify_namespace()?;
+        self.recovery_dir.verify_namespace()?;
+        self.primary_watch.require_unchanged()?;
+        self.recovery_watch.require_unchanged()?;
+        supervisor.probe_observer_alive()?;
+        Ok(ObservedPending {
+            _pending: self,
+            supervisor,
+        })
     }
 }
 
-struct ObservedPending;
+#[cfg(test)]
+struct ObservedPending {
+    supervisor: crate::backup_supervisor::BackupSupervisor,
+    _pending: PendingCopies,
+}
 
+#[cfg(test)]
 impl ObservedPending {
     fn observer_pidfd_for_test(&self) -> Result<File, CollectorError> {
-        Err(CollectorError::ObserverProofUnavailable)
+        Ok(self.supervisor.observer_pidfd_for_test()?)
     }
     fn observer_alive(&self) -> Result<(), CollectorError> {
-        Err(CollectorError::ObserverProofUnavailable)
+        // This snapshot does not rule out pending SIGIO or future lease breaks.
+        self.supervisor.probe_observer_alive()?;
+        Ok(())
     }
     fn seal(self) -> Result<BackupRecoveryRecord, CollectorError> {
         Err(CollectorError::ObserverProofUnavailable)
@@ -355,10 +425,16 @@ fn prepare_with_hook(
         {
             return Err(CollectorError::Changed);
         }
-        expected_names.push(recovery_name);
+        expected_names.push(recovery_name.clone());
         pairs.push(PinnedPair {
-            _primary: primary,
-            _recovery: recovery,
+            primary,
+            recovery,
+            primary_name: name.to_os_string(),
+            recovery_name,
+            primary_metadata: original,
+            recovery_metadata: recovered,
+            size_bytes: artifact.size_bytes,
+            sha256: artifact.sha256.clone(),
         });
     }
     after_copy()?;
@@ -397,8 +473,8 @@ fn prepare_with_hook(
                 None,
             ),
         )?;
-        if !same_file(&primary_metadata, &pair._primary.metadata()?)
-            || !same_file(&recovery_metadata, &pair._recovery.metadata()?)
+        if !same_file(&primary_metadata, &pair.primary.metadata()?)
+            || !same_file(&recovery_metadata, &pair.recovery.metadata()?)
         {
             return Err(CollectorError::Changed);
         }
@@ -421,11 +497,11 @@ fn prepare_with_hook(
         return Err(CollectorError::Changed);
     }
     Ok(PendingCopies {
-        _primary_dir: primary_dir,
-        _recovery_dir: recovery_dir,
-        _primary_watch: primary_watch,
-        _recovery_watch: recovery_watch,
-        _pairs: pairs,
+        primary_dir,
+        recovery_dir,
+        primary_watch,
+        recovery_watch,
+        pairs,
     })
 }
 
@@ -543,19 +619,21 @@ mod tests {
     #[ignore = "requires an explicitly delegated disposable Linux cgroup and observer executable"]
     fn observer_refuses_retained_writer_before_ready() {
         let (root, executable) = disposable_observer();
-        let (manifest, receipt, trusted, lock, primary, recovery) =
-            fixture("collector-observer-writer");
-        let (source, copy) = paths(&receipt, &primary, &recovery);
-        let writer = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&source)
-            .unwrap();
-        let pending = prepare_at(&manifest, &receipt, &trusted, &primary, &recovery).unwrap();
-        assert!(pending.observe_at(&root, &executable).is_err());
-        assert!(source.exists() && copy.exists());
-        drop(writer);
-        drop(receipt);
-        cleanup(&lock, &primary, &recovery);
+        for recovery_writer in [false, true] {
+            let (manifest, receipt, trusted, lock, primary, recovery) =
+                fixture("collector-observer-writer");
+            let (source, copy) = paths(&receipt, &primary, &recovery);
+            let pending = prepare_at(&manifest, &receipt, &trusted, &primary, &recovery).unwrap();
+            let writer = std::fs::OpenOptions::new()
+                .write(true)
+                .open(if recovery_writer { &copy } else { &source })
+                .unwrap();
+            assert!(pending.observe_at(&root, &executable).is_err());
+            assert!(source.exists() && copy.exists());
+            drop(writer);
+            drop(receipt);
+            cleanup(&lock, &primary, &recovery);
+        }
     }
 
     #[test]
@@ -563,26 +641,28 @@ mod tests {
     fn observer_stops_after_lease_break_and_cannot_seal() {
         use std::os::unix::fs::OpenOptionsExt;
         let (root, executable) = disposable_observer();
-        let (manifest, receipt, trusted, lock, primary, recovery) =
-            fixture("collector-observer-break");
-        let (source, copy) = paths(&receipt, &primary, &recovery);
-        let pending = prepare_at(&manifest, &receipt, &trusted, &primary, &recovery).unwrap();
-        let observed = pending.observe_at(&root, &executable).unwrap();
-        let pidfd = observed.observer_pidfd_for_test().unwrap();
-        let writer = std::fs::OpenOptions::new()
-            .write(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(&source);
-        assert!(matches!(writer, Err(ref error) if error.raw_os_error() == Some(libc::EAGAIN)));
-        wait_pidfd(&pidfd);
-        assert!(observed.observer_alive().is_err());
-        assert!(matches!(
-            observed.seal(),
-            Err(CollectorError::ObserverProofUnavailable)
-        ));
-        assert!(source.exists() && copy.exists());
-        drop(receipt);
-        cleanup(&lock, &primary, &recovery);
+        for break_recovery in [false, true] {
+            let (manifest, receipt, trusted, lock, primary, recovery) =
+                fixture("collector-observer-break");
+            let (source, copy) = paths(&receipt, &primary, &recovery);
+            let pending = prepare_at(&manifest, &receipt, &trusted, &primary, &recovery).unwrap();
+            let observed = pending.observe_at(&root, &executable).unwrap();
+            let pidfd = observed.observer_pidfd_for_test().unwrap();
+            let writer = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(if break_recovery { &copy } else { &source });
+            assert!(matches!(writer, Err(ref error) if error.raw_os_error() == Some(libc::EAGAIN)));
+            wait_pidfd(&pidfd);
+            assert!(observed.observer_alive().is_err());
+            assert!(matches!(
+                observed.seal(),
+                Err(CollectorError::ObserverProofUnavailable)
+            ));
+            assert!(source.exists() && copy.exists());
+            drop(receipt);
+            cleanup(&lock, &primary, &recovery);
+        }
     }
 
     #[test]
@@ -611,6 +691,31 @@ mod tests {
         assert!(matches!(
             observed.seal(),
             Err(CollectorError::ObserverProofUnavailable)
+        ));
+        drop(receipt);
+        cleanup(&lock, &primary, &recovery);
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly delegated disposable Linux cgroup and observer executable"]
+    fn observer_ready_does_not_hide_transient_primary_namespace_change() {
+        let (root, executable) = disposable_observer();
+        let (manifest, receipt, trusted, lock, primary, recovery) =
+            fixture("collector-observer-rename");
+        let pending = prepare_at(&manifest, &receipt, &trusted, &primary, &recovery).unwrap();
+        let moved = primary.with_extension("moved");
+        let hook_ran = std::cell::Cell::new(false);
+        let result = pending.observe_at_with_hook(&root, &executable, || {
+            hook_ran.set(true);
+            std::fs::rename(&primary, &moved).unwrap();
+            std::fs::rename(&moved, &primary).unwrap();
+        });
+        assert!(hook_ran.get(), "observer did not reach its internal READY");
+        assert!(matches!(
+            result,
+            Err(CollectorError::Journal(
+                JournalStoreError::ChangedDuringInspection
+            ))
         ));
         drop(receipt);
         cleanup(&lock, &primary, &recovery);

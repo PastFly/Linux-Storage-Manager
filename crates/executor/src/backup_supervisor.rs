@@ -442,16 +442,24 @@ pub(crate) struct BackupSupervisor {
 
 impl BackupSupervisor {
     pub(crate) fn start(backups: Vec<File>) -> io::Result<Self> {
-        Self::start_at(
+        Self::start_inner(
             backups,
             Path::new("/sys/fs/cgroup"),
             OsStr::new("/proc/self/exe"),
         )
     }
 
-    // Production calls this only with the fixed paths above; tests may inject
-    // a disposable delegated cgroup and observer executable.
-    fn start_at(backups: Vec<File>, root: &Path, executable: &OsStr) -> io::Result<Self> {
+    // Test-only injection: callers must supply a disposable delegated group.
+    #[cfg(test)]
+    pub(crate) fn start_at(
+        backups: Vec<File>,
+        root: &Path,
+        executable: &OsStr,
+    ) -> io::Result<Self> {
+        Self::start_inner(backups, root, executable)
+    }
+
+    fn start_inner(backups: Vec<File>, root: &Path, executable: &OsStr) -> io::Result<Self> {
         if unsafe { libc::geteuid() } != 0 {
             return Err(invalid("observer requires root"));
         }
@@ -554,6 +562,43 @@ impl BackupSupervisor {
             return Err(invalid("cgroup became populated"));
         }
         Ok(supervisor)
+    }
+
+    /// A point-in-time process/socket check, not proof that no SIGIO is
+    /// pending or that a lease will remain intact after this call.
+    #[cfg(test)]
+    pub(crate) fn probe_observer_alive(&self) -> io::Result<()> {
+        require_observer_alive(&self.observer_pidfd)?;
+        let socket = self
+            .socket
+            .as_ref()
+            .ok_or_else(|| invalid("observer socket unavailable"))?;
+        let mut item = libc::pollfd {
+            fd: socket.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(&mut item, 1, 0) };
+        if result < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if result != 0 || item.revents != 0 {
+            return Err(invalid("observer connection changed"));
+        }
+        let group = self
+            .group
+            .as_ref()
+            .ok_or_else(|| invalid("observer cgroup unavailable"))?;
+        group.verify()?;
+        if populated(&group.events)? {
+            return Err(invalid("observer cgroup became populated"));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observer_pidfd_for_test(&self) -> io::Result<File> {
+        self.observer_pidfd.try_clone()
     }
 
     /// Disarm only after the observer has confirmed the group is empty.
