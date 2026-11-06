@@ -1782,6 +1782,24 @@ mod tests {
     }
 
     #[test]
+    fn failed_writer_handshake_wakes_child_despite_duplicated_socket() {
+        let root = root("writer-handshake-failure");
+        let store = DurableJournalStore::at(&root);
+        store.persist_new(&journal()).unwrap();
+        let directory = crate::journal_fd::JournalDir::open(&root).unwrap();
+        let name = std::ffi::OsStr::new(".staged-test");
+        let error = directory
+            .write_staged_file_send_fails(name, b"record")
+            .unwrap_err();
+        assert!(
+            matches!(error, JournalStoreError::Io { source, .. } if source.raw_os_error() == Some(libc::EIO))
+        );
+        assert!(root.join(name).exists());
+        assert!(store.all().is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn automatic_sigchld_reaping_rejects_writer_before_creating_stage() {
         const MARKER: &str = "LSM_TEST_AUTOMATIC_SIGCHLD_REAPING";
         if let Some(mode) = std::env::var_os(MARKER) {

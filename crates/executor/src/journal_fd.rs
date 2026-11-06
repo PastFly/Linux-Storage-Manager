@@ -53,6 +53,7 @@ struct WriterControls {
     crash_after_create: bool,
     injected_error: i32,
     fail_fork: bool,
+    fail_send: bool,
     ready_fd: libc::c_int,
     release_fd: libc::c_int,
 }
@@ -141,16 +142,6 @@ unsafe fn isolated_writer(
         error: 0,
         reserved: 0,
     };
-    // Bound the parent-to-writer handshake even if another fork retains the
-    // socket. A timeout is a failure, never permission to publish.
-    let mut ready = libc::pollfd {
-        fd: report_fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    if libc::poll(&mut ready, 1, 10_000) <= 0 || ready.revents & libc::POLLIN == 0 {
-        libc::_exit(77);
-    }
     let received = libc::recv(
         report_fd,
         (&mut request as *mut WriterReport).cast(),
@@ -335,6 +326,7 @@ impl JournalDir {
                 crash_after_create: false,
                 injected_error: 0,
                 fail_fork: false,
+                fail_send: false,
                 ready_fd: -1,
                 release_fd: -1,
             },
@@ -354,6 +346,7 @@ impl JournalDir {
                 crash_after_create: true,
                 injected_error: 0,
                 fail_fork: false,
+                fail_send: false,
                 ready_fd: -1,
                 release_fd: -1,
             },
@@ -374,6 +367,7 @@ impl JournalDir {
                 crash_after_create: false,
                 injected_error,
                 fail_fork: false,
+                fail_send: false,
                 ready_fd: -1,
                 release_fd: -1,
             },
@@ -395,6 +389,7 @@ impl JournalDir {
                 crash_after_create: false,
                 injected_error: 0,
                 fail_fork: false,
+                fail_send: false,
                 ready_fd,
                 release_fd,
             },
@@ -414,6 +409,27 @@ impl JournalDir {
                 crash_after_create: false,
                 injected_error: 0,
                 fail_fork: true,
+                fail_send: false,
+                ready_fd: -1,
+                release_fd: -1,
+            },
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn write_staged_file_send_fails(
+        &self,
+        name: &std::ffi::OsStr,
+        bytes: &[u8],
+    ) -> Result<File, JournalStoreError> {
+        self.write_staged_file_inner(
+            name,
+            bytes,
+            WriterControls {
+                crash_after_create: false,
+                injected_error: 0,
+                fail_fork: false,
+                fail_send: true,
                 ready_fd: -1,
                 release_fd: -1,
             },
@@ -551,20 +567,43 @@ impl JournalDir {
         if let Some(error) = &local_error {
             request.error = error.raw_os_error().unwrap_or(libc::EIO);
         }
-        let sent = unsafe {
-            libc::send(
-                result_socket.as_raw_fd(),
-                (&request as *const WriterReport).cast(),
-                std::mem::size_of::<WriterReport>(),
-                libc::MSG_NOSIGNAL,
-            )
+        // The injected failure retains a duplicate to verify that shutdown,
+        // rather than merely closing this descriptor, wakes the child.
+        #[cfg(test)]
+        let retained_socket = if controls.fail_send {
+            let fd = unsafe { libc::dup(result_socket.as_raw_fd()) };
+            if fd < 0 {
+                return Err(failure(&path, io::Error::last_os_error()));
+            }
+            Some(unsafe { File::from_raw_fd(fd) })
+        } else {
+            None
+        };
+        let sent = if controls.fail_send {
+            -1
+        } else {
+            unsafe {
+                libc::send(
+                    result_socket.as_raw_fd(),
+                    (&request as *const WriterReport).cast(),
+                    std::mem::size_of::<WriterReport>(),
+                    libc::MSG_NOSIGNAL,
+                )
+            }
         };
         let send_error = if sent != std::mem::size_of::<WriterReport>() as isize {
-            let error = if sent < 0 {
+            let error = if controls.fail_send {
+                io::Error::from_raw_os_error(libc::EIO)
+            } else if sent < 0 {
                 io::Error::last_os_error()
             } else {
                 io::Error::other("incomplete journal writer request")
             };
+            // shutdown changes the socket endpoint itself, including copies
+            // inherited by unrelated forks, so the child wakes with EOF.
+            unsafe {
+                libc::shutdown(result_socket.as_raw_fd(), libc::SHUT_WR);
+            }
             Some(error)
         } else {
             None
@@ -583,6 +622,8 @@ impl JournalDir {
                 return Err(failure(&path, error));
             }
         }
+        #[cfg(test)]
+        drop(retained_socket);
         if let Some(error) = local_error.or(send_error) {
             return Err(failure(&path, error));
         }
