@@ -44,6 +44,9 @@ jobs:
         run: |
           cargo build --locked --release --manifest-path .github/diagnostics/Cargo.toml --target-dir /tmp/lsm-observer-target
           sudo python3 -I .github/diagnostics/test-backup-observer.py /tmp/lsm-observer-target/release/lsm-observer /sys/fs/cgroup
+      - name: Test gated child launch on disposable cgroups
+        run: |
+          sudo python3 -I .github/diagnostics/test-gated-launch.py /tmp/lsm-observer-target/release/lsm-gated-launch-proof /sys/fs/cgroup
       - name: Test recovery evidence format
         run: cargo test --locked -p lsm-executor --lib backup_recovery_record::tests
       - name: Test journal recovery binding
