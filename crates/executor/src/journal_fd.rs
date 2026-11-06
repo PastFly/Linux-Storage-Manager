@@ -984,10 +984,24 @@ fn irrelevant_sibling_attrib(
         return false;
     };
     let name = &raw_name[..end];
-    if name.is_empty() || name.contains(&b'/') || raw_name[end..].iter().any(|byte| *byte != 0) {
+    if name.is_empty()
+        || name == b"."
+        || name == b".."
+        || name.contains(&b'/')
+        || raw_name[end..].iter().any(|byte| *byte != 0)
+    {
         return false;
     }
     name != next_name.as_os_str().as_bytes()
+}
+
+fn retry_interrupted(consecutive: &mut usize) -> bool {
+    const MAX_CONSECUTIVE_INTERRUPTS: usize = 64;
+    if *consecutive >= MAX_CONSECUTIVE_INTERRUPTS {
+        return false;
+    }
+    *consecutive += 1;
+    true
 }
 
 impl DirectoryWatch {
@@ -995,10 +1009,12 @@ impl DirectoryWatch {
         const MAX_EVENTS: usize = 1024;
         let mut bytes = [0_u8; 4096];
         let mut processed = 0usize;
+        let mut consecutive_interruptions = 0usize;
         loop {
             match self.file.read(&mut bytes) {
                 Ok(0) => return Err(JournalStoreError::ChangedDuringInspection),
                 Ok(length) => {
+                    consecutive_interruptions = 0;
                     let header_size = std::mem::size_of::<libc::inotify_event>();
                     let mut offset = 0usize;
                     while offset < length {
@@ -1034,7 +1050,11 @@ impl DirectoryWatch {
                         offset = end;
                     }
                 }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                    if !retry_interrupted(&mut consecutive_interruptions) {
+                        return Err(JournalStoreError::ChangedDuringInspection);
+                    }
+                }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(error) => return Err(failure(&self.path, error)),
             }
@@ -1050,11 +1070,6 @@ mod namespace_watch_tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-    // Red-phase stub; the real watch loop will call the bounded helper.
-    fn retry_interrupted(_consecutive: &mut usize) -> bool {
-        true
-    }
 
     #[test]
     fn repeated_interruption_exhausts_watch_retry_budget() {
