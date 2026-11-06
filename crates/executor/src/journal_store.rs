@@ -10,8 +10,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use lsm_planner::{
-    ExactApprovalBinding, ExecutionStartBinding, JournalEvent, JournalPhase, OperationJournal,
-    VerifiedMutationBoundaryBinding, JOURNAL_DIRECTORY,
+    ExactApprovalBinding, ExecutionStartBinding, JournalEvent, JournalPhase,
+    JournalRecoveryBinding, OperationJournal, VerifiedMutationBoundaryBinding, JOURNAL_DIRECTORY,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -123,12 +123,15 @@ fn journal_content_digest(journal: &OperationJournal) -> Result<String, JournalS
 }
 
 fn history_matches_final(history: &OperationJournal, final_journal: &OperationJournal) -> bool {
-    history.journal_id == final_journal.journal_id
+    history.schema_version == final_journal.schema_version
+        && history.journal_id == final_journal.journal_id
         && history.plan_id == final_journal.plan_id
         && history.target == final_journal.target
         && history.baseline_manifest_digest == final_journal.baseline_manifest_digest
         && (history.approval.is_none() || history.approval == final_journal.approval)
         && (history.execution.is_none() || history.execution == final_journal.execution)
+        && (history.recovery_binding.is_none()
+            || history.recovery_binding == final_journal.recovery_binding)
         && final_journal.events.starts_with(&history.events)
         && history.events.len() < final_journal.events.len()
 }
@@ -176,7 +179,18 @@ struct JournalWire {
     execution: Option<ExecutionStartBinding>,
     #[serde(default)]
     verified_boundary: Option<VerifiedMutationBoundaryBinding>,
+    #[serde(default, deserialize_with = "deserialize_optional_recovery_binding")]
+    recovery_binding: Option<Option<JournalRecoveryBinding>>,
     events: Vec<JournalEvent>,
+}
+
+fn deserialize_optional_recovery_binding<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<JournalRecoveryBinding>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<JournalRecoveryBinding>::deserialize(deserializer).map(Some)
 }
 
 impl Default for DurableJournalStore {
@@ -684,7 +698,20 @@ impl DurableJournalStore {
     ) -> Result<PathBuf, JournalStoreError> {
         validate_journal(expected)?;
         validate_journal(journal)?;
-        if expected.journal_id != journal.journal_id
+        let recovery_binding_valid = match (&expected.recovery_binding, &journal.recovery_binding) {
+            (Some(before), Some(after)) => before == after,
+            (None, None) => true,
+            (None, Some(_)) => {
+                expected.schema_version == 2
+                    && expected.phase == JournalPhase::IdentityRevalidated
+                    && journal.phase == JournalPhase::PreconditionsVerified
+                    && journal.events.len() == expected.events.len() + 1
+            }
+            (Some(_), None) => false,
+        };
+        if expected.schema_version != journal.schema_version
+            || !recovery_binding_valid
+            || expected.journal_id != journal.journal_id
             || expected.plan_id != journal.plan_id
             || expected.target != journal.target
             || expected.baseline_manifest_digest != journal.baseline_manifest_digest
@@ -1071,6 +1098,16 @@ fn decode_journal(bytes: &[u8], journal_id: &str) -> Result<OperationJournal, Jo
             "journal ID does not match the requested durable record".to_owned(),
         ));
     }
+    if wire.schema_version == 1 && wire.recovery_binding.is_some() {
+        return Err(JournalStoreError::InvalidRecord(
+            "legacy journal has a recovery binding field".to_owned(),
+        ));
+    }
+    if matches!(wire.recovery_binding.as_ref(), Some(None)) {
+        return Err(JournalStoreError::InvalidRecord(
+            "null recovery binding is not allowed".to_owned(),
+        ));
+    }
 
     let journal = OperationJournal {
         schema_version: wire.schema_version,
@@ -1083,6 +1120,7 @@ fn decode_journal(bytes: &[u8], journal_id: &str) -> Result<OperationJournal, Jo
         approval: wire.approval,
         execution: wire.execution,
         verified_boundary: wire.verified_boundary,
+        recovery_binding: wire.recovery_binding.flatten(),
         events: wire.events,
     };
     validate_journal(&journal)?;
@@ -1090,7 +1128,7 @@ fn decode_journal(bytes: &[u8], journal_id: &str) -> Result<OperationJournal, Jo
 }
 
 fn validate_journal(journal: &OperationJournal) -> Result<(), JournalStoreError> {
-    if journal.schema_version != 1 {
+    if !matches!(journal.schema_version, 1 | 2) {
         return Err(JournalStoreError::InvalidRecord(
             "unsupported journal schema version".to_owned(),
         ));
@@ -1140,6 +1178,25 @@ fn validate_journal(journal: &OperationJournal) -> Result<(), JournalStoreError>
         return Err(JournalStoreError::InvalidRecord(
             "journal phase does not match the event chain".to_owned(),
         ));
+    }
+
+    let reached_preconditions = journal.events.iter().any(|event| {
+        event.from == JournalPhase::IdentityRevalidated
+            && event.to == JournalPhase::PreconditionsVerified
+    });
+    match (journal.schema_version, &journal.recovery_binding) {
+        (1, None) => {}
+        (2, None) if !reached_preconditions => {}
+        (2, Some(binding)) if reached_preconditions => {
+            validate_hex_digest(&binding.record_id, "recovery record ID")?;
+            validate_hex_digest(&binding.session_id, "recovery session ID")?;
+            validate_hex_digest(&binding.handoff_id, "recovery handoff ID")?;
+        }
+        _ => {
+            return Err(JournalStoreError::InvalidRecord(
+                "recovery binding does not match journal schema and history".to_owned(),
+            ))
+        }
     }
 
     let mutation_expected = matches!(
@@ -1214,6 +1271,16 @@ fn validate_approval_binding(journal: &OperationJournal) -> Result<(), JournalSt
             if binding.target_manifest_digest != journal.baseline_manifest_digest {
                 return Err(JournalStoreError::InvalidRecord(
                     "approval binding target manifest does not match the journal".to_owned(),
+                ));
+            }
+            if journal.schema_version == 2
+                && journal
+                    .recovery_binding
+                    .as_ref()
+                    .is_none_or(|recovery| recovery.session_id != binding.locked_session_id)
+            {
+                return Err(JournalStoreError::InvalidRecord(
+                    "approval session does not match recovery binding".to_owned(),
                 ));
             }
             if !binding.integrity_matches()? {
@@ -1644,6 +1711,7 @@ mod tests {
             approval: None,
             execution: None,
             verified_boundary: None,
+            recovery_binding: None,
             events: Vec::new(),
         }
     }

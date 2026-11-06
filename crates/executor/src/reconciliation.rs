@@ -108,6 +108,7 @@ mod tests {
             approval: None,
             execution: None,
             verified_boundary: None,
+            recovery_binding: None,
             events: Vec::new(),
         };
         store.persist_new(&journal).unwrap();

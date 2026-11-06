@@ -349,6 +349,24 @@ pub enum ExecutionStartBindingError {
     Serialization(String),
 }
 
+/// Identifies the recovery record expected by an opt-in v2 journal.
+/// This binding alone does not establish that the record is durable or trusted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JournalRecoveryBinding {
+    pub record_id: String,
+    pub session_id: String,
+    pub handoff_id: String,
+}
+
+impl JournalRecoveryBinding {
+    fn is_valid(&self) -> bool {
+        is_sha256_hex(&self.record_id)
+            && is_sha256_hex(&self.session_id)
+            && is_sha256_hex(&self.handoff_id)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OperationJournal {
     pub schema_version: u32,
@@ -362,6 +380,8 @@ pub struct OperationJournal {
     pub execution: Option<ExecutionStartBinding>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verified_boundary: Option<VerifiedMutationBoundaryBinding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_binding: Option<JournalRecoveryBinding>,
     pub events: Vec<JournalEvent>,
 }
 
@@ -437,6 +457,9 @@ pub enum JournalTransition<'a> {
         fresh_manifest_digest: &'a str,
     },
     PreconditionsVerified,
+    PreconditionsVerifiedWithRecovery {
+        binding: &'a JournalRecoveryBinding,
+    },
     ExactPlanApproved {
         approved_plan_id: &'a str,
         approval: &'a ExactApprovalBinding,
@@ -512,6 +535,8 @@ pub enum JournalError {
     CompletionVerifiedBoundaryMismatch,
     #[error("journal is terminal and cannot advance")]
     Terminal,
+    #[error("journal recovery binding is missing, invalid, or inconsistent")]
+    RecoveryBindingInvalid,
 }
 
 impl OperationJournal {
@@ -527,8 +552,17 @@ impl OperationJournal {
             approval: None,
             execution: None,
             verified_boundary: None,
+            recovery_binding: None,
             events: Vec::new(),
         }
+    }
+
+    /// Opt into the experimental journal format. The caller must establish
+    /// and persist the recovery record separately before binding it here.
+    pub fn new_with_recovery_v2(guard: &ExecutionGuardPlan) -> Self {
+        let mut journal = Self::new(guard);
+        journal.schema_version = 2;
+        journal
     }
 
     pub fn apply(&mut self, transition: JournalTransition<'_>) -> Result<(), JournalError> {
@@ -562,18 +596,46 @@ impl OperationJournal {
                     "fresh target identity exactly matches the frozen baseline",
                 )
             }
-            JournalTransition::PreconditionsVerified => self.advance(
-                JournalPhase::IdentityRevalidated,
-                JournalPhase::PreconditionsVerified,
-                "preconditions-verified",
-                "filesystem decision, backups and other future executor prerequisites verified",
-            ),
+            JournalTransition::PreconditionsVerified => {
+                if self.schema_version != 1 || self.recovery_binding.is_some() {
+                    return Err(JournalError::RecoveryBindingInvalid);
+                }
+                self.advance(
+                    JournalPhase::IdentityRevalidated,
+                    JournalPhase::PreconditionsVerified,
+                    "preconditions-verified",
+                    "filesystem decision, backups and other future executor prerequisites verified",
+                )
+            }
+            JournalTransition::PreconditionsVerifiedWithRecovery { binding } => {
+                if self.schema_version != 2
+                    || self.recovery_binding.is_some()
+                    || !binding.is_valid()
+                {
+                    return Err(JournalError::RecoveryBindingInvalid);
+                }
+                self.advance(
+                    JournalPhase::IdentityRevalidated,
+                    JournalPhase::PreconditionsVerified,
+                    "preconditions-verified",
+                    "filesystem decision, backups and other future executor prerequisites verified",
+                )?;
+                self.recovery_binding = Some(binding.clone());
+                Ok(())
+            }
             JournalTransition::ExactPlanApproved {
                 approved_plan_id,
                 approval,
             } => {
                 if self.phase != JournalPhase::PreconditionsVerified {
                     return Err(self.invalid("exact_plan_approved"));
+                }
+                match (self.schema_version, &self.recovery_binding) {
+                    (1, None) => {}
+                    (2, Some(binding))
+                        if binding.is_valid()
+                            && binding.session_id == approval.locked_session_id => {}
+                    _ => return Err(JournalError::RecoveryBindingInvalid),
                 }
                 if approved_plan_id != self.plan_id {
                     return Err(JournalError::ApprovalMismatch);
@@ -607,6 +669,13 @@ impl OperationJournal {
             JournalTransition::ExecutionStarted { binding } => {
                 if self.phase != JournalPhase::Approved {
                     return Err(self.invalid("execution_started"));
+                }
+                match (self.schema_version, &self.recovery_binding, &self.approval) {
+                    (1, None, _) => {}
+                    (2, Some(recovery), Some(approval))
+                        if recovery.is_valid()
+                            && recovery.session_id == approval.locked_session_id => {}
+                    _ => return Err(JournalError::RecoveryBindingInvalid),
                 }
                 let approval = self
                     .approval
@@ -868,4 +937,65 @@ impl OperationJournal {
 
 fn fingerprint(value: &impl Serialize) -> Result<String, serde_json::Error> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
+}
+
+#[cfg(test)]
+mod recovery_v2_tests {
+    use super::*;
+
+    fn guard() -> ExecutionGuardPlan {
+        ExecutionGuardPlan {
+            schema_version: 1,
+            guard_id: "a".repeat(64),
+            plan_id: "b".repeat(64),
+            target: "/".into(),
+            baseline_manifest_digest: "c".repeat(64),
+            route_status: LayerRouteStatus::SupportedProfile,
+            status: GuardPlanStatus::FutureExecutorGatesRequired,
+            lock: OperationLockPlan {
+                scope: LockScope::HostExclusive,
+                lock_path: "/test/lock".into(),
+                resource_keys: Vec::new(),
+                blocking: false,
+                stale_lock_recovery: "inspect".into(),
+            },
+            journal_path: "/test/journal".into(),
+            gates: Vec::new(),
+            blockers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn opt_in_v2_requires_valid_binding_when_preconditions_advance() {
+        let guard = guard();
+        assert_eq!(OperationJournal::new(&guard).schema_version, 1);
+        let mut journal = OperationJournal::new_with_recovery_v2(&guard);
+        assert_eq!(journal.schema_version, 2);
+        journal.apply(JournalTransition::HostLockAcquired).unwrap();
+        journal
+            .apply(JournalTransition::IdentityRevalidated {
+                fresh_manifest_digest: &guard.baseline_manifest_digest,
+            })
+            .unwrap();
+        let before = journal.clone();
+        assert!(journal
+            .apply(JournalTransition::PreconditionsVerified)
+            .is_err());
+        let mut binding = JournalRecoveryBinding {
+            record_id: "d".repeat(64),
+            session_id: "e".repeat(64),
+            handoff_id: "f".repeat(64),
+        };
+        binding.record_id = "invalid".into();
+        assert!(journal
+            .apply(JournalTransition::PreconditionsVerifiedWithRecovery { binding: &binding })
+            .is_err());
+        assert_eq!(journal, before);
+        binding.record_id = "d".repeat(64);
+        journal
+            .apply(JournalTransition::PreconditionsVerifiedWithRecovery { binding: &binding })
+            .unwrap();
+        assert_eq!(journal.phase, JournalPhase::PreconditionsVerified);
+        assert_eq!(journal.recovery_binding.as_ref(), Some(&binding));
+    }
 }

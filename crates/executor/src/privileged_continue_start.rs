@@ -290,6 +290,7 @@ mod tests {
             approval: None,
             execution: Some(execution.clone()),
             verified_boundary: Some(boundary),
+            recovery_binding: None,
             events: vec![],
         }
     }

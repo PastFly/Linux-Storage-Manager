@@ -50,7 +50,11 @@ jobs:
       - name: Test recovery evidence format
         run: cargo test --locked -p lsm-executor --lib backup_recovery_record::tests
       - name: Test recovery evidence storage
-        run: cargo test --locked -p lsm-executor --lib backup_recovery_storage::tests
+        run: |
+          cargo test --locked -p lsm-executor --lib backup_recovery_storage::tests -- --test-threads=1
+          for attempt in 1 2 3; do
+            cargo test --locked -p lsm-executor --lib backup_recovery_storage::tests -- --test-threads=16
+          done
       - name: Test v2 precondition attachment
         run: cargo test --locked -p lsm-executor --lib journal_store::tests::v2_
       - name: Test experimental journal binding model

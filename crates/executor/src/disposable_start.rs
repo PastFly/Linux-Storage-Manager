@@ -190,6 +190,7 @@ mod tests {
             approval: Some(approval),
             execution: None,
             verified_boundary: None,
+            recovery_binding: None,
             events: vec![],
         }
     }
