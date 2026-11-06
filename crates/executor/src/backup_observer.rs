@@ -74,6 +74,11 @@ mod linux {
             && actual.kind == owner.kind
             && actual.pid == owner.pid
             && unsafe { libc::fcntl(fd, libc::F_GETLEASE) } == libc::F_RDLCK
+            && unsafe { libc::fstat(fd, &mut stat) } == 0
+            && stat.st_mode & libc::S_IFMT == libc::S_IFREG
+            && stat.st_uid == 0
+            && stat.st_mode & 0o777 == 0o600
+            && stat.st_nlink == 1
     }
 
     fn exit(code: c_int) -> ! {
@@ -340,9 +345,18 @@ mod linux {
             }
             if poll_fds[1].revents & libc::POLLIN != 0 {
                 let mut byte = 0u8;
-                let n = unsafe { libc::recv(CONTROL_FD, (&mut byte as *mut u8).cast(), 1, 0) };
+                let mut iov = libc::iovec {
+                    iov_base: (&mut byte as *mut u8).cast(),
+                    iov_len: 1,
+                };
+                let mut msg: libc::msghdr = unsafe { zeroed() };
+                msg.msg_iov = &mut iov;
+                msg.msg_iovlen = 1;
+                let n = unsafe { libc::recvmsg(CONTROL_FD, &mut msg, libc::MSG_CMSG_CLOEXEC) };
                 if n == 1
                     && byte == b'Q'
+                    && msg.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) == 0
+                    && msg.msg_controllen == 0
                     && populated(events) == Some(false)
                     && signal_ready(signal_fd) == Some(false)
                     && fds[2..count as usize + 2]

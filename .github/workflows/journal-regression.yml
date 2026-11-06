@@ -48,6 +48,12 @@ jobs:
         run: |
           cargo build --locked -p linux-storage-manager-cli --target-dir /tmp/lsm-cli-observer
           sudo env LSM_TEST_OBSERVER_CLI=1 python3 -I .github/diagnostics/test-backup-observer.py /tmp/lsm-cli-observer/debug/storagemgr /sys/fs/cgroup
+      - name: Exercise disposable supervisor prototype
+        run: |
+          cargo test --locked -p lsm-executor --lib backup_supervisor::tests --no-run
+          sudo mkdir /sys/fs/cgroup/lsm-disposable-supervisor-test
+          trap 'sudo rmdir /sys/fs/cgroup/lsm-disposable-supervisor-test/* /sys/fs/cgroup/lsm-disposable-supervisor-test || true' EXIT
+          sudo env PATH="$PATH" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" LSM_TEST_DISPOSABLE_CGROUP=/sys/fs/cgroup/lsm-disposable-supervisor-test LSM_TEST_OBSERVER_EXE=/tmp/lsm-cli-observer/debug/storagemgr cargo test --locked -p lsm-executor --lib backup_supervisor::tests -- --include-ignored --test-threads=1
       - name: Check disposable runner cgroup and pidfd primitives
         run: |
           sudo python3 - <<'PY'
