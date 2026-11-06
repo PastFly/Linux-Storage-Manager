@@ -25,12 +25,12 @@ jobs:
       - name: Test sealing on an isolated ext4 image
         run: |
           image="$RUNNER_TEMP/lsm-verity-test.img"
-          mountpoint="$RUNNER_TEMP/lsm-verity-test"
+          mountpoint="/tmp/lsm-verity-test-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           truncate -s 128M "$image"
           mkfs.ext4 -q -F -O verity "$image"
           mkdir "$mountpoint"
           sudo mount -o loop "$image" "$mountpoint"
-          trap 'sudo umount "$mountpoint"' EXIT
+          trap 'sudo umount "$mountpoint"; rmdir "$mountpoint"' EXIT
           cargo test --locked -p lsm-executor --lib backup_verity::tests -- --test-threads=1
           sudo env PATH="$PATH" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" LSM_TEST_DISPOSABLE_VERITY=1 LSM_TEST_DISPOSABLE_VERITY_DIR="$mountpoint" cargo test --locked -p lsm-executor --lib backup_verity::tests -- --ignored --test-threads=1
           sudo env PATH="$PATH" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" TMPDIR="$mountpoint" LSM_TEST_DISPOSABLE_VERITY=1 LSM_TEST_DISPOSABLE_VERITY_DIR="$mountpoint" cargo test --locked -p lsm-executor --lib backup_recovery_collector::tests::verity_experiment_seals_both_copies_and_records_their_measurements -- --ignored --exact --test-threads=1
@@ -59,7 +59,7 @@ jobs:
           shopt -s nullglob
           trap 'sudo rmdir /sys/fs/cgroup/lsm-disposable-lifecycle-test/lsm-backup-* /sys/fs/cgroup/lsm-disposable-lifecycle-test || true' EXIT
           status=0
-          for case in manager-death observer-death lease-break observer-before-go launcher-poll-failure launcher-stopped launcher-failure-before-active manager-stopped manager-auto-reap launcher-pidfd-failure launcher-stopped-after-go launcher-no-numeric-manager-pidfd manager-death-before-launcher-pin; do
+          for case in manager-death observer-death lease-break observer-before-go launcher-poll-failure launcher-stopped launcher-failure-before-active manager-stopped manager-auto-reap launcher-pidfd-failure launcher-stopped-after-go launcher-no-numeric-manager-pidfd manager-death-before-launcher-pin observer-stopped observer-stopped-before-go spoof-worker-same-cgroup normal-flow; do
             sudo env LSM_TEST_DISPOSABLE_CGROUP=/sys/fs/cgroup/lsm-disposable-lifecycle-test python3 -I .github/diagnostics/test-controller-lifecycle.py /tmp/lsm-controller-test/release/lsm-gated-module-harness /tmp/lsm-watchdog-cli/debug/storagemgr /sys/fs/cgroup/lsm-disposable-lifecycle-test "$case" || status=1
           done
           exit "$status"
