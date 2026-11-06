@@ -5,6 +5,52 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
+#[test]
+fn ioctl_layout_matches_linux_uapi() {
+    assert_eq!(std::mem::size_of::<super::EnableArg>(), 128);
+    assert_eq!(std::mem::size_of::<super::DigestBuffer>(), 36);
+    assert_eq!(std::mem::offset_of!(super::DigestBuffer, digest), 4);
+}
+
+#[test]
+fn rejects_unexpected_digest_algorithm_and_length() {
+    let digest = [7; 32];
+    assert!(super::checked_digest(super::DigestBuffer {
+        algorithm: 2,
+        size: 32,
+        digest,
+    })
+    .is_err());
+    assert!(super::checked_digest(super::DigestBuffer {
+        algorithm: 1,
+        size: 31,
+        digest,
+    })
+    .is_err());
+    assert_eq!(
+        super::checked_digest(super::DigestBuffer {
+            algorithm: 1,
+            size: 32,
+            digest,
+        })
+        .unwrap(),
+        digest
+    );
+}
+
+#[test]
+fn rejects_non_regular_descriptor_without_ioctl() {
+    let file = File::open("/dev/null").unwrap();
+    assert_eq!(
+        enable(&file).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        measure(&file).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+}
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new(name: &str) -> Self {
@@ -97,10 +143,21 @@ fn measurement_survives_close_and_reopen_and_write_open_is_rejected() {
     let file = fixture.read();
     enable(&file).unwrap();
     let first = measure(&file).unwrap();
+    // Independently derived from the Linux fs-verity descriptor and Merkle
+    // format for this fixture, SHA-256, a 4096-byte block, and no salt.
+    let encoded = first.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    assert_eq!(
+        encoded,
+        "8d3d5855c72633119cff59b5ac979bd8e19876dd3f0865c57d58972aeefd5fba"
+    );
     file.sync_all().unwrap();
     drop(file);
     let mut reopened = fixture.read();
     assert_eq!(first, measure(&reopened).unwrap());
+    assert_eq!(
+        enable(&reopened).unwrap_err().raw_os_error(),
+        Some(libc::EEXIST)
+    );
     let mut data = Vec::new();
     reopened.read_to_end(&mut data).unwrap();
     assert_eq!(data, b"fs-verity fixture\n");
