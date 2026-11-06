@@ -318,6 +318,22 @@ impl<'a> LockedExecutionSession<'a> {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn persist_preconditions_with_test_recovery(
+        &mut self,
+        binding: &lsm_planner::JournalRecoveryBinding,
+    ) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+        let mut next = self.journal.clone();
+        next.apply(JournalTransition::PreconditionsVerifiedWithRecovery { binding })?;
+        store.persist_if_matches(&self.journal, &next)?;
+        self.journal = next;
+        Ok(())
+    }
+
     pub(crate) fn persist_exact_plan_approved(
         &mut self,
         approved_plan_id: &str,
@@ -869,7 +885,8 @@ mod tests {
         let evidence = recovery_evidence(&session, &snapshot, &capabilities, &record);
         std::fs::create_dir_all(&record_root).unwrap();
         crate::backup_recovery_storage::store(&record_root, &record, record.binding()).unwrap();
-        let proof = crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &record);
+        let proof =
+            crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &record).unwrap();
         // A crash before the transition leaves the independently durable record unbound.
         let before = store.load(&session.journal().journal_id).unwrap();
         assert_eq!(before.phase, JournalPhase::IdentityRevalidated);
@@ -924,7 +941,8 @@ mod tests {
             let record_root = journal_root("recovery-mismatch-record");
             std::fs::create_dir_all(&record_root).unwrap();
             crate::backup_recovery_storage::store(&record_root, &bad, bad.binding()).unwrap();
-            let proof = crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &bad);
+            let proof = crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &bad)
+                .unwrap();
             assert!(crate::preconditions::verify_preconditions_with_recovery(
                 &mut session,
                 &evidence,
@@ -938,6 +956,90 @@ mod tests {
         drop(session);
         let _ = std::fs::remove_dir_all(lock.parent().unwrap());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_preconditions_recheck_record_before_cas() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let lock = lock_path();
+        let root = journal_root("recovery-record-lost");
+        let record_root = journal_root("recovery-record-lost-file");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_recovery_at_paths(&handoff, &lock, &store)
+                .unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let record = recovery_fixture(&session, session.session_id(), &"2".repeat(64));
+        let evidence = recovery_evidence(&session, &snapshot, &capabilities, &record);
+        std::fs::create_dir_all(&record_root).unwrap();
+        crate::backup_recovery_storage::store(&record_root, &record, record.binding()).unwrap();
+        let proof =
+            crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &record).unwrap();
+        std::fs::remove_file(record_root.join(format!("{}.json", record.record_id()))).unwrap();
+        let before = store.load(&session.journal().journal_id).unwrap();
+        assert!(crate::preconditions::verify_preconditions_with_recovery(
+            &mut session,
+            &evidence,
+            &proof
+        )
+        .is_err());
+        assert_eq!(store.load(&before.journal_id).unwrap(), before);
+        assert_eq!(*session.journal(), before);
+        drop(session);
+        let _ = std::fs::remove_dir_all(lock.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(record_root);
+    }
+
+    #[test]
+    fn recovery_preconditions_bind_record_before_exact_approval() {
+        let (snapshot, capabilities) = fixture();
+        let handoff = handoff(&snapshot, &capabilities);
+        let lock = lock_path();
+        let root = journal_root("recovery-approval");
+        let record_root = journal_root("recovery-approval-record");
+        let store = DurableJournalStore::at(&root);
+        let mut session =
+            LockedExecutionSession::begin_durable_recovery_at_paths(&handoff, &lock, &store)
+                .unwrap();
+        session.revalidate(&snapshot, &capabilities).unwrap();
+        let record = recovery_fixture(&session, session.session_id(), &"2".repeat(64));
+        let evidence = recovery_evidence(&session, &snapshot, &capabilities, &record);
+        std::fs::create_dir_all(&record_root).unwrap();
+        crate::backup_recovery_storage::store(&record_root, &record, record.binding()).unwrap();
+        let proof =
+            crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &record).unwrap();
+        let verified = crate::preconditions::verify_preconditions_with_recovery(
+            &mut session,
+            &evidence,
+            &proof,
+        )
+        .unwrap();
+        let before_approval = store.load(&session.journal().journal_id).unwrap();
+        assert_eq!(
+            before_approval.recovery_binding.as_ref().unwrap().record_id,
+            record.record_id()
+        );
+        assert_eq!(
+            verified.journal_digest(),
+            crate::preconditions::journal_digest(&before_approval).unwrap()
+        );
+        crate::approve_exact_plan(
+            &mut session,
+            &verified,
+            handoff.plan().plan_id(),
+            evidence.bundle_id(),
+            &handoff.target_identity().manifest_digest,
+        )
+        .unwrap();
+        let approved = store.load(&before_approval.journal_id).unwrap();
+        assert!(approved.approval.is_some());
+        assert_eq!(approved.recovery_binding, before_approval.recovery_binding);
+        drop(session);
+        let _ = std::fs::remove_dir_all(lock.parent().unwrap());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(record_root);
     }
 
     #[test]
@@ -965,7 +1067,8 @@ mod tests {
             crate::backup_recovery_storage::store(&record_root, &record, record.binding()).unwrap();
             if stage == "after" {
                 let proof =
-                    crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &record);
+                    crate::preconditions::ExperimentalDurableRecovery::load(&record_root, &record)
+                        .unwrap();
                 crate::preconditions::verify_preconditions_with_recovery(
                     &mut session,
                     &evidence,

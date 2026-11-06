@@ -100,6 +100,15 @@ pub fn verify_preconditions(
     session: &mut LockedExecutionSession<'_>,
     evidence: &PreMutationEvidenceBundle,
 ) -> Result<PreconditionsVerification, PreconditionsVerificationError> {
+    validate_preconditions(session, evidence)?;
+    session.persist_preconditions_verified()?;
+    verified_preconditions(session, evidence)
+}
+
+fn validate_preconditions(
+    session: &LockedExecutionSession<'_>,
+    evidence: &PreMutationEvidenceBundle,
+) -> Result<(), PreconditionsVerificationError> {
     if session.journal().phase != JournalPhase::IdentityRevalidated {
         return Err(PreconditionsVerificationError::SessionNotIdentityRevalidated);
     }
@@ -178,7 +187,14 @@ pub fn verify_preconditions(
         return Err(PreconditionsVerificationError::FilesystemChecksRemain);
     }
 
-    session.persist_preconditions_verified()?;
+    Ok(())
+}
+
+fn verified_preconditions(
+    session: &LockedExecutionSession<'_>,
+    evidence: &PreMutationEvidenceBundle,
+) -> Result<PreconditionsVerification, PreconditionsVerificationError> {
+    let filesystem = evidence.filesystem_decision();
     debug_assert_eq!(session.journal().phase, JournalPhase::PreconditionsVerified);
 
     Ok(PreconditionsVerification {
@@ -207,6 +223,7 @@ fn is_lower_hex_digest(value: &str) -> bool {
 }
 
 #[cfg(test)]
+/// Test fixture only: the measurements and artifact provenance are not proven.
 pub(crate) struct ExperimentalDurableRecovery {
     root: std::path::PathBuf,
     record: crate::backup_recovery_record::BackupRecoveryRecord,
@@ -217,21 +234,55 @@ impl ExperimentalDurableRecovery {
     pub(crate) fn load(
         root: &std::path::Path,
         record: &crate::backup_recovery_record::BackupRecoveryRecord,
-    ) -> Self {
-        Self {
-            root: root.to_owned(),
-            record: record.clone(),
+    ) -> Result<Self, PreconditionsVerificationError> {
+        let durable =
+            crate::backup_recovery_storage::load(root, record.record_id(), record.binding())
+                .map_err(|_| PreconditionsVerificationError::BackupBindingInvalid)?;
+        if record.schema_version() != 3 || durable != *record {
+            return Err(PreconditionsVerificationError::BackupBindingInvalid);
         }
+        Ok(Self {
+            root: root.to_owned(),
+            record: durable,
+        })
     }
 }
 
 #[cfg(test)]
 pub(crate) fn verify_preconditions_with_recovery(
-    _session: &mut LockedExecutionSession<'_>,
-    _evidence: &PreMutationEvidenceBundle,
-    _recovery: &ExperimentalDurableRecovery,
+    session: &mut LockedExecutionSession<'_>,
+    evidence: &PreMutationEvidenceBundle,
+    recovery: &ExperimentalDurableRecovery,
 ) -> Result<PreconditionsVerification, PreconditionsVerificationError> {
-    Err(PreconditionsVerificationError::BackupBindingInvalid)
+    validate_preconditions(session, evidence)?;
+    let record = crate::backup_recovery_storage::load(
+        &recovery.root,
+        recovery.record.record_id(),
+        recovery.record.binding(),
+    )
+    .map_err(|_| PreconditionsVerificationError::BackupBindingInvalid)?;
+    let binding = record.binding();
+    if record.schema_version() != 3
+        || record != recovery.record
+        || binding.journal_id != session.journal().journal_id
+        || binding.session_id != session.session_id()
+        || binding.handoff_id != session.handoff().handoff_id()
+        || binding.plan_id != session.journal().plan_id
+        || binding.plan_id != session.handoff().plan().plan_id()
+        || binding.target_manifest_digest != session.journal().baseline_manifest_digest
+        || binding.target_manifest_digest != session.handoff().target_identity().manifest_digest
+        || binding.manifest_id != evidence.backup_manifest_id()
+        || binding.receipt_id != evidence.backup_receipt_id()
+    {
+        return Err(PreconditionsVerificationError::BackupBindingInvalid);
+    }
+    let journal_binding = lsm_planner::JournalRecoveryBinding {
+        record_id: record.record_id().to_owned(),
+        session_id: binding.session_id.clone(),
+        handoff_id: binding.handoff_id.clone(),
+    };
+    session.persist_preconditions_with_test_recovery(&journal_binding)?;
+    verified_preconditions(session, evidence)
 }
 
 #[cfg(test)]
