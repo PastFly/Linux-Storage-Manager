@@ -10,7 +10,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::path::{Component, Path};
 
-const DOMAIN: &[u8] = b"linux-storage-manager:backup-recovery-record:v1\0";
+const DOMAIN_V1: &[u8] = b"linux-storage-manager:backup-recovery-record:v1\0";
+const DOMAIN_V2: &[u8] = b"linux-storage-manager:backup-recovery-record:v2\0";
 const MAX_RECORD_BYTES: usize = 64 * 1024;
 const MAX_ARTIFACTS: usize = 16;
 const MAX_ARTIFACT_BYTES: u64 = 16 * 1024 * 1024;
@@ -52,6 +53,11 @@ pub(crate) struct RecoveryArtifact {
     pub recovery_path: String,
     pub size_bytes: u64,
     pub sha256: String,
+    /// Historical receipt fingerprint inputs, not identities across reboot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_device_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_inode: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,7 +112,7 @@ fn valid_path(value: &str) -> bool {
 
 fn validate_payload(payload: &RecoveryPayload) -> Result<(), RecordError> {
     let binding = &payload.binding;
-    if payload.schema_version != 1
+    if !matches!(payload.schema_version, 1 | 2)
         || ![
             &binding.journal_id,
             &binding.session_id,
@@ -148,11 +154,78 @@ fn validate_payload(payload: &RecoveryPayload) -> Result<(), RecordError> {
             || artifact.size_bytes == 0
             || artifact.size_bytes > MAX_ARTIFACT_BYTES
             || !valid_digest(&artifact.sha256)
+            || match payload.schema_version {
+                1 => artifact.capture_device_id.is_some() || artifact.capture_inode.is_some(),
+                2 => artifact.capture_device_id.is_none() || artifact.capture_inode.is_none(),
+                _ => true,
+            }
         {
             return Err(RecordError::Invalid);
         }
     }
+    if payload.schema_version == 2 {
+        let mut artifacts = Vec::with_capacity(payload.artifacts.len());
+        for artifact in &payload.artifacts {
+            let (kind, expected_identity) = match &artifact.identity {
+                RecoveryIdentity::PartitionTable {
+                    disk,
+                    table_label,
+                    table_id,
+                } => (
+                    crate::MetadataBackupKind::PartitionTable,
+                    crate::BackupExpectedIdentity::PartitionTable {
+                        disk: disk.clone(),
+                        table_label: table_label.clone(),
+                        table_id: table_id.clone(),
+                    },
+                ),
+                RecoveryIdentity::LvmVolumeGroup { vg_name, vg_uuid } => (
+                    crate::MetadataBackupKind::LvmVolumeGroup,
+                    crate::BackupExpectedIdentity::LvmVolumeGroup {
+                        vg_name: vg_name.clone(),
+                        vg_uuid: vg_uuid.clone(),
+                    },
+                ),
+            };
+            artifacts.push(crate::BackupArtifactReceipt {
+                ordinal: artifact.ordinal,
+                kind,
+                artifact_path: artifact.primary_path.clone(),
+                expected_identity,
+                device_id: artifact.capture_device_id.ok_or(RecordError::Invalid)?,
+                inode: artifact.capture_inode.ok_or(RecordError::Invalid)?,
+                size_bytes: artifact.size_bytes,
+                sha256: artifact.sha256.clone(),
+            });
+        }
+        if !verify_receipt_artifacts(&payload.binding, &artifacts, &payload.binding.receipt_id) {
+            return Err(RecordError::BindingMismatch);
+        }
+    }
     Ok(())
+}
+
+fn verify_receipt_artifacts(
+    binding: &RecoveryBinding,
+    artifacts: &[crate::BackupArtifactReceipt],
+    expected_receipt_id: &str,
+) -> bool {
+    let bytes = serde_json::to_vec(&(
+        2_u32,
+        &binding.manifest_id,
+        &binding.handoff_id,
+        &binding.plan_id,
+        &binding.target_manifest_digest,
+        &binding.session_id,
+        &binding.journal_id,
+        false,
+        artifacts,
+    ));
+    bytes.is_ok_and(|bytes| format!("{:x}", Sha256::digest(bytes)) == expected_receipt_id)
+}
+
+fn check_trusted_context(record: &BackupRecoveryRecord, trusted: &RecoveryBinding) -> bool {
+    &record.payload.binding == trusted
 }
 
 fn record_id(payload: &RecoveryPayload) -> Result<String, RecordError> {
@@ -161,9 +234,167 @@ fn record_id(payload: &RecoveryPayload) -> Result<String, RecordError> {
         return Err(RecordError::TooLarge);
     }
     let mut hash = Sha256::new();
-    hash.update(DOMAIN);
+    hash.update(match payload.schema_version {
+        1 => DOMAIN_V1,
+        2 => DOMAIN_V2,
+        _ => return Err(RecordError::Invalid),
+    });
     hash.update(bytes);
     Ok(format!("{:x}", hash.finalize()))
+}
+
+/// Test-only stand-in for evidence collected from an already verified copy.
+/// This is metadata supplied by the caller, not proof of an actual file,
+/// protected namespace, current lease, or durable storage.
+pub(crate) struct ExperimentalCopyView {
+    pub path: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub device_id: u64,
+    pub inode: u64,
+}
+
+pub(crate) struct ExperimentalCopyPair {
+    pub ordinal: u32,
+    pub primary: ExperimentalCopyView,
+    pub recovery: ExperimentalCopyView,
+}
+
+fn copy_pair_matches(
+    requirement: &crate::MetadataBackupRequirement,
+    receipt_artifact: &crate::BackupArtifactReceipt,
+    pair: &ExperimentalCopyPair,
+    root: &Path,
+    recovery_root: &Path,
+) -> bool {
+    let primary = Path::new(&requirement.artifact_path);
+    let Some(name) = primary.file_name() else {
+        return false;
+    };
+    let mut recovery_name = name.to_os_string();
+    recovery_name.push(".recovery");
+    primary.parent() == Some(root)
+        && requirement.ordinal == receipt_artifact.ordinal
+        && pair.ordinal == receipt_artifact.ordinal
+        && requirement.kind == receipt_artifact.kind
+        && requirement.artifact_path == receipt_artifact.artifact_path
+        && requirement.expected_identity == receipt_artifact.expected_identity
+        && pair.primary.path == receipt_artifact.artifact_path
+        && Path::new(&pair.recovery.path) == recovery_root.join(recovery_name)
+        && pair.primary.size_bytes == receipt_artifact.size_bytes
+        && pair.recovery.size_bytes == receipt_artifact.size_bytes
+        && pair.primary.sha256 == receipt_artifact.sha256
+        && pair.recovery.sha256 == receipt_artifact.sha256
+        && pair.primary.device_id == receipt_artifact.device_id
+        && pair.primary.inode == receipt_artifact.inode
+        && (pair.primary.device_id, pair.primary.inode)
+            != (pair.recovery.device_id, pair.recovery.inode)
+}
+
+fn manifest_fingerprint(manifest: &crate::MetadataBackupManifest) -> Result<String, RecordError> {
+    let bytes = serde_json::to_vec(&(
+        manifest.schema_version(),
+        manifest.handoff_id(),
+        manifest.plan_id(),
+        manifest.target_manifest_digest(),
+        manifest.artifact_directory(),
+        manifest.mutation_enabled(),
+        manifest.owner_acceptance_required(),
+        manifest.requirements(),
+    ))
+    .map_err(|_| RecordError::Malformed)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+/// Experimental adapter. A future verified filesystem collector must replace
+/// `copies` and bind it durably before this format can authorize anything.
+pub(crate) fn from_experimental_verified_metadata(
+    manifest: &crate::MetadataBackupManifest,
+    receipt: &crate::MetadataBackupReceipt,
+    trusted: &RecoveryBinding,
+    copies: &[ExperimentalCopyPair],
+) -> Result<BackupRecoveryRecord, RecordError> {
+    if manifest.schema_version() != 1
+        || manifest.mutation_enabled()
+        || !manifest.owner_acceptance_required()
+        || receipt.recovery_schema_version() != 2
+        || receipt.mutation_enabled()
+        || manifest_fingerprint(manifest)? != manifest.manifest_id()
+        || manifest.manifest_id() != trusted.manifest_id
+        || manifest.handoff_id() != trusted.handoff_id
+        || manifest.plan_id() != trusted.plan_id
+        || manifest.target_manifest_digest() != trusted.target_manifest_digest
+        || receipt.receipt_id() != trusted.receipt_id
+        || receipt.manifest_id() != trusted.manifest_id
+        || receipt.handoff_id() != trusted.handoff_id
+        || receipt.plan_id() != trusted.plan_id
+        || receipt.target_manifest_digest() != trusted.target_manifest_digest
+        || receipt.recovery_session_id() != trusted.session_id
+        || receipt.recovery_journal_id() != trusted.journal_id
+        || manifest.requirements().len() != receipt.artifacts().len()
+        || receipt.artifacts().len() != copies.len()
+        || !verify_receipt_artifacts(trusted, receipt.artifacts(), receipt.receipt_id())
+    {
+        return Err(RecordError::BindingMismatch);
+    }
+
+    let root = Path::new(manifest.artifact_directory());
+    let legacy_root = Path::new(crate::BACKUP_DIRECTORY).join(&trusted.handoff_id);
+    let attempt_root = legacy_root.join(&trusted.journal_id);
+    if root != legacy_root && root != attempt_root {
+        return Err(RecordError::BindingMismatch);
+    }
+    let mut recovery_dir_name = root.file_name().ok_or(RecordError::Invalid)?.to_os_string();
+    recovery_dir_name.push(".recovery");
+    let recovery_root = root.with_file_name(recovery_dir_name);
+    let mut artifacts = Vec::with_capacity(copies.len());
+    for ((requirement, receipt_artifact), pair) in manifest
+        .requirements()
+        .iter()
+        .zip(receipt.artifacts())
+        .zip(copies)
+    {
+        if !copy_pair_matches(requirement, receipt_artifact, pair, root, &recovery_root) {
+            return Err(RecordError::BindingMismatch);
+        }
+        let identity = match (&receipt_artifact.kind, &receipt_artifact.expected_identity) {
+            (
+                crate::MetadataBackupKind::PartitionTable,
+                crate::BackupExpectedIdentity::PartitionTable {
+                    disk,
+                    table_label,
+                    table_id,
+                },
+            ) => RecoveryIdentity::PartitionTable {
+                disk: disk.clone(),
+                table_label: table_label.clone(),
+                table_id: table_id.clone(),
+            },
+            (
+                crate::MetadataBackupKind::LvmVolumeGroup,
+                crate::BackupExpectedIdentity::LvmVolumeGroup { vg_name, vg_uuid },
+            ) => RecoveryIdentity::LvmVolumeGroup {
+                vg_name: vg_name.clone(),
+                vg_uuid: vg_uuid.clone(),
+            },
+            _ => return Err(RecordError::Invalid),
+        };
+        artifacts.push(RecoveryArtifact {
+            ordinal: receipt_artifact.ordinal,
+            identity,
+            primary_path: pair.primary.path.clone(),
+            recovery_path: pair.recovery.path.clone(),
+            size_bytes: receipt_artifact.size_bytes,
+            sha256: receipt_artifact.sha256.clone(),
+            capture_device_id: Some(receipt_artifact.device_id),
+            capture_inode: Some(receipt_artifact.inode),
+        });
+    }
+    BackupRecoveryRecord::new(RecoveryPayload {
+        schema_version: 2,
+        binding: trusted.clone(),
+        artifacts,
+    })
 }
 
 impl BackupRecoveryRecord {
@@ -212,25 +443,24 @@ pub(crate) fn decode(bytes: &[u8], expected_id: &str) -> Result<BackupRecoveryRe
     Ok(record)
 }
 
+pub(crate) fn decode_with_trusted_context(
+    bytes: &[u8],
+    expected_id: &str,
+    trusted: &RecoveryBinding,
+) -> Result<BackupRecoveryRecord, RecordError> {
+    let record = decode(bytes, expected_id)?;
+    if record.payload.schema_version != 2 || !check_trusted_context(&record, trusted) {
+        return Err(RecordError::BindingMismatch);
+    }
+    Ok(record)
+}
+
 #[cfg(test)]
 mod tests {
     const RECORD_ID: &str = "54a186958ab3c29898a9213a1b8d2a6d374a817e29079649efa304842a204d5c";
     const FIXTURE: &str = r#"{"record_id":"54a186958ab3c29898a9213a1b8d2a6d374a817e29079649efa304842a204d5c","payload":{"schema_version":1,"journal_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","session_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","handoff_id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","plan_id":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","target_manifest_digest":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","manifest_id":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","receipt_id":"1111111111111111111111111111111111111111111111111111111111111111","artifacts":[{"ordinal":1,"identity":{"kind":"partition_table","disk":"/dev/vda","table_label":"gpt","table_id":"123"},"primary_path":"/var/lib/lsm/backups/primary","recovery_path":"/var/lib/lsm/backups/recovery","size_bytes":42,"sha256":"2222222222222222222222222222222222222222222222222222222222222222"}]}}"#;
 
     use super::*;
-
-    // Red-phase stubs. Production adapter checks replace these before use.
-    fn verify_receipt_artifacts(
-        _binding: &RecoveryBinding,
-        _artifacts: &[crate::BackupArtifactReceipt],
-        _expected_receipt_id: &str,
-    ) -> bool {
-        true
-    }
-
-    fn check_trusted_context(_record: &BackupRecoveryRecord, _trusted: &RecoveryBinding) -> bool {
-        true
-    }
 
     #[test]
     fn receipt_v2_rejects_artifact_substitution_with_original_receipt_id() {
@@ -273,6 +503,206 @@ mod tests {
         assert!(check_trusted_context(&record, &trusted));
         trusted.session_id = "9".repeat(64);
         assert!(!check_trusted_context(&record, &trusted));
+    }
+
+    #[test]
+    fn v2_reproduces_capture_receipt_and_rejects_rebound_tampering() {
+        let old = decode(FIXTURE.as_bytes(), RECORD_ID).unwrap();
+        let mut payload = old.payload;
+        payload.schema_version = 2;
+        payload.binding.receipt_id =
+            "573c963f221eeb5287715a6dd620a3f7b3f84f31facbccdb4de567f8c32001fe".into();
+        payload.artifacts[0].capture_device_id = Some(123);
+        payload.artifacts[0].capture_inode = Some(456);
+        let record = BackupRecoveryRecord::new(payload.clone()).unwrap();
+        let bytes = record.encode().unwrap();
+        assert!(decode_with_trusted_context(&bytes, record.record_id(), &payload.binding).is_ok());
+        let mut unrelated = payload.binding.clone();
+        unrelated.session_id = "9".repeat(64);
+        assert!(decode_with_trusted_context(&bytes, record.record_id(), &unrelated).is_err());
+
+        let mut changed_inode = payload.clone();
+        changed_inode.artifacts[0].capture_inode = Some(457);
+        let mut changed_hash = payload.clone();
+        changed_hash.artifacts[0].sha256 = "3".repeat(64);
+        let mut changed_path = payload;
+        changed_path.artifacts[0].primary_path = "/var/lib/lsm/backups/changed".into();
+        for tampered in [changed_inode, changed_hash, changed_path] {
+            let changed_id = record_id(&tampered).unwrap();
+            let bytes = serde_json::to_vec(&BackupRecoveryRecord {
+                record_id: changed_id.clone(),
+                payload: tampered,
+            })
+            .unwrap();
+            assert!(decode(&bytes, &changed_id).is_err());
+        }
+    }
+
+    #[test]
+    fn copy_metadata_must_match_both_copies_and_capture_receipt() {
+        let identity = crate::BackupExpectedIdentity::PartitionTable {
+            disk: "/dev/vda".into(),
+            table_label: "gpt".into(),
+            table_id: Some("123".into()),
+        };
+        let command = crate::BackupCommandSpec {
+            program: "sfdisk".into(),
+            args: Vec::new(),
+            stdin_path: None,
+            stdout_path: None,
+            mutates_storage_metadata: false,
+        };
+        let requirement = crate::MetadataBackupRequirement {
+            ordinal: 1,
+            kind: crate::MetadataBackupKind::PartitionTable,
+            artifact_path: "/backups/primary".into(),
+            expected_identity: identity.clone(),
+            capture: command.clone(),
+            recovery: command,
+            verification_notes: Vec::new(),
+        };
+        let artifact = crate::BackupArtifactReceipt {
+            ordinal: 1,
+            kind: crate::MetadataBackupKind::PartitionTable,
+            artifact_path: "/backups/primary".into(),
+            expected_identity: identity,
+            device_id: 123,
+            inode: 456,
+            size_bytes: 42,
+            sha256: "2".repeat(64),
+        };
+        let mut pair = ExperimentalCopyPair {
+            ordinal: 1,
+            primary: ExperimentalCopyView {
+                path: "/backups/primary".into(),
+                size_bytes: 42,
+                sha256: "2".repeat(64),
+                device_id: 123,
+                inode: 456,
+            },
+            recovery: ExperimentalCopyView {
+                path: "/backups.recovery/primary.recovery".into(),
+                size_bytes: 42,
+                sha256: "2".repeat(64),
+                device_id: 123,
+                inode: 457,
+            },
+        };
+        let root = Path::new("/backups");
+        let recovery_root = Path::new("/backups.recovery");
+        assert!(copy_pair_matches(
+            &requirement,
+            &artifact,
+            &pair,
+            root,
+            recovery_root
+        ));
+        pair.recovery.sha256 = "3".repeat(64);
+        assert!(!copy_pair_matches(
+            &requirement,
+            &artifact,
+            &pair,
+            root,
+            recovery_root
+        ));
+        pair.recovery.sha256 = "2".repeat(64);
+        pair.recovery.inode = 456;
+        assert!(!copy_pair_matches(
+            &requirement,
+            &artifact,
+            &pair,
+            root,
+            recovery_root
+        ));
+        pair.recovery.inode = 457;
+        pair.primary.device_id = 124;
+        assert!(!copy_pair_matches(
+            &requirement,
+            &artifact,
+            &pair,
+            root,
+            recovery_root
+        ));
+        pair.primary.device_id = 123;
+        pair.recovery.path = "/elsewhere/primary.recovery".into();
+        assert!(!copy_pair_matches(
+            &requirement,
+            &artifact,
+            &pair,
+            root,
+            recovery_root
+        ));
+    }
+
+    #[test]
+    fn adapter_binds_real_manifest_and_receipt_to_trusted_context() {
+        let (_handoff, manifest, receipt, lock_path, temporary_root) =
+            crate::backup_capture::tests::captured_direct_fixture("recovery-adapter");
+        let trusted = RecoveryBinding {
+            journal_id: receipt.recovery_journal_id().into(),
+            session_id: receipt.recovery_session_id().into(),
+            handoff_id: manifest.handoff_id().into(),
+            plan_id: manifest.plan_id().into(),
+            target_manifest_digest: manifest.target_manifest_digest().into(),
+            manifest_id: manifest.manifest_id().into(),
+            receipt_id: receipt.receipt_id().into(),
+        };
+        let root = Path::new(manifest.artifact_directory());
+        let mut recovery_directory = root.file_name().unwrap().to_os_string();
+        recovery_directory.push(".recovery");
+        let recovery_root = root.with_file_name(recovery_directory);
+        // Synthetic view by design: no claim is made that recovery files exist.
+        let mut pairs = receipt
+            .artifacts()
+            .iter()
+            .map(|artifact| {
+                let mut recovery_name = Path::new(&artifact.artifact_path)
+                    .file_name()
+                    .unwrap()
+                    .to_os_string();
+                recovery_name.push(".recovery");
+                ExperimentalCopyPair {
+                    ordinal: artifact.ordinal,
+                    primary: ExperimentalCopyView {
+                        path: artifact.artifact_path.clone(),
+                        size_bytes: artifact.size_bytes,
+                        sha256: artifact.sha256.clone(),
+                        device_id: artifact.device_id,
+                        inode: artifact.inode,
+                    },
+                    recovery: ExperimentalCopyView {
+                        path: recovery_root.join(recovery_name).to_str().unwrap().into(),
+                        size_bytes: artifact.size_bytes,
+                        sha256: artifact.sha256.clone(),
+                        device_id: artifact.device_id,
+                        inode: artifact.inode ^ 1,
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        let record =
+            from_experimental_verified_metadata(&manifest, &receipt, &trusted, &pairs).unwrap();
+        assert_eq!(record.payload.schema_version, 2);
+        let bytes = record.encode().unwrap();
+        assert_eq!(
+            decode_with_trusted_context(&bytes, record.record_id(), &trusted).unwrap(),
+            record
+        );
+        let mut other_context = trusted.clone();
+        other_context.session_id = "9".repeat(64);
+        assert!(
+            from_experimental_verified_metadata(&manifest, &receipt, &other_context, &pairs)
+                .is_err()
+        );
+        assert!(decode_with_trusted_context(&bytes, record.record_id(), &other_context).is_err());
+        pairs[0].recovery.sha256 = "0".repeat(64);
+        assert!(
+            from_experimental_verified_metadata(&manifest, &receipt, &trusted, &pairs).is_err()
+        );
+
+        drop(receipt);
+        let _ = std::fs::remove_dir_all(lock_path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(temporary_root);
     }
 
     #[test]

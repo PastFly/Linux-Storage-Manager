@@ -66,6 +66,21 @@ impl PartialEq for MetadataBackupReceipt {
 impl Eq for MetadataBackupReceipt {}
 
 impl MetadataBackupReceipt {
+    #[cfg(test)]
+    pub(crate) fn recovery_schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recovery_session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recovery_journal_id(&self) -> &str {
+        &self.journal_id
+    }
+
     pub fn receipt_id(&self) -> &str {
         &self.receipt_id
     }
@@ -1038,7 +1053,7 @@ pub(crate) fn test_backup_receipt_revalidation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Mutex;
@@ -1784,7 +1799,7 @@ mod tests {
         let _ = fs::remove_dir_all(lock.parent().unwrap());
     }
 
-    fn captured_direct_fixture(
+    pub(crate) fn captured_direct_fixture(
         suffix: &str,
     ) -> (
         lsm_planner::FrozenExecutionHandoff,
