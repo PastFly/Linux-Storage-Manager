@@ -538,7 +538,7 @@ pub(crate) fn decode_with_trusted_context(
     trusted: &RecoveryBinding,
 ) -> Result<BackupRecoveryRecord, RecordError> {
     let record = decode(bytes, expected_id)?;
-    if record.payload.schema_version != 2 || !check_trusted_context(&record, trusted) {
+    if !matches!(record.payload.schema_version, 2 | 3) || !check_trusted_context(&record, trusted) {
         return Err(RecordError::BindingMismatch);
     }
     Ok(record)
