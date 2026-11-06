@@ -32,3 +32,12 @@ Before any future partition-table write plan is considered valid, current `lsblk
 - Open a pull request into the default branch.
 - Do not merge into the default branch without explicit project-owner approval.
 - CI must pass before requesting merge approval.
+
+## Multi-agent pilot boundary
+
+- Public PR code runs only on disposable GitHub-hosted runners. Do not route it to the persistent AI-Agent-Loop-Lab runner or the shared VPN VPS.
+- `Agent pilot` checks the exact PR head with Rust 1.88.0, format, Clippy, workspace tests, and the source-only harness. It does not replace the existing CI, journal, operator, or portability workflows.
+- Actual loop/storage integration remains confined to the existing disposable GitHub VM jobs. Never run those jobs on a developer host or the shared VPS.
+- Local Qwen/Gemma review is advisory only and starts after all current PR workflows succeed for the exact head SHA. Missing, pending, skipped, cancelled, or failed required checks block review.
+- A trusted controller outside the PR checkout must pin the base/head and diff hash, treat the diff as untrusted data, and revalidate the PR and CI after generation. Models receive no shell tools, credentials, or write access.
+- Model output is not merge approval or a CI result. Keep results local unless publication is explicitly requested; never automatically approve, merge, deploy, or change storage/VPN state.
