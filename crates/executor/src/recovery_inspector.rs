@@ -171,6 +171,13 @@ fn inspect_in_store(store: &DurableJournalStore, id: &str) -> Result<Inspection,
 }
 
 fn inspect_unbound(journal: &OperationJournal) -> Result<Inspection, InspectionError> {
+    inspect_unbound_with_hook(journal, |_| {})
+}
+
+fn inspect_unbound_with_hook(
+    journal: &OperationJournal,
+    mut after_handoff: impl FnMut(&Path),
+) -> Result<Inspection, InspectionError> {
     let root_path = Path::new(crate::BACKUP_DIRECTORY);
     let root = JournalDir::open(root_path)?;
     require_procfs(&[root.file()])?;
@@ -216,6 +223,9 @@ fn inspect_unbound(journal: &OperationJournal) -> Result<Inspection, InspectionE
             return Err(InspectionError::Invalid);
         }
         watch.require_unchanged()?;
+        drop(watch);
+        drop(handoff);
+        after_handoff(&handoff_path);
     }
     root.verify_namespace()?;
     if bounded_names(&root)? != names {

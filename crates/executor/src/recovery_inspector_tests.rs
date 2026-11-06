@@ -287,3 +287,103 @@ fn borrowed_inspection_holds_host_lock_until_owner_is_dropped() {
     drop(crate::HostStorageLock::try_acquire_path(&path).unwrap());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn inspector_rejects_self_consistent_noncanonical_recovery_name() {
+    use std::ffi::CString;
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    if skip() {
+        return;
+    }
+    with_fixture(|session, manifest, receipt, copies| {
+        let sealed = SealedRecovery::seal(session, manifest, receipt, copies).unwrap();
+        let mut value = serde_json::to_value(sealed.record()).unwrap();
+        let original = PathBuf::from(&sealed.record().artifacts()[0].recovery_path);
+        let alternate = original.with_file_name("noncanonical-recovery-name");
+        drop(sealed);
+        fs::rename(&original, &alternate).unwrap();
+        value["payload"]["artifacts"][0]["recovery_path"] =
+            serde_json::Value::String(alternate.to_str().unwrap().into());
+        let payload: crate::backup_recovery_record::RecoveryPayload =
+            serde_json::from_value(value["payload"].clone()).unwrap();
+        let forged = crate::backup_recovery_record::BackupRecoveryRecord::new(payload).unwrap();
+        let id = forged.record_id().to_owned();
+        let root = record_dir(manifest);
+        fs::create_dir(&root).unwrap();
+        let pending = root.join(format!(".{id}.pending"));
+        let mut writer = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&pending)
+            .unwrap();
+        writer.write_all(&forged.encode().unwrap()).unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        let record = File::open(&pending).unwrap();
+        crate::backup_verity::enable(&record).unwrap();
+        record.sync_all().unwrap();
+        let dir = File::open(&root).unwrap();
+        let final_name = CString::new(format!("{id}.json")).unwrap();
+        assert_eq!(
+            unsafe {
+                libc::linkat(
+                    record.as_raw_fd(),
+                    c"".as_ptr(),
+                    dir.as_raw_fd(),
+                    final_name.as_ptr(),
+                    libc::AT_EMPTY_PATH,
+                )
+            },
+            0
+        );
+        dir.sync_all().unwrap();
+        let store = fixture_store(session);
+        let mut next = session.journal().clone();
+        let binding = lsm_planner::JournalRecoveryBinding {
+            record_id: id,
+            session_id: session.session_id().into(),
+            handoff_id: session.handoff().handoff_id().into(),
+        };
+        next.apply(
+            lsm_planner::JournalTransition::PreconditionsVerifiedWithRecovery { binding: &binding },
+        )
+        .unwrap();
+        store.persist_if_matches(session.journal(), &next).unwrap();
+        assert!(
+            inspect_for_test(session, &store).is_err(),
+            "noncanonical recovery basename must not be accepted"
+        );
+        fs::remove_dir_all(root).unwrap();
+    });
+}
+
+#[test]
+fn inspector_detects_transient_change_in_earlier_handoff_during_scan() {
+    if skip() {
+        return;
+    }
+    with_fixture(|session, _manifest, _receipt, copies| {
+        drop(copies);
+        let first = Path::new(crate::BACKUP_DIRECTORY).join("0".repeat(64));
+        assert!(!first.exists());
+        fs::create_dir(&first).unwrap();
+        let mut fired = false;
+        let result = inspect_unbound_with_hook(session.journal(), |path| {
+            if path == first && !fired {
+                fired = true;
+                let transient = first.join("transient");
+                fs::write(&transient, b"event").unwrap();
+                fs::remove_file(transient).unwrap();
+            }
+        });
+        assert!(fired);
+        assert!(
+            result.is_err(),
+            "a change in an already visited handoff must invalidate the scan"
+        );
+        fs::remove_dir(first).unwrap();
+    });
+}
