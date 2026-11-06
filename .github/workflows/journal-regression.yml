@@ -14,6 +14,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  process-lifecycle-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Test guarded lifecycle on disposable cgroups
+        run: |
+          cargo test --locked --manifest-path .github/diagnostics/Cargo.toml --bin lsm-process-lifecycle-runner non_cgroup_root_is_rejected_without_changes -- --test-threads=1
+          cargo build --locked --manifest-path .github/diagnostics/Cargo.toml --bin lsm-process-lifecycle-runner --target-dir /tmp/lsm-process-lifecycle
+          sudo mkdir /sys/fs/cgroup/lsm-process-lifecycle-test
+          trap 'sudo rmdir /sys/fs/cgroup/lsm-process-lifecycle-test || true' EXIT
+          status=0
+          for case in manager-before-go manager-after-go guard-after-go; do
+            sudo env LSM_TEST_DISPOSABLE_CGROUP=/sys/fs/cgroup/lsm-process-lifecycle-test python3 -I .github/diagnostics/test-process-lifecycle.py /tmp/lsm-process-lifecycle/debug/lsm-process-lifecycle-runner /sys/fs/cgroup/lsm-process-lifecycle-test "$case" || status=1
+          done
+          exit "$status"
+
   backup-verity-probe:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
