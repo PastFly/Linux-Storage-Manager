@@ -25,6 +25,15 @@ pub struct DurableJournalStore {
     root: PathBuf,
 }
 
+/// A live session's own durable pending marker. Dropping it never removes the evidence.
+#[derive(Debug)]
+pub(crate) struct PendingBackupFinalization {
+    name: std::ffi::OsString,
+    journal: OperationJournal,
+    file: File,
+    metadata: fs::Metadata,
+}
+
 #[derive(Debug, Serialize)]
 pub struct JournalInspection {
     pub unfinished: Vec<OperationJournal>,
@@ -350,13 +359,53 @@ impl DurableJournalStore {
         &self,
         hook: impl FnOnce(),
     ) -> Result<Vec<OperationJournal>, JournalStoreError> {
+        self.all_with_guard(None, hook)
+    }
+
+    pub(crate) fn all_allowing_pending_backup(
+        &self,
+        guard: &PendingBackupFinalization,
+    ) -> Result<Vec<OperationJournal>, JournalStoreError> {
+        self.all_with_guard(Some(guard), || {})
+    }
+
+    fn all_with_guard(
+        &self,
+        guard: Option<&PendingBackupFinalization>,
+        hook: impl FnOnce(),
+    ) -> Result<Vec<OperationJournal>, JournalStoreError> {
         let directory = crate::journal_fd::JournalDir::open(&self.root)?;
         let mut watch = directory.watch()?;
         let initial_names = directory.names()?;
         let mut journals = Vec::new();
         let mut history = Vec::new();
         let mut pinned = Vec::new();
+        let mut guard_seen = false;
         for name in &initial_names {
+            if let Some(guard) = guard.filter(|guard| guard.name == *name) {
+                let path = self.root.join(name);
+                let (journal, file, metadata) = load_pinned_journal(
+                    &directory,
+                    name,
+                    &path,
+                    &guard.journal.journal_id,
+                    1,
+                    || {},
+                )?;
+                let held = guard
+                    .file
+                    .metadata()
+                    .map_err(|source| io_error(&path, source))?;
+                if journal != guard.journal
+                    || !same_file_version(&guard.metadata, &held)
+                    || !same_file_version(&held, &metadata)
+                {
+                    return Err(JournalStoreError::ChangedDuringInspection);
+                }
+                pinned.push((name.clone(), file, metadata));
+                guard_seen = true;
+                continue;
+            }
             let name = name.to_str().ok_or_else(|| {
                 JournalStoreError::InvalidRecord("non-UTF-8 journal directory entry".to_owned())
             })?;
@@ -385,6 +434,9 @@ impl DurableJournalStore {
                 journals.push(journal);
             }
             pinned.push((std::ffi::OsString::from(name), file, metadata));
+        }
+        if guard.is_some() && !guard_seen {
+            return Err(JournalStoreError::ChangedDuringInspection);
         }
         hook();
         if initial_names != directory.names()? {
@@ -423,6 +475,39 @@ impl DurableJournalStore {
         }
         journals.sort_by(|a, b| a.journal_id.cmp(&b.journal_id));
         Ok(journals)
+    }
+
+    pub(crate) fn create_pending_backup_finalization(
+        &self,
+        journal: &OperationJournal,
+    ) -> Result<PendingBackupFinalization, JournalStoreError> {
+        validate_journal(journal)?;
+        let directory = crate::journal_fd::JournalDir::open(&self.root)?;
+        let name = std::ffi::OsString::from(format!(
+            ".{}.backup-finalization-pending",
+            journal.journal_id
+        ));
+        let path = self.root.join(&name);
+        let mut bytes = serde_json::to_vec(journal)?;
+        if bytes.len() as u64 > MAX_JOURNAL_BYTES {
+            return Err(JournalStoreError::TooLarge);
+        }
+        bytes.push(b'\n');
+        let file = directory.write_staged_file(&name, &bytes)?;
+        let created = file.metadata().map_err(|source| io_error(&path, source))?;
+        let (recorded, opened, metadata) =
+            load_pinned_journal(&directory, &name, &path, &journal.journal_id, 1, || {})?;
+        if recorded != *journal || !same_file_version(&created, &metadata) {
+            return Err(JournalStoreError::ChangedDuringInspection);
+        }
+        directory.sync()?;
+        directory.verify_namespace()?;
+        Ok(PendingBackupFinalization {
+            name,
+            journal: recorded,
+            file: opened,
+            metadata,
+        })
     }
 
     pub fn unfinished(&self) -> Result<Vec<OperationJournal>, JournalStoreError> {

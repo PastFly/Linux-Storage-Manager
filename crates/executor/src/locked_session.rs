@@ -38,6 +38,7 @@ pub struct LockedExecutionSession<'a> {
     handoff: &'a FrozenExecutionHandoff,
     journal: OperationJournal,
     journal_store: Option<&'a DurableJournalStore>,
+    pending_backup_finalization: Option<crate::journal_store::PendingBackupFinalization>,
     revalidation_attempted: bool,
 }
 
@@ -234,6 +235,7 @@ impl<'a> LockedExecutionSession<'a> {
             handoff,
             journal,
             journal_store,
+            pending_backup_finalization: None,
             revalidation_attempted: false,
         })
     }
@@ -242,7 +244,10 @@ impl<'a> LockedExecutionSession<'a> {
         let store = self
             .journal_store
             .ok_or(LockedSessionError::DurableJournalRequired)?;
-        let all = store.all()?;
+        let all = match &self.pending_backup_finalization {
+            Some(guard) => store.all_allowing_pending_backup(guard)?,
+            None => store.all()?,
+        };
         let persisted = all
             .iter()
             .find(|journal| journal.journal_id == self.journal.journal_id);
@@ -264,6 +269,26 @@ impl<'a> LockedExecutionSession<'a> {
         if let Some(path) = store.unclassified_runtime_evidence()?.into_iter().next() {
             return Err(LockedSessionError::UnclassifiedRuntimeJournal(path));
         }
+        Ok(())
+    }
+
+    /// Persist recovery evidence before publishing a verified completion.
+    /// The marker is deliberately never removed by this API; releasing it
+    /// requires a future observer proving that all descendants are gone and
+    /// a subsequent successful backup validation.
+    pub fn arm_backup_finalization_guard(&mut self) -> Result<(), LockedSessionError> {
+        self.require_current_durable_journal()?;
+        if self.journal.phase != JournalPhase::Verifying
+            || self.pending_backup_finalization.is_some()
+        {
+            return Err(LockedSessionError::DurableJournalMismatch);
+        }
+        let store = self
+            .journal_store
+            .ok_or(LockedSessionError::DurableJournalRequired)?;
+        self.pending_backup_finalization =
+            Some(store.create_pending_backup_finalization(&self.journal)?);
+        self.require_current_durable_journal()?;
         Ok(())
     }
 
@@ -1322,13 +1347,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    // Temporary red-phase stub: the production guard API will replace this call.
-    fn arm_backup_finalization_guard(
-        _session: &LockedExecutionSession<'_>,
-    ) -> Result<(), LockedSessionError> {
-        Ok(())
-    }
-
     #[test]
     fn pending_backup_finalization_blocks_new_session_after_completed_journal() {
         let (snapshot, capabilities) = fixture();
@@ -1364,7 +1382,15 @@ mod tests {
             .persist_verification_passed_continue(steps[0], steps[1], &"7".repeat(64))
             .unwrap();
         first.persist_verification_started().unwrap();
-        arm_backup_finalization_guard(&first).unwrap();
+        first.arm_backup_finalization_guard().unwrap();
+        let unrelated = root.join("unrelated-evidence");
+        std::fs::write(&unrelated, b"do not ignore").unwrap();
+        assert!(first
+            .persist_verified_completed(steps[1], &"8".repeat(64))
+            .is_err());
+        assert_eq!(first.journal().phase, JournalPhase::Verifying);
+        assert_eq!(std::fs::read(&unrelated).unwrap(), b"do not ignore");
+        std::fs::remove_file(unrelated).unwrap();
         first
             .persist_verified_completed(steps[1], &"8".repeat(64))
             .unwrap();
