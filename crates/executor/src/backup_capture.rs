@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;
@@ -224,6 +224,7 @@ pub struct PinnedMetadataBackups<'a> {
     directory: crate::journal_fd::JournalDir,
     watch: RefCell<crate::journal_fd::DirectoryWatch>,
     leases: Vec<ArtifactReadLease>,
+    invalidated: Cell<bool>,
 }
 
 impl PinnedMetadataBackups<'_> {
@@ -236,12 +237,24 @@ impl PinnedMetadataBackups<'_> {
             || self.receipt.plan_id != session.journal().plan_id
             || self.receipt.target_manifest_digest != session.journal().baseline_manifest_digest
         {
+            self.invalidated.set(true);
             return Err(BackupCaptureError::LeaseMismatch);
         }
         self.validate()
     }
 
     pub fn validate(&self) -> Result<(), BackupCaptureError> {
+        if self.invalidated.get() {
+            return Err(BackupCaptureError::LeaseMismatch);
+        }
+        let result = self.validate_inner();
+        if result.is_err() {
+            self.invalidated.set(true);
+        }
+        result
+    }
+
+    fn validate_inner(&self) -> Result<(), BackupCaptureError> {
         if !revalidate_receipt_at_root(self.manifest, self.receipt, self.root_override.as_deref())?
             .matches()
         {
@@ -311,6 +324,7 @@ fn pin_backups_at_root<'a>(
         directory,
         watch,
         leases,
+        invalidated: Cell::new(false),
     };
     pin.validate()?;
     Ok(pin)
