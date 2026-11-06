@@ -220,7 +220,7 @@ jobs:
   loop-integration:
     name: Loop integration
     runs-on: ubuntu-24.04
-    needs: rust
+    needs: harness
     timeout-minutes: 25
     steps:
       - name: Checkout

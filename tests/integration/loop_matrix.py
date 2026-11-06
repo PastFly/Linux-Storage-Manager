@@ -2225,7 +2225,7 @@ def exercise_operator_apply(resources: Resources, binary: Runner, loop: Loop,
     resources.check_loop(loop)
     if source != f"/dev/{vg}/data" or target.parent != resources.root:
         raise SafetyError("operator apply target is not the owned disposable fixture")
-    before = ready_snapshot(binary, loop.device, vg)
+    before = ready_snapshot(binary, loop.device, vg, expected_lv_count=2)
     lvm = before["lvm"]
     lvs = [row for row in lvm["logical_volumes"] if row.get("vg_name") == vg]
     target_rows = [row for row in lvs if row.get("path") == source]
@@ -2252,13 +2252,13 @@ def exercise_operator_apply(resources: Resources, binary: Runner, loop: Loop,
     run_operator_with_terminal(binary, target, option, False)
     if filesystem == "ext4":
         run_operator_with_terminal(binary, target, option, True, tamper_backup=True)
-    cancelled = ready_snapshot(binary, loop.device, vg)
+    cancelled = ready_snapshot(binary, loop.device, vg, expected_lv_count=2)
     cancelled_rows = [row for row in cancelled["lvm"]["logical_volumes"] if row.get("path") == source]
     if len(cancelled_rows) != 1 or cancelled_rows[0].get("size_bytes") != initial:
         raise SafetyError("cancelled operator apply changed the LV")
     run_operator_with_terminal(binary, target, option, True)
     refresh_fixture_udev(binary, Path(source).resolve(strict=True).name)
-    final = ready_snapshot(binary, loop.device, vg)
+    final = ready_snapshot(binary, loop.device, vg, expected_lv_count=2)
     rows = [row for row in final["lvm"]["logical_volumes"] if row.get("vg_name") == vg]
     target_rows = [row for row in rows if row.get("path") == source]
     sibling_rows = [row for row in rows if row.get("path") == f"/dev/{vg}/sibling"]
