@@ -147,7 +147,7 @@ jobs:
         run: |
           cargo test --locked -p lsm-executor --lib journal_store::tests::journal_v2
           cargo test --locked -p lsm-executor --lib locked_session::tests::recovery_attempt_starts_with_durable_v2_and_cannot_skip_binding -- --exact
-          cargo test --locked -p lsm-executor --lib locked_session::tests::recovery_preconditions_bind_durable_record_and_survive_reopen -- --exact
+          cargo test --locked -p lsm-executor --lib locked_session::tests::recovery_preconditions_ -- --test-threads=1
       - name: Test namespace watch discrimination
         run: cargo test --locked -p lsm-executor --lib journal_fd::namespace_watch_tests -- --test-threads=1 --nocapture
       - name: Test recovery evidence storage
