@@ -52,8 +52,9 @@ chmod +x storagemgr
 ./storagemgr
 ```
 
-Only use `sudo ./storagemgr` when additional discovery permissions are needed.
-The prototype cannot apply changes. Static linkage does not bundle `lsblk`,
+The narrowly scoped `apply extend` command requires root and interactive confirmation.
+Portable smoke tests do not validate mutation on the target distribution or kernel.
+Static linkage does not bundle `lsblk`,
 `findmnt`, `sfdisk`, LVM2 or filesystem utilities. Missing/incompatible tools or
 incomplete evidence must not become approval to modify storage. Package
 installation remains explicit and distribution-specific, outside storage core.

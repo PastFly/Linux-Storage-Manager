@@ -34,6 +34,28 @@ pub fn apply(target: String, growth: Growth) -> Result<()> {
         .context("apply extend requires an interactive controlling terminal")?;
     let snapshot = lsm_executor::discover_snapshot_trusted()?;
     let capabilities = lsm_executor::discover_capabilities_trusted();
+    // The general preview's MaxFree may include future partition/PV growth.
+    // This operator command is intentionally limited to existing VG extents.
+    let growth = if matches!(growth, Growth::MaxFree) {
+        let probe = plan_extend(
+            &snapshot,
+            &capabilities,
+            ExtendRequest {
+                target: target.clone(),
+                growth: Growth::ByBytes(1),
+            },
+        )?;
+        let size = probe
+            .size_change()
+            .context("no verified existing VG free extents")?;
+        let available = size
+            .rounded_growth_bytes
+            .checked_add(size.remaining_vg_free_bytes)
+            .context("VG free capacity overflow")?;
+        Growth::ByBytes(available)
+    } else {
+        growth
+    };
     let plan = plan_extend(
         &snapshot,
         &capabilities,
@@ -143,10 +165,19 @@ fn run_locked(
     }
     let verification = verify_preconditions(session, &evidence)?;
     let phrase = operator_confirmation_phrase(&verification);
+    let size = plan.size_change().context("LV size evidence is missing")?;
     writeln!(
         tty,
-        "{}\nEvidence: {}\nType exactly to proceed: {}",
-        plan.render_text(),
+        "CONFIRM STORAGE MODIFICATION: this will change the logical volume and filesystem.\nTarget: {:?}\nDevice: {:?}\nLV size: {} -> {} bytes\nGrowth: {} bytes\nVG free afterwards: {} bytes\nPlan: {}",
+        plan.target(), size.device, size.current_lv_size_bytes, size.expected_lv_size_bytes,
+        size.rounded_growth_bytes, size.remaining_vg_free_bytes, plan.plan_id(),
+    )?;
+    for step in plan.steps() {
+        writeln!(tty, "{}. {:?}", step.id, step.operation)?;
+    }
+    writeln!(
+        tty,
+        "Evidence: {}\nType exactly to proceed: {}",
         verification.bundle_id(),
         phrase
     )?;
@@ -164,6 +195,13 @@ fn run_locked(
         }
     }
     let approval = approve_operator_plan(session, &verification, &input)?;
+    let current_backup = revalidate_metadata_backup_receipt(&backup_manifest, &backup)?;
+    if !current_backup.matches() {
+        bail!(
+            "metadata backup changed while awaiting confirmation: {}",
+            current_backup.blockers().join("; ")
+        );
+    }
     let intent = freeze_execution_intent(session, &approval)?;
     let validated = validate_and_bind_native_manifest(compile_native_manifest(&intent))?;
     let executable_snapshot = lsm_executor::discover_snapshot_trusted()?;
@@ -218,6 +256,13 @@ fn run_locked(
         &activation,
         &receipt,
     )?;
+    let current_backup = revalidate_metadata_backup_receipt(&backup_manifest, &backup)?;
+    if !current_backup.matches() {
+        bail!(
+            "metadata backup changed before execution: {}",
+            current_backup.blockers().join("; ")
+        );
+    }
     let outcome = execute_verify_and_persist_production_step(
         session,
         first.descriptor_chain(&activation, &lease),

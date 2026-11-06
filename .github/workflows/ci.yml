@@ -264,14 +264,14 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      - name: Package tested read-only prototype
+      - name: Package tested candidate
         env:
           SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           OUT="${RUNNER_TEMP}/storagemgr-linux-x86_64"
           mkdir -p "${OUT}"
           cp target/preprod/release/storagemgr "${OUT}/storagemgr"
-          printf 'Source head: %s\nTested checkout: %s\nPlatform: Linux x86_64, Ubuntu 24.04 runner\nMode: read-only M0/M1A prototype; no apply/executor\n' \
+          printf 'Source head: %s\nTested checkout: %s\nPlatform: Linux x86_64, Ubuntu 24.04 runner\nMode: guarded LV to ext4/XFS operator apply; other mutation profiles unavailable in CLI\n' \
             "${SOURCE_HEAD}" "$(git rev-parse HEAD)" > "${OUT}/BUILD_INFO.txt"
           cp README.md "${OUT}/README.md"
           (cd "${OUT}" && sha256sum storagemgr > SHA256SUMS)

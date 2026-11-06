@@ -2158,7 +2158,10 @@ def exercise_lvm_growth_mutation(resources: Resources, binary: Runner, loop: Loo
 
 
 
-def run_operator_with_terminal(binary: Runner, target: Path, option: list[str], accept: bool) -> str:
+def run_operator_with_terminal(binary: Runner, target: Path, option: list[str], accept: bool,
+                               tamper_backup: bool = False) -> str:
+    backup_root = Path("/var/lib/linux-storage-manager/backups")
+    prior_backups = set(backup_root.rglob("*")) if backup_root.exists() else set()
     pid, master = pty.fork()
     if pid == 0:
         os.execve(binary.tools["storagemgr"],
@@ -2182,13 +2185,24 @@ def run_operator_with_terminal(binary: Runner, target: Path, option: list[str], 
                     raise SafetyError("operator output exceeded limit")
                 match = re.search(rb"Type exactly to proceed: (EXTEND [0-9a-f]{64})", output)
                 if match and not answered:
+                    if (b"CONFIRM STORAGE MODIFICATION" not in output
+                            or b"DRY RUN ONLY" in output):
+                        raise SafetyError("operator confirmation did not clearly describe a real write")
+                    if tamper_backup:
+                        new_files = [path for path in set(backup_root.rglob("*")) - prior_backups
+                                     if path.is_file() and not path.is_symlink()]
+                        if len(new_files) != 1:
+                            raise SafetyError("could not identify exactly one owned backup for tamper test")
+                        with new_files[0].open("ab") as backup:
+                            backup.write(b"test-tamper\n")
                     os.write(master, (match.group(1) if accept else b"cancel") + b"\n")
                     answered = True
         else:
             raise SafetyError("operator apply timed out")
         _, status = os.waitpid(pid, 0)
         text = output.decode("utf-8", "replace")
-        if not answered or (os.waitstatus_to_exitcode(status) == 0) != accept:
+        if (not answered or (os.waitstatus_to_exitcode(status) == 0) != (accept and not tamper_backup)
+                or (tamper_backup and "metadata backup changed" not in text)):
             raise SafetyError(f"operator apply unexpected result: {text!r}")
         return text
     except BaseException:
@@ -2206,7 +2220,8 @@ def run_operator_with_terminal(binary: Runner, target: Path, option: list[str], 
 
 
 def exercise_operator_apply(resources: Resources, binary: Runner, loop: Loop,
-                            source: str, target: Path, vg: str, filesystem: str) -> None:
+                            source: str, target: Path, sibling_target: Path,
+                            vg: str, filesystem: str) -> None:
     resources.check_loop(loop)
     if source != f"/dev/{vg}/data" or target.parent != resources.root:
         raise SafetyError("operator apply target is not the owned disposable fixture")
@@ -2227,6 +2242,7 @@ def exercise_operator_apply(resources: Resources, binary: Runner, loop: Loop,
     option = ["--by", f"{8 * extent}B"] if filesystem == "ext4" else ["--max"]
     expected = initial + (8 if filesystem == "ext4" else free) * extent
     sentinel = (target / "readonly-sentinel").read_bytes()
+    sibling_sentinel = (sibling_target / "readonly-sentinel").read_bytes()
     before_fs = os.statvfs(target).f_blocks * os.statvfs(target).f_frsize
     no_tty = subprocess.run([binary.tools["storagemgr"], "apply", "extend", str(target), *option],
                             input="yes\n", text=True, capture_output=True, start_new_session=True, timeout=30)
@@ -2234,6 +2250,8 @@ def exercise_operator_apply(resources: Resources, binary: Runner, loop: Loop,
         raise SafetyError(f"operator apply did not reject noninteractive approval: {no_tty!r}")
     resources.uncertain = True
     run_operator_with_terminal(binary, target, option, False)
+    if filesystem == "ext4":
+        run_operator_with_terminal(binary, target, option, True, tamper_backup=True)
     cancelled = ready_snapshot(binary, loop.device, vg)
     cancelled_rows = [row for row in cancelled["lvm"]["logical_volumes"] if row.get("path") == source]
     if len(cancelled_rows) != 1 or cancelled_rows[0].get("size_bytes") != initial:
@@ -2247,7 +2265,8 @@ def exercise_operator_apply(resources: Resources, binary: Runner, loop: Loop,
     if (len(target_rows) != 1 or target_rows[0].get("size_bytes") != expected
             or len(sibling_rows) != 1 or sibling_rows[0].get("size_bytes") != sibling_size
             or os.statvfs(target).f_blocks * os.statvfs(target).f_frsize <= before_fs
-            or (target / "readonly-sentinel").read_bytes() != sentinel):
+            or (target / "readonly-sentinel").read_bytes() != sentinel
+            or (sibling_target / "readonly-sentinel").read_bytes() != sibling_sentinel):
         raise SafetyError("operator apply produced unexpected target, sibling, filesystem or sentinel state")
     resources.uncertain = False
     print(f"OPERATOR_APPLY_EXTEND_OK={filesystem}", flush=True)
@@ -3398,12 +3417,15 @@ def main(argv: list[str] | None = None) -> int:
             operator_partition = resources.create_partition(operator_loop, 896, True)
             operator_vg = "lsmtest" + os.urandom(12).hex()
             operator_source = resources.create_vg(operator_loop, operator_partition, operator_vg)
-            resources.create_lv(operator_vg, "sibling", 64)
+            sibling_source = resources.create_lv(operator_vg, "sibling", 64)
+            runner.run("mkfs.ext4", "-F", sibling_source)
+            refresh_fixture_udev(runner, Path(sibling_source).resolve(strict=True).name)
+            sibling_target = resources.mount(sibling_source, f"operator-apply-{filesystem}-sibling")
             runner.run("mkfs." + filesystem, "-f" if filesystem == "xfs" else "-F", operator_source)
             refresh_fixture_udev(runner, Path(operator_source).resolve(strict=True).name)
             operator_target = resources.mount(operator_source, f"operator-apply-{filesystem}-mount")
             exercise_operator_apply(resources, runner, operator_loop, operator_source,
-                                    operator_target, operator_vg, filesystem)
+                                    operator_target, sibling_target, operator_vg, filesystem)
 
         if args.production_executor_binary is not None:
             print("==> lvm-ext4-production-e2e", flush=True)
