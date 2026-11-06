@@ -54,6 +54,8 @@ jobs:
         run: cargo test --locked -p lsm-executor --lib backup_recovery_record::tests
       - name: Test journal recovery binding
         run: cargo test --locked -p lsm-executor --lib journal_store::tests::journal_v2
+      - name: Test namespace watch discrimination
+        run: cargo test --locked -p lsm-executor --lib journal_fd::namespace_watch_tests -- --test-threads=1 --nocapture
       - name: Test recovery evidence storage
         run: |
           cargo test --locked -p lsm-executor --lib backup_recovery_storage::tests -- --test-threads=1

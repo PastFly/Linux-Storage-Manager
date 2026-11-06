@@ -985,3 +985,84 @@ impl DirectoryWatch {
         }
     }
 }
+
+#[cfg(test)]
+mod namespace_watch_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    fn fixture() -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let outer = std::env::temp_dir().join(format!(
+            "lsm-watch-filter-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let ancestor = outer.join("target");
+        let leaf = ancestor.join("journal");
+        let sibling = outer.join("unrelated");
+        fs::create_dir_all(&leaf).unwrap();
+        fs::create_dir(&sibling).unwrap();
+        fs::set_permissions(&sibling, fs::Permissions::from_mode(0o700)).unwrap();
+        (outer, ancestor, leaf, sibling)
+    }
+
+    #[test]
+    fn namespace_watch_allows_unrelated_sibling_attrib() {
+        let (outer, _, leaf, sibling) = fixture();
+        let directory = JournalDir::open(&leaf).unwrap();
+        let mut watch = directory.watch_namespace().unwrap();
+        fs::set_permissions(&sibling, fs::Permissions::from_mode(0o750)).unwrap();
+        assert!(
+            watch.require_unchanged().is_ok(),
+            "unrelated sibling chmod must not invalidate the pinned namespace"
+        );
+        fs::remove_dir_all(outer).unwrap();
+    }
+
+    #[test]
+    fn namespace_watch_rejects_target_ancestor_attrib() {
+        let (outer, ancestor, leaf, _) = fixture();
+        let directory = JournalDir::open(&leaf).unwrap();
+        let mut watch = directory.watch_namespace().unwrap();
+        fs::set_permissions(&ancestor, fs::Permissions::from_mode(0o750)).unwrap();
+        assert!(
+            watch.require_unchanged().is_err(),
+            "target ancestor chmod must invalidate the pinned namespace"
+        );
+        fs::remove_dir_all(outer).unwrap();
+    }
+
+    #[test]
+    fn namespace_watch_rejects_target_ancestor_rename_and_restore() {
+        let (outer, ancestor, leaf, _) = fixture();
+        let directory = JournalDir::open(&leaf).unwrap();
+        let mut watch = directory.watch_namespace().unwrap();
+        let displaced = outer.join("displaced");
+        fs::rename(&ancestor, &displaced).unwrap();
+        fs::rename(&displaced, &ancestor).unwrap();
+        assert!(
+            watch.require_unchanged().is_err(),
+            "restoring a moved ancestor must not erase evidence of the move"
+        );
+        fs::remove_dir_all(outer).unwrap();
+    }
+
+    #[test]
+    fn namespace_watch_rejects_attrib_of_leaf_entry() {
+        let (outer, _, leaf, _) = fixture();
+        let entry = leaf.join("evidence");
+        fs::write(&entry, b"evidence").unwrap();
+        fs::set_permissions(&entry, fs::Permissions::from_mode(0o600)).unwrap();
+        let directory = JournalDir::open(&leaf).unwrap();
+        let mut watch = directory.watch_namespace().unwrap();
+        fs::set_permissions(&entry, fs::Permissions::from_mode(0o400)).unwrap();
+        assert!(
+            watch.require_unchanged().is_err(),
+            "changing a leaf entry must remain a blocker"
+        );
+        fs::remove_dir_all(outer).unwrap();
+    }
+}
