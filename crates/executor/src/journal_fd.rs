@@ -127,7 +127,17 @@ impl JournalDir {
         if fd < 0 {
             return Err(failure(&path, io::Error::last_os_error()));
         }
-        Ok(unsafe { File::from_raw_fd(fd) })
+        let file = unsafe { File::from_raw_fd(fd) };
+        #[cfg(test)]
+        eprintln!(
+            "journal writer opened time={:?} pid={} thread={:?} fd={} path={:?}",
+            std::time::SystemTime::now(),
+            std::process::id(),
+            std::thread::current().id(),
+            fd,
+            path
+        );
+        Ok(file)
     }
 
     pub(crate) fn exchange(
@@ -280,7 +290,10 @@ impl DirectoryWatch {
                             u32::from_ne_bytes(bytes[12..16].try_into().unwrap()) as usize;
                         let end = (16 + name_len).min(count);
                         eprintln!(
-                            "journal directory event: path={:?} mask={mask:#x} name={:?}",
+                            "journal directory event: time={:?} pid={} thread={:?} path={:?} mask={mask:#x} name={:?}",
+                            std::time::SystemTime::now(),
+                            std::process::id(),
+                            std::thread::current().id(),
                             self.path,
                             String::from_utf8_lossy(&bytes[16..end])
                         );

@@ -2,6 +2,8 @@
 use std::fs::OpenOptions;
 use std::fs::{self, DirBuilder, File};
 use std::io::{self, Read, Write};
+#[cfg(test)]
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 #[cfg(test)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -572,6 +574,15 @@ impl DurableJournalStore {
         }
         directory.sync()?;
         directory.verify_namespace()?;
+        #[cfg(test)]
+        eprintln!(
+            "journal writer closing time={:?} pid={} thread={:?} fd={} path={:?}",
+            std::time::SystemTime::now(),
+            std::process::id(),
+            std::thread::current().id(),
+            file.as_raw_fd(),
+            final_path
+        );
         Ok(final_path)
     }
 
@@ -783,6 +794,15 @@ impl DurableJournalStore {
         {
             return Err(JournalStoreError::ChangedDuringInspection);
         }
+        #[cfg(test)]
+        eprintln!(
+            "journal writer closing time={:?} pid={} thread={:?} fd={} path={:?}",
+            std::time::SystemTime::now(),
+            std::process::id(),
+            std::thread::current().id(),
+            staged.as_raw_fd(),
+            final_path
+        );
         Ok(final_path)
     }
 
