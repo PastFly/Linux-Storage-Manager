@@ -62,9 +62,14 @@ mod linux {
             events: libc::POLLIN,
             revents: 0,
         };
+        let mut interruptions = 0;
         loop {
             let n = unsafe { libc::poll(&mut p, 1, 0) };
             if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                interruptions += 1;
+                if interruptions > 64 {
+                    return Err(error("pidfd poll repeatedly interrupted"));
+                }
                 continue;
             }
             if n < 0 {
@@ -103,6 +108,119 @@ mod linux {
                 return Ok(());
             }
             return Err(error("child pidfd polling failed"));
+        }
+    }
+    // Never reap here: stop_and_reap is the sole owner of the child's status.
+    fn bounded_stopped(pid: libc::pid_t, pidfd: RawFd, timeout: Duration) -> io::Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let mut info: libc::siginfo_t = unsafe { zeroed() };
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid as libc::id_t,
+                    &mut info,
+                    libc::WSTOPPED | libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if result != 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            } else if unsafe { info.si_pid() } != 0 {
+                if info.si_code == libc::CLD_STOPPED && live(pidfd)? {
+                    return Ok(());
+                }
+                return Err(error("child exited before stop"));
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "child stop timed out",
+                ));
+            }
+            // pidfds do not become readable on stop; periodically recheck waitid.
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let millis = remaining.as_millis().clamp(1, 10) as i32;
+            let mut p = libc::pollfd {
+                fd: pidfd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let n = unsafe { libc::poll(&mut p, 1, millis) };
+            if n < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            } else if n > 0 {
+                return Err(error("child exited or pidfd polling failed before stop"));
+            }
+        }
+    }
+    fn bounded_ready(reader: &mut File, pidfd: RawFd, timeout: Duration) -> io::Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "child READY timed out",
+                ));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let millis = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+            let mut fds = [
+                libc::pollfd {
+                    fd: reader.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: pidfd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, millis) };
+            if n < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+            if n == 0 {
+                continue;
+            }
+            if fds[1].revents != 0 {
+                return Err(error("child exited or pidfd polling failed before READY"));
+            }
+            if fds[0].revents != libc::POLLIN {
+                return Err(error("READY pipe closed or polling failed"));
+            }
+            let mut byte = [0];
+            let count = unsafe { libc::read(reader.as_raw_fd(), byte.as_mut_ptr().cast(), 1) };
+            if count < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+            if count == 1 && byte == [b'R'] && live(pidfd)? {
+                return Ok(());
+            }
+            return Err(error("child not ready/live"));
+        }
+    }
+    fn combine_results(run: io::Result<()>, cleanup: io::Result<()>) -> io::Result<()> {
+        match (run, cleanup) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
+            (Err(run), Err(cleanup)) => Err(io::Error::other(format!(
+                "run failed: {run}; cleanup failed: {cleanup}"
+            ))),
         }
     }
     fn populated(events: &mut File) -> io::Result<bool> {
@@ -528,31 +646,18 @@ mod linux {
                     return Err(error("early stop refused"));
                 }
                 go_write.write_all(b"S")?;
-                let mut status = 0;
-                loop {
-                    let n = unsafe { libc::waitpid(child, &mut status, libc::WUNTRACED) };
-                    if n == child {
-                        break;
-                    }
-                    if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    return Err(io::Error::last_os_error());
-                }
-                if !libc::WIFSTOPPED(status) {
-                    return Err(error("child did not stop"));
-                }
+                bounded_stopped(child, child_pidfd.as_raw_fd(), Duration::from_secs(10))?;
                 status_line("STOPPED", child)?;
                 // Test manager will kill the launcher and then SIGCONT the exact pidfd.
                 let mut byte = [0];
                 io::stdin().read_exact(&mut byte)?;
                 return Err(error("unexpected early control"));
             }
-            let mut ready = [0];
-            ready_read.read_exact(&mut ready)?;
-            if ready != [b'R'] || !live(child_pidfd.as_raw_fd())? {
-                return Err(error("child not ready/live"));
-            }
+            bounded_ready(
+                &mut ready_read,
+                child_pidfd.as_raw_fd(),
+                Duration::from_secs(10),
+            )?;
             let procs = openat(&group, c"cgroup.procs", libc::O_RDWR)?;
             let pid_bytes = child.to_string();
             if unsafe { libc::lseek(procs.as_raw_fd(), 0, libc::SEEK_SET) } < 0 {
@@ -579,8 +684,8 @@ mod linux {
             Err(error("test worker exited without external manager"))
         })();
         // The exact pidfd and group remain cleanup authorities even before GO.
-        stop_and_reap(child, child_pidfd.as_raw_fd(), &kill, &mut events)?;
-        run
+        let cleanup = stop_and_reap(child, child_pidfd.as_raw_fd(), &kill, &mut events);
+        combine_results(run, cleanup)
     }
 
     fn worker() -> io::Result<()> {
@@ -645,26 +750,6 @@ mod linux {
         use super::*;
         use std::io::Write;
 
-        // Red-phase helpers mirror the currently unbounded/lossy branches.
-        fn bounded_ready(reader: &mut File, _pidfd: RawFd, _timeout: Duration) -> io::Result<()> {
-            let mut byte = [0];
-            reader.read_exact(&mut byte)
-        }
-        fn bounded_stopped(pid: libc::pid_t, _pidfd: RawFd, _timeout: Duration) -> io::Result<()> {
-            let mut status = 0;
-            if unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) } == pid
-                && libc::WIFSTOPPED(status)
-            {
-                Ok(())
-            } else {
-                Err(error("child did not stop"))
-            }
-        }
-        fn combine_results(run: io::Result<()>, cleanup: io::Result<()>) -> io::Result<()> {
-            cleanup?;
-            run
-        }
-
         #[test]
         fn ready_wait_times_out_with_open_silent_pipe() {
             let mut child = std::process::Command::new("/bin/sleep")
@@ -722,6 +807,22 @@ mod linux {
                 elapsed < Duration::from_millis(400),
                 "WUNTRACED blocked for {elapsed:?}"
             );
+        }
+
+        #[test]
+        fn stopped_wait_observes_stop_without_reaping() {
+            let mut child = std::process::Command::new("/bin/sleep")
+                .arg("10")
+                .spawn()
+                .unwrap();
+            let pid = child.id() as libc::pid_t;
+            let child_fd = pidfd(pid).unwrap();
+            assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
+            let result = bounded_stopped(pid, child_fd.as_raw_fd(), Duration::from_secs(2));
+            child.kill().unwrap();
+            let status = child.wait();
+            assert!(result.is_ok(), "stop was not observed: {result:?}");
+            assert!(status.is_ok(), "child was unexpectedly reaped");
         }
 
         #[test]
