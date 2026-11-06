@@ -49,6 +49,8 @@ jobs:
           sudo python3 -I .github/diagnostics/test-gated-launch.py /tmp/lsm-observer-target/release/lsm-gated-launch-proof /sys/fs/cgroup
       - name: Test recovery evidence format
         run: cargo test --locked -p lsm-executor --lib backup_recovery_record::tests
+      - name: Test recovery evidence storage
+        run: cargo test --locked -p lsm-executor --lib backup_recovery_storage::tests
       - name: Test journal recovery binding
         run: cargo test --locked -p lsm-executor --lib journal_store::tests::journal_v2
       - name: Exercise observer in the actual CLI binary

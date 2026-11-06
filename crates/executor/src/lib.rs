@@ -6,6 +6,8 @@ mod backup_observer;
 #[cfg(test)]
 mod backup_recovery_record;
 #[cfg(test)]
+mod backup_recovery_storage;
+#[cfg(test)]
 mod backup_supervisor;
 mod disposable_argv;
 #[cfg(feature = "disposable-executor")]
