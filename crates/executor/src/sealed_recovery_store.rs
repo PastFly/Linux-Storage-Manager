@@ -71,6 +71,7 @@ pub(crate) enum PublicationStage {
     Created,
     WrittenAndSynced,
     SealedAndSynced,
+    BeforePublish,
     Renamed,
     DirectorySynced,
 }
@@ -248,6 +249,7 @@ impl PublishedRecovery {
         if bounded_names(&directory)? != [OsStr::new(&staging)] {
             return Err(PublicationError::Changed);
         }
+        hook(PublicationStage::BeforePublish)?;
         directory.publish_new(OsStr::new(&staging), OsStr::new(&final_name))?;
         hook(PublicationStage::Renamed)?;
         directory.sync()?;

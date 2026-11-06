@@ -210,6 +210,40 @@ fn publication_rejects_writer_inherited_by_forked_child() {
 }
 
 #[test]
+fn publication_never_publishes_substituted_staging_inode() {
+    if skip_supported() {
+        return;
+    }
+    with_fixture(|session, manifest, receipt, copies| {
+        let sealed = SealedRecovery::seal(session, manifest, receipt, copies).unwrap();
+        let id = sealed.record().record_id().to_owned();
+        let expected = sealed.record().encode().unwrap();
+        let root = record_dir(manifest);
+        fs::create_dir(&root).unwrap();
+        let staging = root.join(format!(".{id}.pending"));
+        let final_path = root.join(format!("{id}.json"));
+        let displaced = root.join("displaced-record");
+        let _result = PublishedRecovery::publish_inner(
+            session,
+            sealed,
+            File::open(&root).unwrap(),
+            |stage| {
+                if stage == PublicationStage::BeforePublish {
+                    fs::rename(&staging, &displaced)?;
+                    fs::write(&staging, b"substituted record")?;
+                }
+                Ok(())
+            },
+        );
+        if final_path.exists() {
+            assert_eq!(fs::read(&final_path).unwrap(), expected);
+        }
+        assert_eq!(fs::read(displaced).unwrap(), expected);
+        fs::remove_dir_all(root).unwrap();
+    });
+}
+
+#[test]
 fn publication_preserves_orphans_after_sigkill() {
     use std::io::Write;
     use std::os::unix::process::ExitStatusExt;
