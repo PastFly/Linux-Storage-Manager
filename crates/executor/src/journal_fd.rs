@@ -1166,6 +1166,45 @@ mod namespace_watch_tests {
         ));
     }
 
+    #[test]
+    fn filter_rejects_unaligned_inotify_name_length() {
+        let nodes = vec![WatchedNode {
+            wd: 7,
+            next_name: Some(OsString::from("target")),
+        }];
+        let event = libc::inotify_event {
+            wd: 7,
+            mask: libc::IN_ATTRIB,
+            cookie: 0,
+            len: 2,
+        };
+        assert!(
+            !irrelevant_sibling_attrib(&event, b"x\0", &nodes),
+            "an unaligned inotify name field must be rejected"
+        );
+    }
+
+    #[test]
+    fn filter_rejects_inotify_name_longer_than_linux_name_max() {
+        let nodes = vec![WatchedNode {
+            wd: 7,
+            next_name: Some(OsString::from("target")),
+        }];
+        // A Linux path component is at most 255 bytes; keep padding aligned.
+        let mut name = vec![b'x'; 256];
+        name.resize(272, 0);
+        let event = libc::inotify_event {
+            wd: 7,
+            mask: libc::IN_ATTRIB,
+            cookie: 0,
+            len: name.len() as u32,
+        };
+        assert!(
+            !irrelevant_sibling_attrib(&event, &name, &nodes),
+            "an overlong inotify component must be rejected"
+        );
+    }
+
     fn fixture() -> (PathBuf, PathBuf, PathBuf, PathBuf) {
         let outer = std::env::temp_dir().join(format!(
             "lsm-watch-filter-{}-{}",
@@ -1220,6 +1259,25 @@ mod namespace_watch_tests {
             "restoring a moved ancestor must not erase evidence of the move"
         );
         fs::remove_dir_all(outer).unwrap();
+    }
+
+    #[test]
+    fn watch_remains_invalid_after_target_event_is_consumed() {
+        let (outer, _, leaf, _) = fixture();
+        let entry = leaf.join("evidence");
+        fs::write(&entry, b"evidence").unwrap();
+        fs::set_permissions(&entry, fs::Permissions::from_mode(0o600)).unwrap();
+        let directory = JournalDir::open(&leaf).unwrap();
+        let mut watch = directory.watch().unwrap();
+        fs::set_permissions(&entry, fs::Permissions::from_mode(0o400)).unwrap();
+
+        let first = watch.require_unchanged();
+        let second = watch.require_unchanged();
+        drop(watch);
+        drop(directory);
+        fs::remove_dir_all(outer).unwrap();
+        assert!(first.is_err(), "target change was not detected");
+        assert!(second.is_err(), "consumed change incorrectly became valid");
     }
 
     #[test]
