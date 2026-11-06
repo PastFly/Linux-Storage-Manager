@@ -146,6 +146,8 @@ jobs:
       - name: Test journal recovery binding
         run: |
           cargo test --locked -p lsm-executor --lib journal_store::tests::journal_v2
+          cargo test --locked -p lsm-executor --lib journal_store::tests::legacy_v1_journal_serialization_and_digest_remain_identical -- --exact
+          cargo test --locked -p lsm-executor --lib locked_session::tests::operator_confirmation_is_exact_and_bound_to_durable_evidence -- --exact
           cargo test --locked -p lsm-executor --lib locked_session::tests::recovery_attempt_starts_with_durable_v2_and_cannot_skip_binding -- --exact
           cargo test --locked -p lsm-executor --lib locked_session::tests::recovery_preconditions_ -- --test-threads=1
       - name: Test namespace watch discrimination
