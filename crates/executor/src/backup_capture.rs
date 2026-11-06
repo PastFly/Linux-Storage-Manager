@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
@@ -209,6 +209,13 @@ pub fn revalidate_metadata_backup_receipt(
 
 struct ArtifactReadLease(File);
 
+struct RecoveryBackup {
+    path: PathBuf,
+    lease: ArtifactReadLease,
+    device_id: u64,
+    inode: u64,
+}
+
 impl Drop for ArtifactReadLease {
     fn drop(&mut self) {
         unsafe { libc::fcntl(self.0.as_raw_fd(), libc::F_SETLEASE, libc::F_UNLCK) };
@@ -224,10 +231,12 @@ pub struct PinnedMetadataBackups<'a> {
     directory: crate::journal_fd::JournalDir,
     watch: RefCell<crate::journal_fd::DirectoryWatch>,
     leases: Vec<ArtifactReadLease>,
+    recovery: Vec<RecoveryBackup>,
     invalidated: Cell<bool>,
 }
 
 impl PinnedMetadataBackups<'_> {
+    #[cfg(feature = "production-mutation-execution")]
     pub(crate) fn validate_for_session(
         &self,
         session: &LockedExecutionSession<'_>,
@@ -260,8 +269,22 @@ impl PinnedMetadataBackups<'_> {
         {
             return Err(BackupCaptureError::LeaseMismatch);
         }
-        if self.leases.len() != self.receipt.artifacts.len() {
+        if self.leases.len() != self.receipt.artifacts.len()
+            || self.recovery.len() != self.receipt.artifacts.len()
+        {
             return Err(BackupCaptureError::LeaseMismatch);
+        }
+        for (recovery, artifact) in self.recovery.iter().zip(&self.receipt.artifacts) {
+            let (size, digest, device_id, inode, _pin) = verify_artifact(&recovery.path)?;
+            if device_id != recovery.device_id
+                || inode != recovery.inode
+                || size != artifact.size_bytes
+                || digest != artifact.sha256
+                || unsafe { libc::fcntl(recovery.lease.0.as_raw_fd(), libc::F_GETLEASE) }
+                    != libc::F_RDLCK
+            {
+                return Err(BackupCaptureError::LeaseMismatch);
+            }
         }
         for (lease, artifact) in self.leases.iter().zip(&self.receipt.artifacts) {
             let metadata = lease
@@ -289,6 +312,9 @@ fn pin_backups_at_root<'a>(
     if receipt.pinned_artifacts.len() != receipt.artifacts.len() || receipt.artifacts.is_empty() {
         return Err(BackupCaptureError::LeaseMismatch);
     }
+    if !revalidate_receipt_at_root(manifest, receipt, root_override)?.matches() {
+        return Err(BackupCaptureError::LeaseMismatch);
+    }
     let root = match root_override {
         Some(root) if Path::new(manifest.artifact_directory()).ends_with(&receipt.journal_id) => {
             root.join(&receipt.journal_id)
@@ -297,7 +323,6 @@ fn pin_backups_at_root<'a>(
         None => PathBuf::from(manifest.artifact_directory()),
     };
     let directory = crate::journal_fd::JournalDir::open(&root)?;
-    let watch = RefCell::new(directory.watch()?);
     let mut leases = Vec::with_capacity(receipt.artifacts.len());
     for (file, artifact) in receipt.pinned_artifacts.iter().zip(&receipt.artifacts) {
         let metadata = file.metadata().map_err(|error| io_error(&root, error))?;
@@ -317,6 +342,53 @@ fn pin_backups_at_root<'a>(
         }
         leases.push(ArtifactReadLease(pinned));
     }
+    let mut recovery = Vec::with_capacity(receipt.artifacts.len());
+    for (original, artifact) in leases.iter().zip(&receipt.artifacts) {
+        if artifact.size_bytes == 0 || artifact.size_bytes > MAX_BACKUP_ARTIFACT_BYTES {
+            return Err(BackupCaptureError::LeaseMismatch);
+        }
+        let mut bytes = vec![0; artifact.size_bytes as usize];
+        original
+            .0
+            .read_exact_at(&mut bytes, 0)
+            .map_err(|error| io_error(&root, error))?;
+        if format!("{:x}", Sha256::digest(&bytes)) != artifact.sha256 {
+            return Err(BackupCaptureError::LeaseMismatch);
+        }
+        let mut name = Path::new(&artifact.artifact_path)
+            .file_name()
+            .ok_or(BackupCaptureError::LeaseMismatch)?
+            .to_os_string();
+        name.push(".recovery");
+        let path = root.join(&name);
+        let file = match directory.open_file(&name) {
+            Ok(file) => file,
+            Err(crate::JournalStoreError::Io { source, .. })
+                if source.kind() == io::ErrorKind::NotFound =>
+            {
+                directory.write_staged_file(&name, &bytes)?
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let metadata = file.metadata().map_err(|error| io_error(&path, error))?;
+        if !crate::journal_store::trusted_journal_file(&metadata)
+            || (metadata.dev() == artifact.device_id && metadata.ino() == artifact.inode)
+        {
+            return Err(BackupCaptureError::LeaseMismatch);
+        }
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLEASE, libc::F_RDLCK) } < 0 {
+            return Err(io_error(&path, io::Error::last_os_error()));
+        }
+        recovery.push(RecoveryBackup {
+            path,
+            lease: ArtifactReadLease(file),
+            device_id: metadata.dev(),
+            inode: metadata.ino(),
+        });
+    }
+    directory.sync()?;
+    directory.verify_namespace()?;
+    let watch = RefCell::new(directory.watch()?);
     let pin = PinnedMetadataBackups {
         manifest,
         receipt,
@@ -324,6 +396,7 @@ fn pin_backups_at_root<'a>(
         directory,
         watch,
         leases,
+        recovery,
         invalidated: Cell::new(false),
     };
     pin.validate()?;
@@ -1038,6 +1111,7 @@ mod tests {
         pin.validate().unwrap();
         drop(pin);
         let writer = OpenOptions::new().write(true).open(&path).unwrap();
+        assert!(pin_backup_at_test_root(&manifest, &receipt, &root).is_err());
         use std::os::unix::fs::FileExt;
         assert_eq!(writer.write_at(b"changed", 0).unwrap(), 7);
         assert!(pin_backup_at_test_root(&manifest, &receipt, &root).is_err());
