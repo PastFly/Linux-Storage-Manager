@@ -7,8 +7,9 @@ low-level partition, LVM and filesystem commands themselves.
 
 ## Current status
 
-The normal `storagemgr` CLI and TUI are **read-only**: they discover storage, explain
-blockers and preview changes. There is no general-purpose `storagemgr apply` command.
+The TUI and planning commands are read-only. The CLI also supports a guarded
+`storagemgr apply extend` for the narrow LV → ext4/XFS profile described below.
+Other mutation workflows remain unavailable through the operator CLI.
 
 Implemented mutation paths are tested through separately enabled harnesses on
 disposable loop devices. They include fresh identity checks, explicit operation
@@ -23,7 +24,7 @@ not authorization to run on a production disk.
 | Swap acceptance | DOS tail swap-partition migration to a swapfile, persistent configuration and old partition removal |
 | Blank-disk Create acceptance | GPT/DOS × ext4/XFS, mount, atomic fstab persistence, restart verification and exact fixture cleanup |
 | Existing GPT free-tail Create | Frozen intent, consent and runtime preflight; write/format execution and E2E acceptance remain pending |
-| General operator apply flow and advanced layouts | Pending; unsupported or contradictory topology is blocked |
+| Operator apply | Existing VG free extents → LV → ext4 or mounted XFS; other and contradictory topologies are blocked |
 
 ## Start testing
 
@@ -56,9 +57,9 @@ storage resources after a failure.
 GitHub CI runs this same Wave 1 command on its disposable Ubuntu 24.04 VM and
 uploads the evidence. Debian, Rocky and aarch64 VM acceptance require their own
 complete reports. Portable artifact checks cover static linkage and userland smoke
-tests separately; the downloadable `storagemgr` prototype remains read-only.
+tests separately; portable smoke tests alone do not establish disk-mutation support.
 
-## Read-only CLI
+## CLI
 
 ```text
 storagemgr                   # open the TUI
@@ -71,11 +72,15 @@ storagemgr plan targets      # selectable targets and blockers
 storagemgr plan create-spaces # verified/blocked provisioning sources
 storagemgr plan extend / --max
 storagemgr plan extend / --max --freeze-handoff --json # frozen, non-executable handoff
+storagemgr apply extend / --by 8GiB # root and interactive exact confirmation required
 storagemgr plan create <id> --max --purpose filesystem --fs ext4
 ```
 
 Discovery works without root wherever the underlying tools permit it. Missing
 permissions or tools are reported rather than treated as a complete inventory.
+`apply extend` requires a controlling terminal, records a durable journal and metadata
+backup, and executes only after the exact displayed confirmation. Review the plan
+and retain backups and recovery evidence; unsupported layouts fail closed.
 
 ## Development
 

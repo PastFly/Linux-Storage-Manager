@@ -1,17 +1,23 @@
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File};
 use std::io::{Read, Take};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{ProductionChainedMutationActivationIntent, ProductionMutationActivationIntent};
+use crate::{
+    ExactPlanApproval, LockedExecutionSession, ProductionChainedMutationActivationIntent,
+    ProductionMutationActivationIntent,
+};
+use lsm_planner::{ExecutionStartBinding, JournalPhase};
 
 pub const PRODUCTION_MUTATION_CONSENT_PATH: &str =
     "/etc/linux-storage-manager/production-mutation-consent.json";
 pub const PRODUCTION_MUTATION_CONSENT_PHRASE: &str = "I UNDERSTAND THIS WILL MODIFY STORAGE";
+pub const OPERATOR_MUTATION_CONSENT_DIRECTORY: &str =
+    "/var/lib/linux-storage-manager/operator-consents";
 pub const PRODUCTION_MUTATION_CONSENT_COMPILED: bool =
     cfg!(feature = "production-mutation-consent");
 const MAX_CONSENT_BYTES: u64 = 4096;
@@ -75,6 +81,14 @@ impl ProductionMutationConsentReceipt {
 
 #[derive(Debug, Error)]
 pub enum ProductionMutationConsentError {
+    #[error("production consent storage verification failed: {0}")]
+    Storage(#[from] crate::JournalStoreError),
+    #[error("operator consent requires an exact current approved session")]
+    OperatorApprovalMismatch,
+    #[error("operator consent requires administrator privileges")]
+    OperatorPrivilegeRequired,
+    #[error("operator session verification failed: {0}")]
+    Session(#[from] crate::LockedSessionError),
     #[error("production mutation consent feature is not compiled")]
     FeatureDisabled,
     #[error("production activation intent integrity check failed")]
@@ -122,6 +136,22 @@ fn validate_activation_intent(
         return Err(ProductionMutationConsentError::ActivationAlreadyEnabled);
     }
     Ok(())
+}
+
+pub(crate) fn operator_consent_path(
+    intent: &ProductionMutationActivationIntent,
+) -> Result<PathBuf, ProductionMutationConsentError> {
+    validate_activation_intent(intent)?;
+    if intent.activation_id.len() != 64
+        || !intent
+            .activation_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ProductionMutationConsentError::ActivationIntentInvalid);
+    }
+    Ok(Path::new(OPERATOR_MUTATION_CONSENT_DIRECTORY)
+        .join(format!("{}.json", intent.activation_id)))
 }
 
 fn validate_chained_activation_intent(
@@ -297,16 +327,19 @@ fn validate_secure_parent(path: &Path) -> Result<(), ProductionMutationConsentEr
 ///
 /// Even after success, the receipt records execution_enabled=false. The next
 /// reviewed gate must consume both M1B35 activation and this consent receipt.
-fn read_default_production_mutation_consent_file(
+fn read_production_mutation_consent_file(
+    path: &Path,
 ) -> Result<(Vec<u8>, ProductionMutationConsentFileIdentity), ProductionMutationConsentError> {
-    let path = Path::new(PRODUCTION_MUTATION_CONSENT_PATH);
     validate_secure_parent(path)?;
-
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|source| io_error(path, source))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| ProductionMutationConsentError::UnsafeParent(path.to_path_buf()))?;
+    let name = path
+        .file_name()
+        .ok_or(ProductionMutationConsentError::UnsafeFile)?;
+    let directory = crate::journal_fd::JournalDir::open(parent)?;
+    let mut watch = directory.watch()?;
+    let mut file = directory.open_file(name)?;
     let metadata = file.metadata().map_err(|source| io_error(path, source))?;
     if !metadata.file_type().is_file()
         || metadata.uid() != 0
@@ -326,6 +359,26 @@ fn read_default_production_mutation_consent_file(
     if bytes.len() as u64 != metadata.len() || bytes.len() as u64 > MAX_CONSENT_BYTES {
         return Err(ProductionMutationConsentError::InvalidFileSize);
     }
+    let held = file.metadata().map_err(|source| io_error(path, source))?;
+    let live = directory.open_file(name)?;
+    let live = live.metadata().map_err(|source| io_error(path, source))?;
+    for current in [&held, &live] {
+        if metadata.dev() != current.dev()
+            || metadata.ino() != current.ino()
+            || metadata.mode() != current.mode()
+            || metadata.uid() != current.uid()
+            || metadata.nlink() != current.nlink()
+            || metadata.len() != current.len()
+            || metadata.mtime() != current.mtime()
+            || metadata.mtime_nsec() != current.mtime_nsec()
+            || metadata.ctime() != current.ctime()
+            || metadata.ctime_nsec() != current.ctime_nsec()
+        {
+            return Err(ProductionMutationConsentError::UnsafeFile);
+        }
+    }
+    directory.verify_namespace()?;
+    watch.require_unchanged()?;
 
     let identity = ProductionMutationConsentFileIdentity {
         device_id: metadata.dev(),
@@ -349,8 +402,106 @@ pub fn verify_default_production_mutation_consent(
         return Err(ProductionMutationConsentError::FeatureDisabled);
     }
     validate_activation_intent(intent)?;
-    let (bytes, identity) = read_default_production_mutation_consent_file()?;
+    let (bytes, identity) =
+        read_production_mutation_consent_file(Path::new(PRODUCTION_MUTATION_CONSENT_PATH))?;
     bind_consent_receipt(intent, PRODUCTION_MUTATION_CONSENT_PATH, &bytes, identity)
+}
+
+/// Verify the retained operator consent for this exact activation.
+pub fn verify_operator_production_mutation_consent(
+    intent: &ProductionMutationActivationIntent,
+) -> Result<ProductionMutationConsentReceipt, ProductionMutationConsentError> {
+    if !PRODUCTION_MUTATION_CONSENT_COMPILED {
+        return Err(ProductionMutationConsentError::FeatureDisabled);
+    }
+    let path = operator_consent_path(intent)?;
+    let (bytes, identity) = read_production_mutation_consent_file(&path)?;
+    let path = path
+        .to_str()
+        .ok_or(ProductionMutationConsentError::ActivationIntentInvalid)?;
+    bind_consent_receipt(intent, path, &bytes, identity)
+}
+
+/// Persist consent only for the exact approved, still-locked operation. The
+/// returned read-only file pins the written inode through lease creation.
+pub(crate) fn record_operator_production_mutation_consent(
+    session: &LockedExecutionSession<'_>,
+    approval: &ExactPlanApproval,
+    execution: &ExecutionStartBinding,
+    intent: &ProductionMutationActivationIntent,
+) -> Result<(ProductionMutationConsentReceipt, File), ProductionMutationConsentError> {
+    if !PRODUCTION_MUTATION_CONSENT_COMPILED {
+        return Err(ProductionMutationConsentError::FeatureDisabled);
+    }
+    let path = operator_consent_path(intent)?;
+    session.require_current_durable_journal()?;
+    let journal = session.journal();
+    let binding = journal
+        .approval
+        .as_ref()
+        .ok_or(ProductionMutationConsentError::OperatorApprovalMismatch)?;
+    if journal.phase != JournalPhase::Approved
+        || journal.mutation_may_have_started
+        || !execution.integrity_matches()?
+        || !binding.integrity_matches()?
+        || approval.approval_id() != binding.approval_id
+        || approval.journal_id() != journal.journal_id
+        || approval.locked_session_id() != session.session_id()
+        || approval.plan_id() != journal.plan_id
+        || approval.target_manifest_digest() != journal.baseline_manifest_digest
+        || execution.journal_id != journal.journal_id
+        || execution.plan_id != journal.plan_id
+        || execution.approval_id != binding.approval_id
+        || execution.approved_journal_digest != crate::preconditions::journal_digest(journal)?
+        || execution.fresh_identity_digest != journal.baseline_manifest_digest
+        || intent.execution_id != execution.execution_id
+        || intent.source_manifest_id != execution.source_manifest_id
+        || intent.native_manifest_digest != execution.native_manifest_digest
+        || intent.fresh_identity_digest != execution.fresh_identity_digest
+        || intent.target != journal.target
+    {
+        return Err(ProductionMutationConsentError::OperatorApprovalMismatch);
+    }
+    if !crate::effective_user_is_root() {
+        return Err(ProductionMutationConsentError::OperatorPrivilegeRequired);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| ProductionMutationConsentError::UnsafeParent(path.clone()))?;
+    crate::journal_store::ensure_secure_directory(parent, true)?;
+    let directory = crate::journal_fd::JournalDir::open(parent)?;
+    let document = ProductionMutationConsentDocument {
+        schema_version: 1,
+        activation_id: intent.activation_id.clone(),
+        execution_id: intent.execution_id.clone(),
+        target: intent.target.clone(),
+        resolved_device: intent.resolved_device.clone(),
+        consent_phrase: PRODUCTION_MUTATION_CONSENT_PHRASE.to_owned(),
+    };
+    let bytes = serde_json::to_vec(&document)?;
+    let temp_name = format!(".{}.staging", intent.activation_id);
+    let final_name = path
+        .file_name()
+        .ok_or(ProductionMutationConsentError::UnsafeFile)?;
+    let pinned = directory.write_staged_file(std::ffi::OsStr::new(&temp_name), &bytes)?;
+    let identity = pinned
+        .metadata()
+        .map_err(|source| io_error(&path, source))?;
+    if !crate::journal_store::trusted_journal_file(&identity) {
+        return Err(ProductionMutationConsentError::UnsafeFile);
+    }
+    directory.sync()?;
+    directory.verify_namespace()?;
+    directory.publish_new(std::ffi::OsStr::new(&temp_name), final_name)?;
+    directory.sync()?;
+    directory.verify_namespace()?;
+    let receipt = verify_operator_production_mutation_consent(intent)?;
+    if receipt.consent_file.device_id != identity.dev()
+        || receipt.consent_file.inode != identity.ino()
+    {
+        return Err(ProductionMutationConsentError::UnsafeFile);
+    }
+    Ok((receipt, pinned))
 }
 
 /// Verify the same fixed root-owned runtime consent boundary for the M1B45
@@ -365,7 +516,8 @@ pub fn verify_default_production_chained_mutation_consent(
         return Err(ProductionMutationConsentError::FeatureDisabled);
     }
     validate_chained_activation_intent(intent)?;
-    let (bytes, identity) = read_default_production_mutation_consent_file()?;
+    let (bytes, identity) =
+        read_production_mutation_consent_file(Path::new(PRODUCTION_MUTATION_CONSENT_PATH))?;
     bind_chained_consent_receipt(intent, PRODUCTION_MUTATION_CONSENT_PATH, &bytes, identity)
 }
 
@@ -459,6 +611,22 @@ mod tests {
         assert!(receipt.integrity_matches().unwrap());
         assert!(receipt.consent_verified);
         assert!(!receipt.execution_enabled);
+    }
+
+    #[test]
+    fn operator_consent_path_is_bound_to_one_valid_activation() {
+        let mut activation = intent();
+        let path = operator_consent_path(&activation).unwrap();
+        assert_eq!(
+            path.parent(),
+            Some(Path::new(OPERATOR_MUTATION_CONSENT_DIRECTORY))
+        );
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            format!("{}.json", activation.activation_id)
+        );
+        activation.activation_id = "../unsafe".into();
+        assert!(operator_consent_path(&activation).is_err());
     }
 
     #[test]

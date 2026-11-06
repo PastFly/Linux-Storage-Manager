@@ -16,6 +16,8 @@ use lsm_planner::{
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod apply_extend;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "storagemgr",
@@ -70,8 +72,25 @@ enum Command {
         #[command(subcommand)]
         command: PlanCommand,
     },
+    /// Apply an explicitly confirmed, narrowly supported storage operation.
+    Apply {
+        #[command(subcommand)]
+        command: ApplyCommand,
+    },
     /// Open the full-screen read-only terminal UI.
     Tui,
+}
+
+#[derive(Debug, Subcommand)]
+enum ApplyCommand {
+    /// Grow an existing LVM logical volume and its ext4 or XFS filesystem.
+    Extend {
+        target: String,
+        #[arg(long, conflicts_with = "max", required_unless_present = "max")]
+        by: Option<String>,
+        #[arg(long)]
+        max: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -209,6 +228,16 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
     match cli.command {
+        Some(Command::Apply {
+            command: ApplyCommand::Extend { target, by, max },
+        }) => {
+            let growth = match (by, max) {
+                (Some(value), false) => Growth::ByBytes(parse_growth_size(&value)?),
+                (None, true) => Growth::MaxFree,
+                _ => anyhow::bail!("select exactly one of --by or --max"),
+            };
+            apply_extend::apply(target, growth)?;
+        }
         Some(Command::Capabilities) => print_capabilities()?,
         Some(Command::Json) => {
             println!(
@@ -1110,10 +1139,25 @@ mod extend_handoff_cli_tests {
     }
 
     #[test]
-    fn freeze_handoff_is_not_an_apply_command() {
-        // A frozen handoff is a pending execution contract; this CLI has no
-        // authorization to mutate storage or report successful execution.
-        assert!(Cli::try_parse_from(["storagemgr", "apply", "extend", "/", "--max"]).is_err());
+    fn apply_extend_requires_exactly_one_growth_selection() {
+        assert!(Cli::try_parse_from(["storagemgr", "apply", "extend", "/", "--max"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["storagemgr", "apply", "extend", "/", "--by", "1GiB"]).is_ok()
+        );
+        assert!(Cli::try_parse_from(["storagemgr", "apply", "extend", "/"]).is_err());
+        assert!(Cli::try_parse_from([
+            "storagemgr",
+            "apply",
+            "extend",
+            "/",
+            "--max",
+            "--by",
+            "1GiB"
+        ])
+        .is_err());
+        assert!(
+            Cli::try_parse_from(["storagemgr", "apply", "extend", "/", "--max", "--yes"]).is_err()
+        );
     }
 
     #[test]

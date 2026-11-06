@@ -1,10 +1,19 @@
 use std::io;
-#[cfg(feature = "disposable-loop-harness")]
+#[cfg(any(
+    feature = "disposable-loop-harness",
+    feature = "production-mutation-execution"
+))]
 use std::path::Path;
 
-#[cfg(feature = "disposable-loop-harness")]
+#[cfg(any(
+    feature = "disposable-loop-harness",
+    feature = "production-mutation-execution"
+))]
 use lsm_core::{HostCapabilities, HostSnapshot};
-#[cfg(feature = "disposable-loop-harness")]
+#[cfg(any(
+    feature = "disposable-loop-harness",
+    feature = "production-mutation-execution"
+))]
 use lsm_planner::{
     decide_filesystem_growth, revalidate_target_identity, FilesystemDecisionState, JournalPhase,
 };
@@ -14,7 +23,10 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::LockedExecutionSession;
-#[cfg(feature = "disposable-loop-harness")]
+#[cfg(any(
+    feature = "disposable-loop-harness",
+    feature = "production-mutation-execution"
+))]
 use crate::MUTATION_ENABLED;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -143,7 +155,10 @@ pub enum ExplicitFilesystemHealthError {
     Serialization(#[from] serde_json::Error),
 }
 
-#[cfg(feature = "disposable-loop-harness")]
+#[cfg(any(
+    feature = "disposable-loop-harness",
+    feature = "production-mutation-execution"
+))]
 pub fn execute_explicit_filesystem_health_check(
     session: &LockedExecutionSession<'_>,
     fresh_snapshot: &HostSnapshot,
@@ -270,7 +285,11 @@ pub(crate) fn receipt_matches_exact_check(
         && receipt.args == check.args)
 }
 
-#[cfg(any(test, feature = "disposable-loop-harness"))]
+#[cfg(any(
+    test,
+    feature = "disposable-loop-harness",
+    feature = "production-mutation-execution"
+))]
 fn digest_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -279,7 +298,10 @@ fn fingerprint(value: &impl Serialize) -> Result<String, serde_json::Error> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
 }
 
-#[cfg(feature = "disposable-loop-harness")]
+#[cfg(any(
+    feature = "disposable-loop-harness",
+    feature = "production-mutation-execution"
+))]
 fn stderr_summary(stderr: &[u8]) -> String {
     const LIMIT: usize = 4096;
     let bytes = &stderr[..stderr.len().min(LIMIT)];

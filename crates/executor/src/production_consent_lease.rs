@@ -1,5 +1,5 @@
-use std::fs::{File, OpenOptions};
-use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
+use std::fs::File;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
@@ -7,9 +7,10 @@ use thiserror::Error;
 
 use crate::{
     verify_default_production_chained_mutation_consent, verify_default_production_mutation_consent,
-    ProductionChainedMutationActivationIntent, ProductionMutationActivationIntent,
-    ProductionMutationConsentError, ProductionMutationConsentFileIdentity,
-    ProductionMutationConsentReceipt, PRODUCTION_MUTATION_CONSENT_PATH,
+    verify_operator_production_mutation_consent, ProductionChainedMutationActivationIntent,
+    ProductionMutationActivationIntent, ProductionMutationConsentError,
+    ProductionMutationConsentFileIdentity, ProductionMutationConsentReceipt,
+    PRODUCTION_MUTATION_CONSENT_PATH,
 };
 
 const CONSENT_READ_CHUNK: usize = 4096;
@@ -28,6 +29,8 @@ impl PinnedProductionMutationConsent {
 
 #[derive(Debug, Error)]
 pub enum ProductionMutationConsentLeaseError {
+    #[error("pinned consent storage verification failed: {0}")]
+    Storage(#[from] crate::JournalStoreError),
     #[error("production runtime consent verification failed: {0}")]
     Consent(#[from] ProductionMutationConsentError),
     #[error("pinned consent file no longer matches the verified file identity")]
@@ -90,18 +93,24 @@ fn open_file_matches_identity(
     Ok(sha256_file(file, expected.size_bytes)? == expected.sha256)
 }
 
-fn open_pinned_default_consent(
+fn open_pinned_consent(
     receipt: ProductionMutationConsentReceipt,
 ) -> Result<PinnedProductionMutationConsent, ProductionMutationConsentLeaseError> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(Path::new(PRODUCTION_MUTATION_CONSENT_PATH))?;
+    let path = Path::new(&receipt.consent_path);
+    let parent = path
+        .parent()
+        .ok_or(ProductionMutationConsentLeaseError::CurrentPathMismatch)?;
+    let name = path
+        .file_name()
+        .ok_or(ProductionMutationConsentLeaseError::CurrentPathMismatch)?;
+    let directory = crate::journal_fd::JournalDir::open(parent)?;
+    let file = directory.open_file(name)?;
 
     if !open_file_matches_identity(&file, &receipt.consent_file)? {
         return Err(ProductionMutationConsentLeaseError::PinnedFileMismatch);
     }
 
+    directory.verify_namespace()?;
     Ok(PinnedProductionMutationConsent { receipt, file })
 }
 
@@ -116,14 +125,37 @@ pub fn pin_default_production_mutation_consent(
     intent: &ProductionMutationActivationIntent,
 ) -> Result<PinnedProductionMutationConsent, ProductionMutationConsentLeaseError> {
     let receipt = verify_default_production_mutation_consent(intent)?;
-    open_pinned_default_consent(receipt)
+    open_pinned_consent(receipt)
+}
+
+pub fn pin_operator_production_mutation_consent(
+    intent: &ProductionMutationActivationIntent,
+) -> Result<PinnedProductionMutationConsent, ProductionMutationConsentLeaseError> {
+    let receipt = verify_operator_production_mutation_consent(intent)?;
+    open_pinned_consent(receipt)
+}
+
+/// Record the approved operation's consent and retain its original inode.
+pub fn record_and_pin_operator_production_mutation_consent(
+    session: &crate::LockedExecutionSession<'_>,
+    approval: &crate::ExactPlanApproval,
+    execution: &lsm_planner::ExecutionStartBinding,
+    intent: &ProductionMutationActivationIntent,
+) -> Result<PinnedProductionMutationConsent, ProductionMutationConsentLeaseError> {
+    let (receipt, file) = crate::production_consent::record_operator_production_mutation_consent(
+        session, approval, execution, intent,
+    )?;
+    if !open_file_matches_identity(&file, &receipt.consent_file)? {
+        return Err(ProductionMutationConsentLeaseError::PinnedFileMismatch);
+    }
+    Ok(PinnedProductionMutationConsent { receipt, file })
 }
 
 pub fn pin_default_production_chained_mutation_consent(
     intent: &ProductionChainedMutationActivationIntent,
 ) -> Result<PinnedProductionMutationConsent, ProductionMutationConsentLeaseError> {
     let receipt = verify_default_production_chained_mutation_consent(intent)?;
-    open_pinned_default_consent(receipt)
+    open_pinned_consent(receipt)
 }
 
 /// Revalidate both the current consent pathname and the still-open pinned file.
@@ -150,7 +182,15 @@ pub fn revalidate_pinned_production_mutation_consent(
     intent: &ProductionMutationActivationIntent,
     lease: &PinnedProductionMutationConsent,
 ) -> Result<ProductionMutationConsentReceipt, ProductionMutationConsentLeaseError> {
-    let current = verify_default_production_mutation_consent(intent)?;
+    let current = if lease.receipt.consent_path == PRODUCTION_MUTATION_CONSENT_PATH {
+        verify_default_production_mutation_consent(intent)?
+    } else {
+        let expected = crate::production_consent::operator_consent_path(intent)?;
+        if Path::new(&lease.receipt.consent_path) != expected {
+            return Err(ProductionMutationConsentLeaseError::CurrentPathMismatch);
+        }
+        verify_operator_production_mutation_consent(intent)?
+    };
     validate_current_receipt_against_lease(current, lease)
 }
 

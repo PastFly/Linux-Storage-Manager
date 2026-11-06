@@ -113,7 +113,10 @@ mod production_verified_step;
 #[cfg(feature = "trusted-discovery")]
 mod trusted_discovery;
 
-pub use approval::{approve_exact_plan, ExactPlanApproval, ExactPlanApprovalError};
+pub use approval::{
+    approve_exact_plan, approve_operator_plan, operator_confirmation_phrase, ExactPlanApproval,
+    ExactPlanApprovalError,
+};
 pub use backup_capture::{
     capture_metadata_backups, revalidate_metadata_backup_receipt, BackupArtifactReceipt,
     BackupCaptureError, BackupReceiptRevalidation, MetadataBackupReceipt,
@@ -165,7 +168,10 @@ pub use execution_intent::{
     FrozenExecutionIntentManifest, FrozenIntentAction, FrozenIntentRole, FrozenIntentStep,
     VerificationBarrierSpec,
 };
-#[cfg(feature = "disposable-loop-harness")]
+#[cfg(any(
+    feature = "disposable-loop-harness",
+    feature = "production-mutation-execution"
+))]
 pub use filesystem_health::execute_explicit_filesystem_health_check;
 pub use filesystem_health::{ExplicitFilesystemHealthError, ExplicitFilesystemHealthReceipt};
 pub use journal_store::{
@@ -278,13 +284,15 @@ pub use production_chained_verified_step::{
 };
 pub use production_consent::{
     verify_default_production_chained_mutation_consent, verify_default_production_mutation_consent,
-    ProductionMutationConsentDocument, ProductionMutationConsentError,
-    ProductionMutationConsentFileIdentity, ProductionMutationConsentReceipt,
+    verify_operator_production_mutation_consent, ProductionMutationConsentDocument,
+    ProductionMutationConsentError, ProductionMutationConsentFileIdentity,
+    ProductionMutationConsentReceipt, OPERATOR_MUTATION_CONSENT_DIRECTORY,
     PRODUCTION_MUTATION_CONSENT_COMPILED, PRODUCTION_MUTATION_CONSENT_PATH,
     PRODUCTION_MUTATION_CONSENT_PHRASE,
 };
 pub use production_consent_lease::{
     pin_default_production_chained_mutation_consent, pin_default_production_mutation_consent,
+    pin_operator_production_mutation_consent, record_and_pin_operator_production_mutation_consent,
     revalidate_pinned_production_chained_mutation_consent,
     revalidate_pinned_production_mutation_consent, PinnedProductionMutationConsent,
     ProductionMutationConsentLeaseError,

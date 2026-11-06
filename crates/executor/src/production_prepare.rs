@@ -239,8 +239,6 @@ pub fn prepare_continuation_production_mutation_step(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn builder_is_only_present_with_production_execution_feature() {
         assert!(cfg!(feature = "production-mutation-execution"));

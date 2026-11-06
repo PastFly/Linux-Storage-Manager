@@ -97,12 +97,12 @@ jobs:
             -v "$GITHUB_WORKSPACE/tests/portability:/checks:ro" \
             lsm-debian12-probe python3 -I /checks/debian-smoke.py \
             | tee -a "$RUNNER_TEMP/portable-probe/PORTABILITY.txt"
-      - name: Package portability-tested read-only candidate
+      - name: Package portability-tested candidate
         env:
           SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           OUT="$RUNNER_TEMP/portable-probe"
-          printf 'Source head: %s\nTested checkout: %s\nTarget: %s\nMode: read-only M0/M1A prototype; no apply/executor\nAcceptance: static linkage and userland smoke only; disk integration is separate CI\n' \
+          printf 'Source head: %s\nTested checkout: %s\nTarget: %s\nMode: guarded LV to ext4/XFS operator apply; other mutation profiles unavailable in CLI\nAcceptance: static linkage and userland smoke only; disk integration is separate CI\n' \
             "$SOURCE_HEAD" "$(git rev-parse HEAD)" "$TARGET" > "$OUT/BUILD_INFO.txt"
           cp docs/PORTABILITY.md "$OUT/README.md"
           (cd "$OUT" && sha256sum storagemgr > SHA256SUMS)
