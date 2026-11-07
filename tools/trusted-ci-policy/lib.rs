@@ -254,6 +254,91 @@ mod tests {
         assert_eq!(evaluate(&p, &s, &s), Outcome::Blocked);
     }
     #[test]
+    fn same_workflow_run_with_distinct_checks_blocks_even_with_different_attempts() {
+        let (mut policy, mut snapshot) = fixture();
+        policy.requirements.push(Requirement {
+            check: "test",
+            issuer: "trusted-app",
+            definition: "v1",
+        });
+        let mut test = snapshot.evidence[0].clone();
+        test.check = "test";
+        test.attempt = 2;
+        snapshot.evidence.push(test);
+        assert_eq!(evaluate(&policy, &snapshot, &snapshot), Outcome::Blocked);
+    }
+
+    #[test]
+    fn repeated_attempt_claims_block_regardless_of_status_or_order() {
+        let (policy, snapshot) = fixture();
+        for later_success in [false, true] {
+            let mut two_attempts = snapshot.clone();
+            let mut later = two_attempts.evidence[0].clone();
+            later.attempt = 2;
+            later.success = later_success;
+            two_attempts.evidence.push(later);
+            assert_eq!(
+                evaluate(&policy, &two_attempts, &two_attempts),
+                Outcome::Blocked
+            );
+            two_attempts.evidence.reverse();
+            assert_eq!(
+                evaluate(&policy, &two_attempts, &two_attempts),
+                Outcome::Blocked
+            );
+        }
+        let mut later_only = snapshot.clone();
+        later_only.evidence[0].attempt = 2;
+        assert_eq!(
+            evaluate(&policy, &later_only, &later_only),
+            Outcome::EvidenceConsistent
+        );
+        assert_eq!(evaluate(&policy, &snapshot, &later_only), Outcome::Blocked);
+    }
+
+    #[test]
+    fn success_plus_non_success_or_incomplete_collection_blocks() {
+        let (mut policy, mut snapshot) = fixture();
+        policy.requirements.push(Requirement {
+            check: "test",
+            issuer: "trusted-app",
+            definition: "v1",
+        });
+        let mut second = snapshot.evidence[0].clone();
+        second.check = "test";
+        second.run_id = 11;
+        second.success = false; // The model cannot distinguish pending from failure.
+        snapshot.evidence.push(second);
+        assert_eq!(evaluate(&policy, &snapshot, &snapshot), Outcome::Blocked);
+        snapshot.evidence[1].success = true;
+        snapshot.complete = false;
+        assert_eq!(evaluate(&policy, &snapshot, &snapshot), Outcome::Blocked);
+        snapshot.complete = true;
+        assert_eq!(
+            evaluate(&policy, &snapshot, &snapshot),
+            Outcome::EvidenceConsistent
+        );
+    }
+
+    #[test]
+    fn duplicate_check_cannot_replace_a_missing_required_check() {
+        let (mut policy, mut snapshot) = fixture();
+        policy.requirements.push(Requirement {
+            check: "test",
+            issuer: "trusted-app",
+            definition: "v1",
+        });
+        let mut conflicting = snapshot.evidence[0].clone();
+        conflicting.run_id = 11;
+        conflicting.attempt = 2;
+        conflicting.success = false;
+        snapshot.evidence.push(conflicting);
+        assert_eq!(evaluate(&policy, &snapshot, &snapshot), Outcome::Blocked);
+        snapshot.evidence[1].success = true;
+        assert_eq!(evaluate(&policy, &snapshot, &snapshot), Outcome::Blocked);
+    }
+
+    #[test]
     fn claims_can_be_forged_and_are_not_authenticated() {
         let (p, mut s) = fixture();
         s.evidence[0].run_id = 12345;
