@@ -20,7 +20,7 @@ jobs:
       CARGO_BUILD_JOBS: "1"
       RUST_TEST_THREADS: "2"
     steps:
-      - name: Require disposable GitHub-hosted runner
+      - name: Check runner environment and user
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: test "$RUNNER_ENVIRONMENT" = github-hosted && test "$(id -u)" -ne 0
@@ -36,7 +36,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           printf 'Tested PR head: %s\n' "$EXPECTED_HEAD" >> "$GITHUB_STEP_SUMMARY"
           git rev-parse HEAD 'HEAD^{tree}'
-      - name: Test harness without storage access
+      - name: Run source-only harness
         run: bash tools/validate.sh --source-only
       - name: Install Rust 1.88.0
         uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
