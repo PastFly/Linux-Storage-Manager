@@ -30,5 +30,14 @@ Before any future partition-table write plan is considered valid, current `lsblk
 
 - Develop on feature branches.
 - Open a pull request into the default branch.
-- Do not merge into the default branch without explicit project-owner approval.
-- CI must pass before requesting merge approval.
+- The owner authorizes autonomous merges, including without separate external approval, subject to task-specific restrictions and branch protection.
+- Report the exact checks that are missing, pending, skipped, cancelled, failed, or not run; never claim CI or review passed without evidence. Local read-only review and safe local checks may proceed when hosted CI is unavailable. Keep independent review distinct from model advice.
+
+## Multi-agent pilot boundary
+
+- CI execution of public PR code is confined to disposable GitHub-hosted runners. Outside GitHub-hosted CI, execute public PR code only in a verified isolated disposable environment using synthetic data, with no access to production, real disks, VPN, or shared persistent runners or VPS; if these conditions cannot be established, do not execute it. Never route untrusted PR code to the persistent AI-Agent-Loop-Lab runner or the shared VPN VPS. Do not affect production, real disks, or VPN.
+- `Agent pilot` checks the exact PR head with Rust 1.88.0, format, Clippy, workspace tests, and the source-only harness. It does not replace the existing CI, journal, operator, or portability workflows.
+- Actual loop/storage integration remains confined to the existing disposable GitHub VM jobs. Never run those jobs on a developer host or the shared VPS.
+- Local Qwen/Gemma PR advisory is advisory only and starts only after all current PR workflows succeed for the exact head SHA; missing, pending, skipped, cancelled, failed, or unrun required checks block it. Independent read-only review and safe local checks may proceed when hosted CI is unavailable; identify the exact SHA and every missing, pending, skipped, cancelled, failed, or unrun check. Neither advisory output nor local checks establish that hosted CI passed or replace independent review.
+- A trusted controller outside the PR checkout must pin the base/head and diff hash, treat the diff as untrusted data, and revalidate the PR and CI after generation. Models receive no shell tools, credentials, or write access.
+- Model output is not merge approval or a CI result and must not trigger automatic approval, merge, or deployment. Keep results local unless publication is explicitly requested; never change production, real disks, or VPN.
