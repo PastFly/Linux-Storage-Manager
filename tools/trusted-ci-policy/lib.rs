@@ -14,8 +14,12 @@ pub struct Evidence<'a> {
     pub definition: &'a str,
     pub candidate: &'a str,
     pub run_id: u64,
+    pub job_id: u64,
+    pub check_run_id: u64,
     pub attempt: u32,
+    pub run_success: bool,
     pub success: bool,
+    pub check_success: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot<'a> {
@@ -103,16 +107,25 @@ pub fn evaluate(policy: &Policy<'_>, before: &Snapshot<'_>, after: &Snapshot<'_>
             || e.definition != requirement.definition
             || e.candidate != before.candidate
             || e.run_id == 0
+            || e.job_id == 0
+            || e.check_run_id == 0
             || e.attempt == 0
+            || !e.run_success
             || !e.success
+            || !e.check_success
         {
             return Outcome::Blocked;
         }
     }
     if before.evidence.iter().enumerate().any(|(i, e)| {
-        before.evidence[..i]
-            .iter()
-            .any(|other| other.run_id == e.run_id)
+        before.evidence[..i].iter().any(|other| {
+            other.job_id == e.job_id
+                || other.check_run_id == e.check_run_id
+                || (other.run_id == e.run_id
+                    && (other.attempt != e.attempt
+                        || other.issuer != e.issuer
+                        || other.definition != e.definition))
+        })
     }) {
         return Outcome::Blocked;
     }
@@ -156,8 +169,12 @@ mod tests {
                     definition: "v1",
                     candidate: MERGE,
                     run_id: 10,
+                    job_id: 20,
+                    check_run_id: 30,
                     attempt: 1,
+                    run_success: true,
                     success: true,
+                    check_success: true,
                 }],
             },
         )
@@ -247,10 +264,12 @@ mod tests {
         assert_eq!(evaluate(&p, &s, &s), Outcome::Blocked);
         let mut second = s.evidence[0].clone();
         second.check = "test";
+        second.job_id = 21;
+        second.check_run_id = 31;
         second.run_id = 11;
         s.evidence.push(second);
         assert_eq!(evaluate(&p, &s, &s), Outcome::EvidenceConsistent);
-        s.evidence[1].run_id = 10;
+        s.evidence[1].check_run_id = s.evidence[0].check_run_id;
         assert_eq!(evaluate(&p, &s, &s), Outcome::Blocked);
     }
     #[test]
@@ -263,6 +282,8 @@ mod tests {
         });
         let mut test = snapshot.evidence[0].clone();
         test.check = "test";
+        test.job_id = 21;
+        test.check_run_id = 31;
         test.attempt = 2;
         snapshot.evidence.push(test);
         assert_eq!(evaluate(&policy, &snapshot, &snapshot), Outcome::Blocked);
@@ -306,6 +327,8 @@ mod tests {
         });
         let mut second = snapshot.evidence[0].clone();
         second.check = "test";
+        second.job_id = 21;
+        second.check_run_id = 31;
         second.run_id = 11;
         second.success = false; // The model cannot distinguish pending from failure.
         snapshot.evidence.push(second);
@@ -335,6 +358,97 @@ mod tests {
         snapshot.evidence.push(conflicting);
         assert_eq!(evaluate(&policy, &snapshot, &snapshot), Outcome::Blocked);
         snapshot.evidence[1].success = true;
+        assert_eq!(evaluate(&policy, &snapshot, &snapshot), Outcome::Blocked);
+    }
+
+    #[test]
+    fn distinct_jobs_in_one_workflow_attempt_can_be_consistent() {
+        let (mut policy, mut snapshot) = fixture();
+        policy.requirements.push(Requirement {
+            check: "test",
+            issuer: "trusted-app",
+            definition: "v1",
+        });
+        let mut second = snapshot.evidence[0].clone();
+        second.check = "test";
+        second.job_id = 21;
+        second.check_run_id = 31;
+        snapshot.evidence.push(second);
+        assert_eq!(
+            evaluate(&policy, &snapshot, &snapshot),
+            Outcome::EvidenceConsistent
+        );
+    }
+
+    #[test]
+    fn separate_job_and_check_identifiers_and_statuses_are_required() {
+        let (mut policy, mut snapshot) = fixture();
+        policy.requirements.push(Requirement {
+            check: "test",
+            issuer: "trusted-app",
+            definition: "v1",
+        });
+        let mut second = snapshot.evidence[0].clone();
+        second.check = "test";
+        second.job_id = 21;
+        second.check_run_id = 31;
+        snapshot.evidence.push(second);
+        assert_eq!(
+            evaluate(&policy, &snapshot, &snapshot),
+            Outcome::EvidenceConsistent
+        );
+        let mut cases = vec![];
+        let mut x = snapshot.clone();
+        x.evidence[1].job_id = 20;
+        cases.push(x);
+        let mut x = snapshot.clone();
+        x.evidence[1].check_run_id = 30;
+        cases.push(x);
+        let mut x = snapshot.clone();
+        x.evidence[1].job_id = 0;
+        cases.push(x);
+        let mut x = snapshot.clone();
+        x.evidence[1].check_run_id = 0;
+        cases.push(x);
+        let mut x = snapshot.clone();
+        x.evidence[1].run_success = false;
+        cases.push(x);
+        let mut x = snapshot.clone();
+        x.evidence[1].check_success = false;
+        cases.push(x);
+        let mut x = snapshot.clone();
+        x.evidence[1].attempt = 2;
+        cases.push(x);
+        for x in cases {
+            assert_eq!(evaluate(&policy, &x, &x), Outcome::Blocked);
+        }
+        let mut changed = snapshot.clone();
+        changed.evidence[1].job_id = 22;
+        assert_eq!(evaluate(&policy, &snapshot, &changed), Outcome::Blocked);
+        let mut changed = snapshot.clone();
+        changed.evidence[1].check_run_id = 32;
+        assert_eq!(evaluate(&policy, &snapshot, &changed), Outcome::Blocked);
+    }
+
+    #[test]
+    fn one_run_cannot_claim_conflicting_issuer_or_definition() {
+        let (mut policy, mut snapshot) = fixture();
+        policy.requirements.push(Requirement {
+            check: "test",
+            issuer: "other-app",
+            definition: "v1",
+        });
+        let mut second = snapshot.evidence[0].clone();
+        second.check = "test";
+        second.job_id = 21;
+        second.check_run_id = 31;
+        second.issuer = "other-app";
+        snapshot.evidence.push(second);
+        assert_eq!(evaluate(&policy, &snapshot, &snapshot), Outcome::Blocked);
+        policy.requirements[1].issuer = "trusted-app";
+        policy.requirements[1].definition = "v2";
+        snapshot.evidence[1].issuer = "trusted-app";
+        snapshot.evidence[1].definition = "v2";
         assert_eq!(evaluate(&policy, &snapshot, &snapshot), Outcome::Blocked);
     }
 
