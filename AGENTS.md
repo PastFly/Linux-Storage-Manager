@@ -35,7 +35,7 @@ Before any future partition-table write plan is considered valid, current `lsblk
 
 ## Multi-agent pilot boundary
 
-- CI execution of public PR code is confined to disposable GitHub-hosted runners. Do not route untrusted PR code to the persistent AI-Agent-Loop-Lab runner or the shared VPN VPS. Do not affect production, real disks, or VPN.
+- CI execution of public PR code is confined to disposable GitHub-hosted runners. Outside GitHub-hosted CI, execute public PR code only in a verified isolated disposable environment using synthetic data, with no access to production, real disks, VPN, or shared persistent runners or VPS; if these conditions cannot be established, do not execute it. Never route untrusted PR code to the persistent AI-Agent-Loop-Lab runner or the shared VPN VPS. Do not affect production, real disks, or VPN.
 - `Agent pilot` checks the exact PR head with Rust 1.88.0, format, Clippy, workspace tests, and the source-only harness. It does not replace the existing CI, journal, operator, or portability workflows.
 - Actual loop/storage integration remains confined to the existing disposable GitHub VM jobs. Never run those jobs on a developer host or the shared VPS.
 - Local Qwen/Gemma PR advisory is advisory only and starts only after all current PR workflows succeed for the exact head SHA; missing, pending, skipped, cancelled, failed, or unrun required checks block it. Independent read-only review and safe local checks may proceed when hosted CI is unavailable; identify the exact SHA and every missing, pending, skipped, cancelled, failed, or unrun check. Neither advisory output nor local checks establish that hosted CI passed or replace independent review.
